@@ -10,15 +10,15 @@ use async_trait::async_trait;
 use jaco_agent::AgentPersistence;
 use jaco_core::{
     AgentRunId, AgentRunStatus, ConversationEntryId, ConversationEntryPayload,
-    ConversationEntryStatus, ConversationId, ProviderStepId, ToolInvocationId,
+    ConversationEntryStatus, ConversationId, ProviderStepId, ToolInvocationApproval,
+    ToolInvocationId,
 };
 use jaco_db::{
     AgentRunRecord, ConversationCommit, ConversationEntryRecord, ConversationTimelineRecords,
     FinishAgentRun, FinishedAgentRun, FreshRepository, FreshStore, NewAgentRun,
     NewConversationEntry, NewProviderStep, NewToolInvocation, NewToolInvocationApproval,
-    NewUsageEvent, ProviderStepRecord, ToolInvocationApproval, ToolInvocationApprovalOutcome,
-    ToolInvocationRecord, UpdateAgentRunStatus, UpdateProviderStepStatus,
-    UpdateToolInvocationStatus, UsageEventRecord,
+    NewUsageEvent, ProviderStepRecord, ToolInvocationApprovalOutcome, ToolInvocationRecord,
+    UpdateAgentRunStatus, UpdateProviderStepStatus, UpdateToolInvocationStatus, UsageEventRecord,
 };
 
 use crate::{
@@ -156,6 +156,11 @@ impl SessionDatabaseExecutor {
                 conversation_mutation: AtomicBool::new(false),
             }),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(store: FreshStore) -> Self {
+        Self::new(store)
     }
 
     pub(crate) async fn execute<R, F>(&self, command: F) -> jaco_db::Result<R>

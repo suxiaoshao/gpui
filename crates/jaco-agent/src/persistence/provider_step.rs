@@ -42,14 +42,10 @@ impl PersistenceContext {
             provider_step_id: step.id.clone(),
         });
         self.push_step(AgentStep::ProviderStep(step.id.clone()));
-        self.emit_runtime(AgentRuntimeEvent::ProviderStepChanged {
-            agent_run_id: self.agent_run_id.clone(),
-            provider_step_id: step.id.clone(),
-        });
         self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
             conversation_id: self.conversation_id.clone(),
-            changes: vec![jaco_db::ConversationChange::ProviderStepChanged {
-                step: Box::new(step.clone()),
+            changes: vec![jaco_core::ConversationChange::ProviderStepChanged {
+                step: step.clone(),
             }],
         });
         Ok(step)
@@ -106,14 +102,10 @@ impl PersistenceContext {
         if step.status != ProviderStepStatus::Completed {
             return Ok(());
         }
-        self.emit_runtime(AgentRuntimeEvent::ProviderStepChanged {
-            agent_run_id: self.agent_run_id.clone(),
-            provider_step_id: provider_step_id.to_string(),
-        });
         self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
             conversation_id: self.conversation_id.clone(),
-            changes: vec![jaco_db::ConversationChange::ProviderStepChanged {
-                step: Box::new(step.clone()),
+            changes: vec![jaco_core::ConversationChange::ProviderStepChanged {
+                step: step.clone(),
             }],
         });
         let usage = provider_usage(response.usage);
@@ -208,14 +200,10 @@ impl PersistenceContext {
         if step.status != ProviderStepStatus::Completed {
             return Ok(());
         }
-        self.emit_runtime(AgentRuntimeEvent::ProviderStepChanged {
-            agent_run_id: self.agent_run_id.clone(),
-            provider_step_id: provider_step_id.to_string(),
-        });
         self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
             conversation_id: self.conversation_id.clone(),
-            changes: vec![jaco_db::ConversationChange::ProviderStepChanged {
-                step: Box::new(step.clone()),
+            changes: vec![jaco_core::ConversationChange::ProviderStepChanged {
+                step: step.clone(),
             }],
         });
         let usage = provider_usage(usage);
@@ -259,14 +247,10 @@ impl PersistenceContext {
         if step.status != ProviderStepStatus::Failed {
             return Ok(());
         }
-        self.emit_runtime(AgentRuntimeEvent::ProviderStepChanged {
-            agent_run_id: self.agent_run_id.clone(),
-            provider_step_id: provider_step_id.to_string(),
-        });
         self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
             conversation_id: self.conversation_id.clone(),
-            changes: vec![jaco_db::ConversationChange::ProviderStepChanged {
-                step: Box::new(step.clone()),
+            changes: vec![jaco_core::ConversationChange::ProviderStepChanged {
+                step: step.clone(),
             }],
         });
         self.push_event(AgentRunEvent::ProviderStepEvent {
@@ -296,14 +280,10 @@ impl PersistenceContext {
         if step.status != ProviderStepStatus::Canceled {
             return Ok(());
         }
-        self.emit_runtime(AgentRuntimeEvent::ProviderStepChanged {
-            agent_run_id: self.agent_run_id.clone(),
-            provider_step_id: provider_step_id.to_string(),
-        });
         self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
             conversation_id: self.conversation_id.clone(),
-            changes: vec![jaco_db::ConversationChange::ProviderStepChanged {
-                step: Box::new(step.clone()),
+            changes: vec![jaco_core::ConversationChange::ProviderStepChanged {
+                step: step.clone(),
             }],
         });
         self.push_event(AgentRunEvent::ProviderStepEvent {

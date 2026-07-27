@@ -542,18 +542,23 @@ on the Data type:
 use gpui_operation::Transition;
 
 struct ReplaceRecord(Record);
+enum RecordEffect {
+    Inserted,
+    Replaced,
+}
 
 impl Transition<ReplaceRecord> for &mut CatalogData {
-    type Output = ();
+    type Output = RecordEffect;
 
-    fn transition(self, message: ReplaceRecord) {
-        self.insert_or_replace(message.0);
+    fn transition(self, message: ReplaceRecord) -> Self::Output {
+        self.insert_or_replace(message.0)
     }
 }
 ```
 
 Both families implement the corresponding delegation for
-`&mut Ready<Data>`. The caller must first match the exact runtime variant:
+`&mut Ready<Data>` and preserve the domain transition's output. The caller must
+first match the exact runtime variant:
 
 ```rust
 if let refresh::Operation::Ready(ready) = &mut operation {

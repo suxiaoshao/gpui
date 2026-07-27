@@ -3,15 +3,12 @@ use std::{collections::HashSet, fmt};
 use gpui::SharedString;
 use gpui::{App, Task};
 use gpui_operation::refresh;
-use jaco_core::{ConversationId, ProjectId, ProjectKind};
-use jaco_db::ConversationRecord;
+use jaco_core::{ConversationId, ConversationSummary, ProjectId, ProjectKind};
 
 use crate::{
     database,
-    state::{
-        conversation_index::{self, ConversationIndexOperation},
-        projects::{self, ProjectOperation},
-    },
+    features::conversation::registry::ConversationCatalogOperation,
+    state::projects::{self, ProjectOperation},
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -60,11 +57,14 @@ pub(crate) fn empty_snapshot(cx: &App) -> jaco_db::Result<TemporaryConversationS
             "project resource is not ready".to_string(),
         )),
     })?;
-    conversation_index::catalog(cx).read(cx, |operation| match operation {
-        ConversationIndexOperation::Ready(ready) => Ok(TemporaryConversationSnapshot {
+    let registry = crate::app::session::ready_conversations(cx).ok_or_else(|| {
+        jaco_db::DbError::Invariant("conversation session is not ready".to_string())
+    })?;
+    let catalog = registry.read(cx).catalog();
+    match catalog.read(cx).operation() {
+        ConversationCatalogOperation::Ready(ready) => Ok(TemporaryConversationSnapshot {
             conversations: ready
                 .data()
-                .conversations()
                 .iter()
                 .filter(|conversation| scratch_projects.contains(&conversation.project_id))
                 .cloned()
@@ -74,7 +74,7 @@ pub(crate) fn empty_snapshot(cx: &App) -> jaco_db::Result<TemporaryConversationS
         _ => Err(jaco_db::DbError::Invariant(
             "conversation index is not ready".to_string(),
         )),
-    })
+    }
 }
 
 pub(crate) fn search(
@@ -88,8 +88,11 @@ pub(crate) fn search(
     cx.spawn(async move |_| {
         executor
             .execute(move |repository| {
-                let conversations = repository
-                    .list_no_project_conversations(&query)?
+                let conversations = jaco_conversation::ConversationService::new(repository)
+                    .load_scratch_catalog(&query)
+                    .map_err(|error| match error {
+                        jaco_conversation::ConversationError::Database(error) => error,
+                    })?
                     .into_iter()
                     .map(conversation_node)
                     .collect();
@@ -100,7 +103,7 @@ pub(crate) fn search(
     })
 }
 
-fn conversation_node(conversation: ConversationRecord) -> TemporaryConversationNode {
+fn conversation_node(conversation: ConversationSummary) -> TemporaryConversationNode {
     TemporaryConversationNode {
         id: conversation.id,
         project_id: conversation.project_id,

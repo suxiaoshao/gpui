@@ -260,9 +260,9 @@ fn insert_attachments_into_message_item_with_conn(
     conn: &mut SqliteConnection,
     item: &mut NewConversationEntry,
     attachments: Vec<NewAttachment>,
-) -> Result<()> {
+) -> Result<Vec<AttachmentRecord>> {
     if attachments.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let ConversationEntryPayload::Message { content, .. } = &mut item.payload else {
         return Err(DbError::Invariant(
@@ -270,6 +270,7 @@ fn insert_attachments_into_message_item_with_conn(
         ));
     };
 
+    let mut records = Vec::with_capacity(attachments.len());
     for attachment in attachments {
         if attachment.conversation_id != item.conversation_id {
             return Err(DbError::Invariant(
@@ -278,8 +279,9 @@ fn insert_attachments_into_message_item_with_conn(
         }
         let record = insert_attachment_with_conn(conn, attachment)?;
         content.push(content_part_for_attachment(&record));
+        records.push(record);
     }
-    Ok(())
+    Ok(records)
 }
 
 fn content_part_for_attachment(attachment: &AttachmentRecord) -> ContentPart {

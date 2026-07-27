@@ -20,6 +20,7 @@ pub(super) fn project_popup_menu(
     menu: PopupMenu,
     project: SidebarProjectHeader,
     workspace: Entity<HomeWorkspace>,
+    mutations_ready: bool,
     _window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
@@ -42,6 +43,7 @@ pub(super) fn project_popup_menu(
 
     menu.item(
         PopupMenuItem::new(pin_label)
+            .disabled(!mutations_ready)
             .icon(if project_for_pin.pinned {
                 IconName::PinOff
             } else {
@@ -77,6 +79,7 @@ pub(super) fn project_popup_menu(
     )
     .item(
         PopupMenuItem::new(rename_label)
+            .disabled(!mutations_ready)
             .icon(IconName::Pencil)
             .on_click(move |_, window, cx| {
                 open_rename_project_dialog(
@@ -90,6 +93,7 @@ pub(super) fn project_popup_menu(
     .item(PopupMenuItem::separator())
     .item(
         PopupMenuItem::new(remove_label)
+            .disabled(!mutations_ready)
             .icon(IconName::FolderMinus)
             .on_click(move |_, window, cx| {
                 open_remove_project_confirm(

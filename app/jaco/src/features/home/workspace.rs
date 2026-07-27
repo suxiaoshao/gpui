@@ -5,13 +5,13 @@ use std::{
 };
 
 use gpui::{App, AppContext, Context, Entity, SharedString, Subscription, Task};
+use gpui_operation::refresh::Phase;
 use gpui_store::{Select, StoreSelection};
-use jaco_core::{ConversationId, ConversationStatus, ProjectId, ProjectKind};
-use jaco_db::{ConversationRecord, ProjectRecord};
+use jaco_core::{ConversationId, ConversationStatus, ConversationSummary, ProjectId, ProjectKind};
+use jaco_db::ProjectRecord;
 
 use crate::{
-    database,
-    state::{conversation_index, projects},
+    database, features::conversation::registry::ConversationCatalogModel, state::projects,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -28,23 +28,57 @@ struct WorkspaceProjectInput {
 struct SelectWorkspaceProjects;
 
 impl Select<projects::ProjectOperation> for SelectWorkspaceProjects {
-    type Output = Option<Vec<WorkspaceProjectInput>>;
+    type Output = WorkspaceProjectsSnapshot;
 
     fn select(&self, operation: &projects::ProjectOperation) -> Self::Output {
-        operation.data().map(|data| {
-            data.projects()
-                .iter()
-                .filter(|project| !project.removed)
-                .map(|project| WorkspaceProjectInput {
-                    id: project.id.clone(),
-                    kind: project.kind,
-                    path: PathBuf::from(&project.path),
-                    display_name: project.display_name.clone(),
-                    pinned: project.pinned,
-                    updated_at: project.updated_at.unix_timestamp_nanos(),
-                })
-                .collect()
-        })
+        WorkspaceProjectsSnapshot {
+            projects: operation.data().map(|data| {
+                data.projects()
+                    .iter()
+                    .filter(|project| !project.removed)
+                    .map(|project| WorkspaceProjectInput {
+                        id: project.id.clone(),
+                        kind: project.kind,
+                        path: PathBuf::from(&project.path),
+                        display_name: project.display_name.clone(),
+                        pinned: project.pinned,
+                        updated_at: project.updated_at.unix_timestamp_nanos(),
+                    })
+                    .collect()
+            }),
+            status: WorkspaceResourceStatus::from_operation(operation),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorkspaceProjectsSnapshot {
+    projects: Option<Vec<WorkspaceProjectInput>>,
+    status: WorkspaceResourceStatus,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WorkspaceResourceStatus {
+    pub(crate) phase: Phase,
+    pub(crate) problem: Option<String>,
+    pub(crate) has_data: bool,
+    pub(crate) running: bool,
+}
+
+impl WorkspaceResourceStatus {
+    fn from_operation<Data, Problem: std::error::Error, Task>(
+        operation: &gpui_operation::refresh::Operation<Data, Problem, Task>,
+    ) -> Self {
+        Self {
+            phase: operation.phase(),
+            problem: operation.problem().map(ToString::to_string),
+            has_data: operation.data().is_some(),
+            running: operation.is_running(),
+        }
+    }
+
+    pub(crate) fn is_ready(&self) -> bool {
+        self.phase == Phase::Ready
     }
 }
 
@@ -57,32 +91,6 @@ struct WorkspaceConversationInput {
     status: ConversationStatus,
     updated_at: i128,
     deleted_at: Option<i128>,
-}
-
-#[derive(Clone, Copy, Default)]
-struct SelectWorkspaceConversations;
-
-impl Select<conversation_index::ConversationIndexOperation> for SelectWorkspaceConversations {
-    type Output = Option<Vec<WorkspaceConversationInput>>;
-
-    fn select(&self, operation: &conversation_index::ConversationIndexOperation) -> Self::Output {
-        operation.data().map(|data| {
-            data.conversations()
-                .iter()
-                .map(|conversation| WorkspaceConversationInput {
-                    id: conversation.id.clone(),
-                    project_id: conversation.project_id.clone(),
-                    title: conversation.title.clone(),
-                    pinned: conversation.pinned,
-                    status: conversation.status,
-                    updated_at: conversation.updated_at.unix_timestamp_nanos(),
-                    deleted_at: conversation
-                        .deleted_at
-                        .map(|deleted_at| deleted_at.unix_timestamp_nanos()),
-                })
-                .collect()
-        })
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,31 +143,35 @@ pub(crate) struct SidebarSearchResult {
     pub(crate) project: Option<SidebarProjectHeader>,
 }
 
+pub(crate) struct SidebarSearchLoad {
+    pub(crate) results: Vec<SidebarSearchResult>,
+    pub(crate) stale_problem: Option<String>,
+}
+
 pub(crate) struct HomeWorkspace {
     route: HomeRoute,
     snapshot: SidebarSnapshot,
     expanded_project_ids: HashSet<ProjectId>,
     pending_new_conversation_project_id: Option<ProjectId>,
-    projects: StoreSelection<Option<Vec<WorkspaceProjectInput>>>,
-    conversations: StoreSelection<Option<Vec<WorkspaceConversationInput>>>,
+    projects: StoreSelection<WorkspaceProjectsSnapshot>,
+    conversations: Entity<ConversationCatalogModel>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl HomeWorkspace {
     fn new(
         project_catalog: projects::ProjectStore,
-        conversation_catalog: conversation_index::ConversationIndexStore,
+        conversation_catalog: Entity<ConversationCatalogModel>,
         cx: &mut Context<Self>,
     ) -> Self {
         let projects = project_catalog.select(cx, SelectWorkspaceProjects);
-        let conversations = conversation_catalog.select(cx, SelectWorkspaceConversations);
         let mut store = Self {
             route: HomeRoute::NewConversation,
             snapshot: SidebarSnapshot::default(),
             expanded_project_ids: HashSet::new(),
             pending_new_conversation_project_id: None,
             projects,
-            conversations,
+            conversations: conversation_catalog.clone(),
             _subscriptions: Vec::new(),
         };
         store._subscriptions.push(project_catalog.observe_select(
@@ -169,11 +181,9 @@ impl HomeWorkspace {
         ));
         store
             ._subscriptions
-            .push(conversation_catalog.observe_select(
-                cx,
-                SelectWorkspaceConversations,
-                |store, _, cx| store.rebuild_sidebar(cx),
-            ));
+            .push(cx.observe(&conversation_catalog, |store, _, cx| {
+                store.rebuild_sidebar(cx)
+            }));
         store.rebuild_sidebar(cx);
         store
     }
@@ -186,15 +196,49 @@ impl HomeWorkspace {
         &self.snapshot
     }
 
+    pub(crate) fn project_status(&self) -> WorkspaceResourceStatus {
+        self.projects.read(|projects| projects.status.clone())
+    }
+
+    pub(crate) fn conversation_status(&self, cx: &App) -> WorkspaceResourceStatus {
+        WorkspaceResourceStatus::from_operation(self.conversations.read(cx).operation())
+    }
+
+    pub(crate) fn project_mutations_ready(&self) -> bool {
+        self.project_status().is_ready()
+    }
+
+    pub(crate) fn conversation_mutations_ready(&self, cx: &App) -> bool {
+        self.conversation_status(cx).is_ready()
+    }
+
+    pub(crate) fn refresh_projects(&self, cx: &mut App) {
+        projects::request_refresh(cx);
+    }
+
+    pub(crate) fn refresh_conversations(&self, cx: &mut App) {
+        self.conversations
+            .update(cx, |catalog, cx| catalog.refresh(cx));
+    }
+
     fn rebuild_sidebar(&mut self, cx: &mut Context<Self>) {
+        let conversations = self
+            .conversations
+            .read(cx)
+            .operation()
+            .data()
+            .map(|conversations| {
+                conversations
+                    .iter()
+                    .map(workspace_conversation_input)
+                    .collect::<Vec<_>>()
+            });
         self.snapshot = self.projects.read(|projects| {
-            self.conversations.read(|conversations| {
-                build_sidebar_snapshot(
-                    &self.expanded_project_ids,
-                    projects.as_deref().unwrap_or_default(),
-                    conversations.as_deref().unwrap_or_default(),
-                )
-            })
+            build_sidebar_snapshot(
+                &self.expanded_project_ids,
+                projects.projects.as_deref().unwrap_or_default(),
+                conversations.as_deref().unwrap_or_default(),
+            )
         });
         cx.notify();
     }
@@ -269,7 +313,7 @@ impl HomeWorkspace {
         conversation_id: ConversationId,
         pinned: bool,
         cx: &mut Context<Self>,
-    ) -> Task<jaco_db::Result<ConversationRecord>> {
+    ) -> Task<jaco_db::Result<ConversationSummary>> {
         crate::features::conversation::set_conversation_pinned(conversation_id, pinned, cx)
     }
 
@@ -277,7 +321,7 @@ impl HomeWorkspace {
         &mut self,
         conversation_id: ConversationId,
         cx: &mut Context<Self>,
-    ) -> Task<jaco_db::Result<ConversationRecord>> {
+    ) -> Task<jaco_db::Result<ConversationSummary>> {
         if matches!(&self.route, HomeRoute::Conversation(id) if id == &conversation_id) {
             self.route = HomeRoute::NewConversation;
         }
@@ -289,9 +333,17 @@ impl HomeWorkspace {
         query: String,
         limit: usize,
         cx: &mut Context<Self>,
-    ) -> Task<jaco_db::Result<Vec<SidebarSearchResult>>> {
+    ) -> Task<jaco_db::Result<SidebarSearchLoad>> {
         let project_by_id = self.visible_project_headers();
         if query.is_empty() {
+            let status = self.conversation_status(cx);
+            if !status.has_data {
+                return Task::ready(Err(jaco_db::DbError::Invariant(
+                    status
+                        .problem
+                        .unwrap_or_else(|| "conversation catalog is loading".to_string()),
+                )));
+            }
             let results =
                 self.snapshot
                     .projects
@@ -312,7 +364,14 @@ impl HomeWorkspace {
                     ))
                     .take(limit)
                     .collect();
-            return Task::ready(Ok(results));
+            return Task::ready(Ok(SidebarSearchLoad {
+                results,
+                stale_problem: (!status.is_ready()).then(|| {
+                    status
+                        .problem
+                        .unwrap_or_else(|| "conversation catalog is stale".to_string())
+                }),
+            }));
         }
         let executor = match database::ready_executor(cx) {
             Ok(executor) => executor,
@@ -320,10 +379,16 @@ impl HomeWorkspace {
         };
         cx.spawn(async move |_, _| {
             executor
-                .execute(move |repo| repo.search_sidebar_conversations(&query, limit))
+                .execute(move |repo| {
+                    jaco_conversation::ConversationService::new(repo)
+                        .search_catalog(&query, limit)
+                        .map_err(|error| match error {
+                            jaco_conversation::ConversationError::Database(error) => error,
+                        })
+                })
                 .await
-                .map(|conversations| {
-                    conversations
+                .map(|conversations| SidebarSearchLoad {
+                    results: conversations
                         .into_iter()
                         .map(|conversation| SidebarSearchResult {
                             project: project_by_id.get(&conversation.project_id).cloned(),
@@ -335,7 +400,8 @@ impl HomeWorkspace {
                                 pinned: conversation.pinned,
                             },
                         })
-                        .collect()
+                        .collect(),
+                    stale_problem: None,
                 })
         })
     }
@@ -345,19 +411,20 @@ impl HomeWorkspace {
             return false;
         };
 
-        self.conversations.read(|conversations| {
-            conversations
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .find(|conversation| &conversation.id == conversation_id)
-                .is_some_and(|conversation| &conversation.project_id == project_id)
-        })
+        self.conversations
+            .read(_cx)
+            .operation()
+            .data()
+            .into_iter()
+            .flatten()
+            .find(|conversation| &conversation.id == conversation_id)
+            .is_some_and(|conversation| &conversation.project_id == project_id)
     }
 
     fn visible_project_headers(&self) -> HashMap<ProjectId, SidebarProjectHeader> {
         self.projects.read(|projects| {
             projects
+                .projects
                 .as_deref()
                 .unwrap_or_default()
                 .iter()
@@ -369,8 +436,25 @@ impl HomeWorkspace {
 
 pub(crate) fn create(cx: &mut App) -> Entity<HomeWorkspace> {
     let project_catalog = projects::catalog(cx);
-    let conversation_catalog = conversation_index::catalog(cx);
+    let conversation_catalog = crate::app::session::ready_conversations(cx)
+        .expect("home workspace requires a ready app session")
+        .read(cx)
+        .catalog();
     cx.new(|cx| HomeWorkspace::new(project_catalog, conversation_catalog, cx))
+}
+
+fn workspace_conversation_input(conversation: &ConversationSummary) -> WorkspaceConversationInput {
+    WorkspaceConversationInput {
+        id: conversation.id.clone(),
+        project_id: conversation.project_id.clone(),
+        title: conversation.title.clone(),
+        pinned: conversation.pinned,
+        status: conversation.status,
+        updated_at: conversation.updated_at.unix_timestamp_nanos(),
+        deleted_at: conversation
+            .deleted_at
+            .map(|deleted_at| deleted_at.unix_timestamp_nanos()),
+    }
 }
 
 fn build_sidebar_snapshot(

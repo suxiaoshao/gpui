@@ -125,6 +125,11 @@ impl TemporaryWindow {
         );
         let new_conversation = cx.new(|cx| TemporaryNewConversationPane::new(window, cx));
         let database_store = crate::database::store(cx);
+        let project_catalog = state::projects::catalog(cx);
+        let conversation_catalog = crate::app::session::ready_conversations(cx)
+            .expect("temporary window requires a ready conversation session")
+            .read(cx)
+            .catalog();
         let binding = crate::database::ready_binding(cx)
             .expect("temporary window is only constructed for an exact Ready session");
         let search_subscription =
@@ -139,7 +144,24 @@ impl TemporaryWindow {
             },
         );
 
-        Self {
+        let project_subscription = project_catalog.observe_in(cx, window, |view, _, window, cx| {
+            view.sync_new_conversation_capability(cx);
+            if view.query.is_empty() {
+                view.reload_conversations(ReloadSelection::FirstMatch, window, cx);
+            }
+        });
+        let conversation_subscription =
+            cx.observe_in(&conversation_catalog, window, |view, _, window, cx| {
+                view.sync_new_conversation_capability(cx);
+                if view.query.is_empty() {
+                    view.reload_conversations(ReloadSelection::FirstMatch, window, cx);
+                }
+            });
+        let runtime_subscription = cx.observe_in(&runtime, window, |view, _, _window, cx| {
+            view.sync_new_conversation_capability(cx);
+        });
+
+        let mut view = Self {
             focus_handle,
             search_input,
             list,
@@ -153,6 +175,9 @@ impl TemporaryWindow {
             _subscriptions: vec![
                 search_subscription,
                 new_conversation_subscription,
+                project_subscription,
+                conversation_subscription,
+                runtime_subscription,
                 cx.observe_window_activation(window, |this, window, cx| {
                     if window.is_window_active() {
                         this.focus_search_input(window, cx);
@@ -183,7 +208,52 @@ impl TemporaryWindow {
                 }),
             ],
             _theme_binding: state::theme::WindowThemeBinding::new(window, cx),
-        }
+        };
+        view.sync_new_conversation_capability(cx);
+        view
+    }
+
+    fn sync_new_conversation_capability(&mut self, cx: &mut Context<Self>) {
+        let project_problem = state::projects::catalog(cx).read(cx, |operation| {
+            (!matches!(operation, state::projects::ProjectOperation::Ready(_))).then(|| {
+                operation
+                    .problem()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| cx.global::<I18n>().t("resource-status-loading"))
+            })
+        });
+        let conversation_problem =
+            crate::app::session::ready_conversations(cx).and_then(|registry| {
+                let catalog = registry.read(cx).catalog();
+                let operation = catalog.read(cx).operation();
+                (!matches!(
+                    operation,
+                    conversation::registry::ConversationCatalogOperation::Ready(_)
+                ))
+                .then(|| {
+                    operation
+                        .problem()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| cx.global::<I18n>().t("resource-status-loading"))
+                })
+            });
+        let runtime_problem = {
+            let runtime = self.runtime.read(cx);
+            let recovery = runtime.recovery();
+            (!matches!(recovery, gpui_operation::refresh::Operation::Ready(_))).then(|| {
+                recovery
+                    .problem()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| cx.global::<I18n>().t("conversation-runtime-recovering"))
+            })
+        };
+        let problem = project_problem
+            .or(conversation_problem)
+            .or(runtime_problem)
+            .map(Into::into);
+        self.new_conversation.update(cx, |pane, cx| {
+            pane.set_submission_problem(problem, cx);
+        });
     }
 
     pub(crate) fn focus_search_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -499,7 +569,7 @@ impl TemporaryWindow {
             let result = task.await;
             let _ = page.update_in(cx, |page, window, cx| match result {
                 Ok(created) => {
-                    let conversation_id = created.record.conversation.id.clone();
+                    let conversation_id = created.conversation_id.clone();
                     page.new_conversation.update(cx, |pane, cx| {
                         pane.clear_after_submit(window, cx);
                     });
@@ -519,9 +589,19 @@ impl TemporaryWindow {
                     );
                     page.route = TemporaryWindowRoute::Conversation(conversation_id.clone());
                     let _ = page.conversation_page(conversation_id.clone(), window, cx);
-                    page.runtime.update(cx, |runtime, cx| {
-                        runtime.start_run(created.run_request, window, cx);
+                    let start = page.runtime.update(cx, |runtime, cx| {
+                        runtime.start_run(created.run_request, window, cx)
                     });
+                    if let Err(error) = start {
+                        let title = cx.global::<I18n>().t("conversation-run-failed");
+                        push_temporary_notification(
+                            window,
+                            cx,
+                            title,
+                            error,
+                            NotificationType::Error,
+                        );
+                    }
                 }
                 Err(err) => {
                     let title = cx.global::<I18n>().t("temporary-submit-failed");
@@ -544,7 +624,7 @@ impl TemporaryWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let conversation_id = created.record.conversation.id.clone();
+        let conversation_id = created.conversation_id.clone();
         self.query.clear();
         self.search_input.update(cx, |input, cx| {
             if !input.value().is_empty() {
@@ -558,9 +638,15 @@ impl TemporaryWindow {
         );
         self.route = TemporaryWindowRoute::Conversation(conversation_id.clone());
         let _ = self.conversation_page(conversation_id.clone(), window, cx);
-        self.runtime.update(cx, |runtime, cx| {
+        let start = self.runtime.update(cx, |runtime, cx| {
             runtime.start_run(created.run_request, window, cx)
-        })
+        });
+        if let Err(error) = start {
+            let title = cx.global::<I18n>().t("conversation-run-failed");
+            push_temporary_notification(window, cx, title, error, NotificationType::Error);
+            return false;
+        }
+        true
     }
 
     fn conversation_page(
@@ -569,17 +655,22 @@ impl TemporaryWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<ConversationDetailPage> {
+        if let Some(page) = self.conversation_pages.get(&conversation_id) {
+            return page.clone();
+        }
+        let registry = crate::app::session::ready_conversations(cx)
+            .expect("conversation page requires a ready app session");
+        let conversation = registry.update(cx, |registry, cx| {
+            registry.conversation(conversation_id.clone(), cx)
+        });
+        // Keep search focus while the route is materialized after an
+        // arrow-key selection.
+        let runtime = self.runtime.clone();
+        let page = cx
+            .new(|cx| ConversationDetailPage::new_without_focus(conversation, runtime, window, cx));
         self.conversation_pages
-            .entry(conversation_id.clone())
-            .or_insert_with(|| {
-                // Keep search focus while the route is materialized after an
-                // arrow-key selection.
-                let runtime = self.runtime.clone();
-                cx.new(|cx| {
-                    ConversationDetailPage::new_without_focus(conversation_id, runtime, window, cx)
-                })
-            })
-            .clone()
+            .insert(conversation_id, page.clone());
+        page
     }
 
     fn minimize(&mut self, _: &menus::Minimize, window: &mut Window, _: &mut Context<Self>) {

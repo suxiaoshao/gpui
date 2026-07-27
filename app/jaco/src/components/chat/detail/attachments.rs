@@ -3,10 +3,9 @@ use std::{collections::HashMap, path::PathBuf};
 use gpui::*;
 use gpui_component::{ActiveTheme, h_flex};
 use jaco_core::{
-    AttachmentId, AttachmentKind, AttachmentSource, ContentPart, ConversationEntryPayload,
-    TranscriptRole,
+    AttachmentId, AttachmentKind, AttachmentSource, ContentPart, ConversationAttachment,
+    ConversationEntry, ConversationEntryPayload, TranscriptRole,
 };
-use jaco_db::{AttachmentRecord, ConversationEntryRecord};
 
 use crate::components::chat::image_preview::{self, ImagePreviewAttachment, ImagePreviewSource};
 
@@ -36,8 +35,8 @@ impl UserImageAttachment {
 }
 
 pub(super) fn attachments_by_id(
-    attachments: &[AttachmentRecord],
-) -> HashMap<AttachmentId, AttachmentRecord> {
+    attachments: &[ConversationAttachment],
+) -> HashMap<AttachmentId, ConversationAttachment> {
     attachments
         .iter()
         .cloned()
@@ -46,8 +45,8 @@ pub(super) fn attachments_by_id(
 }
 
 pub(super) fn user_image_attachments(
-    item: &ConversationEntryRecord,
-    attachments_by_id: &HashMap<AttachmentId, AttachmentRecord>,
+    item: &ConversationEntry,
+    attachments_by_id: &HashMap<AttachmentId, ConversationAttachment>,
 ) -> Vec<UserImageAttachment> {
     let ConversationEntryPayload::Message {
         role: TranscriptRole::User,
@@ -118,7 +117,9 @@ fn render_user_image_attachment(attachment: UserImageAttachment, cx: &mut App) -
         .into_any_element()
 }
 
-fn user_image_attachment_from_record(record: &AttachmentRecord) -> Option<UserImageAttachment> {
+fn user_image_attachment_from_record(
+    record: &ConversationAttachment,
+) -> Option<UserImageAttachment> {
     if record.kind != AttachmentKind::Image {
         return None;
     }
@@ -137,7 +138,7 @@ fn user_image_attachment_from_record(record: &AttachmentRecord) -> Option<UserIm
     })
 }
 
-fn attachment_path(record: &AttachmentRecord) -> Option<PathBuf> {
+fn attachment_path(record: &ConversationAttachment) -> Option<PathBuf> {
     record
         .path
         .as_deref()
@@ -156,9 +157,9 @@ mod tests {
     use super::{attachments_by_id, user_image_attachments};
     use jaco_core::{
         AttachmentKind, AttachmentMetadata, AttachmentSource, AttachmentStorageKind, ContentPart,
-        ConversationEntryKind, ConversationEntryPayload, ConversationEntryStatus, TranscriptRole,
+        ConversationAttachment, ConversationEntry, ConversationEntryKind, ConversationEntryPayload,
+        ConversationEntryStatus, TranscriptRole,
     };
-    use jaco_db::{AttachmentRecord, ConversationEntryRecord};
     use std::path::PathBuf;
     use time::OffsetDateTime;
 
@@ -199,9 +200,9 @@ mod tests {
         assert_eq!(images[0].height, Some(240));
     }
 
-    fn user_message(content: Vec<ContentPart>) -> ConversationEntryRecord {
+    fn user_message(content: Vec<ContentPart>) -> ConversationEntry {
         let now = OffsetDateTime::UNIX_EPOCH;
-        ConversationEntryRecord {
+        ConversationEntry {
             id: "item-1".to_string(),
             conversation_id: "conversation-1".to_string(),
             seq: 1,
@@ -221,26 +222,26 @@ mod tests {
         }
     }
 
-    fn image_record(id: &str, path: &str, width: u32, height: u32) -> AttachmentRecord {
+    fn image_record(id: &str, path: &str, width: u32, height: u32) -> ConversationAttachment {
         let mut record = attachment_record(id, AttachmentKind::Image, path);
         record.metadata.width = Some(width);
         record.metadata.height = Some(height);
         record
     }
 
-    fn image_record_without_path(id: &str) -> AttachmentRecord {
+    fn image_record_without_path(id: &str) -> ConversationAttachment {
         let mut record = attachment_record(id, AttachmentKind::Image, "");
         record.path = None;
         record
     }
 
-    fn file_record(id: &str, path: &str) -> AttachmentRecord {
+    fn file_record(id: &str, path: &str) -> ConversationAttachment {
         attachment_record(id, AttachmentKind::File, path)
     }
 
-    fn attachment_record(id: &str, kind: AttachmentKind, path: &str) -> AttachmentRecord {
+    fn attachment_record(id: &str, kind: AttachmentKind, path: &str) -> ConversationAttachment {
         let now = OffsetDateTime::UNIX_EPOCH;
-        AttachmentRecord {
+        ConversationAttachment {
             id: id.to_string(),
             conversation_id: "conversation-1".to_string(),
             kind,

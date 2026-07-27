@@ -19,22 +19,23 @@ use gpui_component::{
     text::TextViewState,
     v_flex,
 };
-use gpui_operation::{Complete, Load, Refresh, Retry, Transition};
-use jaco_core::{AgentRunId, ConversationEntryId, ConversationId, ToolInvocationId};
+use jaco_core::{
+    AgentRunId, ConversationEffect, ConversationEntryId, ConversationId, ToolInvocationId,
+};
 
 use crate::{
     components::chat::input::{
         ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
     },
+    components::chat::runtime_status::ConversationRuntimeStatus,
     features::conversation,
     foundation::{I18n, conversation_format as format},
 };
-use conversation::ConversationLoadSnapshot;
+use conversation::model::{ConversationModel, ConversationModelEvent, ConversationOperation};
 
 pub(crate) struct ConversationDetailPage {
     conversation_id: ConversationId,
-    operation: conversation::ConversationTimelineOperation,
-    pending_changes: Vec<jaco_db::ConversationChange>,
+    conversation: Entity<ConversationModel>,
     chat_form: Entity<ChatInputController>,
     timeline: ListState,
     timeline_rows: timeline::ConversationTimelineRows,
@@ -58,59 +59,6 @@ enum MessageTextUpdate<'a> {
     Replace,
 }
 
-struct TimelineCommit {
-    conversation: Option<jaco_db::ConversationRecord>,
-    changes: Vec<jaco_db::ConversationChange>,
-}
-
-impl Transition<TimelineCommit> for &mut Option<ConversationLoadSnapshot> {
-    type Output = ();
-
-    fn transition(self, commit: TimelineCommit) {
-        let Some(snapshot) = self.as_mut() else {
-            return;
-        };
-        if let Some(conversation) = commit.conversation {
-            snapshot.conversation = conversation;
-        }
-        for change in commit.changes {
-            match change {
-                jaco_db::ConversationChange::EntryAppended { entry }
-                | jaco_db::ConversationChange::EntryUpdated { entry } => {
-                    match snapshot.items.iter_mut().find(|item| item.id == entry.id) {
-                        Some(current) => *current = entry,
-                        None => snapshot.items.push(entry),
-                    }
-                    snapshot.items.sort_by(|left, right| {
-                        left.seq
-                            .cmp(&right.seq)
-                            .then_with(|| left.id.cmp(&right.id))
-                    });
-                }
-                jaco_db::ConversationChange::ToolInvocationChanged { invocation } => match snapshot
-                    .tool_invocations
-                    .iter_mut()
-                    .find(|current| current.id == invocation.id)
-                {
-                    Some(current) => *current = invocation,
-                    None => snapshot.tool_invocations.push(invocation),
-                },
-                jaco_db::ConversationChange::RunStatusChanged { run } => {
-                    match snapshot
-                        .runs
-                        .iter_mut()
-                        .find(|current| current.id == run.id)
-                    {
-                        Some(current) => *current = run,
-                        None => snapshot.runs.push(run),
-                    }
-                }
-                jaco_db::ConversationChange::ProviderStepChanged { .. } => {}
-            }
-        }
-    }
-}
-
 fn message_text_update<'a>(previous: &str, next: &'a str) -> MessageTextUpdate<'a> {
     if previous == next {
         return MessageTextUpdate::Unchanged;
@@ -127,25 +75,25 @@ fn message_text_update<'a>(previous: &str, next: &'a str) -> MessageTextUpdate<'
 
 impl ConversationDetailPage {
     pub(crate) fn new(
-        conversation_id: ConversationId,
+        conversation: Entity<ConversationModel>,
         runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_with_focus(conversation_id, runtime, true, window, cx)
+        Self::new_with_focus(conversation, runtime, true, window, cx)
     }
 
     pub(crate) fn new_without_focus(
-        conversation_id: ConversationId,
+        conversation: Entity<ConversationModel>,
         runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_with_focus(conversation_id, runtime, false, window, cx)
+        Self::new_with_focus(conversation, runtime, false, window, cx)
     }
 
     fn new_with_focus(
-        conversation_id: ConversationId,
+        conversation: Entity<ConversationModel>,
         runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
         focus_composer: bool,
         window: &mut Window,
@@ -183,25 +131,45 @@ impl ConversationDetailPage {
                 page.handle_runtime_event(runtime, event, window, cx);
             },
         );
+        let runtime_observation = cx.observe(&runtime, |page, _, cx| {
+            page.sync_submission_problem(cx);
+            cx.notify();
+        });
 
+        let model_event_subscription = cx.subscribe(
+            &conversation,
+            |page, _model, event: &ConversationModelEvent, cx| {
+                page.handle_conversation_model_event(event, cx);
+            },
+        );
+        let model_observation = cx.observe(&conversation, |page, _, cx| {
+            page.sync_submission_problem(cx);
+            cx.notify();
+        });
+        let conversation_id = conversation.read(cx).id().clone();
         let mut page = Self {
             conversation_id,
-            operation: conversation::ConversationTimelineOperation::new(),
-            pending_changes: Vec::new(),
+            conversation,
             chat_form,
             timeline,
             timeline_rows,
             message_text_states: Vec::new(),
             expanded_agent_runs: HashMap::new(),
             runtime,
-            _subscriptions: vec![chat_form_subscription, runtime_subscription],
+            _subscriptions: vec![
+                chat_form_subscription,
+                runtime_subscription,
+                runtime_observation,
+                model_event_subscription,
+                model_observation,
+            ],
         };
-        page.reload(window, cx);
         page.refresh_chat_form_context(cx);
         page.sync_message_text_states(cx);
-        page.sync_timeline(window, cx, None);
+        page.sync_timeline(cx, None);
         page.timeline.scroll_to_end();
         page.sync_agent_running(cx);
+        page.sync_submission_problem(cx);
         page
     }
 
@@ -217,6 +185,12 @@ impl ConversationDetailPage {
         cx: &mut Context<Self>,
     ) {
         if self.runtime.read(cx).is_running(&self.conversation_id) {
+            return;
+        }
+        if !matches!(
+            self.conversation.read(cx).operation(),
+            ConversationOperation::Ready(ready) if ready.data().is_some()
+        ) {
             return;
         }
         let request = conversation::SendConversationMessageRequest {
@@ -237,24 +211,21 @@ impl ConversationDetailPage {
                     page.chat_form.update(cx, |chat_form, cx| {
                         chat_form.clear_after_submit(window, cx);
                     });
-                    let runtime = page.runtime.clone();
-                    page.handle_runtime_event(
-                        &runtime,
-                        &conversation::runtime::ConversationRuntimeEvent::ConversationChanges {
-                            conversation_id: sent.conversation.id.clone(),
-                            conversation: Some(Box::new(sent.conversation)),
-                            changes: vec![jaco_db::ConversationChange::EntryAppended {
-                                entry: sent.item,
-                            }],
-                        },
-                        window,
-                        cx,
-                    );
                     page.timeline.set_follow_mode(FollowMode::Tail);
                     page.timeline.scroll_to_end();
-                    page.runtime.update(cx, |runtime, cx| {
-                        runtime.start_run(sent.run_request, window, cx);
+                    let start = page.runtime.update(cx, |runtime, cx| {
+                        runtime.start_run(sent.run_request, window, cx)
                     });
+                    if let Err(error) = start {
+                        let title = cx.global::<I18n>().t("conversation-run-failed");
+                        push_conversation_notification(
+                            window,
+                            cx,
+                            title,
+                            error,
+                            NotificationType::Error,
+                        );
+                    }
                 }
                 Err(err) => {
                     let title = cx.global::<I18n>().t("conversation-send-failed");
@@ -280,13 +251,6 @@ impl ConversationDetailPage {
     ) {
         let event_conversation_id = match event {
             conversation::runtime::ConversationRuntimeEvent::RunStarted { conversation_id }
-            | conversation::runtime::ConversationRuntimeEvent::ConversationChanged {
-                conversation_id,
-            }
-            | conversation::runtime::ConversationRuntimeEvent::ConversationChanges {
-                conversation_id,
-                ..
-            }
             | conversation::runtime::ConversationRuntimeEvent::RunFinished { conversation_id } => {
                 conversation_id
             }
@@ -295,36 +259,8 @@ impl ConversationDetailPage {
             return;
         }
 
-        match event {
-            conversation::runtime::ConversationRuntimeEvent::ConversationChanges {
-                conversation,
-                changes,
-                ..
-            } => {
-                if let conversation::ConversationTimelineOperation::Ready(ready) =
-                    &mut self.operation
-                {
-                    ready.transition(TimelineCommit {
-                        conversation: conversation.as_deref().cloned(),
-                        changes: changes.clone(),
-                    });
-                    self.refresh_chat_form_context(cx);
-                    self.sync_message_text_states(cx);
-                    self.sync_timeline(window, cx, None);
-                    cx.notify();
-                } else {
-                    self.pending_changes.extend(changes.iter().cloned());
-                }
-            }
-            conversation::runtime::ConversationRuntimeEvent::ConversationChanged { .. } => {
-                self.reload(window, cx);
-            }
-            conversation::runtime::ConversationRuntimeEvent::RunStarted { .. }
-            | conversation::runtime::ConversationRuntimeEvent::RunFinished { .. } => {
-                self.sync_agent_running(cx);
-                cx.notify();
-            }
-        }
+        self.sync_agent_running(cx);
+        cx.notify();
         if matches!(
             event,
             conversation::runtime::ConversationRuntimeEvent::RunFinished { .. }
@@ -344,78 +280,68 @@ impl ConversationDetailPage {
         }
     }
 
-    fn apply_pending_changes(&mut self) {
-        if self.pending_changes.is_empty() {
-            return;
+    fn handle_conversation_model_event(
+        &mut self,
+        event: &ConversationModelEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            ConversationModelEvent::Reloaded => {
+                self.refresh_chat_form_context(cx);
+                self.sync_message_text_states(cx);
+                self.sync_timeline(cx, None);
+                self.sync_agent_running(cx);
+            }
+            ConversationModelEvent::Changed(effects) => {
+                for effect in effects {
+                    self.apply_conversation_effect(effect, cx);
+                }
+            }
         }
-        if self.operation.data().and_then(Option::as_ref).is_none() {
-            return;
-        }
-        let changes = std::mem::take(&mut self.pending_changes);
-        if let conversation::ConversationTimelineOperation::Ready(ready) = &mut self.operation {
-            ready.transition(TimelineCommit {
-                conversation: None,
-                changes,
-            });
+        self.sync_submission_problem(cx);
+        cx.notify();
+    }
+
+    fn apply_conversation_effect(&mut self, effect: &ConversationEffect, cx: &mut Context<Self>) {
+        match effect {
+            ConversationEffect::SummaryChanged => {}
+            ConversationEffect::EntryInserted { entry_id } => {
+                self.sync_message_text_state(entry_id, cx);
+                self.sync_timeline(cx, None);
+            }
+            ConversationEffect::EntryChanged { entry_id, .. } => {
+                self.sync_message_text_state(entry_id, cx);
+                self.update_timeline_entry(entry_id, cx);
+            }
+            ConversationEffect::EntryRemoved { entry_id } => {
+                self.message_text_states
+                    .retain(|state| &state.id != entry_id);
+                self.sync_timeline(cx, None);
+            }
+            ConversationEffect::AttachmentChanged { attachment_id }
+            | ConversationEffect::AttachmentRemoved { attachment_id } => {
+                self.sync_attachment_rows(attachment_id, cx);
+            }
+            ConversationEffect::RunChanged { run_id } => self.update_timeline_run(run_id, cx),
+            ConversationEffect::ProviderStepChanged { .. }
+            | ConversationEffect::ToolInvocationChanged { .. } => {}
+            ConversationEffect::Deleted => {
+                self.message_text_states.clear();
+                self.sync_timeline(cx, None);
+            }
         }
     }
 
-    fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.operation.is_running() {
-            return;
-        }
-        let Ok(executor) = crate::database::ready_executor(cx) else {
-            return;
-        };
-        let conversation_id = self.conversation_id.clone();
-        let completion_id = conversation_id.clone();
-        let page = cx.entity().downgrade();
-        let task = window.spawn(cx, async move |cx| {
-            let result = executor
-                .execute(move |repository| {
-                    repository.conversation_timeline_records(&conversation_id)
-                })
-                .await
-                .map_err(conversation::ConversationTimelineProblem::from);
-            let _ = page.update_in(cx, |page, window, cx| {
-                if page.conversation_id != completion_id || !page.operation.is_running() {
-                    return;
-                }
-                page.operation.transition(Complete(result));
-                page.apply_pending_changes();
-                page.refresh_chat_form_context(cx);
-                page.sync_message_text_states(cx);
-                page.sync_timeline(window, cx, None);
-                page.sync_agent_running(cx);
-                cx.notify();
-            });
-        });
-        match &mut self.operation {
-            conversation::ConversationTimelineOperation::Idle(_) => {
-                self.operation.transition(Load(task))
-            }
-            conversation::ConversationTimelineOperation::Ready(_)
-            | conversation::ConversationTimelineOperation::Degraded(_) => {
-                self.operation.transition(Refresh(task))
-            }
-            conversation::ConversationTimelineOperation::Unavailable(_) => {
-                self.operation.transition(Retry(task))
-            }
-            conversation::ConversationTimelineOperation::Loading(_)
-            | conversation::ConversationTimelineOperation::Refreshing(_)
-            | conversation::ConversationTimelineOperation::Retrying(_)
-            | conversation::ConversationTimelineOperation::RefreshingDegraded(_) => {}
-        }
-        self.refresh_chat_form_context(cx);
-        self.sync_message_text_states(cx);
-        self.sync_timeline(window, cx, None);
-        self.sync_agent_running(cx);
-        cx.notify();
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        self.conversation
+            .update(cx, |conversation, cx| conversation.refresh(cx));
     }
 
     fn refresh_chat_form_context(&mut self, cx: &mut Context<Self>) {
         let project_path = self
-            .operation
+            .conversation
+            .read(cx)
+            .operation()
             .data()
             .and_then(Option::as_ref)
             .map(|snapshot| snapshot.project.path.clone());
@@ -426,7 +352,6 @@ impl ConversationDetailPage {
 
     fn sync_timeline(
         &mut self,
-        _window: &mut Window,
         cx: &mut Context<Self>,
         remeasure_hint: Option<message::TimelineRowKey>,
     ) {
@@ -451,7 +376,9 @@ impl ConversationDetailPage {
             },
         );
         let rows = self
-            .operation
+            .conversation
+            .read(cx)
+            .operation()
             .data()
             .and_then(Option::as_ref)
             .map(|snapshot| {
@@ -479,12 +406,14 @@ impl ConversationDetailPage {
 
     fn sync_message_text_states(&mut self, cx: &mut Context<Self>) {
         let sources = self
-            .operation
+            .conversation
+            .read(cx)
+            .operation()
             .data()
             .and_then(Option::as_ref)
             .map(|snapshot| {
                 snapshot
-                    .items
+                    .entries
                     .iter()
                     .filter_map(|item| {
                         let source = format::item_markdown(item);
@@ -504,6 +433,126 @@ impl ConversationDetailPage {
 
         self.message_text_states
             .retain(|entry| next_ids.contains(&entry.id));
+    }
+
+    fn sync_message_text_state(&mut self, item_id: &ConversationEntryId, cx: &mut Context<Self>) {
+        let source = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .and_then(|conversation| {
+                conversation
+                    .entries
+                    .iter()
+                    .find(|entry| &entry.id == item_id)
+            })
+            .map(format::item_markdown);
+        match source {
+            Some(source) if !source.is_empty() => {
+                self.ensure_message_text_state(item_id.clone(), &source, cx);
+            }
+            Some(_) | None => {
+                self.message_text_states
+                    .retain(|state| &state.id != item_id);
+            }
+        }
+    }
+
+    fn update_timeline_entry(&mut self, item_id: &ConversationEntryId, cx: &mut Context<Self>) {
+        let Some((entry, attachments)) = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .and_then(|conversation| {
+                conversation
+                    .entries
+                    .iter()
+                    .find(|entry| &entry.id == item_id)
+                    .cloned()
+                    .map(|entry| (entry, conversation.attachments.clone()))
+            })
+        else {
+            self.sync_timeline(cx, None);
+            return;
+        };
+        let text_state = self
+            .message_text_states
+            .iter()
+            .find(|state| &state.id == item_id)
+            .map(|state| state.state.clone());
+        let Some(key) = self
+            .timeline_rows
+            .update_entry(entry, &attachments, text_state)
+        else {
+            self.sync_timeline(cx, None);
+            return;
+        };
+        self.remeasure_timeline_row(&key);
+    }
+
+    fn update_timeline_run(&mut self, run_id: &AgentRunId, cx: &mut Context<Self>) {
+        let Some(run) = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .and_then(|conversation| {
+                conversation
+                    .runs
+                    .iter()
+                    .find(|run| &run.id == run_id)
+                    .cloned()
+            })
+        else {
+            self.sync_timeline(cx, None);
+            return;
+        };
+        let Some(key) = self.timeline_rows.update_run(run) else {
+            self.sync_timeline(cx, None);
+            return;
+        };
+        self.remeasure_timeline_row(&key);
+    }
+
+    fn sync_attachment_rows(
+        &mut self,
+        attachment_id: &jaco_core::AttachmentId,
+        cx: &mut Context<Self>,
+    ) {
+        let item_ids = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .map(|conversation| {
+                conversation
+                    .entries
+                    .iter()
+                    .filter(|entry| entry_references_attachment(entry, attachment_id))
+                    .map(|entry| entry.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for item_id in item_ids {
+            self.update_timeline_entry(&item_id, cx);
+        }
+    }
+
+    fn remeasure_timeline_row(&self, key: &message::TimelineRowKey) {
+        if let Some(row_ix) = self
+            .timeline_rows
+            .keys()
+            .iter()
+            .position(|current| current == key)
+        {
+            self.timeline.remeasure_items(row_ix..row_ix + 1);
+        }
     }
 
     fn ensure_message_text_state(
@@ -569,6 +618,42 @@ impl ConversationDetailPage {
         });
     }
 
+    fn sync_submission_problem(&mut self, cx: &mut Context<Self>) {
+        let conversation_problem = {
+            let operation = self.conversation.read(cx).operation();
+            (!matches!(
+                operation,
+                ConversationOperation::Ready(ready) if ready.data().is_some()
+            ))
+            .then(|| {
+                operation
+                    .problem()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| {
+                        cx.global::<I18n>().t(if operation.data().is_some() {
+                            "resource-status-stale"
+                        } else {
+                            "resource-status-loading"
+                        })
+                    })
+            })
+        };
+        let runtime_problem = {
+            let runtime = self.runtime.read(cx);
+            let operation = runtime.recovery();
+            (!matches!(operation, gpui_operation::refresh::Operation::Ready(_))).then(|| {
+                operation
+                    .problem()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| cx.global::<I18n>().t("conversation-runtime-recovering"))
+            })
+        };
+        let problem = conversation_problem.or(runtime_problem).map(Into::into);
+        self.chat_form.update(cx, |chat_form, cx| {
+            chat_form.set_submission_problem(problem, cx);
+        });
+    }
+
     fn stop_agent_run(&mut self, cx: &mut Context<Self>) {
         self.runtime.update(cx, |runtime, cx| {
             runtime.stop_run(&self.conversation_id, cx);
@@ -599,27 +684,33 @@ impl ConversationDetailPage {
     fn toggle_agent_run(
         &mut self,
         agent_run_id: AgentRunId,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let current = self
             .expanded_agent_runs
             .get(&agent_run_id)
             .copied()
-            .unwrap_or_else(|| self.default_agent_run_expanded(&agent_run_id));
+            .unwrap_or_else(|| self.default_agent_run_expanded(&agent_run_id, cx));
         self.timeline.set_follow_mode(FollowMode::Normal);
         self.expanded_agent_runs
             .insert(agent_run_id.clone(), !current);
-        self.sync_timeline(
-            window,
-            cx,
-            Some(message::TimelineRowKey::Agent(agent_run_id)),
-        );
+        self.sync_timeline(cx, Some(message::TimelineRowKey::Agent(agent_run_id)));
         cx.notify();
     }
 
-    fn default_agent_run_expanded(&self, agent_run_id: &AgentRunId) -> bool {
-        let Some(snapshot) = self.operation.data().and_then(Option::as_ref) else {
+    fn default_agent_run_expanded(
+        &self,
+        agent_run_id: &AgentRunId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(snapshot) = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+        else {
             return true;
         };
         let Some(run) = snapshot.runs.iter().find(|run| &run.id == agent_run_id) else {
@@ -632,10 +723,11 @@ impl ConversationDetailPage {
     }
 
     fn render_missing(&self, cx: &mut Context<Self>) -> AnyElement {
-        let (title, subtitle) = match self.operation.data() {
-            None if self.operation.problem().is_some() => (
+        let operation = self.conversation.read(cx).operation();
+        let (title, subtitle) = match operation.data() {
+            None if operation.problem().is_some() => (
                 cx.global::<I18n>().t("conversation-load-failed"),
-                self.operation
+                operation
                     .problem()
                     .map(ToString::to_string)
                     .unwrap_or_default(),
@@ -670,26 +762,23 @@ impl ConversationDetailPage {
                     .text_sm()
                     .text_color(cx.theme().muted_foreground),
             )
-            .children(self.operation.is_running().then(|| Spinner::new().small()))
+            .children(operation.is_running().then(|| Spinner::new().small()))
             .child(
                 Button::new("conversation-retry-load")
                     .label(cx.global::<I18n>().t("resource-status-refresh"))
-                    .disabled(self.operation.is_running())
-                    .on_click(cx.listener(|page, _, window, cx| {
-                        page.reload(window, cx);
+                    .disabled(operation.is_running())
+                    .on_click(cx.listener(|page, _, _window, cx| {
+                        page.reload(cx);
                     })),
             )
             .into_any_element()
     }
 
     fn render_stale_status(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let problem = self.operation.problem().map(ToString::to_string);
-        let running = self.operation.is_running();
-        (!matches!(
-            self.operation,
-            conversation::ConversationTimelineOperation::Ready(_)
-        ))
-        .then(|| {
+        let operation = self.conversation.read(cx).operation();
+        let problem = operation.problem().map(ToString::to_string);
+        let running = operation.is_running();
+        (!matches!(operation, ConversationOperation::Ready(_))).then(|| {
             v_flex()
                 .w_full()
                 .gap_2()
@@ -709,18 +798,30 @@ impl ConversationDetailPage {
                         .label(cx.global::<I18n>().t("resource-status-refresh"))
                         .disabled(running)
                         .loading(running)
-                        .on_click(cx.listener(|page, _, window, cx| {
-                            page.reload(window, cx);
+                        .on_click(cx.listener(|page, _, _window, cx| {
+                            page.reload(cx);
                         })),
                 )
                 .into_any_element()
         })
     }
+
+    fn render_runtime_status(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        ConversationRuntimeStatus::from_runtime(&self.runtime, cx)
+            .map(IntoElement::into_any_element)
+    }
 }
 
 impl Render for ConversationDetailPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.operation.data().and_then(Option::as_ref).is_none() {
+        if self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .is_none()
+        {
             return self.render_missing(cx);
         }
 
@@ -734,6 +835,7 @@ impl Render for ConversationDetailPage {
             .overflow_hidden()
             .bg(cx.theme().tokens.background.background)
             .children(self.render_stale_status(cx))
+            .children(self.render_runtime_status(cx))
             .child(
                 div()
                     .flex_1()
@@ -825,6 +927,30 @@ fn push_conversation_notification(
             .with_type(notification_type),
         cx,
     );
+}
+
+fn entry_references_attachment(
+    entry: &jaco_core::ConversationEntry,
+    attachment_id: &jaco_core::AttachmentId,
+) -> bool {
+    let jaco_core::ConversationEntryPayload::Message { content, .. } = &entry.payload else {
+        return false;
+    };
+    content.iter().any(|part| match part {
+        jaco_core::ContentPart::Image {
+            attachment_id: current,
+        }
+        | jaco_core::ContentPart::File {
+            attachment_id: current,
+        }
+        | jaco_core::ContentPart::Audio {
+            attachment_id: current,
+        }
+        | jaco_core::ContentPart::Attachment {
+            attachment_id: current,
+        } => current == attachment_id,
+        jaco_core::ContentPart::Text { .. } => false,
+    })
 }
 
 fn sync_timeline_list(

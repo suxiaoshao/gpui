@@ -5,12 +5,12 @@ use std::{
 
 use gpui::{App, Entity, Window};
 use gpui_component::text::TextViewState;
-use jaco_core::{AgentRunId, ConversationEntryId, ToolInvocationId};
-use jaco_db::{AgentRunRecord, ConversationEntryRecord};
-
-use crate::{
-    features::conversation::ConversationLoadSnapshot, foundation::conversation_format as format,
+use jaco_core::{
+    AgentRun, AgentRunId, Conversation, ConversationAttachment, ConversationEntry,
+    ConversationEntryId, ToolInvocationId,
 };
+
+use crate::foundation::conversation_format as format;
 
 use super::attachments;
 use super::message::{
@@ -58,10 +58,70 @@ impl ConversationTimelineRows {
     pub(super) fn row_index_for_item(&self, item_id: &ConversationEntryId) -> Option<usize> {
         self.rows.iter().position(|row| row.contains_item(item_id))
     }
+
+    pub(super) fn update_entry(
+        &mut self,
+        entry: ConversationEntry,
+        attachments: &[ConversationAttachment],
+        text_state: Option<Entity<TextViewState>>,
+    ) -> Option<TimelineRowKey> {
+        let attachments_by_id = attachments::attachments_by_id(attachments);
+        for row in &mut self.rows {
+            match row {
+                TimelineRow::User(user) if user.item.id == entry.id => {
+                    user.image_attachments =
+                        attachments::user_image_attachments(&entry, &attachments_by_id);
+                    user.text_state = text_state;
+                    user.item = entry;
+                    return Some(row.key());
+                }
+                TimelineRow::Agent(agent)
+                    if agent.items.iter().any(|current| current.id == entry.id) =>
+                {
+                    if let Some(current) = agent
+                        .items
+                        .iter_mut()
+                        .find(|current| current.id == entry.id)
+                    {
+                        *current = entry.clone();
+                    }
+                    if agent
+                        .final_item
+                        .as_ref()
+                        .is_some_and(|current| current.id == entry.id)
+                    {
+                        agent.final_item = Some(entry.clone());
+                    }
+                    if let Some(text_state) = text_state {
+                        agent.text_states.insert(entry.id.clone(), text_state);
+                    } else {
+                        agent.text_states.remove(&entry.id);
+                    }
+                    return Some(row.key());
+                }
+                TimelineRow::User(_) | TimelineRow::Agent(_) => {}
+            }
+        }
+        None
+    }
+
+    pub(super) fn update_run(&mut self, run: AgentRun) -> Option<TimelineRowKey> {
+        let row = self.rows.iter_mut().find(|row| {
+            matches!(
+                row,
+                TimelineRow::Agent(agent) if agent.run_id.as_ref() == Some(&run.id)
+            )
+        })?;
+        let TimelineRow::Agent(agent) = row else {
+            unreachable!("run rows are always agent rows")
+        };
+        agent.run = Some(run);
+        Some(row.key())
+    }
 }
 
 pub(super) fn build_rows(
-    snapshot: &ConversationLoadSnapshot,
+    snapshot: &Conversation,
     active_agent_run_id: Option<&AgentRunId>,
     expanded_agent_runs: &HashMap<AgentRunId, bool>,
     text_states: &HashMap<ConversationEntryId, Entity<TextViewState>>,
@@ -69,7 +129,7 @@ pub(super) fn build_rows(
 ) -> Vec<TimelineRow> {
     let attachments_by_id = attachments::attachments_by_id(&snapshot.attachments);
     let (pending_rows, mut run_items) =
-        collect_pending_rows(&snapshot.items, &snapshot.runs, active_agent_run_id);
+        collect_pending_rows(&snapshot.entries, &snapshot.runs, active_agent_run_id);
     let run_by_id = snapshot
         .runs
         .iter()
@@ -115,24 +175,24 @@ fn row_keys(rows: &[TimelineRow]) -> Vec<TimelineRowKey> {
 }
 
 enum PendingTimelineRow {
-    User(ConversationEntryRecord),
+    User(ConversationEntry),
     Agent(AgentRunId),
-    LooseAgent(ConversationEntryRecord),
+    LooseAgent(ConversationEntry),
 }
 
 fn collect_pending_rows(
-    items: &[ConversationEntryRecord],
-    runs: &[AgentRunRecord],
+    items: &[ConversationEntry],
+    runs: &[AgentRun],
     active_agent_run_id: Option<&AgentRunId>,
 ) -> (
     Vec<PendingTimelineRow>,
-    HashMap<AgentRunId, Vec<ConversationEntryRecord>>,
+    HashMap<AgentRunId, Vec<ConversationEntry>>,
 ) {
     let run_by_id = runs
         .iter()
         .map(|run| (run.id.clone(), run))
         .collect::<HashMap<_, _>>();
-    let mut run_items: HashMap<AgentRunId, Vec<ConversationEntryRecord>> = HashMap::new();
+    let mut run_items: HashMap<AgentRunId, Vec<ConversationEntry>> = HashMap::new();
     let mut pending_rows = Vec::new();
     let mut seen_runs = HashSet::new();
 
@@ -169,8 +229,8 @@ fn collect_pending_rows(
 
 fn agent_turn_row(
     run_id: Option<AgentRunId>,
-    run: Option<AgentRunRecord>,
-    items: Vec<ConversationEntryRecord>,
+    run: Option<AgentRun>,
+    items: Vec<ConversationEntry>,
     expanded_agent_runs: &HashMap<AgentRunId, bool>,
     text_states: &HashMap<ConversationEntryId, Entity<TextViewState>>,
     callbacks: TimelineCallbacks,
@@ -196,9 +256,9 @@ fn agent_turn_row(
 }
 
 fn final_item_for_run(
-    run: Option<&AgentRunRecord>,
-    items: &[ConversationEntryRecord],
-) -> Option<ConversationEntryRecord> {
+    run: Option<&AgentRun>,
+    items: &[ConversationEntry],
+) -> Option<ConversationEntry> {
     run.and_then(|run| run.output.as_ref().map(|output| &output.final_entry_id))
         .and_then(|final_entry_id| {
             items
@@ -332,8 +392,72 @@ mod tests {
         assert_eq!(run_items.get(&run_id).unwrap().len(), 1);
     }
 
-    fn active_run(id: AgentRunId) -> AgentRunRecord {
-        AgentRunRecord {
+    #[test]
+    fn updating_one_entry_preserves_other_timeline_rows() {
+        let first = entry(
+            "entry-1",
+            1,
+            None,
+            ConversationEntryPayload::Message {
+                role: TranscriptRole::User,
+                content: vec![ContentPart::Text {
+                    text: "before".to_string(),
+                }],
+            },
+        );
+        let second = entry(
+            "entry-2",
+            2,
+            None,
+            ConversationEntryPayload::Message {
+                role: TranscriptRole::User,
+                content: vec![ContentPart::Text {
+                    text: "untouched".to_string(),
+                }],
+            },
+        );
+        let on_copy: OnCopy = Rc::new(|_, _, _| true);
+        let mut rows = ConversationTimelineRows::new(vec![
+            TimelineRow::User(Box::new(UserMessageRow {
+                item: first,
+                image_attachments: Vec::new(),
+                text_state: None,
+                on_copy: on_copy.clone(),
+            })),
+            TimelineRow::User(Box::new(UserMessageRow {
+                item: second.clone(),
+                image_attachments: Vec::new(),
+                text_state: None,
+                on_copy,
+            })),
+        ]);
+        let updated = entry(
+            "entry-1",
+            1,
+            None,
+            ConversationEntryPayload::Message {
+                role: TranscriptRole::User,
+                content: vec![ContentPart::Text {
+                    text: "after".to_string(),
+                }],
+            },
+        );
+
+        let key = rows.update_entry(updated.clone(), &[], None);
+
+        assert_eq!(key, Some(TimelineRowKey::User("entry-1".to_string())));
+        let TimelineRow::User(first) = &rows.rows[0] else {
+            panic!("first row must remain a user row");
+        };
+        let TimelineRow::User(second_row) = &rows.rows[1] else {
+            panic!("second row must remain a user row");
+        };
+        assert_eq!(first.item, updated);
+        assert_eq!(second_row.item, second);
+    }
+
+    fn active_run(id: AgentRunId) -> AgentRun {
+        AgentRun {
             id,
             conversation_id: "conversation-1".to_string(),
             trigger_entry_id: "trigger-entry".to_string(),
@@ -383,8 +507,8 @@ mod tests {
         seq: i32,
         agent_run_id: Option<AgentRunId>,
         payload: ConversationEntryPayload,
-    ) -> ConversationEntryRecord {
-        ConversationEntryRecord {
+    ) -> ConversationEntry {
+        ConversationEntry {
             id: id.to_string(),
             conversation_id: "conversation-1".to_string(),
             seq,

@@ -1,23 +1,24 @@
 pub(crate) mod attachments;
+pub(crate) mod model;
+pub(crate) mod registry;
 pub(crate) mod runtime;
 
-use std::{fmt, path::PathBuf};
+use std::path::PathBuf;
 
 use gpui::{App, Task};
-use gpui_operation::refresh;
 use jaco_agent::{AgentRunRequest, SkillActivationRequest};
 use jaco_core::{
     AgentEngineKind, AgentRunTriggerKind, AgentRuntimeSnapshot, ContentPart,
     ConversationEntryPayload, ConversationEntryStatus, ConversationId, ConversationMetadata,
-    ConversationSettingsSnapshot, ProjectId, PromptContent, PromptId, ReasoningSelectionSnapshot,
-    RunSettingsSnapshot, ToolApprovalMode, ToolApprovalPolicy, ToolNameStrategy,
-    ToolPermissionScopeSnapshot, ToolPolicySnapshot, ToolSource, TranscriptRole, new_id,
+    ConversationSettingsSnapshot, ConversationSummary, ProjectId, PromptContent, PromptId,
+    ReasoningSelectionSnapshot, RunSettingsSnapshot, ToolApprovalMode, ToolApprovalPolicy,
+    ToolNameStrategy, ToolPermissionScopeSnapshot, ToolPolicySnapshot, ToolSource, TranscriptRole,
+    new_id,
 };
 use jaco_db::{
-    ConversationEntryRecord, ConversationIndexDelta, ConversationRecord,
-    ConversationTimelineRecords, ConversationWithUserItemRecord, CreatedConversationTransaction,
-    FreshRepository, NewConversation, NewConversationEntry, NewConversationTransaction,
-    NewConversationWithUserItem, ProjectRecord, SendConversationTransaction,
+    CreatedConversationTransaction, FreshRepository, NewConversation, NewConversationEntry,
+    NewConversationTransaction, NewConversationWithUserItem, ProjectRecord,
+    SendConversationTransaction,
 };
 use tokio::sync::oneshot;
 
@@ -31,7 +32,6 @@ use crate::{
 use self::attachments::{
     ComposerAttachment, cleanup_stored_attachment_files, prepare_message_attachments_in,
 };
-use crate::state::conversation_index;
 
 const DEFAULT_MAX_STEPS: u32 = 32;
 const TITLE_MAX_CHARS: usize = 48;
@@ -63,46 +63,19 @@ pub(crate) struct SendConversationMessageRequest {
 }
 
 pub(crate) struct CreatedConversation {
-    pub(crate) record: ConversationWithUserItemRecord,
+    pub(crate) conversation_id: ConversationId,
     pub(crate) run_request: AgentRunRequest,
 }
 
 pub(crate) struct SentConversationMessage {
-    pub(crate) item: ConversationEntryRecord,
-    pub(crate) conversation: ConversationRecord,
     pub(crate) run_request: AgentRunRequest,
-}
-
-pub(crate) type ConversationLoadSnapshot = ConversationTimelineRecords;
-pub(crate) type ConversationTimelineOperation =
-    refresh::Operation<Option<ConversationLoadSnapshot>, ConversationTimelineProblem, Task<()>>;
-
-#[derive(Debug)]
-pub(crate) struct ConversationTimelineProblem(jaco_db::DbError);
-
-impl fmt::Display for ConversationTimelineProblem {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl std::error::Error for ConversationTimelineProblem {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.0)
-    }
-}
-
-impl From<jaco_db::DbError> for ConversationTimelineProblem {
-    fn from(error: jaco_db::DbError) -> Self {
-        Self(error)
-    }
 }
 
 pub(crate) fn create_conversation(
     request: CreateConversationRequest,
     cx: &mut App,
 ) -> Task<JacoResult<CreatedConversation>> {
-    if !conversation_index::is_ready(cx) {
+    if !registry::is_catalog_ready(cx) {
         return Task::ready(Err(jaco_db::DbError::Invariant(
             "conversation index is not ready".to_string(),
         )
@@ -241,13 +214,13 @@ pub(crate) fn create_conversation(
             cx.update(|cx| {
                 if database::ready_binding(cx).as_ref() == Some(&binding) {
                     projects::publish_project(transaction.project.clone(), cx);
-                    conversation_index::publish(transaction.record.conversation.clone(), cx);
+                    registry::publish_summary(transaction.record.conversation.clone(), cx);
                 }
             });
         }
         let result = result
             .map(|(transaction, run_request)| CreatedConversation {
-                record: transaction.record,
+                conversation_id: transaction.record.conversation.id,
                 run_request,
             })
             .map_err(Into::into);
@@ -268,7 +241,7 @@ pub(crate) fn send_conversation_message(
     request: SendConversationMessageRequest,
     cx: &mut App,
 ) -> Task<JacoResult<SentConversationMessage>> {
-    if !conversation_index::is_ready(cx) {
+    if !registry::is_catalog_ready(cx) {
         return Task::ready(Err(jaco_db::DbError::Invariant(
             "conversation index is not ready".to_string(),
         )
@@ -353,20 +326,23 @@ pub(crate) fn send_conversation_message(
                         tool_policy
                     },
                 });
-                let sent = SentConversationMessage {
-                    item,
-                    conversation: transaction.commit.conversation.clone(),
-                    run_request,
-                };
+                let sent = SentConversationMessage { run_request };
                 (transaction, sent)
             });
         if let Ok((transaction, _)) = &result {
             cx.update(|cx| {
                 if database::ready_binding(cx).as_ref() == Some(&binding) {
                     projects::publish_project(transaction.project.clone(), cx);
-                    conversation_index::publish_committed(
-                        transaction.commit.conversation.clone(),
-                        transaction.commit.index_delta.clone(),
+                    registry::publish_changes(
+                        transaction.commit.conversation.id.clone(),
+                        Some(transaction.commit.conversation.clone()),
+                        std::iter::once(jaco_core::ConversationChange::EntryAppended {
+                            entry: transaction.commit.value.clone(),
+                        })
+                        .chain(transaction.attachments.iter().cloned().map(|attachment| {
+                            jaco_core::ConversationChange::AttachmentUpserted { attachment }
+                        }))
+                        .collect(),
                         cx,
                     );
                 }
@@ -390,7 +366,7 @@ pub(crate) fn send_conversation_message(
 }
 
 fn follow_up_prompt_snapshot(
-    conversation: &ConversationRecord,
+    conversation: &ConversationSummary,
     repository: &FreshRepository,
 ) -> jaco_db::Result<Option<PromptContent>> {
     if let Some(prompt) = conversation.settings_snapshot.prompt.clone() {
@@ -409,22 +385,12 @@ pub(crate) fn set_conversation_pinned(
     conversation_id: ConversationId,
     pinned: bool,
     cx: &mut App,
-) -> Task<jaco_db::Result<ConversationRecord>> {
+) -> Task<jaco_db::Result<ConversationSummary>> {
     spawn_conversation_mutation(
         cx,
         move |repository| repository.set_conversation_pinned(&conversation_id, pinned),
         |conversation, cx| {
-            conversation_index::publish_committed(
-                conversation.clone(),
-                ConversationIndexDelta::PresentationChanged {
-                    id: conversation.id.clone(),
-                    title: None,
-                    pinned: Some(conversation.pinned),
-                    status: None,
-                    updated_at: conversation.updated_at,
-                },
-                cx,
-            );
+            registry::publish_summary(conversation.clone(), cx);
         },
     )
 }
@@ -432,12 +398,12 @@ pub(crate) fn set_conversation_pinned(
 pub(crate) fn delete_conversation(
     conversation_id: ConversationId,
     cx: &mut App,
-) -> Task<jaco_db::Result<ConversationRecord>> {
+) -> Task<jaco_db::Result<ConversationSummary>> {
     let removed_id = conversation_id.clone();
     spawn_conversation_mutation(
         cx,
         move |repository| repository.soft_delete_conversation(&conversation_id),
-        move |_conversation, cx| conversation_index::publish_removed(removed_id, cx),
+        move |_conversation, cx| registry::publish_removed(removed_id, cx),
     )
 }
 
@@ -449,7 +415,7 @@ fn spawn_conversation_mutation<R>(
 where
     R: Send + 'static,
 {
-    if !conversation_index::is_ready(cx) {
+    if !registry::is_catalog_ready(cx) {
         return Task::ready(Err(jaco_db::DbError::Invariant(
             "conversation index is not ready".to_string(),
         )));

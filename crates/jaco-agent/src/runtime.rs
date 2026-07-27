@@ -156,6 +156,15 @@ impl AgentRuntime {
                 status: AgentRunStatus::Running,
             },
         );
+        emit_runtime(
+            observer,
+            AgentRuntimeEvent::ConversationTimelineChanged {
+                conversation_id: agent_run.conversation_id.clone(),
+                changes: vec![jaco_core::ConversationChange::RunStatusChanged {
+                    run: agent_run.clone(),
+                }],
+            },
+        );
         Ok(agent_run)
     }
 
@@ -798,13 +807,12 @@ impl AgentRuntime {
             observer,
             AgentRuntimeEvent::ConversationCommitted {
                 conversation: Box::new(commit.conversation.clone()),
-                index_delta: commit.index_delta.clone(),
                 changes: {
-                    let mut changes = vec![jaco_db::ConversationChange::RunStatusChanged {
+                    let mut changes = vec![jaco_core::ConversationChange::RunStatusChanged {
                         run: commit.value.run.clone(),
                     }];
                     if commit.value.appended_final_entry {
-                        changes.push(jaco_db::ConversationChange::EntryAppended {
+                        changes.push(jaco_core::ConversationChange::EntryAppended {
                             entry: commit.value.final_entry.clone(),
                         });
                     }
@@ -813,16 +821,6 @@ impl AgentRuntime {
             },
         );
         let finished = commit.value;
-        if finished.appended_final_entry {
-            let entry = &finished.final_entry;
-            emit_runtime(
-                observer,
-                AgentRuntimeEvent::ConversationEntryAppended {
-                    conversation_id: entry.conversation_id.clone(),
-                    item_id: entry.id.clone(),
-                },
-            );
-        }
         emit_runtime(
             observer,
             AgentRuntimeEvent::AgentRunStatusChanged {

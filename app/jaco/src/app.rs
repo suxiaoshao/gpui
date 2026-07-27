@@ -184,7 +184,6 @@ fn init_ready_services(cx: &mut App) -> crate::errors::JacoResult<()> {
     state::projects::init(cx);
     state::prompts::init(cx);
     state::shortcuts::init(cx);
-    state::conversation_index::init(cx);
     state::hotkey::init_shortcuts(cx);
     Ok(())
 }

@@ -4,7 +4,7 @@ use crate::{
 };
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, Sizable,
+    ActiveTheme, Disableable, Icon, Sizable,
     button::Button,
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -181,6 +181,8 @@ impl SkillsSettingsPage {
                 Button::new("skill-settings-refresh")
                     .icon(IconName::RefreshCcw)
                     .label(cx.global::<I18n>().t("button-refresh-skills"))
+                    .loading(self.skill_catalog.is_running())
+                    .disabled(self.skill_catalog.is_running())
                     .on_click(cx.listener(|page, _, _window, cx| {
                         page.start_skill_load(cx);
                     })),
@@ -261,6 +263,34 @@ impl SkillsSettingsPage {
     }
 
     fn render_body(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.skill_catalog.data().is_none() && self.skill_catalog.is_running() {
+            return v_flex()
+                .size_full()
+                .min_h(px(260.))
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .child(gpui_component::spinner::Spinner::new())
+                .child(
+                    Label::new(cx.global::<I18n>().t("resource-status-loading"))
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground),
+                )
+                .into_any_element();
+        }
+        if self.skill_catalog.data().is_none() && self.skill_catalog.problem().is_some() {
+            return v_flex()
+                .size_full()
+                .min_h(px(260.))
+                .items_center()
+                .justify_center()
+                .child(
+                    Label::new(cx.global::<I18n>().t("resource-status-unavailable"))
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground),
+                )
+                .into_any_element();
+        }
         if self.items.is_empty() {
             return self.render_empty_state(cx);
         }

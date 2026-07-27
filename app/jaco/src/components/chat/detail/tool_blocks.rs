@@ -8,8 +8,7 @@ use gpui_component::{
     text::{TextView, TextViewState},
     v_flex,
 };
-use jaco_core::ConversationEntryPayload;
-use jaco_db::ConversationEntryRecord;
+use jaco_core::{ConversationEntry, ConversationEntryPayload};
 
 use crate::foundation::{I18n, assets::IconName, conversation_format as format};
 
@@ -28,7 +27,7 @@ enum DetailTone {
 }
 
 pub(super) fn detail_block(
-    item: ConversationEntryRecord,
+    item: ConversationEntry,
     text_state: Option<Entity<TextViewState>>,
     approval_decidable: bool,
     on_approval_decision: OnApprovalDecision,
@@ -175,7 +174,7 @@ fn default_expanded(payload: &ConversationEntryPayload) -> bool {
     )
 }
 
-fn detail_title(item: &ConversationEntryRecord, i18n: &I18n) -> String {
+fn detail_title(item: &ConversationEntry, i18n: &I18n) -> String {
     match &item.payload {
         ConversationEntryPayload::ToolCall(call) => label_with_name(
             i18n,

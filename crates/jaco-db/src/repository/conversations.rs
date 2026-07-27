@@ -78,7 +78,8 @@ impl FreshRepository {
                 .try_into()?;
             let mut user_item = input.user_item;
             user_item.conversation_id = new_conversation_row.id;
-            insert_attachments_into_message_item_with_conn(conn, &mut user_item, attachments)?;
+            let _attachments =
+                insert_attachments_into_message_item_with_conn(conn, &mut user_item, attachments)?;
             let user_item = append_conversation_entry_with_conn(conn, user_item)?;
             let conversation = conversation_row(conn, &conversation.id)?
                 .ok_or_else(|| DbError::Invariant("conversation is missing".to_string()))?
@@ -142,7 +143,7 @@ impl FreshRepository {
 
             let mut user_item = input.conversation.user_item;
             user_item.conversation_id = new_conversation_row.id.clone();
-            insert_attachments_into_message_item_with_conn(
+            let _attachments = insert_attachments_into_message_item_with_conn(
                 conn,
                 &mut user_item,
                 input.attachments,
@@ -190,7 +191,7 @@ impl FreshRepository {
                 .ok_or_else(|| DbError::Invariant("project is missing".to_string()))?
                 .try_into()?;
 
-            insert_attachments_into_message_item_with_conn(
+            let attachments = insert_attachments_into_message_item_with_conn(
                 conn,
                 &mut input.entry,
                 input.attachments,
@@ -208,7 +209,11 @@ impl FreshRepository {
                 .get_result::<SqlProjectRow>(conn)?
                 .try_into()?;
 
-            Ok(SentConversationTransaction { project, commit })
+            Ok(SentConversationTransaction {
+                project,
+                commit,
+                attachments,
+            })
         })
     }
 
@@ -382,7 +387,8 @@ impl FreshRepository {
     ) -> Result<ConversationCommit<ConversationEntryRecord>> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
-            insert_attachments_into_message_item_with_conn(conn, &mut input, attachments)?;
+            let _attachments =
+                insert_attachments_into_message_item_with_conn(conn, &mut input, attachments)?;
             let entry = append_conversation_entry_with_conn(conn, input)?;
             conversation_commit_with_conn(conn, entry.conversation_id.clone(), entry)
         })
@@ -429,8 +435,10 @@ impl FreshRepository {
         let attachments = self.conversation_attachments(conversation_id)?;
         let runs = self.agent_runs_for_conversation(conversation_id)?;
         validate_timeline_run_entries(&runs, &items)?;
+        let mut provider_steps = Vec::new();
         let mut tool_invocations = Vec::new();
         for run in &runs {
+            provider_steps.extend(self.provider_steps_for_run(&run.id)?);
             tool_invocations.extend(self.tool_invocations_for_run(&run.id)?);
         }
 
@@ -440,6 +448,7 @@ impl FreshRepository {
             items,
             attachments,
             runs,
+            provider_steps,
             tool_invocations,
         }))
     }

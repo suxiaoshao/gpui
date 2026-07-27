@@ -1,9 +1,8 @@
 use fluent_bundle::FluentArgs;
 use jaco_core::{
-    AgentRunStatus, ContentPart, ConversationEntryPayload, ConversationStatusCode,
-    ProviderRawPayload, TranscriptRole,
+    AgentRun, AgentRunStatus, ContentPart, ConversationEntry, ConversationEntryPayload,
+    ConversationStatusCode, ProviderRawPayload, TranscriptRole,
 };
-use jaco_db::{AgentRunRecord, ConversationEntryRecord};
 use time::{Month, OffsetDateTime, UtcOffset, Weekday};
 
 use crate::foundation::I18n;
@@ -16,7 +15,7 @@ pub(crate) fn content_parts_text(content: &[ContentPart]) -> String {
         .join("\n")
 }
 
-pub(crate) fn item_markdown(item: &ConversationEntryRecord) -> String {
+pub(crate) fn item_markdown(item: &ConversationEntry) -> String {
     match &item.payload {
         ConversationEntryPayload::Message { content, .. } => content_parts_text(content),
         ConversationEntryPayload::SkillActivation(skill) => {
@@ -93,7 +92,7 @@ pub(crate) fn status_code_label(code: ConversationStatusCode) -> &'static str {
     }
 }
 
-pub(crate) fn is_user_message(item: &ConversationEntryRecord) -> bool {
+pub(crate) fn is_user_message(item: &ConversationEntry) -> bool {
     matches!(
         item.payload,
         ConversationEntryPayload::Message {
@@ -103,24 +102,24 @@ pub(crate) fn is_user_message(item: &ConversationEntryRecord) -> bool {
     )
 }
 
-pub(crate) fn is_terminal_run(run: &AgentRunRecord) -> bool {
+pub(crate) fn is_terminal_run(run: &AgentRun) -> bool {
     matches!(
         run.status,
         AgentRunStatus::Completed | AgentRunStatus::Failed | AgentRunStatus::Canceled
     )
 }
 
-pub(crate) fn run_completed_time(run: &AgentRunRecord) -> OffsetDateTime {
+pub(crate) fn run_completed_time(run: &AgentRun) -> OffsetDateTime {
     run.completed_at
         .or(run.started_at)
         .unwrap_or(run.created_at)
 }
 
-pub(crate) fn run_started_time(run: &AgentRunRecord) -> OffsetDateTime {
+pub(crate) fn run_started_time(run: &AgentRun) -> OffsetDateTime {
     run.started_at.unwrap_or(run.created_at)
 }
 
-pub(crate) fn run_duration_label(run: &AgentRunRecord) -> String {
+pub(crate) fn run_duration_label(run: &AgentRun) -> String {
     let start = run_started_time(run);
     let end = run.completed_at.unwrap_or_else(OffsetDateTime::now_utc);
     duration_label((end - start).whole_seconds().max(0))

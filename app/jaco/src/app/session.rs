@@ -11,6 +11,7 @@ use crate::{
 #[derive(Clone)]
 pub(crate) struct AppSessionData {
     pub(crate) binding: database::session::DatabaseBinding,
+    pub(crate) conversations: Entity<conversation::registry::ConversationRegistry>,
     pub(crate) runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
 }
 
@@ -161,9 +162,20 @@ fn initialize_ready_session(
     cx: &mut App,
 ) -> JacoResult<AppSessionData> {
     super::init_ready_services(cx)?;
+    let executor = database::ready_executor(cx)?;
+    let conversations =
+        cx.new(|cx| conversation::registry::ConversationRegistry::new(executor, cx));
+    conversations
+        .read(cx)
+        .catalog()
+        .update(cx, |catalog, cx| catalog.refresh(cx));
     let runtime = conversation::runtime::create(cx)?;
     conversation::runtime::retry_recovery_if_needed(&runtime, cx);
-    Ok(AppSessionData { binding, runtime })
+    Ok(AppSessionData {
+        binding,
+        conversations,
+        runtime,
+    })
 }
 
 pub(crate) fn store(cx: &impl AppContext) -> AppSessionStore {
@@ -183,6 +195,12 @@ pub(crate) fn ready_runtime(
     ready_data(cx).map(|session| session.runtime)
 }
 
+pub(crate) fn ready_conversations(
+    cx: &impl AppContext,
+) -> Option<Entity<conversation::registry::ConversationRegistry>> {
+    ready_data(cx).map(|session| session.conversations)
+}
+
 pub(crate) fn request_retry(cx: &mut App) {
     let dependency = database::store(cx).read(cx, |resource| {
         SelectDatabaseSessionDependency.select(resource)
@@ -196,6 +214,11 @@ pub(crate) fn retain_task(
     task: Task<()>,
     cx: &mut App,
 ) {
+    #[cfg(test)]
+    if !cx.has_global::<AppSessionCoordinatorGlobal>() {
+        super::tasks::retain_application(task, cx);
+        return;
+    }
     let coordinator = cx.global::<AppSessionCoordinatorGlobal>().0.clone();
     coordinator.update(cx, |coordinator, _cx| {
         coordinator.retain_task(&binding, task);

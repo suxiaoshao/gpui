@@ -2,8 +2,8 @@ use crate::{
     AgentRunFinalEntry, DATABASE_FILE, FinishAgentRun, FreshStore, NewAgentRun, NewAttachment,
     NewConversation, NewConversationEntry, NewProject, NewPrompt, NewProvider, NewProviderModel,
     NewProviderStep, NewShortcut, NewToolInvocation, NewToolInvocationApproval, NewUsageEvent,
-    ToolInvocationApproval, ToolInvocationApprovalOutcome, UpdateAgentRunStatus, UpdatePrompt,
-    UpdateProvider, UpdateProviderStepStatus, UpdateShortcut, UpdateToolInvocationStatus,
+    ToolInvocationApprovalOutcome, UpdateAgentRunStatus, UpdatePrompt, UpdateProvider,
+    UpdateProviderStepStatus, UpdateShortcut, UpdateToolInvocationStatus,
 };
 use diesel::{
     Connection, RunQueryDsl, SqliteConnection, sql_query,

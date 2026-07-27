@@ -1,6 +1,7 @@
 use crate::components::chat::input::{
     ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
 };
+use crate::components::chat::runtime_status::ConversationRuntimeStatus;
 use gpui::*;
 use gpui_component::v_flex;
 
@@ -60,10 +61,21 @@ impl TemporaryNewConversationPane {
         self.chat_form
             .update(cx, |chat_form, cx| chat_form.clear_after_submit(window, cx));
     }
+
+    pub(super) fn set_submission_problem(
+        &mut self,
+        problem: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.chat_form.update(cx, |chat_form, cx| {
+            chat_form.set_submission_problem(problem, cx);
+        });
+        cx.notify();
+    }
 }
 
 impl Render for TemporaryNewConversationPane {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .id("jaco-temporary-new-conversation")
             .size_full()
@@ -78,6 +90,12 @@ impl Render for TemporaryNewConversationPane {
                     .w_full()
                     .max_w(px(780.))
                     .items_center()
+                    .gap_3()
+                    .children(
+                        crate::app::session::ready_runtime(cx).and_then(|runtime| {
+                            ConversationRuntimeStatus::from_runtime(&runtime, cx)
+                        }),
+                    )
                     .child(self.chat_form.clone()),
             )
     }

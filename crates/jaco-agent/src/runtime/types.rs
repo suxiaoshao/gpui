@@ -120,13 +120,12 @@ impl AgentRuntimeObserver {
 #[derive(Clone, Debug, PartialEq)]
 pub enum AgentRuntimeEvent {
     ConversationCommitted {
-        conversation: Box<jaco_db::ConversationRecord>,
-        index_delta: jaco_db::ConversationIndexDelta,
-        changes: Vec<jaco_db::ConversationChange>,
+        conversation: Box<jaco_core::ConversationSummary>,
+        changes: Vec<jaco_core::ConversationChange>,
     },
     ConversationTimelineChanged {
         conversation_id: ConversationId,
-        changes: Vec<jaco_db::ConversationChange>,
+        changes: Vec<jaco_core::ConversationChange>,
     },
     AgentRunStarted {
         agent_run_id: AgentRunId,
@@ -135,26 +134,6 @@ pub enum AgentRuntimeEvent {
     AgentRunStatusChanged {
         agent_run_id: AgentRunId,
         status: AgentRunStatus,
-    },
-    ConversationEntryAppended {
-        conversation_id: ConversationId,
-        item_id: ConversationEntryId,
-    },
-    ConversationEntryUpdated {
-        conversation_id: ConversationId,
-        item_id: ConversationEntryId,
-    },
-    ProviderStepChanged {
-        agent_run_id: AgentRunId,
-        provider_step_id: ProviderStepId,
-    },
-    ToolInvocationChanged {
-        agent_run_id: AgentRunId,
-        tool_invocation_id: ToolInvocationId,
-    },
-    ToolApprovalRequested {
-        agent_run_id: AgentRunId,
-        tool_invocation_id: ToolInvocationId,
     },
 }
 

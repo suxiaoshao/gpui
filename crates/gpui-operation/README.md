@@ -128,10 +128,11 @@ struct Append(i32);
 struct CatalogData(Vec<i32>);
 
 impl Transition<Append> for &mut CatalogData {
-    type Output = ();
+    type Output = usize;
 
-    fn transition(self, message: Append) {
+    fn transition(self, message: Append) -> Self::Output {
         self.0.push(message.0);
+        self.0.len()
     }
 }
 
@@ -145,9 +146,9 @@ fn apply_append<Problem: std::error::Error, Task>(
 }
 ```
 
-`&mut Ready<Data>` delegates domain messages to
-`&mut Data: Transition<Message, Output = ()>`. The explicit variant match
-keeps retained Data in refreshing or degraded states read-only.
+`&mut Ready<Data>` delegates domain messages to `&mut Data` and returns the
+domain transition's output. The explicit variant match keeps retained Data in
+refreshing or degraded states read-only.
 
 ## Named-state API
 

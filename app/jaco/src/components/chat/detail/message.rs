@@ -14,8 +14,9 @@ use gpui_component::{
     text::{TextView, TextViewState},
     v_flex,
 };
-use jaco_core::{AgentRunId, AgentRunStatus, ConversationEntryId, ToolInvocationId};
-use jaco_db::{AgentRunRecord, ConversationEntryRecord};
+use jaco_core::{
+    AgentRun, AgentRunId, AgentRunStatus, ConversationEntry, ConversationEntryId, ToolInvocationId,
+};
 
 use crate::foundation::{I18n, assets::IconName, conversation_format as format};
 
@@ -93,7 +94,7 @@ impl RenderOnce for TimelineRow {
 
 #[derive(Clone)]
 pub(super) struct UserMessageRow {
-    pub(super) item: ConversationEntryRecord,
+    pub(super) item: ConversationEntry,
     pub(super) image_attachments: Vec<UserImageAttachment>,
     pub(super) text_state: Option<Entity<TextViewState>>,
     pub(super) on_copy: OnCopy,
@@ -184,9 +185,9 @@ impl RenderOnce for UserMessageRow {
 #[derive(Clone)]
 pub(super) struct AgentTurnRow {
     pub(super) run_id: Option<AgentRunId>,
-    pub(super) run: Option<AgentRunRecord>,
-    pub(super) items: Vec<ConversationEntryRecord>,
-    pub(super) final_item: Option<ConversationEntryRecord>,
+    pub(super) run: Option<AgentRun>,
+    pub(super) items: Vec<ConversationEntry>,
+    pub(super) final_item: Option<ConversationEntry>,
     pub(super) text_states: HashMap<ConversationEntryId, Entity<TextViewState>>,
     pub(super) expanded: bool,
     pub(super) on_toggle: OnToggleAgent,
@@ -533,7 +534,7 @@ fn agent_copy_text(row: &AgentTurnRow, i18n: &I18n) -> String {
     parts.join("\n\n")
 }
 
-fn agent_final_markdown(final_item: Option<&ConversationEntryRecord>, i18n: &I18n) -> String {
+fn agent_final_markdown(final_item: Option<&ConversationEntry>, i18n: &I18n) -> String {
     let Some(final_item) = final_item else {
         return String::new();
     };
@@ -548,11 +549,7 @@ fn agent_final_markdown(final_item: Option<&ConversationEntryRecord>, i18n: &I18
     }
 }
 
-fn agent_terminal_status_label(
-    status: AgentRunStatus,
-    run: &AgentRunRecord,
-    i18n: &I18n,
-) -> String {
+fn agent_terminal_status_label(status: AgentRunStatus, run: &AgentRun, i18n: &I18n) -> String {
     let key = match status {
         AgentRunStatus::Completed => "conversation-agent-processed",
         AgentRunStatus::Failed => "conversation-agent-failed",
@@ -562,7 +559,7 @@ fn agent_terminal_status_label(
     duration_arg_label(i18n, key, format::run_duration_label(run))
 }
 
-fn agent_hover_time(run: &AgentRunRecord, i18n: &I18n) -> String {
+fn agent_hover_time(run: &AgentRun, i18n: &I18n) -> String {
     if format::is_terminal_run(run) {
         timestamp_arg_label(
             i18n,

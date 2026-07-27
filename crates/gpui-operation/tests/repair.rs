@@ -32,10 +32,11 @@ struct Task;
 struct Add(i32);
 
 impl Transition<Add> for &mut IntData {
-    type Output = ();
+    type Output = i32;
 
-    fn transition(self, message: Add) {
+    fn transition(self, message: Add) -> Self::Output {
         self.0 += message.0;
+        self.0
     }
 }
 
@@ -839,7 +840,7 @@ fn runtime_applies_domain_messages_only_while_ready() {
     let RepairOperation::Ready(ready) = &mut operation else {
         panic!("expected ready");
     };
-    ready.transition(Add(2));
+    assert_eq!(ready.transition(Add(2)), 42);
     assert_eq!(operation.data(), Some(&IntData(42)));
 
     operation.transition(Refresh(Task));

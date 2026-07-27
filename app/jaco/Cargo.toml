@@ -46,6 +46,7 @@ tree-sitter-languages-full = ["gpui-component/tree-sitter-languages"]
 
 [dependencies]
 jaco-agent.workspace = true
+jaco-conversation.workspace = true
 jaco-core.workspace = true
 rmcp.workspace = true
 

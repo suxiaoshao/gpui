@@ -26,6 +26,7 @@ use crate::{
         chat::input::{
             ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
         },
+        chat::runtime_status::ConversationRuntimeStatus,
         picker::PickerListDelegate,
     },
     features::conversation,
@@ -145,6 +146,12 @@ impl NewConversationPage {
                 }
             },
         );
+        let workspace_observation = cx.observe(&workspace, |page, _, cx| {
+            page.sync_submission_problem(cx);
+        });
+        let runtime_observation = cx.observe(&runtime, |page, _, cx| {
+            page.sync_submission_problem(cx);
+        });
 
         if let Some(project) = selected_project {
             chat_form.update(cx, |chat_form, cx| {
@@ -152,15 +159,22 @@ impl NewConversationPage {
             });
         }
 
-        Self {
+        let mut page = Self {
             chat_form,
             projects,
             selected_project_id,
             project,
             workspace,
             runtime,
-            _subscriptions: vec![project_subscription, chat_form_subscription],
-        }
+            _subscriptions: vec![
+                project_subscription,
+                chat_form_subscription,
+                workspace_observation,
+                runtime_observation,
+            ],
+        };
+        page.sync_submission_problem(cx);
+        page
     }
 
     pub(crate) fn focus_primary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -172,6 +186,40 @@ impl NewConversationPage {
 
         self.chat_form
             .update(cx, |chat_form, cx| chat_form.focus_composer(window, cx));
+    }
+
+    fn sync_submission_problem(&mut self, cx: &mut Context<Self>) {
+        let problem = {
+            let workspace = self.workspace.read(cx);
+            let project = workspace.project_status();
+            let conversation = workspace.conversation_status(cx);
+            if !project.is_ready() {
+                Some(
+                    project
+                        .problem
+                        .unwrap_or_else(|| cx.global::<I18n>().t("resource-status-loading")),
+                )
+            } else if !conversation.is_ready() {
+                Some(
+                    conversation
+                        .problem
+                        .unwrap_or_else(|| cx.global::<I18n>().t("resource-status-loading")),
+                )
+            } else {
+                let runtime = self.runtime.read(cx);
+                let recovery = runtime.recovery();
+                (!matches!(recovery, gpui_operation::refresh::Operation::Ready(_))).then(|| {
+                    recovery
+                        .problem()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| cx.global::<I18n>().t("conversation-runtime-recovering"))
+                })
+            }
+        }
+        .map(Into::into);
+        self.chat_form.update(cx, |chat_form, cx| {
+            chat_form.set_submission_problem(problem, cx);
+        });
     }
 
     pub(crate) fn select_project_id_from_sidebar(
@@ -416,16 +464,26 @@ impl NewConversationPage {
             let result = task.await;
             let _ = page.update_in(cx, |page, window, cx| match result {
                 Ok(created) => {
-                    let conversation_id = created.record.conversation.id.clone();
+                    let conversation_id = created.conversation_id.clone();
                     page.chat_form.update(cx, |chat_form, cx| {
                         chat_form.clear_after_submit(window, cx);
                     });
                     page.workspace.update(cx, |workspace, cx| {
                         workspace.open_conversation(conversation_id, cx);
                     });
-                    page.runtime.update(cx, |runtime, cx| {
-                        runtime.start_run(created.run_request, window, cx);
+                    let start = page.runtime.update(cx, |runtime, cx| {
+                        runtime.start_run(created.run_request, window, cx)
                     });
+                    if let Err(error) = start {
+                        let title = cx.global::<I18n>().t("conversation-run-failed");
+                        push_project_notification(
+                            window,
+                            cx,
+                            title,
+                            error,
+                            NotificationType::Error,
+                        );
+                    }
                 }
                 Err(err) => {
                     let title = cx.global::<I18n>().t("new-conversation-submit-failed");
@@ -542,6 +600,7 @@ impl Render for NewConversationPage {
                             .font_medium()
                             .text_color(cx.theme().foreground),
                     )
+                    .children(ConversationRuntimeStatus::from_runtime(&self.runtime, cx))
                     .child(self.chat_form.clone()),
             )
     }

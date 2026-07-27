@@ -6059,6 +6059,7 @@ dependencies = [
  "http 1.4.2",
  "image",
  "jaco-agent",
+ "jaco-conversation",
  "jaco-core",
  "jaco-db",
  "pinyin",
@@ -6118,11 +6119,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "jaco-conversation"
+version = "0.1.0"
+dependencies = [
+ "jaco-core",
+ "jaco-db",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "jaco-core"
 version = "0.1.0"
 dependencies = [
+ "gpui-operation",
  "serde",
  "serde_json",
+ "time",
  "uuid",
 ]
 

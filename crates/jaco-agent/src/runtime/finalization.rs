@@ -5,8 +5,8 @@ use crate::{
 };
 use jaco_core::*;
 use jaco_db::{
-    AgentRunRecord, NewConversationEntry, ToolInvocationApproval, ToolInvocationRecord,
-    UpdateProviderStepStatus, UpdateToolInvocationStatus,
+    AgentRunRecord, NewConversationEntry, ToolInvocationRecord, UpdateProviderStepStatus,
+    UpdateToolInvocationStatus,
 };
 
 impl AgentRuntime {

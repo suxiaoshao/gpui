@@ -1902,7 +1902,7 @@ async fn cancel_running_run_terminalizes_active_children_without_run_error() {
         AgentRuntimeEvent::ConversationCommitted { changes, .. }
             if matches!(
                 changes.as_slice(),
-                [jaco_db::ConversationChange::RunStatusChanged { run }]
+                [jaco_core::ConversationChange::RunStatusChanged { run }]
                     if run.id == agent_run.id && run.status == AgentRunStatus::Canceled
             )
     ));

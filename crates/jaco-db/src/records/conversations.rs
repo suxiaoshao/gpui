@@ -24,26 +24,10 @@ pub struct SendConversationTransaction {
 pub struct SentConversationTransaction {
     pub project: ProjectRecord,
     pub commit: ConversationCommit<ConversationEntryRecord>,
+    pub attachments: Vec<AttachmentRecord>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ConversationRecord {
-    pub id: ConversationId,
-    pub project_id: ProjectId,
-    pub title: String,
-    pub status: ConversationStatus,
-    pub pinned: bool,
-    pub prompt_id: Option<PromptId>,
-    pub default_provider_id: Option<ProviderId>,
-    pub default_model_id: Option<ProviderModelId>,
-    pub last_entry_seq: i32,
-    pub metadata: ConversationMetadata,
-    pub settings_snapshot: ConversationSettingsSnapshot,
-    pub created_at: OffsetDateTime,
-    pub updated_at: OffsetDateTime,
-    pub archived_at: Option<OffsetDateTime>,
-    pub deleted_at: Option<OffsetDateTime>,
-}
+pub type ConversationRecord = ConversationSummary;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConversationCommit<T> {
@@ -87,15 +71,6 @@ pub enum ConversationIndexDelta {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ConversationChange {
-    EntryAppended { entry: ConversationEntryRecord },
-    EntryUpdated { entry: ConversationEntryRecord },
-    ProviderStepChanged { step: Box<ProviderStepRecord> },
-    ToolInvocationChanged { invocation: ToolInvocationRecord },
-    RunStatusChanged { run: AgentRunRecord },
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct NewConversation {
     pub project_id: ProjectId,
     pub title: String,
@@ -126,25 +101,11 @@ pub struct ConversationTimelineRecords {
     pub items: Vec<ConversationEntryRecord>,
     pub attachments: Vec<AttachmentRecord>,
     pub runs: Vec<AgentRunRecord>,
+    pub provider_steps: Vec<ProviderStepRecord>,
     pub tool_invocations: Vec<ToolInvocationRecord>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ConversationEntryRecord {
-    pub id: ConversationEntryId,
-    pub conversation_id: ConversationId,
-    pub seq: i32,
-    pub kind: ConversationEntryKind,
-    pub status: ConversationEntryStatus,
-    pub agent_run_id: Option<AgentRunId>,
-    pub provider_step_id: Option<ProviderStepId>,
-    pub tool_invocation_id: Option<ToolInvocationId>,
-    pub provider_item_id: Option<String>,
-    pub payload: ConversationEntryPayload,
-    pub search_text: String,
-    pub created_at: OffsetDateTime,
-    pub updated_at: OffsetDateTime,
-}
+pub type ConversationEntryRecord = ConversationEntry;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewConversationEntry {
@@ -157,24 +118,7 @@ pub struct NewConversationEntry {
     pub payload: ConversationEntryPayload,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct AttachmentRecord {
-    pub id: AttachmentId,
-    pub conversation_id: ConversationId,
-    pub kind: AttachmentKind,
-    pub storage_kind: AttachmentStorageKind,
-    pub mime_type: Option<String>,
-    pub name: Option<String>,
-    pub path: Option<String>,
-    pub external_uri: Option<String>,
-    pub provider_id: Option<ProviderId>,
-    pub provider_file_id: Option<String>,
-    pub sha256: Option<String>,
-    pub size_bytes: Option<i64>,
-    pub metadata: AttachmentMetadata,
-    pub created_at: OffsetDateTime,
-    pub updated_at: OffsetDateTime,
-}
+pub type AttachmentRecord = ConversationAttachment;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewAttachment {

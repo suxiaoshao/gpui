@@ -49,6 +49,9 @@ impl<Repair> Default for Idle<Repair> {
 }
 
 /// Valid data is available.
+///
+/// Domain messages are delegated to `&mut Data`, preserving the delegated
+/// transition's output.
 #[must_use = "operation states must be retained or transitioned"]
 pub struct Ready<Data, Repair> {
     data: Data,
@@ -62,14 +65,14 @@ impl<Data, Repair> Ready<Data, Repair> {
     }
 }
 
-impl<Data, Repair, Message> Transition<Message> for &mut Ready<Data, Repair>
+impl<'ready, Data, Repair, Message> Transition<Message> for &'ready mut Ready<Data, Repair>
 where
-    for<'data> &'data mut Data: Transition<Message, Output = ()>,
+    &'ready mut Data: Transition<Message>,
 {
-    type Output = ();
+    type Output = <&'ready mut Data as Transition<Message>>::Output;
 
-    fn transition(self, message: Message) {
-        (&mut self.data).transition(message);
+    fn transition(self, message: Message) -> Self::Output {
+        (&mut self.data).transition(message)
     }
 }
 

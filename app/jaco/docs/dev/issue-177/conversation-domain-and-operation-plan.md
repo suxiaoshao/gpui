@@ -2,7 +2,7 @@
 
 关联 issue：[suxiaoshao/gpui#177](https://github.com/suxiaoshao/gpui/issues/177)
 
-状态：**待用户 Review，尚未实施**。
+状态：**已实施；可见 UI 留给用户人工验证**。
 
 本文是 issue #177 的后续重构计划。它保留
 [总计划](README.md) 和
@@ -14,8 +14,22 @@
 - `ConversationDetailPage` 自己理解数据库 timeline records、index delta 和 runtime change；
 - 主窗口与临时窗口分别创建并持有完整 Conversation 数据 owner。
 
-本计划同时纳入当前 Operation UI 审计中尚未完成的高、中优先级问题。本文只持久化已确认的
-方向和实施工作包，不在本轮修改代码或执行最终完整性检查。
+本计划同时纳入 Operation UI 审计中尚未完成的高、中优先级问题。实施结果如下：
+
+- `jaco-core` 现在定义完整 Conversation 领域类型，UI 不再消费数据库 timeline records；
+- 新增无 GPUI 依赖的 `jaco-conversation`，统一提供 Catalog、详情、搜索和基础 mutation
+  服务；
+- 当前 `AppSession` 持有 `ConversationRegistry`，同一 Session 内按 id 复用共享
+  `ConversationModel`；
+- 主窗口和临时窗口共享 Conversation 数据 Entity，但仍各自拥有 View 交互状态；
+- app-global `ConversationIndexStore`、page-local `ConversationTimelineOperation` 和
+  `pending_changes` 已删除；
+- Home、Temporary、Search、Project 和 Skill 消费点已区分 Loading、Unavailable、
+  Degraded、Ready(empty)，并在相应组件提供刷新入口和 mutation capability；
+- Agent Runtime 向应用发布领域 `ConversationChange`，不再发布或消费 index delta。
+
+`jaco-db` 内部仍可保留 record alias、transaction commit 和 timeline 聚合输入；它们只服务于
+持久化与 `jaco-agent` persistence port，不再是 Jaco View 的数据模型。
 
 ## 1. 目标
 

@@ -236,23 +236,17 @@ impl PersistenceContext {
                 finish_agent_run_spec(&run, outcome.clone()),
             )
             .await?;
-        let mut changes = vec![jaco_db::ConversationChange::RunStatusChanged {
+        let mut changes = vec![jaco_core::ConversationChange::RunStatusChanged {
             run: commit.value.run.clone(),
         }];
         if commit.value.appended_final_entry {
-            changes.push(jaco_db::ConversationChange::EntryAppended {
+            changes.push(jaco_core::ConversationChange::EntryAppended {
                 entry: commit.value.final_entry.clone(),
             });
         }
         self.emit_conversation_commit_with_changes(&commit, changes);
         let finished = commit.value;
         self.set_final_entry_id(Some(finished.final_entry.id.clone()));
-        if finished.appended_final_entry {
-            self.emit_runtime(AgentRuntimeEvent::ConversationEntryAppended {
-                conversation_id: finished.final_entry.conversation_id.clone(),
-                item_id: finished.final_entry.id.clone(),
-            });
-        }
         self.push_step(AgentStep::ConversationEntry(
             finished.final_entry.id.clone(),
         ));

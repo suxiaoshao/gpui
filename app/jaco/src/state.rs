@@ -1,5 +1,4 @@
 pub(crate) mod config;
-pub(crate) mod conversation_index;
 pub(crate) mod hotkey;
 pub(crate) mod layout;
 pub(crate) mod mcp;

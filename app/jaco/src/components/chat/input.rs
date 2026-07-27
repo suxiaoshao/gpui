@@ -28,8 +28,12 @@ use crate::{
 use conversation::attachments::{ComposerAttachment, ModelAttachmentSupportIssue};
 use gpui::*;
 use gpui_component::{
-    WindowExt as _,
+    ActiveTheme, Disableable, Sizable, WindowExt as _,
+    button::Button,
+    h_flex,
+    label::Label,
     notification::{Notification, NotificationType},
+    v_flex,
 };
 use gpui_operation::{Complete, Load, Transition};
 use jaco_core::{ReasoningSelectionSnapshot, ToolApprovalMode};
@@ -113,6 +117,7 @@ pub(crate) struct ChatInputController {
     primary_action_state: Entity<PrimaryActionControlState>,
     next_attachment_id: u64,
     agent_running: bool,
+    submission_problem: Option<SharedString>,
     skill_catalog_scope: skills::SkillCatalogScope,
     skill_catalog: skills::SkillCatalogOperation,
     _subscriptions: Vec<Subscription>,
@@ -321,6 +326,7 @@ impl ChatInputController {
             primary_action_state,
             next_attachment_id: 1,
             agent_running: false,
+            submission_problem: None,
             skill_catalog_scope: skills::SkillCatalogScope::Global,
             skill_catalog,
             _subscriptions: subscriptions,
@@ -383,6 +389,9 @@ impl ChatInputController {
         });
         self.skill_catalog = skills::SkillCatalogOperation::new();
         self.skill_catalog.transition(Load(task));
+        self.composer
+            .update(cx, |composer, cx| composer.set_skill_entries(&[], cx));
+        cx.notify();
     }
 
     fn apply_skill_catalog_entries(
@@ -404,6 +413,19 @@ impl ChatInputController {
         cx.notify();
     }
 
+    pub(crate) fn set_submission_problem(
+        &mut self,
+        problem: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.submission_problem == problem {
+            return;
+        }
+        self.submission_problem = problem;
+        self.sync_chat_form_projection(cx);
+        cx.notify();
+    }
+
     pub(crate) fn clear_after_submit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.composer.update(cx, |composer, cx| composer.clear(cx));
         let empty_composer = self.composer.read(cx).snapshot();
@@ -417,9 +439,13 @@ impl ChatInputController {
         let agent_running = self.agent_running;
         let can_submit = self.can_send(cx);
         let disabled_reason = (!agent_running)
-            .then(|| send_resource_problem(cx))
-            .flatten()
-            .map(|key| cx.global::<foundation::I18n>().t(key).into());
+            .then(|| {
+                self.submission_problem.clone().or_else(|| {
+                    send_resource_problem(cx)
+                        .map(|key| cx.global::<foundation::I18n>().t(key).into())
+                })
+            })
+            .flatten();
         self.primary_action_state.update(cx, |state, cx| {
             state.agent_running = agent_running;
             state.can_submit = can_submit;
@@ -459,7 +485,7 @@ impl ChatInputController {
     }
 
     fn can_send(&self, cx: &Context<Self>) -> bool {
-        if send_resource_problem(cx).is_some() {
+        if self.submission_problem.is_some() || send_resource_problem(cx).is_some() {
             return false;
         }
         let composer = self.composer.read(cx).snapshot();
@@ -544,8 +570,51 @@ fn send_resource_problem(cx: &App) -> Option<&'static str> {
 }
 
 impl Render for ChatInputController {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        self.chat_form.clone()
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let status =
+            (!matches!(self.skill_catalog, skills::SkillCatalogOperation::Ready(_))).then(|| {
+                let running = self.skill_catalog.is_running();
+                let message = self
+                    .skill_catalog
+                    .problem()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| {
+                        cx.global::<foundation::I18n>().t("resource-status-loading")
+                    });
+                let warning = self.skill_catalog.problem().is_some();
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .rounded(cx.theme().radius)
+                    .bg(cx.theme().warning.opacity(0.08))
+                    .child(
+                        Label::new(message)
+                            .text_xs()
+                            .text_color(if warning {
+                                cx.theme().warning
+                            } else {
+                                cx.theme().muted_foreground
+                            })
+                            .flex_1(),
+                    )
+                    .child(
+                        Button::new("chat-form-refresh-skills")
+                            .label(cx.global::<foundation::I18n>().t("resource-status-refresh"))
+                            .xsmall()
+                            .disabled(running)
+                            .on_click(cx.listener(|form, _, _window, cx| {
+                                form.load_skill_catalog(form.skill_catalog_scope.clone(), cx);
+                            })),
+                    )
+            });
+        v_flex()
+            .w_full()
+            .gap_2()
+            .children(status)
+            .child(self.chat_form.clone())
     }
 }
 

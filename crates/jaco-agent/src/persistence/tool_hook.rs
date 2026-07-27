@@ -6,8 +6,8 @@ use crate::{
 };
 use jaco_core::*;
 use jaco_db::{
-    NewConversationEntry, NewToolInvocation, ToolInvocationApproval, ToolInvocationApprovalOutcome,
-    ToolInvocationRecord, UpdateToolInvocationStatus,
+    NewConversationEntry, NewToolInvocation, ToolInvocationApprovalOutcome, ToolInvocationRecord,
+    UpdateToolInvocationStatus,
 };
 use rig_core::{
     agent::{
@@ -102,17 +102,8 @@ impl PersistenceContext {
                 invocation.id
             ))
         })?;
-        let item_id = item.id.clone();
-        self.add_input_item_id(item_id.clone());
-        self.push_step(AgentStep::ConversationEntry(item_id.clone()));
-        self.emit_runtime(AgentRuntimeEvent::ConversationEntryAppended {
-            conversation_id: self.conversation_id.clone(),
-            item_id,
-        });
-        self.emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
-            agent_run_id: invocation.agent_run_id.clone(),
-            tool_invocation_id: invocation.id.clone(),
-        });
+        self.add_input_item_id(item.id.clone());
+        self.push_step(AgentStep::ConversationEntry(item.id));
         self.push_event(AgentRunEvent::ToolInvocationFinished {
             tool_invocation_id: invocation.id,
         });
@@ -166,14 +157,6 @@ impl PersistenceContext {
         })?;
         self.add_input_item_id(item.id.clone());
         self.push_step(AgentStep::ConversationEntry(item.id.clone()));
-        self.emit_runtime(AgentRuntimeEvent::ConversationEntryAppended {
-            conversation_id: self.conversation_id.clone(),
-            item_id: item.id,
-        });
-        self.emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
-            agent_run_id: invocation.agent_run_id.clone(),
-            tool_invocation_id: invocation.id.clone(),
-        });
         self.push_event(AgentRunEvent::ToolInvocationFinished {
             tool_invocation_id: invocation.id.clone(),
         });
@@ -236,10 +219,6 @@ impl PersistenceContext {
         self.push_event(AgentRunEvent::ToolInvocationRequested {
             tool_invocation_id: invocation.id.clone(),
         });
-        self.emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
-            agent_run_id: self.agent_run_id.clone(),
-            tool_invocation_id: invocation.id.clone(),
-        });
         self.push_step(AgentStep::ToolInvocation(invocation.id.clone()));
 
         let payload = ConversationEntryPayload::ToolCall(ToolCallEntry {
@@ -296,10 +275,6 @@ impl PersistenceContext {
         self.emit_tool_entry_commit(&commit);
         let (entry, invocation) = commit.value;
         self.record_persisted_entries(std::slice::from_ref(&entry));
-        self.emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
-            agent_run_id: self.agent_run_id.clone(),
-            tool_invocation_id: invocation.id.clone(),
-        });
         self.push_event(AgentRunEvent::ApprovalRequested {
             tool_invocation_id: invocation.id.clone(),
         });
@@ -325,13 +300,7 @@ impl PersistenceContext {
                 reason: Some("approval broker unavailable".to_string()),
             };
         };
-        let agent_run_id = request.agent_run_id.clone();
-        let tool_invocation_id = request.tool_invocation_id.clone();
         let decision = broker.request_tool_approval(request);
-        self.emit_runtime(AgentRuntimeEvent::ToolApprovalRequested {
-            agent_run_id,
-            tool_invocation_id,
-        });
         tokio::select! {
             biased;
             _ = self.cancellation_token.cancelled() => ToolApprovalDecision::Canceled,
@@ -374,10 +343,6 @@ impl PersistenceContext {
         self.emit_tool_entry_commit(&commit);
         let (entry, invocation) = commit.value;
         self.record_persisted_entries(std::slice::from_ref(&entry));
-        self.emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
-            agent_run_id: invocation.agent_run_id.clone(),
-            tool_invocation_id: invocation.id.clone(),
-        });
         Ok(invocation)
     }
 
@@ -569,10 +534,6 @@ impl PersistenceContext {
         self.emit_tool_entries_commit(&commit);
         let (entries, _) = commit.value;
         self.record_persisted_entries(&entries);
-        self.emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
-            agent_run_id: invocation.agent_run_id.clone(),
-            tool_invocation_id: invocation.id.clone(),
-        });
         Ok(())
     }
 
@@ -1044,6 +1005,13 @@ where
             Ok(invocation) => invocation,
             Err(error) => return HookAction::terminate(error.to_string()),
         };
+        self.context
+            .emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
+                conversation_id: self.context.conversation_id.clone(),
+                changes: vec![jaco_core::ConversationChange::ToolInvocationChanged {
+                    invocation: invocation.clone(),
+                }],
+            });
         let payload = ConversationEntryPayload::ToolResult(ToolResultEntry {
             tool_invocation_id: Some(tool_invocation_id.clone()),
             call_id: invocation.call_id,
@@ -1061,11 +1029,6 @@ where
         }
         self.context
             .push_event(AgentRunEvent::ToolInvocationFinished { tool_invocation_id });
-        self.context
-            .emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
-                agent_run_id: self.context.agent_run_id.clone(),
-                tool_invocation_id: invocation.id,
-            });
         HookAction::cont()
     }
 }

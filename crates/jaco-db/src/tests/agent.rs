@@ -357,6 +357,11 @@ fn provider_step_derives_dimensions_from_request_snapshot() {
         .unwrap();
     assert_eq!(provider_step.provider_id, provider.id);
     assert_eq!(provider_step.model_id, model.model_id);
+    let timeline = repo
+        .conversation_timeline_records(&conversation.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(timeline.provider_steps, vec![provider_step.clone()]);
 
     let bad_settings = repo.insert_provider_step(NewProviderStep {
         agent_run_id: agent_run.id.clone(),

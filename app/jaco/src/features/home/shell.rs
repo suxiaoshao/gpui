@@ -146,13 +146,19 @@ impl HomeView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<ConversationDetailPage> {
+        if let Some(page) = self.conversation_pages.get(&conversation_id) {
+            return page.clone();
+        }
+        let registry = crate::app::session::ready_conversations(cx)
+            .expect("conversation page requires a ready app session");
+        let conversation = registry.update(cx, |registry, cx| {
+            registry.conversation(conversation_id.clone(), cx)
+        });
+        let runtime = self.runtime.clone();
+        let page = cx.new(|cx| ConversationDetailPage::new(conversation, runtime, window, cx));
         self.conversation_pages
-            .entry(conversation_id.clone())
-            .or_insert_with(|| {
-                let runtime = self.runtime.clone();
-                cx.new(|cx| ConversationDetailPage::new(conversation_id, runtime, window, cx))
-            })
-            .clone()
+            .insert(conversation_id, page.clone());
+        page
     }
 }
 

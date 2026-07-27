@@ -509,18 +509,22 @@ Task、Repair 或 completion result 也归状态机所有。如果这会构成�
 use gpui_operation::Transition;
 
 struct ReplaceRecord(Record);
+enum RecordEffect {
+    Inserted,
+    Replaced,
+}
 
 impl Transition<ReplaceRecord> for &mut CatalogData {
-    type Output = ();
+    type Output = RecordEffect;
 
-    fn transition(self, message: ReplaceRecord) {
-        self.insert_or_replace(message.0);
+    fn transition(self, message: ReplaceRecord) -> Self::Output {
+        self.insert_or_replace(message.0)
     }
 }
 ```
 
-两个 family 都为 `&mut Ready<Data>` 实现了相应委托。调用者必须先匹配准确的 runtime
-variant：
+两个 family 都为 `&mut Ready<Data>` 实现了相应委托，并保留领域 Transition 的 Output。
+调用者必须先匹配准确的 runtime variant：
 
 ```rust
 if let refresh::Operation::Ready(ready) = &mut operation {

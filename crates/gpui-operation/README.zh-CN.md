@@ -120,10 +120,11 @@ struct Append(i32);
 struct CatalogData(Vec<i32>);
 
 impl Transition<Append> for &mut CatalogData {
-    type Output = ();
+    type Output = usize;
 
-    fn transition(self, message: Append) {
+    fn transition(self, message: Append) -> Self::Output {
         self.0.push(message.0);
+        self.0.len()
     }
 }
 
@@ -137,9 +138,8 @@ fn apply_append<Problem: std::error::Error, Task>(
 }
 ```
 
-`&mut Ready<Data>` 会把领域消息委托给
-`&mut Data: Transition<Message, Output = ()>`。显式匹配 variant 可以保证 refreshing 或
-degraded 状态中保留的 Data 仍然只读。
+`&mut Ready<Data>` 会把领域消息委托给 `&mut Data`，并返回领域 Transition 的 Output。
+显式匹配 variant 可以保证 refreshing 或 degraded 状态中保留的 Data 仍然只读。
 
 ## 具名状态 API
 

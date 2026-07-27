@@ -8,7 +8,7 @@ use jaco_agent::{
     AgentCancellationToken, AgentPersistence, AgentRunHandle, AgentRunRequest, AgentRuntime,
     AgentRuntimeObserver, ToolApprovalDecision,
 };
-use jaco_core::{AgentRunId, AgentRunStatus, ConversationId, ToolInvocationId};
+use jaco_core::{AgentRunId, ConversationId, ToolInvocationId};
 use jaco_db::ProviderRecord;
 use smol::channel::{Receiver, Sender};
 use tracing::{Level, event};
@@ -50,20 +50,8 @@ struct ActiveRunKey(u64);
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ConversationRuntimeEvent {
-    RunStarted {
-        conversation_id: ConversationId,
-    },
-    ConversationChanged {
-        conversation_id: ConversationId,
-    },
-    ConversationChanges {
-        conversation_id: ConversationId,
-        conversation: Option<Box<jaco_db::ConversationRecord>>,
-        changes: Vec<jaco_db::ConversationChange>,
-    },
-    RunFinished {
-        conversation_id: ConversationId,
-    },
+    RunStarted { conversation_id: ConversationId },
+    RunFinished { conversation_id: ConversationId },
 }
 
 impl EventEmitter<ConversationRuntimeEvent> for ConversationRuntimeStore {}
@@ -101,6 +89,10 @@ impl ConversationRuntimeStore {
             .and_then(|active| active.agent_run_id.clone())
     }
 
+    pub(crate) fn recovery(&self) -> &refresh::Operation<(), ConversationRuntimeProblem, Task<()>> {
+        &self.recovery
+    }
+
     pub(crate) fn take_last_error(&mut self, conversation_id: &ConversationId) -> Option<String> {
         self.last_errors.remove(conversation_id)
     }
@@ -124,7 +116,7 @@ impl ConversationRuntimeStore {
         if let Ok(persistence) = database::ready_agent_persistence(cx) {
             let conversation_id = conversation_id.clone();
             let agent_run_id = active.agent_run_id.clone();
-            let cleanup = cx.spawn(async move |_, _| {
+            let cleanup = cx.spawn(async move |_, cx| {
                 if let Err(err) = AgentRuntime::new(persistence)
                     .cancel_non_terminal_runs_for_conversation(&conversation_id, None)
                     .await
@@ -136,6 +128,10 @@ impl ConversationRuntimeStore {
                         agent_run_id = ?agent_run_id,
                         "cancel active conversation runs failed"
                     );
+                } else {
+                    cx.update(|cx| {
+                        super::registry::refresh_conversation(&conversation_id, cx);
+                    });
                 }
             });
             self.cleanup_tasks.retain(|task| !task.is_ready());
@@ -143,9 +139,7 @@ impl ConversationRuntimeStore {
         }
 
         self.last_errors.remove(conversation_id);
-        cx.emit(ConversationRuntimeEvent::ConversationChanged {
-            conversation_id: conversation_id.clone(),
-        });
+        super::registry::release_active(conversation_id, cx);
         cx.emit(ConversationRuntimeEvent::RunFinished {
             conversation_id: conversation_id.clone(),
         });
@@ -158,21 +152,21 @@ impl ConversationRuntimeStore {
         request: AgentRunRequest,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
-    ) -> bool {
+    ) -> Result<(), String> {
         if self.shutting_down || !matches!(self.recovery, refresh::Operation::Ready(_)) {
-            self.last_errors.insert(
-                request.conversation_id.clone(),
-                self.recovery
-                    .problem()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| "conversation runtime is recovering".to_string()),
-            );
+            let message = self
+                .recovery
+                .problem()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "conversation runtime is recovering".to_string());
+            self.last_errors
+                .insert(request.conversation_id.clone(), message.clone());
             cx.notify();
-            return false;
+            return Err(message);
         }
         let conversation_id = request.conversation_id.clone();
         if self.active_runs.contains_key(&conversation_id) {
-            return false;
+            return Err("conversation already has an active run".to_string());
         }
 
         self.last_errors.remove(&conversation_id);
@@ -183,7 +177,7 @@ impl ConversationRuntimeStore {
                 self.last_errors
                     .insert(conversation_id.clone(), error.to_string());
                 cx.notify();
-                return false;
+                return Err(error.to_string());
             }
         };
         let provider = match crate::state::providers::ready_provider(&request.provider_id, cx) {
@@ -192,7 +186,7 @@ impl ConversationRuntimeStore {
                 self.last_errors
                     .insert(conversation_id.clone(), error.to_string());
                 cx.notify();
-                return false;
+                return Err(error.to_string());
             }
         };
         let (tx, rx) = smol::channel::unbounded();
@@ -230,12 +224,12 @@ impl ConversationRuntimeStore {
                 _event_task: event_task,
             },
         );
+        super::registry::retain_active(conversation_id.clone(), cx);
         cx.emit(ConversationRuntimeEvent::RunStarted {
             conversation_id: conversation_id.clone(),
         });
-        cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
         cx.notify();
-        true
+        Ok(())
     }
 
     pub(crate) fn shutdown_all(&mut self, cx: &mut Context<Self>) -> Task<()> {
@@ -258,9 +252,6 @@ impl ConversationRuntimeStore {
                 active.approval_broker.cancel_all();
             }
             self.last_errors.remove(&conversation_id);
-            cx.emit(ConversationRuntimeEvent::ConversationChanged {
-                conversation_id: conversation_id.clone(),
-            });
             cx.emit(ConversationRuntimeEvent::RunFinished { conversation_id });
             tasks.push((active.run_task.take(), active._event_task));
         }
@@ -315,7 +306,6 @@ impl ConversationRuntimeStore {
         debug_assert_eq!(outcome.conversation_id, conversation_id);
         debug_assert_eq!(&outcome.agent_run_id, agent_run_id);
         let _ = outcome.remaining_for_run;
-        cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
         cx.notify();
         true
     }
@@ -355,7 +345,6 @@ impl ConversationRuntimeStore {
         debug_assert_eq!(outcome.conversation_id, conversation_id);
         debug_assert_eq!(&outcome.agent_run_id, agent_run_id);
         let _ = outcome.remaining_for_run;
-        cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
         cx.notify();
         true
     }
@@ -391,31 +380,27 @@ impl ConversationRuntimeStore {
         match runtime_event {
             jaco_agent::AgentRuntimeEvent::ConversationCommitted {
                 conversation,
-                index_delta,
                 changes,
             } => {
                 let conversation = *conversation;
                 let conversation_id = conversation.id.clone();
-                crate::state::conversation_index::publish_committed(
-                    conversation.clone(),
-                    index_delta,
+                super::registry::publish_changes(
+                    conversation_id.clone(),
+                    Some(conversation.clone()),
+                    changes.clone(),
                     cx,
                 );
-                cx.emit(ConversationRuntimeEvent::ConversationChanges {
-                    conversation_id: conversation_id.clone(),
-                    conversation: Some(Box::new(conversation.clone())),
-                    changes,
-                });
             }
             jaco_agent::AgentRuntimeEvent::ConversationTimelineChanged {
                 conversation_id,
                 changes,
             } => {
-                cx.emit(ConversationRuntimeEvent::ConversationChanges {
-                    conversation_id,
-                    conversation: None,
-                    changes,
-                });
+                super::registry::publish_changes(
+                    conversation_id.clone(),
+                    None,
+                    changes.clone(),
+                    cx,
+                );
             }
             jaco_agent::AgentRuntimeEvent::AgentRunStarted {
                 agent_run_id,
@@ -425,48 +410,13 @@ impl ConversationRuntimeStore {
                     return;
                 };
                 active.agent_run_id = Some(agent_run_id);
-                cx.emit(ConversationRuntimeEvent::RunStarted {
-                    conversation_id: conversation_id.clone(),
-                });
-                cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
             }
             jaco_agent::AgentRuntimeEvent::AgentRunStatusChanged {
-                agent_run_id,
-                status,
-            } => {
-                if let Some(conversation_id) = self.conversation_id_for_agent_run(&agent_run_id) {
-                    if is_terminal_status(status) {
-                        cx.emit(ConversationRuntimeEvent::RunFinished {
-                            conversation_id: conversation_id.clone(),
-                        });
-                    }
-                    cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
-                }
-            }
-            jaco_agent::AgentRuntimeEvent::ConversationEntryAppended {
-                conversation_id, ..
-            }
-            | jaco_agent::AgentRuntimeEvent::ConversationEntryUpdated {
-                conversation_id, ..
-            } => {
-                cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
-            }
-            jaco_agent::AgentRuntimeEvent::ProviderStepChanged { agent_run_id, .. }
-            | jaco_agent::AgentRuntimeEvent::ToolInvocationChanged { agent_run_id, .. }
-            | jaco_agent::AgentRuntimeEvent::ToolApprovalRequested { agent_run_id, .. } => {
-                if let Some(conversation_id) = self.conversation_id_for_agent_run(&agent_run_id) {
-                    cx.emit(ConversationRuntimeEvent::ConversationChanged { conversation_id });
-                }
-            }
+                agent_run_id: _,
+                status: _,
+            } => {}
         }
         cx.notify();
-    }
-
-    fn conversation_id_for_agent_run(&self, agent_run_id: &AgentRunId) -> Option<ConversationId> {
-        self.active_runs
-            .iter()
-            .find(|(_, active)| active.agent_run_id.as_ref() == Some(agent_run_id))
-            .map(|(conversation_id, _)| conversation_id.clone())
     }
 
     fn finish_run(
@@ -484,12 +434,10 @@ impl ConversationRuntimeStore {
         }
 
         self.active_runs.remove(&conversation_id);
+        super::registry::release_active(&conversation_id, cx);
         if let Err(err) = result {
             self.last_errors.insert(conversation_id.clone(), err);
         }
-        cx.emit(ConversationRuntimeEvent::ConversationChanged {
-            conversation_id: conversation_id.clone(),
-        });
         cx.emit(ConversationRuntimeEvent::RunFinished { conversation_id });
         cx.notify();
         true
@@ -626,21 +574,17 @@ async fn run_agent_with_saved_provider(
     .map_err(|err| err.to_string())
 }
 
-fn is_terminal_status(status: AgentRunStatus) -> bool {
-    matches!(
-        status,
-        AgentRunStatus::Completed | AgentRunStatus::Failed | AgentRunStatus::Canceled
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database;
+    use crate::{
+        app::session::{AppSessionState, AppSessionStore},
+        database,
+    };
     use gpui::{Subscription, WindowHandle};
     use jaco_agent::AgentRunHandleStatus;
     use jaco_core::{
-        AgentEngineKind, AgentRunInput, AgentRunTriggerKind, AgentRuntimeSnapshot,
+        AgentEngineKind, AgentRunInput, AgentRunStatus, AgentRunTriggerKind, AgentRuntimeSnapshot,
         ApprovalRequestPayload, ApprovalStatus, ContentPart, ConversationEntryPayload,
         ConversationEntryStatus, ConversationMetadata, ConversationSettingsSnapshot, ProjectKind,
         ProjectMetadata, ProviderSettingsPayload, ToolApprovalMode, ToolApprovalPolicy,
@@ -828,6 +772,7 @@ mod tests {
 
     #[gpui::test]
     fn finish_run_records_uncanceled_error(cx: &mut gpui::TestAppContext) {
+        init_session_stub(cx);
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
 
@@ -853,6 +798,7 @@ mod tests {
 
     #[gpui::test]
     fn finish_run_removes_matching_active_run(cx: &mut gpui::TestAppContext) {
+        init_session_stub(cx);
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
         let agent_run = jaco_db::AgentRunRecord {
@@ -1075,30 +1021,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn conversation_entry_updated_emits_conversation_changed(cx: &mut gpui::TestAppContext) {
-        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
-        let recorder = cx.update(|cx| cx.new(|cx| RuntimeEventRecorder::new(store.clone(), cx)));
-        let conversation_id = "conversation-1".to_string();
-
-        cx.update(|cx| {
-            store.update(cx, |store, cx| {
-                store.handle_runtime_event(
-                    jaco_agent::AgentRuntimeEvent::ConversationEntryUpdated {
-                        conversation_id: conversation_id.clone(),
-                        item_id: "item-1".to_string(),
-                    },
-                    cx,
-                );
-            });
-        });
-
-        let events = cx.update(|cx| recorder.read(cx).events.lock().unwrap().clone());
-        assert!(
-            events.contains(&ConversationRuntimeEvent::ConversationChanged { conversation_id })
-        );
-    }
-
-    #[gpui::test]
     fn finish_run_ignores_stale_run_key(cx: &mut gpui::TestAppContext) {
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
@@ -1125,8 +1047,15 @@ mod tests {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
             database::install_for_test(cx, dir.path());
+            AppSessionStore::install_global(cx, AppSessionState::AwaitingDatabase);
         });
         dir
+    }
+
+    fn init_session_stub(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            AppSessionStore::install_global(cx, AppSessionState::AwaitingDatabase);
+        });
     }
 
     fn test_repository(cx: &App) -> FreshRepository {
