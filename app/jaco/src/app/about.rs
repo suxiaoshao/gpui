@@ -145,44 +145,20 @@ pub(crate) struct AboutWindow {
     focus_handle: FocusHandle,
     app_menu_bar: Entity<TitleBarAppMenuBar>,
     metadata: AboutMetadata,
-    _subscriptions: Vec<Subscription>,
+    _theme_binding: state::theme::WindowThemeBinding,
 }
 
 impl AboutWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        state::theme::apply_current_theme(window, cx);
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         let app_menu_bar = TitleBarAppMenuBar::new(cx);
-        let config_store = state::config::store(cx);
 
         Self {
             focus_handle,
             app_menu_bar,
             metadata: about_metadata(),
-            _subscriptions: vec![
-                cx.observe_window_appearance(window, |_state, window, cx| {
-                    state::theme::apply_current_theme(window, cx);
-                    cx.refresh_windows();
-                }),
-                cx.observe_global_in::<state::theme::SystemAccentThemeState>(
-                    window,
-                    |_state, window, cx| {
-                        state::theme::apply_current_theme(window, cx);
-                        cx.refresh_windows();
-                    },
-                ),
-                config_store.observe_select_in(
-                    cx,
-                    window,
-                    state::selectors::SelectAppPresentation::current(cx),
-                    |this, _settings, window, cx| {
-                        state::theme::apply_current_theme(window, cx);
-                        this.reload_app_menu_bar(cx);
-                        cx.refresh_windows();
-                    },
-                ),
-            ],
+            _theme_binding: state::theme::WindowThemeBinding::new(window, cx),
         }
     }
 

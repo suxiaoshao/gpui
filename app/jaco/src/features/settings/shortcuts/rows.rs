@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, rc::Rc};
 
 use crate::{
+    components::chat::run_settings::reasoning_selection_is_valid,
     components::hotkey_input::format_hotkey_label,
-    components::run_settings::reasoning_selection_is_valid,
     foundation::{
         I18n,
         assets::{IconName, provider_visual_for_kind, provider_visual_icon},

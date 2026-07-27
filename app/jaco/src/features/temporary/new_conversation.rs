@@ -1,4 +1,4 @@
-use crate::components::chat_input::{
+use crate::components::chat::input::{
     ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
 };
 use gpui::*;

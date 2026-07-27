@@ -1,6 +1,6 @@
 use crate::{
     app::{menus, title_bar_menu},
-    components::conversation_detail::ConversationDetailPage,
+    components::chat::detail::ConversationDetailPage,
     foundation, state,
 };
 use gpui::{prelude::FluentBuilder as _, *};
@@ -26,7 +26,7 @@ pub(crate) struct HomeView {
     app_menu_bar: Entity<title_bar_menu::TitleBarAppMenuBar>,
     layout_state: Entity<state::JacoLayoutState>,
     workspace: Entity<state::JacoWorkspaceStore>,
-    runtime: Entity<state::conversation_runtime::ConversationRuntimeStore>,
+    runtime: Entity<state::conversations::runtime::ConversationRuntimeStore>,
     sidebar: Entity<HomeSidebar>,
     new_conversation: Entity<NewConversationPage>,
     conversation_pages: HashMap<ConversationId, Entity<ConversationDetailPage>>,
@@ -36,11 +36,10 @@ pub(crate) struct HomeView {
 impl HomeView {
     pub(crate) fn new(
         workspace: Entity<state::JacoWorkspaceStore>,
-        runtime: Entity<state::conversation_runtime::ConversationRuntimeStore>,
+        runtime: Entity<state::conversations::runtime::ConversationRuntimeStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        state::theme::apply_current_theme(window, cx);
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         let app_menu_bar = title_bar_menu::TitleBarAppMenuBar::new(cx);
@@ -96,17 +95,6 @@ impl HomeView {
                         );
                     });
                 }),
-                cx.observe_window_appearance(window, |_state, window, cx| {
-                    state::theme::apply_current_theme(window, cx);
-                    cx.refresh_windows();
-                }),
-                cx.observe_global_in::<state::theme::SystemAccentThemeState>(
-                    window,
-                    |_state, window, cx| {
-                        state::theme::apply_current_theme(window, cx);
-                        cx.refresh_windows();
-                    },
-                ),
             ],
         }
     }

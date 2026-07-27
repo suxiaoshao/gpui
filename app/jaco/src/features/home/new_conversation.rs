@@ -18,11 +18,11 @@ use tracing::{Level, event};
 
 use crate::{
     components::{
-        chat_form::{
+        chat::form::{
             ProjectControlState, ProjectPickerOption, ProjectPickerValue, project_picker_value,
             project_sections,
         },
-        chat_input::{
+        chat::input::{
             ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
         },
         picker::PickerListDelegate,
@@ -37,14 +37,14 @@ pub(crate) struct NewConversationPage {
     selected_project_id: Option<ProjectId>,
     project: Entity<ProjectControlState>,
     workspace: Entity<state::JacoWorkspaceStore>,
-    runtime: Entity<state::conversation_runtime::ConversationRuntimeStore>,
+    runtime: Entity<state::conversations::runtime::ConversationRuntimeStore>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl NewConversationPage {
     pub(crate) fn new(
         workspace: Entity<state::JacoWorkspaceStore>,
-        runtime: Entity<state::conversation_runtime::ConversationRuntimeStore>,
+        runtime: Entity<state::conversations::runtime::ConversationRuntimeStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -116,12 +116,16 @@ impl NewConversationPage {
             chat_form
         });
         let project_catalog = state::projects::catalog(cx);
-        let project_subscription =
-            project_catalog.observe_in(cx, window, |_, _catalog, window, cx| {
+        let project_subscription = project_catalog.observe_select_in(
+            cx,
+            window,
+            state::selectors::SelectNormalProjectCatalog,
+            |_, _catalog, window, cx| {
                 cx.defer_in(window, move |page, window, cx| {
                     page.reload_projects_from_catalog(window, cx);
                 });
-            });
+            },
+        );
         let chat_form_subscription = cx.subscribe_in(
             &chat_form,
             window,
@@ -178,37 +182,28 @@ impl NewConversationPage {
             project_by_id(projects.as_deref().unwrap_or_default(), &project_id).cloned()
         }) {
             let selected = project.clone();
-            let save_task = state::config::update_app_settings(cx, {
+            let result = state::config::update_app_settings(cx, {
                 let project_id = project.id.clone();
                 move |payload| {
                     payload.default_project_id = Some(project_id);
                 }
             });
-            let page = cx.entity().downgrade();
-            window
-                .spawn(cx, async move |cx| {
-                    let result = save_task.await;
-                    let _ = page.update_in(cx, |page, window, cx| match result {
-                        Ok(_) => {
-                            page.selected_project_id = Some(selected.id.clone());
-                            page.chat_form.update(cx, |chat_form, cx| {
-                                chat_form.refresh_skill_catalog(
-                                    Some(Path::new(&selected.path)),
-                                    cx,
-                                );
-                            });
-                            page.sync_project_picker(window, cx);
-                            page.project.update(cx, |project, cx| {
-                                project.open = false;
-                                cx.notify();
-                            });
-                        }
-                        Err(err) => {
-                            event!(Level::ERROR, error = ?err, "save sidebar selected project failed");
-                        }
+            match result {
+                Ok(_) => {
+                    self.selected_project_id = Some(selected.id.clone());
+                    self.chat_form.update(cx, |chat_form, cx| {
+                        chat_form.refresh_skill_catalog(Some(Path::new(&selected.path)), cx);
                     });
-                })
-                .detach();
+                    self.sync_project_picker(window, cx);
+                    self.project.update(cx, |project, cx| {
+                        project.open = false;
+                        cx.notify();
+                    });
+                }
+                Err(err) => {
+                    event!(Level::ERROR, error = ?err, "save sidebar selected project failed");
+                }
+            }
         }
         cx.notify();
     }
@@ -283,36 +278,30 @@ impl NewConversationPage {
     }
 
     fn select_no_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let task = state::config::update_app_settings(cx, |payload| {
+        let result = state::config::update_app_settings(cx, |payload| {
             payload.default_project_id = None;
         });
-        let page = cx.entity().downgrade();
-        window
-            .spawn(cx, async move |cx| {
-                let result = task.await;
-                let _ = page.update_in(cx, |page, window, cx| match result {
-                    Ok(_) => {
-                        page.selected_project_id = None;
-                        page.chat_form.update(cx, |chat_form, cx| {
-                            chat_form.refresh_skill_catalog(None, cx);
-                        });
-                        page.sync_project_picker(window, cx);
-                        page.set_project_picker_open(false, window, cx);
-                    }
-                    Err(err) => {
-                        let title = cx.global::<I18n>().t("notify-save-settings-failed");
-                        push_project_notification(
-                            window,
-                            cx,
-                            title,
-                            err.to_string(),
-                            NotificationType::Error,
-                        );
-                        page.sync_project_picker(window, cx);
-                    }
+        match result {
+            Ok(_) => {
+                self.selected_project_id = None;
+                self.chat_form.update(cx, |chat_form, cx| {
+                    chat_form.refresh_skill_catalog(None, cx);
                 });
-            })
-            .detach();
+                self.sync_project_picker(window, cx);
+                self.set_project_picker_open(false, window, cx);
+            }
+            Err(err) => {
+                let title = cx.global::<I18n>().t("notify-save-settings-failed");
+                push_project_notification(
+                    window,
+                    cx,
+                    title,
+                    err.to_string(),
+                    NotificationType::Error,
+                );
+                self.sync_project_picker(window, cx);
+            }
+        }
     }
 
     fn select_project(
@@ -322,37 +311,31 @@ impl NewConversationPage {
         cx: &mut Context<Self>,
     ) {
         let project_id = project.id.clone();
-        let task = state::config::update_app_settings(cx, {
+        let result = state::config::update_app_settings(cx, {
             let project_id = project_id.clone();
             move |payload| payload.default_project_id = Some(project_id)
         });
-        let page = cx.entity().downgrade();
-        window
-            .spawn(cx, async move |cx| {
-                let result = task.await;
-                let _ = page.update_in(cx, |page, window, cx| match result {
-                    Ok(_) => {
-                        page.selected_project_id = Some(project_id);
-                        page.chat_form.update(cx, |chat_form, cx| {
-                            chat_form.refresh_skill_catalog(Some(Path::new(&project.path)), cx);
-                        });
-                        page.sync_project_picker(window, cx);
-                        page.set_project_picker_open(false, window, cx);
-                    }
-                    Err(err) => {
-                        let title = cx.global::<I18n>().t("notify-save-settings-failed");
-                        push_project_notification(
-                            window,
-                            cx,
-                            title,
-                            err.to_string(),
-                            NotificationType::Error,
-                        );
-                        page.sync_project_picker(window, cx);
-                    }
+        match result {
+            Ok(_) => {
+                self.selected_project_id = Some(project_id);
+                self.chat_form.update(cx, |chat_form, cx| {
+                    chat_form.refresh_skill_catalog(Some(Path::new(&project.path)), cx);
                 });
-            })
-            .detach();
+                self.sync_project_picker(window, cx);
+                self.set_project_picker_open(false, window, cx);
+            }
+            Err(err) => {
+                let title = cx.global::<I18n>().t("notify-save-settings-failed");
+                push_project_notification(
+                    window,
+                    cx,
+                    title,
+                    err.to_string(),
+                    NotificationType::Error,
+                );
+                self.sync_project_picker(window, cx);
+            }
+        }
     }
 
     fn open_add_project_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -367,41 +350,40 @@ impl NewConversationPage {
         });
         let page = cx.entity().downgrade();
 
-        window
-            .spawn(cx, async move |cx| {
-                let selected_path = match path_prompt.await {
-                    Ok(Ok(Some(paths))) => paths.into_iter().next(),
-                    Ok(Ok(None)) => return,
-                    Ok(Err(err)) => {
-                        push_project_notification_async(
-                            cx,
-                            failed_title.clone().into(),
-                            err.to_string(),
-                            NotificationType::Error,
-                        );
-                        return;
-                    }
-                    Err(err) => {
-                        push_project_notification_async(
-                            cx,
-                            failed_title.into(),
-                            err.to_string(),
-                            NotificationType::Error,
-                        );
-                        return;
-                    }
-                };
-                let Some(path) = selected_path else {
+        let prompt_task = window.spawn(cx, async move |cx| {
+            let selected_path = match path_prompt.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) => return,
+                Ok(Err(err)) => {
+                    push_project_notification_async(
+                        cx,
+                        failed_title.clone().into(),
+                        err.to_string(),
+                        NotificationType::Error,
+                    );
                     return;
-                };
-
-                if let Err(err) = page.update_in(cx, |page, window, cx| {
-                    page.insert_selected_project(path, window, cx);
-                }) {
-                    event!(Level::ERROR, error = ?err, "add project from new conversation failed");
                 }
-            })
-            .detach();
+                Err(err) => {
+                    push_project_notification_async(
+                        cx,
+                        failed_title.into(),
+                        err.to_string(),
+                        NotificationType::Error,
+                    );
+                    return;
+                }
+            };
+            let Some(path) = selected_path else {
+                return;
+            };
+
+            if let Err(err) = page.update_in(cx, |page, window, cx| {
+                page.insert_selected_project(path, window, cx);
+            }) {
+                event!(Level::ERROR, error = ?err, "add project from new conversation failed");
+            }
+        });
+        crate::app::tasks::retain_window(window, prompt_task, cx);
     }
 
     fn submit_new_conversation(
@@ -425,35 +407,34 @@ impl NewConversationPage {
         };
         let task = state::conversations::create_conversation(request, cx);
         let page = cx.entity().downgrade();
-        window
-            .spawn(cx, async move |cx| {
-                let result = task.await;
-                let _ = page.update_in(cx, |page, window, cx| match result {
-                    Ok(created) => {
-                        let conversation_id = created.record.conversation.id.clone();
-                        page.chat_form.update(cx, |chat_form, cx| {
-                            chat_form.clear_after_submit(window, cx);
-                        });
-                        page.workspace.update(cx, |workspace, cx| {
-                            workspace.open_conversation(conversation_id, cx);
-                        });
-                        page.runtime.update(cx, |runtime, cx| {
-                            runtime.start_run(created.run_request, window, cx);
-                        });
-                    }
-                    Err(err) => {
-                        let title = cx.global::<I18n>().t("new-conversation-submit-failed");
-                        push_project_notification(
-                            window,
-                            cx,
-                            title,
-                            err.to_string(),
-                            NotificationType::Error,
-                        );
-                    }
-                });
-            })
-            .detach();
+        let completion = window.spawn(cx, async move |cx| {
+            let result = task.await;
+            let _ = page.update_in(cx, |page, window, cx| match result {
+                Ok(created) => {
+                    let conversation_id = created.record.conversation.id.clone();
+                    page.chat_form.update(cx, |chat_form, cx| {
+                        chat_form.clear_after_submit(window, cx);
+                    });
+                    page.workspace.update(cx, |workspace, cx| {
+                        workspace.open_conversation(conversation_id, cx);
+                    });
+                    page.runtime.update(cx, |runtime, cx| {
+                        runtime.start_run(created.run_request, window, cx);
+                    });
+                }
+                Err(err) => {
+                    let title = cx.global::<I18n>().t("new-conversation-submit-failed");
+                    push_project_notification(
+                        window,
+                        cx,
+                        title,
+                        err.to_string(),
+                        NotificationType::Error,
+                    );
+                }
+            });
+        });
+        crate::app::tasks::retain_window(window, completion, cx);
     }
 
     fn insert_selected_project(
@@ -464,46 +445,39 @@ impl NewConversationPage {
     ) {
         let mutation = state::projects::insert_existing_folder_project(cx, path);
         let page = cx.entity().downgrade();
-        window
-            .spawn(cx, async move |cx| {
-                let result = mutation.await;
-                let _ = page.update_in(cx, |page, window, cx| match result {
-                    Ok(result) => {
-                        let project = result.project.clone();
-                        let _ = page.reload_projects(window, cx);
-                        page.select_project(project.clone(), window, cx);
-                        let (title, notification_type) = if result.was_existing {
-                            (
-                                cx.global::<I18n>().t("notify-project-already-exists"),
-                                NotificationType::Warning,
-                            )
-                        } else {
-                            (
-                                cx.global::<I18n>().t("notify-project-added-success"),
-                                NotificationType::Success,
-                            )
-                        };
-                        push_project_notification(
-                            window,
-                            cx,
-                            title,
-                            project.path,
-                            notification_type,
-                        );
-                    }
-                    Err(err) => {
-                        let title = cx.global::<I18n>().t("notify-add-project-failed");
-                        push_project_notification(
-                            window,
-                            cx,
-                            title,
-                            err.to_string(),
-                            NotificationType::Error,
-                        );
-                    }
-                });
-            })
-            .detach();
+        let completion = window.spawn(cx, async move |cx| {
+            let result = mutation.await;
+            let _ = page.update_in(cx, |page, window, cx| match result {
+                Ok(result) => {
+                    let project = result.project.clone();
+                    let _ = page.reload_projects(window, cx);
+                    page.select_project(project.clone(), window, cx);
+                    let (title, notification_type) = if result.was_existing {
+                        (
+                            cx.global::<I18n>().t("notify-project-already-exists"),
+                            NotificationType::Warning,
+                        )
+                    } else {
+                        (
+                            cx.global::<I18n>().t("notify-project-added-success"),
+                            NotificationType::Success,
+                        )
+                    };
+                    push_project_notification(window, cx, title, project.path, notification_type);
+                }
+                Err(err) => {
+                    let title = cx.global::<I18n>().t("notify-add-project-failed");
+                    push_project_notification(
+                        window,
+                        cx,
+                        title,
+                        err.to_string(),
+                        NotificationType::Error,
+                    );
+                }
+            });
+        });
+        crate::app::tasks::retain_window(window, completion, cx);
     }
 
     fn sync_project_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {

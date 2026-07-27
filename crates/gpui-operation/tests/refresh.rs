@@ -5,7 +5,7 @@ use std::{
 };
 
 use gpui_operation::{
-    Cancel, Complete, Load, Refresh, Retry, Transition,
+    Cancel, Complete, Load, Refresh, Retry, Settle, Transition,
     refresh::{
         Degraded, FetchCompleted, Idle, Operation as RefreshOperation, Phase as RefreshPhase,
         Ready, RefreshCompleted, Unavailable,
@@ -75,6 +75,25 @@ fn make_degraded<Data, Problem: std::error::Error>(
 }
 
 // ── OP-R8: Load completion produces ready or unavailable ────────────────
+
+#[test]
+fn synchronous_settle_produces_ready_or_unavailable_without_a_task() {
+    let completed: FetchCompleted<IntData, IntProblem> =
+        Idle::new().transition(Settle(Ok(IntData(40))));
+    match completed {
+        FetchCompleted::Ready(ready) => assert_eq!(ready.data(), &IntData(40)),
+        FetchCompleted::Unavailable(_) => panic!("expected Ready"),
+    }
+
+    let completed: FetchCompleted<IntData, IntProblem> =
+        Idle::new().transition(Settle(Err(IntProblem(41))));
+    match completed {
+        FetchCompleted::Ready(_) => panic!("expected Unavailable"),
+        FetchCompleted::Unavailable(unavailable) => {
+            assert_eq!(unavailable.problem(), &IntProblem(41));
+        }
+    }
+}
 
 #[test]
 fn load_completion_produces_ready_or_unavailable() {
@@ -406,6 +425,33 @@ fn empty_data_is_ready() {
 }
 
 // ── Runtime enum ────────────────────────────────────────────────────────
+
+#[test]
+fn runtime_settle_is_idle_only_and_distinct_from_async_completion() {
+    let mut success = RefreshOperation::<IntData, IntProblem, Task>::new();
+    success.transition(Settle(Ok(IntData(1))));
+    assert_eq!(success.phase(), RefreshPhase::Ready);
+    assert_eq!(success.data(), Some(&IntData(1)));
+
+    success.transition(Settle(Ok(IntData(2))));
+    assert_eq!(success.phase(), RefreshPhase::Ready);
+    assert_eq!(success.data(), Some(&IntData(1)));
+
+    let mut failure = RefreshOperation::<IntData, IntProblem, Task>::new();
+    failure.transition(Settle(Err(IntProblem(3))));
+    assert_eq!(failure.phase(), RefreshPhase::Unavailable);
+    assert_eq!(failure.problem(), Some(&IntProblem(3)));
+
+    let mut cancelled = RefreshOperation::<IntData, IntProblem, Task>::new();
+    cancelled.transition(Load(Task));
+    cancelled.transition(Cancel);
+    cancelled.transition(Complete(Ok(IntData(4))));
+    assert_eq!(cancelled.phase(), RefreshPhase::Idle);
+
+    cancelled.transition(Settle(Ok(IntData(5))));
+    assert_eq!(cancelled.phase(), RefreshPhase::Ready);
+    assert_eq!(cancelled.data(), Some(&IntData(5)));
+}
 
 fn runtime_ready(data: IntData) -> RefreshOperation<IntData, IntProblem, Task> {
     let mut operation = RefreshOperation::new();

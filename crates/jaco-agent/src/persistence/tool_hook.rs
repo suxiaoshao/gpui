@@ -2,7 +2,7 @@ use super::{PersistenceContext, error_tool_output, lock, mutex_clone, mutex_repl
 use crate::{
     AgentRuntimeError, AgentRuntimeEvent, AgentStep, RegisteredToolDefinition, Result,
     ToolApprovalDecision, ToolApprovalRequest,
-    tool_registry::{RegisteredRuntimeTool, tool_output_to_model_text},
+    tools::{RegisteredRuntimeTool, tool_output_to_model_text},
 };
 use jaco_core::*;
 use jaco_db::{
@@ -877,7 +877,7 @@ where
         };
 
         let builtin_access_requests = if matches!(definition.source, ToolSource::Local) {
-            match crate::builtin_tools::registry::access_requests_for_builtin_tool(
+            match crate::tools::builtin::registry::access_requests_for_builtin_tool(
                 &definition.tool_name,
                 &arguments,
                 &self.context.settings_snapshot.tool_policy,
@@ -903,7 +903,7 @@ where
         };
         if let Some(access_requests) = builtin_access_requests {
             let evaluator =
-                match crate::builtin_tools::approval::ToolPermissionEvaluator::from_policy(
+                match crate::tools::builtin::approval::ToolPermissionEvaluator::from_policy(
                     &self.context.settings_snapshot.tool_policy,
                     None,
                 ) {
@@ -911,7 +911,9 @@ where
                     Err(error) => return ToolCallHookAction::terminate(error.to_string()),
                 };
             match evaluator.evaluate(&access_requests) {
-                crate::builtin_tools::approval::ToolPermissionDecision::Allow { auto_approved } => {
+                crate::tools::builtin::approval::ToolPermissionDecision::Allow {
+                    auto_approved,
+                } => {
                     if let Err(error) = self
                         .context
                         .record_auto_approval(
@@ -925,7 +927,7 @@ where
                         return ToolCallHookAction::terminate(error.to_string());
                     }
                 }
-                crate::builtin_tools::approval::ToolPermissionDecision::Ask {
+                crate::tools::builtin::approval::ToolPermissionDecision::Ask {
                     reason,
                     access_requests,
                 } => {
@@ -952,7 +954,7 @@ where
                         )
                         .await;
                 }
-                crate::builtin_tools::approval::ToolPermissionDecision::Deny { reason } => {
+                crate::tools::builtin::approval::ToolPermissionDecision::Deny { reason } => {
                     let error = run_error("tool_permission_denied", reason, false, None);
                     return match self
                         .context

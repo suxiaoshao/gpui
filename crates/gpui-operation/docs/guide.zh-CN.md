@@ -7,13 +7,14 @@ Repair 和 task source，以便具体展示 ownership 与状态转换模式。
 
 ## 1. 用途
 
-`gpui-operation` 描述可失败异步工作的安全状态转换。它是转换库，不是 executor 或 owner：
+`gpui-operation` 描述可失败同步或异步工作的安全状态转换。它是转换库，不是 executor 或
+owner：
 
 ```text
 当前状态 + 消息 -> 下一状态
 ```
 
-调用者负责：
+对于异步工作，调用者负责：
 
 - 构造并启动 task；
 - 把 task 最终结果作为消息送回；
@@ -75,6 +76,10 @@ pub struct Complete<Data, Problem: std::error::Error>(
     pub Result<Data, Problem>,
 );
 
+pub struct Settle<Data, Problem: std::error::Error>(
+    pub Result<Data, Problem>,
+);
+
 pub struct Cancel;
 ```
 
@@ -82,12 +87,26 @@ pub struct Cancel;
 统一实现 `Clone`、`PartialEq`、`Send` 或 `Sync`，但 Problem 必须实现
 `std::error::Error`。
 
+`Settle(result)` 用于把同步完成的首次工作从 `Idle` 直接记录为稳定状态，不创建运行状态，
+也不保存 Task。`Complete(result)` 则只在运行状态生效。这样，取消后迟到的 `Complete`
+会被忽略，operation 仍保持 `Idle`；只有调用者明确发送 `Settle` 才能同步初始化。
+
+具名状态也保留同样的区分：
+
+```rust
+use gpui_operation::{Settle, Transition};
+use gpui_operation::refresh::{FetchCompleted, Idle};
+
+let settled: FetchCompleted<CatalogData, CatalogProblem> =
+    Idle::new().transition(Settle(read_catalog_synchronously()));
+```
+
 完整 runtime enum 接受其 family 支持的消息：
 
 | Runtime family | 原地接收的消息 |
 | --- | --- |
-| `refresh::Operation` | `Load`、`Refresh`、`Retry`、`Complete`、`Cancel` |
-| `repair::Operation` | `Load`、`Refresh`、`Repair`、`Complete`、`Cancel` |
+| `refresh::Operation` | `Settle`、`Load`、`Refresh`、`Retry`、`Complete`、`Cancel` |
+| `repair::Operation` | `Settle`、`Load`、`Refresh`、`Repair`、`Complete`、`Cancel` |
 
 如果消息不适用于当前 runtime variant，operation 保持不变，消息及其 owned payload 会被
 drop；runtime 消息传递返回 `()`，没有其他返回路径。如果工作 payload 不能被丢弃，应用应先
@@ -376,6 +395,8 @@ let settled = match repairing.transition(Complete(result)) {
 库把 Task 当作 owned generic value，不 poll、不 abort、也不检查它。进入运行状态会把 Task 移入
 该状态；完成或取消会消费运行状态并 drop Task。
 
+同步首次工作使用 `Idle + Settle(result)`，不会进入这套 Task 生命周期。
+
 对于 GPUI `Task`，drop handle 会取消 task。因此预期的 UI 契约是：
 
 1. 运行状态是其 task 的唯一 owner；
@@ -446,6 +467,7 @@ Degraded / RepairingDegraded
 路由为：
 
 ```text
+Idle + Settle<Result<Data, Problem>> -> Ready / Unavailable
 Idle + Load<Task> -> Loading
 Ready + Refresh<Task> -> Refreshing
 Unavailable + Retry<Task> -> Retrying
@@ -454,7 +476,8 @@ Degraded + Refresh<Task> -> RefreshingDegraded
 运行状态 + Cancel -> 准确的上一个稳定状态
 ```
 
-可修复 runtime 在 `Idle` 接收 `Load`，在 `Ready` 接收 `Refresh`，在 `Unavailable` 或
+可修复 runtime 也在 `Idle` 接收 `Settle`，并在 `Idle` 接收 `Load`、在 `Ready` 接收
+`Refresh`，在 `Unavailable` 或
 `Degraded` 接收 `Repair { repair, task }`。`Complete` 与 `Cancel` 适用于它的所有运行
 variant。
 

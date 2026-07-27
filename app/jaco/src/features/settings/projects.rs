@@ -29,9 +29,11 @@ impl ProjectsSettingsPage {
     pub(super) fn new(cx: &mut Context<Self>) -> Self {
         let resource = state::projects::catalog(cx);
         let projects = resource.select(cx, state::selectors::SelectNormalProjects);
-        let resource_subscription = resource.observe(cx, |_page, _operation, cx| {
-            cx.notify();
-        });
+        let resource_subscription = resource.observe_select(
+            cx,
+            state::selectors::SelectProjectStatus,
+            |_page, _status, cx| cx.notify(),
+        );
         Self {
             resource,
             projects,
@@ -50,41 +52,40 @@ impl ProjectsSettingsPage {
         });
         let page = cx.entity().downgrade();
 
-        window
-            .spawn(cx, async move |cx| {
-                let selected_path = match path_prompt.await {
-                    Ok(Ok(Some(paths))) => paths.into_iter().next(),
-                    Ok(Ok(None)) => return,
-                    Ok(Err(err)) => {
-                        push_project_notification_async(
-                            cx,
-                            failed_title.clone().into(),
-                            err.to_string(),
-                            NotificationType::Error,
-                        );
-                        return;
-                    }
-                    Err(err) => {
-                        push_project_notification_async(
-                            cx,
-                            failed_title.into(),
-                            err.to_string(),
-                            NotificationType::Error,
-                        );
-                        return;
-                    }
-                };
-                let Some(path) = selected_path else {
+        let prompt_task = window.spawn(cx, async move |cx| {
+            let selected_path = match path_prompt.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) => return,
+                Ok(Err(err)) => {
+                    push_project_notification_async(
+                        cx,
+                        failed_title.clone().into(),
+                        err.to_string(),
+                        NotificationType::Error,
+                    );
                     return;
-                };
-
-                if let Err(err) = page.update_in(cx, |page, window, cx| {
-                    page.insert_selected_project(path, window, cx);
-                }) {
-                    event!(Level::ERROR, error = ?err, "add project after path prompt failed");
                 }
-            })
-            .detach();
+                Err(err) => {
+                    push_project_notification_async(
+                        cx,
+                        failed_title.into(),
+                        err.to_string(),
+                        NotificationType::Error,
+                    );
+                    return;
+                }
+            };
+            let Some(path) = selected_path else {
+                return;
+            };
+
+            if let Err(err) = page.update_in(cx, |page, window, cx| {
+                page.insert_selected_project(path, window, cx);
+            }) {
+                event!(Level::ERROR, error = ?err, "add project after path prompt failed");
+            }
+        });
+        crate::app::tasks::retain_window(window, prompt_task, cx);
     }
 
     fn insert_selected_project(
@@ -95,37 +96,36 @@ impl ProjectsSettingsPage {
     ) {
         let mutation = state::projects::insert_existing_folder_project(cx, path);
         let page = cx.entity().downgrade();
-        window
-            .spawn(cx, async move |cx| {
-                let result = mutation.await;
-                let _ = page.update_in(cx, |_page, window, cx| match result {
-                    Ok(result) => {
-                        let (title, notification_type) = if result.was_existing {
-                            (
-                                cx.global::<I18n>().t("notify-project-already-exists"),
-                                NotificationType::Warning,
-                            )
-                        } else {
-                            (
-                                cx.global::<I18n>().t("notify-project-added-success"),
-                                NotificationType::Success,
-                            )
-                        };
-                        push_project_notification(
-                            window,
-                            cx,
-                            title,
-                            result.project.path,
-                            notification_type,
-                        );
-                    }
-                    Err(err) => {
-                        let title = cx.global::<I18n>().t("notify-add-project-failed");
-                        push_settings_error(window, cx, title, err);
-                    }
-                });
-            })
-            .detach();
+        let completion = window.spawn(cx, async move |cx| {
+            let result = mutation.await;
+            let _ = page.update_in(cx, |_page, window, cx| match result {
+                Ok(result) => {
+                    let (title, notification_type) = if result.was_existing {
+                        (
+                            cx.global::<I18n>().t("notify-project-already-exists"),
+                            NotificationType::Warning,
+                        )
+                    } else {
+                        (
+                            cx.global::<I18n>().t("notify-project-added-success"),
+                            NotificationType::Success,
+                        )
+                    };
+                    push_project_notification(
+                        window,
+                        cx,
+                        title,
+                        result.project.path,
+                        notification_type,
+                    );
+                }
+                Err(err) => {
+                    let title = cx.global::<I18n>().t("notify-add-project-failed");
+                    push_settings_error(window, cx, title, err);
+                }
+            });
+        });
+        crate::app::tasks::retain_window(window, completion, cx);
     }
 
     fn render_toolbar(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {

@@ -12,9 +12,9 @@ use tokio::sync::oneshot;
 use tracing::{Level, event};
 
 use crate::{
-    components::run_settings::reasoning_selection_is_valid,
-    database,
-    state::{self, session::CatalogMutation},
+    components::chat::run_settings::reasoning_selection_is_valid,
+    database::{self, session::CatalogMutation},
+    state,
 };
 
 pub(crate) type ShortcutOperation = refresh::Operation<ShortcutData, ShortcutProblem, Task<()>>;
@@ -429,7 +429,8 @@ where
         Err(error) => return Task::ready(Err(error)),
     };
     let (sender, receiver) = oneshot::channel();
-    cx.spawn(async move |cx| {
+    let task_binding = binding.clone();
+    let driver = cx.spawn(async move |cx| {
         let result = executor.mutate(CatalogMutation::Shortcut, command).await;
         if let Ok(value) = &result {
             cx.update(|cx| {
@@ -439,8 +440,8 @@ where
             });
         }
         let _ = sender.send(result);
-    })
-    .detach();
+    });
+    crate::app::session::retain_task(task_binding, driver, cx);
     cx.spawn(async move |_| {
         receiver.await.unwrap_or_else(|_| {
             Err(DbError::Invariant(

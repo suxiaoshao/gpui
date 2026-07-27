@@ -74,24 +74,13 @@ impl AppearanceSettingsPage {
         }
     }
 
-    fn update_theme(
-        update: impl FnOnce(&mut AppThemeSettings) + Send + 'static,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let task =
-            state::config::update_app_settings(cx, move |payload| update(&mut payload.theme));
-        window
-            .spawn(cx, async move |cx| {
-                let result = task.await;
-                let _ = cx.update(|window, cx| {
-                    if let Err(err) = result {
-                        let title = cx.global::<I18n>().t("notify-save-settings-failed");
-                        push_settings_error(window, cx, title, err);
-                    }
-                });
-            })
-            .detach();
+    fn update_theme(update: impl FnOnce(&mut AppThemeSettings), window: &mut Window, cx: &mut App) {
+        if let Err(err) =
+            state::config::update_app_settings(cx, move |payload| update(&mut payload.theme))
+        {
+            let title = cx.global::<I18n>().t("notify-save-settings-failed");
+            push_settings_error(window, cx, title, err);
+        }
     }
 
     fn set_theme_mode(mode: AppThemeMode, window: &mut Window, cx: &mut App) {

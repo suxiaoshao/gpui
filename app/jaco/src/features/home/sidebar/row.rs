@@ -339,16 +339,15 @@ impl RenderOnce for ConversationSidebarRow {
                                         cx,
                                     )
                                 });
-                                window
-                                    .spawn(cx, async move |_| {
-                                        if let Err(error) = task.await {
-                                            tracing::error!(
-                                                error = %error,
-                                                "failed to update conversation pin"
-                                            );
-                                        }
-                                    })
-                                    .detach();
+                                let completion = window.spawn(cx, async move |_| {
+                                    if let Err(error) = task.await {
+                                        tracing::error!(
+                                            error = %error,
+                                            "failed to update conversation pin"
+                                        );
+                                    }
+                                });
+                                crate::app::tasks::retain_window(window, completion, cx);
                             }),
                     )
                     .child(

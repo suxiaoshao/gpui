@@ -7,9 +7,10 @@ use gpui::{App, AppContext, Context, Entity, Global, Subscription, WeakEntity, W
 
 use crate::{
     StoreChange,
-    observation::{self, ObservationPhase},
-    select::Select,
-    selection::StoreSelection,
+    projection::{
+        Select, StoreSelection,
+        observation::{self, ObservationPhase},
+    },
 };
 
 #[allow(clippy::type_complexity)]

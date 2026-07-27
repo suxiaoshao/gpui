@@ -1,14 +1,25 @@
+mod finalization;
+mod history;
+mod reasoning;
+mod streaming;
+#[cfg(test)]
+mod tests;
+pub(crate) mod types;
+
+use self::{
+    history::{PromptHistoryOptions, build_prompt_history_with_options},
+    reasoning::{merge_additional_params, reasoning_additional_params},
+    streaming::StreamingOutputAccumulator,
+};
 use crate::{
     AgentRunHandle, AgentRunHandleStatus, AgentRunRequest, AgentRuntimeError, AgentRuntimeEvent,
     AgentRuntimeObserver, AgentStep, McpSessionManager, ProviderSecretValues, Result, SkillCatalog,
     SkillLoader, ToolApprovalBroker,
-    history::{PromptHistoryOptions, build_prompt_history_with_options},
     persistence::{
         AgentPersistence, AgentRunOutcome, PersistenceContext, PersistingCompletionModel,
         finish_agent_run_spec, new_agent_run_input, run_error,
     },
-    provider_models::run_saved_provider_model,
-    reasoning_params::{merge_additional_params, reasoning_additional_params},
+    providers::run_saved_provider_model,
 };
 use futures::StreamExt;
 use jaco_core::*;
@@ -21,12 +32,6 @@ use rig_core::{
     completion::{CompletionModel, Prompt, PromptError, Usage},
     streaming::{StreamedAssistantContent, StreamingPrompt},
 };
-mod finalization;
-mod streaming;
-#[cfg(test)]
-mod tests;
-
-use self::streaming::StreamingOutputAccumulator;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -117,7 +122,7 @@ impl AgentRuntime {
         if request.cancellation_token.is_cancelled() {
             return Err(AgentRuntimeError::Canceled);
         }
-        crate::builtin_tools::registry::register_enabled_builtin_tools(
+        crate::tools::builtin::registry::register_enabled_builtin_tools(
             &mut request.tool_registry,
             &request.settings_snapshot.tool_policy,
             request.project_root.as_deref(),

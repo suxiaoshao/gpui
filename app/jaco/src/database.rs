@@ -1,3 +1,5 @@
+pub(crate) mod session;
+
 use std::{
     collections::VecDeque,
     fmt, fs,
@@ -6,8 +8,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use gpui::{App, AppContext, BorrowAppContext, Entity, Global, Task};
-use gpui_operation::{Complete, Load, Refresh, Repair, Transition, repair};
+use gpui::{App, AppContext, BorrowAppContext, Entity, Global, Subscription, Task};
+use gpui_operation::{Complete, Load, Refresh, Repair, Settle, Transition, repair};
 use gpui_store::Store;
 use jaco_agent::AgentPersistence;
 #[cfg(test)]
@@ -16,12 +18,11 @@ use jaco_db::{DbError, FreshStore};
 
 use crate::{
     errors::{JacoError, JacoResult},
-    state::{
-        config,
-        persistence::FileLock,
-        session::{DatabaseBinding, DatabaseSession, DatabaseSessionKey},
-    },
+    foundation::persistence::FileLock,
+    state::{config, selectors::SelectDatabaseTarget},
 };
+
+use self::session::{DatabaseBinding, DatabaseSession, DatabaseSessionKey};
 
 static NEXT_SESSION_KEY: AtomicU64 = AtomicU64::new(1);
 
@@ -179,16 +180,46 @@ struct DatabaseRepairNotices(VecDeque<DatabaseBackupOutcome>);
 
 impl Global for DatabaseRepairNotices {}
 
-pub(crate) fn init_store(cx: &mut App) {
-    cx.set_global(DatabaseRepairNotices(VecDeque::new()));
-    DatabaseStore::install_global(cx, DatabaseResource::AwaitingConfig);
-    sync_from_config(cx);
+struct DatabaseConfigObserver {
+    _subscription: Subscription,
 }
 
-pub(crate) fn sync_from_config(cx: &mut App) {
+struct DatabaseConfigObserverGlobal {
+    _observer: Entity<DatabaseConfigObserver>,
+}
+
+impl Global for DatabaseConfigObserverGlobal {}
+
+pub(crate) fn init_store(cx: &mut App) {
+    cx.set_global(DatabaseRepairNotices(VecDeque::new()));
     let target = config::store(cx).read(cx, |operation| {
         operation.data().map(DatabaseTarget::from_config)
     });
+    let resource = match target {
+        Some(target) => {
+            let result = open_initial(&target, cx);
+            let mut operation = DatabaseOperation::new();
+            operation.transition(Settle(result));
+            DatabaseResource::Bound { target, operation }
+        }
+        None => DatabaseResource::AwaitingConfig,
+    };
+    DatabaseStore::install_global(cx, resource);
+    let observer = cx.new(|cx| {
+        let subscription =
+            config::store(cx).observe_select(cx, SelectDatabaseTarget, |_observer, target, cx| {
+                sync_target(target.clone(), cx)
+            });
+        DatabaseConfigObserver {
+            _subscription: subscription,
+        }
+    });
+    cx.set_global(DatabaseConfigObserverGlobal {
+        _observer: observer,
+    });
+}
+
+fn sync_target(target: Option<DatabaseTarget>, cx: &mut App) {
     let database = store(cx);
     let should_rebind = database.read(cx, |resource| match (resource, &target) {
         (DatabaseResource::AwaitingConfig, None) => false,
@@ -269,7 +300,6 @@ fn start_initial_open(target: DatabaseTarget, cx: &mut App) {
     });
 }
 
-#[cfg(test)]
 fn open_initial(
     target: &DatabaseTarget,
     cx: &mut impl AppContext,
@@ -369,7 +399,7 @@ pub(crate) fn ready_agent_persistence(
 
 pub(crate) fn ready_executor(
     cx: &impl AppContext,
-) -> jaco_db::Result<crate::state::session::SessionDatabaseExecutor> {
+) -> jaco_db::Result<crate::database::session::SessionDatabaseExecutor> {
     ensure_config_ready(cx)?;
     let session = store(cx).read(cx, |resource| match resource {
         DatabaseResource::Bound {
@@ -548,7 +578,8 @@ pub(crate) fn backup_and_create_fresh(backup_dir: PathBuf, cx: &mut App) -> Jaco
         let repaired = smol::unblock(move || {
             let lease = match active {
                 Some(active) => {
-                    let crate::state::session::ActiveDatabaseSession { store, lease, .. } = active;
+                    let crate::database::session::ActiveDatabaseSession { store, lease, .. } =
+                        active;
                     drop(store);
                     lease
                 }
@@ -736,8 +767,71 @@ pub(crate) fn install_for_test(cx: &mut App, data_dir: &Path) {
     };
     let result = open_initial(&target, cx);
     let mut operation = DatabaseOperation::new();
-    operation.transition(Load(Task::ready(())));
-    operation.transition(Complete(result));
+    operation.transition(Settle(result));
     let resource = DatabaseResource::Bound { target, operation };
     DatabaseStore::install_global(cx, resource);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn initial_database_open_is_settled_before_init_returns(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            let config_path = dir.path().join("config.toml");
+            let config = config::JacoConfig {
+                storage: config::StorageConfig {
+                    data_dir: Some(dir.path().to_path_buf()),
+                },
+                ..Default::default()
+            };
+            config::install_for_test(cx, config_path, config).expect("install config store");
+
+            init_store(cx);
+
+            store(cx).read(cx, |resource| {
+                let DatabaseResource::Bound { operation, .. } = resource else {
+                    panic!("database should bind to ready config");
+                };
+                assert!(matches!(operation, DatabaseOperation::Ready(_)));
+                assert!(!operation.is_running());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn chat_preferences_do_not_rebind_database(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let config = config::JacoConfig {
+            storage: config::StorageConfig {
+                data_dir: Some(dir.path().to_path_buf()),
+            },
+            ..Default::default()
+        };
+        fs::write(&config_path, toml::to_string_pretty(&config).unwrap()).unwrap();
+        cx.update(|cx| {
+            config::install_for_test(cx, config_path, config).expect("install config store");
+            init_store(cx);
+        });
+        cx.run_until_parked();
+
+        let original = cx.update(|cx| retained_binding(cx).expect("ready database binding"));
+        cx.update(|cx| {
+            config::update_chat_form_config(cx, |chat_form| {
+                chat_form.model = Some(config::ChatFormModelConfig {
+                    provider_id: "provider-1".to_string(),
+                    model_id: "gpt-5".to_string(),
+                });
+            })
+            .expect("save chat preferences");
+        });
+        cx.run_until_parked();
+
+        let current = cx.update(|cx| retained_binding(cx).expect("retained database binding"));
+        assert_eq!(current, original);
+    }
 }

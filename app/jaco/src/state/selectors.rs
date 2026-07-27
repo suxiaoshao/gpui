@@ -1,65 +1,78 @@
-use gpui::AppContext;
 use gpui_store::Select;
 use jaco_core::{
-    AppLanguage, ConversationId, ConversationStatus, ProjectId, ProjectKind, ShortcutId,
+    AppLanguage, AppThemeSettings, ConversationId, ConversationStatus, ProjectId, ProjectKind,
+    ShortcutId,
 };
 use jaco_db::{ProjectRecord, PromptRecord, ProviderModelRecord, ProviderRecord, ShortcutRecord};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::{
-    config::{AppThemeConfig, ConfigOperation, McpServerTomlConfig},
-    conversation_index::ConversationIndexOperation,
+    config::{ConfigOperation, McpServerTomlConfig},
+    conversations::index::ConversationIndexOperation,
     projects::ProjectOperation,
     prompts::PromptOperation,
-    providers::ProviderOperation,
+    providers::{ProviderModelChoice, ProviderOperation},
     shortcuts::ShortcutOperation,
 };
+use crate::database::DatabaseTarget;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct AppPresentation {
-    pub(crate) language: AppLanguage,
-    pub(crate) theme: AppThemeConfig,
-}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectLanguage;
 
-#[derive(Clone)]
-pub(crate) struct SelectAppPresentation {
-    bootstrap: AppPresentation,
-}
-
-impl SelectAppPresentation {
-    pub(crate) fn new(language: AppLanguage, theme: AppThemeConfig) -> Self {
-        Self {
-            bootstrap: AppPresentation { language, theme },
-        }
-    }
-
-    pub(crate) fn current(cx: &impl AppContext) -> Self {
-        super::config::store(cx).read(cx, |operation| {
-            operation
-                .data()
-                .map(|config| {
-                    Self::new(
-                        config.app_settings.language,
-                        config.app_settings.theme.clone(),
-                    )
-                })
-                .unwrap_or_else(|| Self::new(AppLanguage::System, AppThemeConfig::default()))
-        })
-    }
-}
-
-impl Select<ConfigOperation> for SelectAppPresentation {
-    type Output = AppPresentation;
+impl Select<ConfigOperation> for SelectLanguage {
+    type Output = AppLanguage;
 
     fn select(&self, operation: &ConfigOperation) -> Self::Output {
         operation
             .data()
-            .map(|config| AppPresentation {
-                language: config.app_settings.language,
-                theme: config.app_settings.theme.clone(),
-            })
-            .unwrap_or_else(|| self.bootstrap.clone())
+            .map(|config| config.app_settings_payload().language)
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectThemeSettings;
+
+impl Select<ConfigOperation> for SelectThemeSettings {
+    type Output = AppThemeSettings;
+
+    fn select(&self, operation: &ConfigOperation) -> Self::Output {
+        operation
+            .data()
+            .map(|config| config.app_settings_payload().theme)
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectDatabaseTarget;
+
+impl Select<ConfigOperation> for SelectDatabaseTarget {
+    type Output = Option<DatabaseTarget>;
+
+    fn select(&self, operation: &ConfigOperation) -> Self::Output {
+        operation.data().map(DatabaseTarget::from_config)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ConfigGateStatus {
+    phase: gpui_operation::repair::Phase,
+    problem: Option<String>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectConfigGateStatus;
+
+impl Select<ConfigOperation> for SelectConfigGateStatus {
+    type Output = ConfigGateStatus;
+
+    fn select(&self, operation: &ConfigOperation) -> Self::Output {
+        ConfigGateStatus {
+            phase: operation.phase(),
+            problem: operation.problem().map(ToString::to_string),
+        }
     }
 }
 
@@ -89,6 +102,12 @@ impl Select<ConfigOperation> for SelectTemporaryHotkey {
 
 pub(crate) type ProviderWithModels = (ProviderRecord, Vec<ProviderModelRecord>);
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RefreshResourceStatus {
+    phase: gpui_operation::refresh::Phase,
+    problem: Option<String>,
+}
+
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SelectProviderRecordsWithModels;
 
@@ -97,6 +116,42 @@ impl Select<ProviderOperation> for SelectProviderRecordsWithModels {
 
     fn select(&self, operation: &ProviderOperation) -> Self::Output {
         operation.data().map(|data| data.providers.clone())
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectProviderStatus;
+
+impl Select<ProviderOperation> for SelectProviderStatus {
+    type Output = RefreshResourceStatus;
+
+    fn select(&self, operation: &ProviderOperation) -> Self::Output {
+        RefreshResourceStatus {
+            phase: operation.phase(),
+            problem: operation.problem().map(ToString::to_string),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProviderModelCatalogSnapshot {
+    models: Option<Vec<ProviderModelChoice>>,
+    phase: gpui_operation::refresh::Phase,
+    problem: Option<String>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectProviderModelCatalog;
+
+impl Select<ProviderOperation> for SelectProviderModelCatalog {
+    type Output = ProviderModelCatalogSnapshot;
+
+    fn select(&self, operation: &ProviderOperation) -> Self::Output {
+        ProviderModelCatalogSnapshot {
+            models: operation.data().map(|data| data.enabled_models.clone()),
+            phase: operation.phase(),
+            problem: operation.problem().map(ToString::to_string),
+        }
     }
 }
 
@@ -118,6 +173,48 @@ impl Select<ProjectOperation> for SelectNormalProjects {
 }
 
 #[derive(Clone, Copy, Default)]
+pub(crate) struct SelectProjectStatus;
+
+impl Select<ProjectOperation> for SelectProjectStatus {
+    type Output = RefreshResourceStatus;
+
+    fn select(&self, operation: &ProjectOperation) -> Self::Output {
+        RefreshResourceStatus {
+            phase: operation.phase(),
+            problem: operation.problem().map(ToString::to_string),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NormalProjectCatalogSnapshot {
+    projects: Option<Vec<ProjectRecord>>,
+    phase: gpui_operation::refresh::Phase,
+    problem: Option<String>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectNormalProjectCatalog;
+
+impl Select<ProjectOperation> for SelectNormalProjectCatalog {
+    type Output = NormalProjectCatalogSnapshot;
+
+    fn select(&self, operation: &ProjectOperation) -> Self::Output {
+        NormalProjectCatalogSnapshot {
+            projects: operation.data().map(|data| {
+                data.projects()
+                    .iter()
+                    .filter(|project| project.kind == ProjectKind::Normal && !project.removed)
+                    .cloned()
+                    .collect()
+            }),
+            phase: operation.phase(),
+            problem: operation.problem().map(ToString::to_string),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
 pub(crate) struct SelectPromptRecords;
 
 impl Select<PromptOperation> for SelectPromptRecords {
@@ -129,6 +226,20 @@ impl Select<PromptOperation> for SelectPromptRecords {
 }
 
 #[derive(Clone, Copy, Default)]
+pub(crate) struct SelectPromptStatus;
+
+impl Select<PromptOperation> for SelectPromptStatus {
+    type Output = RefreshResourceStatus;
+
+    fn select(&self, operation: &PromptOperation) -> Self::Output {
+        RefreshResourceStatus {
+            phase: operation.phase(),
+            problem: operation.problem().map(ToString::to_string),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
 pub(crate) struct SelectShortcutRecords;
 
 impl Select<ShortcutOperation> for SelectShortcutRecords {
@@ -136,6 +247,20 @@ impl Select<ShortcutOperation> for SelectShortcutRecords {
 
     fn select(&self, operation: &ShortcutOperation) -> Self::Output {
         operation.data().map(|data| data.shortcuts().to_vec())
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectShortcutStatus;
+
+impl Select<ShortcutOperation> for SelectShortcutStatus {
+    type Output = RefreshResourceStatus;
+
+    fn select(&self, operation: &ShortcutOperation) -> Self::Output {
+        RefreshResourceStatus {
+            phase: operation.phase(),
+            problem: operation.problem().map(ToString::to_string),
+        }
     }
 }
 

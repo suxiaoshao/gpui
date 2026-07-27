@@ -1,9 +1,12 @@
+pub(crate) mod array;
+pub(crate) mod path;
+
 use std::{fmt, hash::Hash};
 
 use crate::{
-    array::FormItemId,
-    path::{FieldPath, FieldPathSegment},
-    trigger::ValidationTrigger,
+    schema::array::FormItemId,
+    schema::path::{FieldPath, FieldPathSegment},
+    validation::trigger::ValidationTrigger,
 };
 
 #[doc(hidden)]

@@ -41,8 +41,12 @@ impl PromptsSettingsPage {
         });
         let prompt_catalog = state::prompts::catalog(cx);
         let prompts = prompt_catalog.select(cx, state::selectors::SelectPromptRecords);
-        let resource_subscription =
-            prompt_catalog.observe_in(cx, window, |_page, _operation, _window, cx| cx.notify());
+        let resource_subscription = prompt_catalog.observe_select_in(
+            cx,
+            window,
+            state::selectors::SelectPromptStatus,
+            |_page, _status, _window, cx| cx.notify(),
+        );
         let search_subscription =
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
 

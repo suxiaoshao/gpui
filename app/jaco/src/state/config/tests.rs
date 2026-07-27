@@ -1,4 +1,5 @@
 use super::*;
+use gpui::TestAppContext;
 
 #[test]
 fn toml_config_preserves_public_field_shape() {
@@ -53,6 +54,21 @@ fn missing_config_is_atomically_created_as_ready() {
     assert_eq!(&data.value, &JacoConfig::default());
     assert_eq!(data.source_bytes, fs::read(&path).unwrap());
     assert!(!data.source_bytes.is_empty());
+}
+
+#[test]
+fn initial_operation_is_settled_before_installation() {
+    let dir = tempfile::tempdir().unwrap();
+    let valid_path = dir.path().join("valid.toml");
+    let ready = initial_operation(load_for_operation(&valid_path));
+    assert!(matches!(ready, ConfigOperation::Ready(_)));
+    assert!(!ready.is_running());
+
+    let invalid_path = dir.path().join("invalid.toml");
+    fs::write(&invalid_path, b"not = [valid").unwrap();
+    let unavailable = initial_operation(load_for_operation(&invalid_path));
+    assert!(matches!(unavailable, ConfigOperation::Unavailable(_)));
+    assert!(!unavailable.is_running());
 }
 
 #[test]
@@ -129,4 +145,38 @@ fn repair_support_matrix_is_explicit() {
     assert!(parse.supports(ConfigRepair::BackupAndCreateDefault));
     assert!(!parse.supports(ConfigRepair::RetryWrite));
     assert!(!parse.supports(ConfigRepair::BackupAndOverwritePending));
+}
+
+#[gpui::test]
+fn chat_preferences_commit_synchronously_without_leaving_ready(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let initial = JacoConfig::default();
+    fs::write(&path, toml::to_string_pretty(&initial).unwrap()).unwrap();
+
+    cx.update(|cx| {
+        install_for_test(cx, path.clone(), initial).unwrap();
+        update_chat_form_config(cx, |config| {
+            config.model = Some(ChatFormModelConfig {
+                provider_id: "provider-1".to_string(),
+                model_id: "gpt-5".to_string(),
+            });
+        })
+        .unwrap();
+
+        store(cx).read(cx, |operation| {
+            assert!(matches!(operation, ConfigOperation::Ready(_)));
+            assert!(!operation.is_running());
+        });
+    });
+
+    let persisted = JacoConfig::load_from_path_for_test(&path).unwrap();
+    assert_eq!(
+        persisted
+            .chat_form
+            .model
+            .as_ref()
+            .map(|model| (model.provider_id.as_str(), model.model_id.as_str())),
+        Some(("provider-1", "gpt-5"))
+    );
 }

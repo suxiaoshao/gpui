@@ -60,7 +60,7 @@ use self::{
     },
     model_fetch::{ModelFetchSupport, fetch_support},
 };
-use state::provider_secrets::{ProviderSecretStore, ProviderSecretWrite};
+use state::providers::secrets::{ProviderSecretStore, ProviderSecretWrite};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ProviderListItem {
@@ -376,10 +376,20 @@ impl ProviderSettingsPage {
             cx.subscribe_in(&provider_list, window, Self::on_provider_list_event);
         let model_list_subscription =
             cx.subscribe_in(&model_list, window, Self::on_model_list_event);
-        let resource_subscription =
-            resource.observe_in(cx, window, |page, _operation, window, cx| {
+        let resource_data_subscription = resource.observe_select_in(
+            cx,
+            window,
+            state::selectors::SelectProviderRecordsWithModels,
+            |page, _providers, window, cx| {
                 page.reload_from_resource(window, cx);
-            });
+            },
+        );
+        let resource_status_subscription = resource.observe_select_in(
+            cx,
+            window,
+            state::selectors::SelectProviderStatus,
+            |_page, _status, _window, cx| cx.notify(),
+        );
         Self {
             resource,
             provider_list,
@@ -391,7 +401,8 @@ impl ProviderSettingsPage {
             _list_subscriptions: vec![
                 provider_list_subscription,
                 model_list_subscription,
-                resource_subscription,
+                resource_data_subscription,
+                resource_status_subscription,
             ],
             _load_task: None,
         }
@@ -888,33 +899,32 @@ impl ProviderSettingsPage {
             enabled,
         );
         let page = cx.entity().downgrade();
-        window
-            .spawn(cx, async move |cx| {
-                let result = mutation.await;
-                let _ = page.update_in(cx, |page, window, cx| match result {
-                    Ok(_) => {
-                        if let Some(editor) = page.editors.get_mut(&key) {
-                            editor.models =
-                                Self::load_models(Some(&provider_id), cx).unwrap_or_default();
-                        }
-                        page.sync_model_list(window, cx);
-                        cx.notify();
+        let completion = window.spawn(cx, async move |cx| {
+            let result = mutation.await;
+            let _ = page.update_in(cx, |page, window, cx| match result {
+                Ok(_) => {
+                    if let Some(editor) = page.editors.get_mut(&key) {
+                        editor.models =
+                            Self::load_models(Some(&provider_id), cx).unwrap_or_default();
                     }
-                    Err(err) => {
-                        window.push_notification(
-                            Notification::new()
-                                .title(
-                                    cx.global::<I18n>()
-                                        .t("provider-notification-update-model-failed"),
-                                )
-                                .message(err.to_string())
-                                .with_type(NotificationType::Error),
-                            cx,
-                        );
-                    }
-                });
-            })
-            .detach();
+                    page.sync_model_list(window, cx);
+                    cx.notify();
+                }
+                Err(err) => {
+                    window.push_notification(
+                        Notification::new()
+                            .title(
+                                cx.global::<I18n>()
+                                    .t("provider-notification-update-model-failed"),
+                            )
+                            .message(err.to_string())
+                            .with_type(NotificationType::Error),
+                        cx,
+                    );
+                }
+            });
+        });
+        crate::app::tasks::retain_window(window, completion, cx);
     }
 
     fn fetch_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1026,58 +1036,55 @@ impl ProviderSettingsPage {
                     result.models,
                 );
                 let page = cx.entity().downgrade();
-                window
-                    .spawn(cx, async move |cx| {
-                        let result = mutation.await;
-                        let _ =
-                            page.update_in(cx, |page, window, cx| match result {
-                                Ok(_) => {
-                                    let provider_id = page
-                                        .editors
-                                        .get(&key)
-                                        .and_then(|editor| editor.metadata.provider_id.clone());
-                                    if let (Some(editor), Some(provider_id)) =
-                                        (page.editors.get_mut(&key), provider_id)
-                                    {
-                                        editor.models = Self::load_models(Some(&provider_id), cx)
-                                            .unwrap_or_default();
-                                    }
-                                    if page.selected_key == key {
-                                        page.sync_model_list(window, cx);
-                                    }
-                                    let mut args = FluentArgs::new();
-                                    args.set("count", count);
-                                    window.push_notification(
-                                        Notification::new()
-                                            .title(
-                                                cx.global::<I18n>()
-                                                    .t("provider-notification-fetch-success"),
-                                            )
-                                            .message(cx.global::<I18n>().t_with_args(
-                                                "provider-fetch-success-message",
-                                                &args,
-                                            ))
-                                            .with_type(NotificationType::Success),
-                                        cx,
-                                    );
-                                    cx.notify();
-                                }
-                                Err(err) => {
-                                    window.push_notification(
-                                        Notification::new()
-                                            .title(
-                                                cx.global::<I18n>()
-                                                    .t("provider-notification-fetch-failed"),
-                                            )
-                                            .message(err.to_string())
-                                            .with_type(NotificationType::Error),
-                                        cx,
-                                    );
-                                    cx.notify();
-                                }
-                            });
-                    })
-                    .detach();
+                let completion = window.spawn(cx, async move |cx| {
+                    let result = mutation.await;
+                    let _ = page.update_in(cx, |page, window, cx| match result {
+                        Ok(_) => {
+                            let provider_id = page
+                                .editors
+                                .get(&key)
+                                .and_then(|editor| editor.metadata.provider_id.clone());
+                            if let (Some(editor), Some(provider_id)) =
+                                (page.editors.get_mut(&key), provider_id)
+                            {
+                                editor.models =
+                                    Self::load_models(Some(&provider_id), cx).unwrap_or_default();
+                            }
+                            if page.selected_key == key {
+                                page.sync_model_list(window, cx);
+                            }
+                            let mut args = FluentArgs::new();
+                            args.set("count", count);
+                            window.push_notification(
+                                Notification::new()
+                                    .title(
+                                        cx.global::<I18n>()
+                                            .t("provider-notification-fetch-success"),
+                                    )
+                                    .message(
+                                        cx.global::<I18n>()
+                                            .t_with_args("provider-fetch-success-message", &args),
+                                    )
+                                    .with_type(NotificationType::Success),
+                                cx,
+                            );
+                            cx.notify();
+                        }
+                        Err(err) => {
+                            window.push_notification(
+                                Notification::new()
+                                    .title(
+                                        cx.global::<I18n>().t("provider-notification-fetch-failed"),
+                                    )
+                                    .message(err.to_string())
+                                    .with_type(NotificationType::Error),
+                                cx,
+                            );
+                            cx.notify();
+                        }
+                    });
+                });
+                crate::app::tasks::retain_window(window, completion, cx);
             }
             Err(ProviderModelFetchError::ManualModelsRequired { .. }) => {
                 window.push_notification(
@@ -1817,7 +1824,7 @@ mod tests {
         I18n,
         assets::{IconName, ProviderLogoName},
     };
-    use crate::state::provider_secrets::{ProviderSecretStore, ProviderSecretWrite};
+    use crate::state::providers::secrets::{ProviderSecretStore, ProviderSecretWrite};
     use fluent_bundle::FluentArgs;
     use gpui::{App, AppContext as _, Entity, TestAppContext, VisualTestContext, WindowHandle};
     use gpui_component::IndexPath;

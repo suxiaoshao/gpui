@@ -1,3 +1,7 @@
+pub(crate) mod attachments;
+pub(crate) mod index;
+pub(crate) mod runtime;
+
 use std::{fmt, path::PathBuf};
 
 use gpui::{App, Task};
@@ -19,18 +23,20 @@ use jaco_db::{
 use tokio::sync::oneshot;
 
 use crate::{
-    database,
+    database::{self, session::CatalogMutation},
     errors::JacoResult,
     foundation::I18n,
     state::{
-        attachments::{
+        config,
+        conversations::attachments::{
             ComposerAttachment, cleanup_stored_attachment_files, prepare_message_attachments_in,
         },
-        config, conversation_index, projects,
+        projects,
         providers::ProviderModelChoice,
-        session::CatalogMutation,
     },
 };
+
+use self::index as conversation_index;
 
 const DEFAULT_MAX_STEPS: u32 = 32;
 const TITLE_MAX_CHARS: usize = 48;
@@ -175,7 +181,8 @@ pub(crate) fn create_conversation(
     let attachments = request.attachments.clone();
     let run_input = request;
     let (sender, receiver) = oneshot::channel();
-    cx.spawn(async move |cx| {
+    let task_binding = binding.clone();
+    let driver = cx.spawn(async move |cx| {
         let result = executor
             .mutate_two(
                 CatalogMutation::Project,
@@ -250,8 +257,8 @@ pub(crate) fn create_conversation(
             })
             .map_err(Into::into);
         let _ = sender.send(result);
-    })
-    .detach();
+    });
+    crate::app::session::retain_task(task_binding, driver, cx);
     cx.spawn(async move |_| {
         receiver.await.unwrap_or_else(|_| {
             Err(jaco_db::DbError::Invariant(
@@ -296,7 +303,8 @@ pub(crate) fn send_conversation_message(
     let attachments = request.attachments.clone();
     let content_parts = request.content_parts.clone();
     let (sender, receiver) = oneshot::channel();
-    cx.spawn(async move |cx| {
+    let task_binding = binding.clone();
+    let driver = cx.spawn(async move |cx| {
         let result = executor
             .mutate_two(
                 CatalogMutation::Project,
@@ -374,8 +382,8 @@ pub(crate) fn send_conversation_message(
                 .map(|(_, sent)| sent)
                 .map_err(crate::errors::JacoError::from),
         );
-    })
-    .detach();
+    });
+    crate::app::session::retain_task(task_binding, driver, cx);
     cx.spawn(async move |_| {
         receiver.await.unwrap_or_else(|_| {
             Err(jaco_db::DbError::Invariant(
@@ -461,7 +469,8 @@ where
         Err(error) => return Task::ready(Err(error)),
     };
     let (sender, receiver) = oneshot::channel();
-    cx.spawn(async move |cx| {
+    let task_binding = binding.clone();
+    let driver = cx.spawn(async move |cx| {
         let result = executor
             .mutate(CatalogMutation::Conversation, command)
             .await;
@@ -473,8 +482,8 @@ where
             });
         }
         let _ = sender.send(result);
-    })
-    .detach();
+    });
+    crate::app::session::retain_task(task_binding, driver, cx);
     cx.spawn(async move |_| {
         receiver.await.unwrap_or_else(|_| {
             Err(jaco_db::DbError::Invariant(
@@ -601,7 +610,7 @@ mod tests {
         foundation::I18n,
         state::{
             JacoConfig,
-            attachments::{ComposerAttachmentKind, ComposerAttachmentSource},
+            conversations::attachments::{ComposerAttachmentKind, ComposerAttachmentSource},
         },
     };
     use gpui::TestAppContext;
@@ -878,7 +887,7 @@ mod tests {
             crate::state::providers::init(cx);
             crate::state::projects::init(cx);
             crate::state::prompts::init(cx);
-            crate::state::conversation_index::init(cx);
+            crate::state::conversations::index::init(cx);
         });
         cx.run_until_parked();
     }

@@ -376,24 +376,23 @@ pub(super) fn open_prompt_delete_confirm(prompt: PromptRecord, window: &mut Wind
             let mutation = state::prompts::delete_prompt(cx, prompt_id.clone());
             let deleted_title = deleted_title.clone();
             let delete_failed_title = delete_failed_title.clone();
-            window
-                .spawn(cx, async move |cx| {
-                    let result = mutation.await;
-                    let _ = cx.update(|window, cx| match result {
-                        Ok(_) => {
-                            window.push_notification(
-                                Notification::new()
-                                    .title(deleted_title)
-                                    .with_type(NotificationType::Success),
-                                cx,
-                            );
-                        }
-                        Err(err) => {
-                            push_settings_error(window, cx, delete_failed_title, err);
-                        }
-                    });
-                })
-                .detach();
+            let completion = window.spawn(cx, async move |cx| {
+                let result = mutation.await;
+                let _ = cx.update(|window, cx| match result {
+                    Ok(_) => {
+                        window.push_notification(
+                            Notification::new()
+                                .title(deleted_title)
+                                .with_type(NotificationType::Success),
+                            cx,
+                        );
+                    }
+                    Err(err) => {
+                        push_settings_error(window, cx, delete_failed_title, err);
+                    }
+                });
+            });
+            crate::app::tasks::retain_window(window, completion, cx);
         },
         window,
         cx,

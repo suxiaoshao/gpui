@@ -1,3 +1,5 @@
+pub(crate) mod oauth;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -17,11 +19,10 @@ use tracing::{Level, event};
 
 use crate::{
     errors::JacoResult,
-    state::{
-        config::{self, JacoConfig, McpOAuthTomlConfig, McpTransportKind},
-        mcp_oauth,
-    },
+    state::config::{self, JacoConfig, McpOAuthTomlConfig, McpTransportKind},
 };
+
+use self::oauth as mcp_oauth;
 
 #[derive(Clone)]
 pub(crate) struct McpRuntimeGlobal(Entity<McpRuntimeStore>);

@@ -1,12 +1,12 @@
 use gpui::{Context, EventEmitter};
 
 use crate::{
-    error::{ValidationIssue, ValidationReport},
-    path::FieldPath,
+    schema::path::FieldPath,
     schema::{FormFieldId, FormModelSchema},
     submit::SubmitError,
-    transform::SubmitTransform,
-    trigger::ValidationTrigger,
+    submit::transform::SubmitTransform,
+    validation::report::{ValidationIssue, ValidationReport},
+    validation::trigger::ValidationTrigger,
     validation::{
         FormValidationRuntime, StructuralValidate, ValidationAdapter, ValidationContextValue,
         ValidationScope,

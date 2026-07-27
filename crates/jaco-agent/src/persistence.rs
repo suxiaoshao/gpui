@@ -1,6 +1,6 @@
 use crate::{
     AgentRuntimeError, AgentRuntimeEvent, AgentRuntimeObserver, AgentStep,
-    RegisteredToolDefinition, Result, ToolApprovalBroker, tool_registry::RegisteredRuntimeTool,
+    RegisteredToolDefinition, Result, ToolApprovalBroker, tools::RegisteredRuntimeTool,
 };
 use jaco_core::*;
 use jaco_db::{

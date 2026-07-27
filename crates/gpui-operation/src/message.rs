@@ -23,6 +23,13 @@ pub struct Repair<Kind, Task> {
 #[must_use]
 pub struct Complete<Data, Problem: std::error::Error>(pub Result<Data, Problem>);
 
+/// Settles synchronous initial work without creating or storing a task.
+///
+/// This message is accepted only while an operation is idle. Use [`Complete`]
+/// for the result of an already-running task.
+#[must_use]
+pub struct Settle<Data, Problem: std::error::Error>(pub Result<Data, Problem>);
+
 /// Cancels the active attempt and restores the previous settled state.
 #[must_use]
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]

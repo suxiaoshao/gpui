@@ -232,22 +232,45 @@ fn current_temporary_hotkey(cx: &App) -> Option<Keystroke> {
 }
 
 fn save_temporary_hotkey(next_hotkey: Option<String>, window: &mut Window, cx: &mut App) -> bool {
-    let committed_hotkey = next_hotkey;
-    let task = state::config::update_app_settings(cx, move |payload| {
+    let previous_hotkey = state::config::app_settings(cx)
+        .temporary_hotkey()
+        .map(str::to_string);
+    if previous_hotkey
+        .as_deref()
+        .is_some_and(|hotkey| string_to_keystroke(hotkey).is_none())
+        && next_hotkey.is_none()
+    {
+        return false;
+    }
+    if previous_hotkey == next_hotkey {
+        return true;
+    }
+    if let Err(err) = state::GlobalHotkeyState::update_temporary_hotkey(
+        previous_hotkey.as_deref(),
+        next_hotkey.as_deref(),
+        cx,
+    ) {
+        tracing::error!(error = ?err, "update temporary hotkey runtime failed");
+        return false;
+    }
+    let committed_hotkey = next_hotkey.clone();
+    if let Err(err) = state::config::update_app_settings(cx, move |payload| {
         payload.temporary_hotkey = committed_hotkey;
-    });
-    window
-        .spawn(cx, async move |cx| {
-            let result = task.await;
-            let _ = cx.update(|window, cx| match result {
-                Ok(_) => {}
-                Err(err) => {
-                    let title = cx.global::<I18n>().t("notify-save-settings-failed");
-                    push_settings_error(window, cx, title, err);
-                }
-            });
-        })
-        .detach();
+    }) {
+        if let Err(rollback_error) = state::GlobalHotkeyState::update_temporary_hotkey(
+            next_hotkey.as_deref(),
+            previous_hotkey.as_deref(),
+            cx,
+        ) {
+            tracing::error!(
+                error = ?rollback_error,
+                "restore temporary hotkey after config save failure failed"
+            );
+        }
+        let title = cx.global::<I18n>().t("notify-save-settings-failed");
+        push_settings_error(window, cx, title, err);
+        return false;
+    }
     true
 }
 
@@ -285,23 +308,13 @@ fn language_dropdown(cx: &mut App) -> AnyElement {
                         PopupMenuItem::new(label.clone())
                             .checked(language == current_language)
                             .on_click(move |_, window, cx| {
-                                let task = state::config::update_app_settings(cx, move |payload| {
-                                    payload.language = language
-                                });
-                                let save_failed = save_failed.clone();
-                                window
-                                    .spawn(cx, async move |cx| {
-                                        let result = task.await;
-                                        let _ = cx.update(|window, cx| match result {
-                                            Ok(_) => {
-                                                cx.refresh_windows();
-                                            }
-                                            Err(err) => {
-                                                push_settings_error(window, cx, save_failed, err);
-                                            }
-                                        });
+                                if let Err(err) =
+                                    state::config::update_app_settings(cx, move |payload| {
+                                        payload.language = language
                                     })
-                                    .detach();
+                                {
+                                    push_settings_error(window, cx, save_failed.clone(), err);
+                                }
                             }),
                     )
                 })
@@ -339,22 +352,13 @@ fn app_http_proxy_input(window: &mut Window, cx: &mut App) -> AnyElement {
                         Some(next_value.clone())
                     };
                     let committed_proxy = next_proxy.clone();
-                    let task = state::config::update_app_settings(cx, move |payload| {
+                    if let Err(err) = state::config::update_app_settings(cx, move |payload| {
                         payload.http_proxy = committed_proxy;
-                    });
+                    }) {
+                        let title = cx.global::<I18n>().t("notify-save-settings-failed");
+                        push_settings_error(window, cx, title, err);
+                    }
                     input_state.last_value = next_value;
-                    window
-                        .spawn(cx, async move |cx| {
-                            let result = task.await;
-                            let _ = cx.update(|window, cx| {
-                                if let Err(err) = result {
-                                    let title =
-                                        cx.global::<I18n>().t("notify-save-settings-failed");
-                                    push_settings_error(window, cx, title, err);
-                                }
-                            });
-                        })
-                        .detach();
                 }
             });
 
@@ -484,14 +488,12 @@ mod tests {
         let window = open_test_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
-        let task = cx.update(|_, cx| {
+        cx.update(|_, cx| {
             state::config::update_app_settings(cx, |payload| {
                 payload.temporary_hotkey = Some("cmd+shift+".to_string());
             })
-        });
-        cx.foreground_executor()
-            .block_test(task)
             .expect("seed invalid temporary hotkey setting");
+        });
         let control =
             cx.update(|window, cx| cx.new(|cx| TemporaryHotkeyControlState::new(window, cx)));
 

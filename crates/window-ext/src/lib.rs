@@ -1,4 +1,8 @@
 #![allow(deprecated)]
+mod platform;
+#[cfg(target_os = "macos")]
+mod quick_look;
+
 use gpui::{Bounds, DisplayId, Pixels, Window};
 #[cfg(target_os = "macos")]
 use objc2::{
@@ -11,6 +15,7 @@ use objc2::{
 use objc2_app_kit::{NSApplication, NSCursor, NSScreen, NSView, NSWindow};
 #[cfg(target_os = "macos")]
 use objc2_foundation::NSURL;
+use platform::*;
 #[cfg(target_os = "macos")]
 use raw_window_handle::AppKitWindowHandle;
 use raw_window_handle::{HandleError, HasRawWindowHandle, RawWindowHandle};
@@ -288,98 +293,6 @@ pub fn preview_file_with_quick_look(path: &Path) -> Result<(), WindowExtError> {
 }
 
 #[cfg(target_os = "macos")]
-mod quick_look {
-    use super::*;
-
-    #[link(name = "QuickLookUI", kind = "framework")]
-    unsafe extern "C" {}
-
-    thread_local! {
-        static CURRENT_URL: RefCell<Option<Retained<NSURL>>> = const { RefCell::new(None) };
-        static DATA_SOURCE: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
-    }
-
-    pub(super) fn preview_file(path: &Path) -> Result<(), WindowExtError> {
-        let _ = MainThreadMarker::new().ok_or(WindowExtError::QuickLookRequiresMainThread)?;
-        let url = NSURL::from_file_path(path).ok_or(WindowExtError::FailedToCreateQuickLookUrl)?;
-        CURRENT_URL.with(|current_url| {
-            current_url.replace(Some(url));
-        });
-        let data_source = data_source_object()?;
-        let panel_class =
-            AnyClass::get(c"QLPreviewPanel").ok_or(WindowExtError::FailedToGetQuickLookPanel)?;
-        let panel: *mut AnyObject = unsafe { msg_send![panel_class, sharedPreviewPanel] };
-        let Some(panel) = (unsafe { panel.as_ref() }) else {
-            return Err(WindowExtError::FailedToGetQuickLookPanel);
-        };
-        let _: () = unsafe { msg_send![panel, setDataSource: &*data_source] };
-        let _: () = unsafe { msg_send![panel, reloadData] };
-        let _: () = unsafe { msg_send![panel, makeKeyAndOrderFront: ptr::null_mut::<AnyObject>()] };
-        Ok(())
-    }
-
-    fn data_source_object() -> Result<Retained<AnyObject>, WindowExtError> {
-        DATA_SOURCE.with(|slot| {
-            if let Some(data_source) = slot.borrow().as_ref() {
-                return Ok(data_source.clone());
-            }
-            let class = data_source_class();
-            let data_source: Retained<AnyObject> = unsafe { msg_send![class, new] };
-            slot.replace(Some(data_source.clone()));
-            Ok(data_source)
-        })
-    }
-
-    fn data_source_class() -> &'static AnyClass {
-        static CLASS: OnceLock<&'static AnyClass> = OnceLock::new();
-        CLASS.get_or_init(|| {
-            extern "C-unwind" fn number_of_items(
-                _this: &AnyObject,
-                _sel: Sel,
-                _panel: *mut AnyObject,
-            ) -> isize {
-                CURRENT_URL.with(
-                    |current_url| {
-                        if current_url.borrow().is_some() { 1 } else { 0 }
-                    },
-                )
-            }
-
-            extern "C-unwind" fn item_at_index(
-                _this: &AnyObject,
-                _sel: Sel,
-                _panel: *mut AnyObject,
-                index: isize,
-            ) -> *mut AnyObject {
-                if index != 0 {
-                    return ptr::null_mut();
-                }
-                CURRENT_URL.with(|current_url| {
-                    current_url
-                        .borrow()
-                        .as_ref()
-                        .map(|url| ptr::from_ref::<NSURL>(url).cast_mut().cast::<AnyObject>())
-                        .unwrap_or_else(ptr::null_mut)
-                })
-            }
-
-            let mut builder = ClassBuilder::new(c"WindowExtQuickLookDataSource", NSObject::class())
-                .expect("WindowExtQuickLookDataSource class should register once");
-            unsafe {
-                builder.add_method(
-                    sel!(numberOfPreviewItemsInPreviewPanel:),
-                    number_of_items as extern "C-unwind" fn(_, _, _) -> _,
-                );
-                builder.add_method(
-                    sel!(previewPanel:previewItemAtIndex:),
-                    item_at_index as extern "C-unwind" fn(_, _, _, _) -> _,
-                );
-            }
-            builder.register()
-        })
-    }
-}
-
 impl WindowExt for Window {
     fn native_window_handle(&self) -> Result<NativeWindowHandle, WindowExtError> {
         Ok(NativeWindowHandle {
@@ -634,131 +547,6 @@ impl WindowExt for Window {
         }
         Ok(())
     }
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn macos_window_level_value(level: WindowLevel) -> i32 {
-    match level {
-        WindowLevel::Normal => NORMAL_WINDOW_LEVEL,
-        WindowLevel::Floating => FLOATING_WINDOW_LEVEL,
-        WindowLevel::ModalPanel => MODAL_PANEL_WINDOW_LEVEL,
-        WindowLevel::PopUpMenu => POP_UP_MENU_WINDOW_LEVEL,
-        WindowLevel::Custom(value) => value,
-    }
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn logical_bounds_to_device_rect(
-    bounds: Bounds<Pixels>,
-    scale_factor: f32,
-) -> (i32, i32, i32, i32) {
-    let bounds = bounds.to_device_pixels(scale_factor);
-    (
-        bounds.origin.x.0,
-        bounds.origin.y.0,
-        bounds.size.width.0,
-        bounds.size.height.0,
-    )
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn resolve_target_scale_factor(
-    fallback_scale_factor: f32,
-    target_scale_factor: Option<f32>,
-) -> f32 {
-    target_scale_factor.unwrap_or(fallback_scale_factor)
-}
-
-#[cfg(target_os = "windows")]
-fn scale_factor_for_display(display_id: DisplayId) -> Option<f32> {
-    let display_index = usize::try_from(u64::from(display_id)).ok()?;
-    available_monitors()
-        .into_iter()
-        .nth(display_index)
-        .and_then(|monitor| get_scale_factor_for_monitor(monitor).ok())
-}
-
-#[cfg(target_os = "windows")]
-fn available_monitors() -> Vec<HMONITOR> {
-    let mut monitors = Vec::new();
-    unsafe {
-        let _ = EnumDisplayMonitors(
-            None,
-            None,
-            Some(monitor_enum_proc),
-            LPARAM(&mut monitors as *mut _ as _),
-        );
-    }
-    monitors
-}
-
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn monitor_enum_proc(
-    monitor: HMONITOR,
-    _hdc: HDC,
-    _rect: *mut RECT,
-    data: LPARAM,
-) -> BOOL {
-    let monitors = data.0 as *mut Vec<HMONITOR>;
-    unsafe { (*monitors).push(monitor) };
-    BOOL(1)
-}
-
-#[cfg(target_os = "windows")]
-fn get_scale_factor_for_monitor(monitor: HMONITOR) -> windows::core::Result<f32> {
-    let mut dpi_x = 0;
-    let mut dpi_y = 0;
-    unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) }?;
-    debug_assert_eq!(dpi_x, dpi_y);
-    Ok(dpi_x as f32 / USER_DEFAULT_SCREEN_DPI as f32)
-}
-
-fn get_raw_window(window: &Window) -> Result<RawWindowHandle, WindowExtError> {
-    let raw_window = window
-        .raw_window_handle()
-        .map_err(WindowExtError::FailedToGetHandle)?;
-    Ok(raw_window)
-}
-
-#[cfg(target_os = "macos")]
-fn get_ns_window(
-    window: AppKitWindowHandle,
-) -> Result<objc2::rc::Retained<NSWindow>, WindowExtError> {
-    let ns_view = get_ns_view(window)?;
-    let ns_window = ns_view
-        .window()
-        .ok_or(WindowExtError::FailedToGetNSWindow)?;
-
-    Ok(ns_window)
-}
-
-#[cfg(target_os = "macos")]
-fn get_ns_view(window: AppKitWindowHandle) -> Result<objc2::rc::Retained<NSView>, WindowExtError> {
-    let ns_view = window.ns_view.as_ptr();
-    let ns_view: Id<NSView> =
-        unsafe { Id::retain(ns_view.cast()) }.ok_or(WindowExtError::FailedToGetNSView)?;
-    Ok(ns_view)
-}
-
-#[cfg(target_os = "macos")]
-fn resolve_screen_frame(
-    ns_window: &NSWindow,
-    display_id: Option<DisplayId>,
-) -> Result<objc2_foundation::NSRect, WindowExtError> {
-    if let Some(display_id) = display_id {
-        let mtm = MainThreadMarker::new().ok_or(WindowExtError::FailedToGetNSApplication)?;
-        let screens = NSScreen::screens(mtm);
-        for screen in &screens {
-            if u64::from(screen.CGDirectDisplayID()) == u64::from(display_id) {
-                return Ok(screen.frame());
-            }
-        }
-    }
-
-    let screen = ns_window
-        .screen()
-        .ok_or(WindowExtError::FailedToGetNSWindow)?;
-    Ok(screen.frame())
 }
 
 #[cfg(test)]

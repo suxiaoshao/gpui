@@ -1,18 +1,11 @@
-mod approval;
-mod builtin_tools;
 mod error;
-mod history;
 mod mcp;
-mod model_capabilities;
 mod persistence;
-mod provider_models;
-mod reasoning_params;
+mod providers;
 mod runtime;
 mod skills;
-mod tool_registry;
-mod types;
+mod tools;
 
-pub use approval::{ToolApprovalBroker, ToolApprovalDecision, ToolApprovalRequest};
 pub use error::{AgentRuntimeError, Result};
 pub use mcp::{
     McpConfigLayer, McpConnector, McpOAuthCredentialsSnapshot, McpOAuthStatusSnapshot,
@@ -23,18 +16,21 @@ pub use mcp::{
 };
 pub use persistence::AgentPersistence;
 pub use persistence::PersistingCompletionModel;
-pub use provider_models::{
+pub use providers::{
     ProviderModelFetchError, ProviderModelFetchRequest, ProviderSecretValues,
     fetch_provider_models, provider_model_from_rig_model,
 };
-pub use runtime::AgentRuntime;
+pub use runtime::{
+    AgentRuntime,
+    types::{
+        AgentCancellationToken, AgentRunHandle, AgentRunHandleStatus, AgentRunRequest,
+        AgentRuntimeEvent, AgentRuntimeObserver, AgentStep, CompletionModelFactory, RuntimeGuards,
+    },
+};
 pub use skills::{
     SkillActivationRequest, SkillCatalog, SkillCatalogEntry, SkillCatalogWarning, SkillLoader,
 };
-pub use tool_registry::{
+pub use tools::{
     LocalTool, RegisteredToolDefinition, ToolDefinition, ToolExecutor, ToolRegistry, ToolRunPolicy,
-};
-pub use types::{
-    AgentCancellationToken, AgentRunHandle, AgentRunHandleStatus, AgentRunRequest,
-    AgentRuntimeEvent, AgentRuntimeObserver, AgentStep, CompletionModelFactory, RuntimeGuards,
+    approval::{ToolApprovalBroker, ToolApprovalDecision, ToolApprovalRequest},
 };

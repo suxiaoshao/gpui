@@ -23,16 +23,11 @@
 //! }
 //! ```
 
-mod array;
 mod control;
-mod error;
 mod field;
 mod form;
-mod path;
 mod schema;
 mod submit;
-mod transform;
-mod trigger;
 pub mod typed;
 mod validation;
 

@@ -1,5 +1,5 @@
 use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
-use gpui::{App, Global};
+use gpui::{App, AppContext, Entity, Global, Subscription};
 use jaco_core::AppLanguage;
 use std::{collections::HashMap, rc::Rc};
 use unic_langid::LanguageIdentifier;
@@ -23,12 +23,57 @@ pub(crate) struct I18n {
 
 impl Global for I18n {}
 
+struct LocalizationRuntime {
+    language: AppLanguage,
+    _subscription: Subscription,
+}
+
+struct LocalizationRuntimeGlobal {
+    _runtime: Entity<LocalizationRuntime>,
+}
+
+impl Global for LocalizationRuntimeGlobal {}
+
 pub(crate) fn init(cx: &mut App) {
     cx.set_global(I18n::from_settings(cx));
 }
 
+pub(crate) fn init_runtime(cx: &mut App) {
+    let language = config::store(cx).read(cx, |operation| {
+        operation
+            .data()
+            .map(|config| config.app_settings_payload().language)
+            .unwrap_or_default()
+    });
+    let runtime = cx.new(|cx| {
+        let subscription = config::store(cx).observe_select(
+            cx,
+            crate::state::selectors::SelectLanguage,
+            |runtime: &mut LocalizationRuntime, language, cx| runtime.apply(*language, cx),
+        );
+        LocalizationRuntime {
+            language,
+            _subscription: subscription,
+        }
+    });
+    cx.set_global(LocalizationRuntimeGlobal { _runtime: runtime });
+}
+
 pub(crate) fn init_bootstrap(cx: &mut App) {
     cx.set_global(I18n::new(detect_locale()));
+}
+
+impl LocalizationRuntime {
+    fn apply(&mut self, language: AppLanguage, cx: &mut App) {
+        if self.language == language {
+            return;
+        }
+        self.language = language;
+        cx.set_global(I18n::new(locale_for_language(language)));
+        crate::app::menus::sync_app_menus(cx);
+        crate::app::reload_app_menu_bars(cx);
+        cx.refresh_windows();
+    }
 }
 
 impl I18n {
@@ -194,6 +239,7 @@ mod tests {
         let mut args = FluentArgs::new();
         args.set("path", "/tmp/jaco");
         args.set("error", "expected table");
+        args.set("message", "could not initialize");
         args.set("duration", "1s");
 
         assert_ne!(
@@ -236,10 +282,19 @@ mod tests {
             I18n::for_locale_tag("zh-CN").t_with_args("conversation-agent-canceled", &args),
             "conversation-agent-canceled"
         );
+        for locale in ["en-US", "zh-CN"] {
+            assert_ne!(
+                I18n::for_locale_tag(locale)
+                    .t_with_args("critical-session-error-description", &args),
+                "critical-session-error-description"
+            );
+        }
         for key in [
             "conversation-status-canceled",
             "conversation-status-max-steps",
             "conversation-status-completed-without-output",
+            "critical-session-error-title",
+            "critical-session-retry",
         ] {
             assert_ne!(I18n::for_locale_tag("en-US").t(key), key);
             assert_ne!(I18n::for_locale_tag("zh-CN").t(key), key);

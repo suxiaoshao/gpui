@@ -67,6 +67,7 @@ pub(crate) struct SettingsView {
     app_menu_bar: Entity<TitleBarAppMenuBar>,
     selected_page: SettingsPageKey,
     sidebar_width: Pixels,
+    _theme_binding: state::theme::WindowThemeBinding,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -76,7 +77,6 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        state::theme::apply_current_theme(window, cx);
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         let settings_search_input = cx.new(|cx| {
@@ -91,7 +91,6 @@ impl SettingsView {
         let mcp_settings = cx.new(|cx| McpSettingsPage::new(window, cx));
         let app_menu_bar = TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
-        let config_store = state::config::store(cx);
         let database_store = crate::database::store(cx);
         let binding = crate::database::ready_binding(cx)
             .expect("settings is only constructed for an exact Ready session");
@@ -113,27 +112,16 @@ impl SettingsView {
                     );
                 });
             }),
-            cx.observe_window_appearance(window, |_settings, window, cx| {
-                state::theme::apply_current_theme(window, cx);
-                cx.refresh_windows();
+            cx.observe_global_in::<I18n>(window, |settings, window, cx| {
+                settings.settings_search_input.update(cx, |input, cx| {
+                    input.set_placeholder(
+                        cx.global::<I18n>().t("field-search-settings"),
+                        window,
+                        cx,
+                    );
+                });
+                cx.notify();
             }),
-            cx.observe_global_in::<state::theme::SystemAccentThemeState>(
-                window,
-                |_state, window, cx| {
-                    state::theme::apply_current_theme(window, cx);
-                    cx.refresh_windows();
-                },
-            ),
-            config_store.observe_select_in(
-                cx,
-                window,
-                state::selectors::SelectAppPresentation::current(cx),
-                |this, _settings, window, cx| {
-                    state::theme::apply_current_theme(window, cx);
-                    this.reload_app_menu_bar(cx);
-                    cx.refresh_windows();
-                },
-            ),
             database_store.observe_in(cx, window, move |_settings, _resource, window, cx| {
                 if crate::database::retained_binding(cx).as_ref() != Some(&binding) {
                     window.remove_window();
@@ -155,6 +143,7 @@ impl SettingsView {
             app_menu_bar,
             selected_page,
             sidebar_width: SETTINGS_SIDEBAR_DEFAULT_WIDTH,
+            _theme_binding: state::theme::WindowThemeBinding::new(window, cx),
             _subscriptions,
         }
     }

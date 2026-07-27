@@ -16,6 +16,27 @@ A database query or remote catalog normally uses `refresh`. A malformed
 configuration file or a database that cannot be opened normally uses
 `repair`.
 
+## Synchronous initial work
+
+When the caller has already completed the initial work synchronously, deliver
+its result with `Settle` instead of constructing a task:
+
+```rust
+use std::io;
+
+use gpui_operation::{Settle, Transition, refresh::Operation};
+
+struct Task;
+
+let mut config = Operation::<String, io::Error, Task>::new();
+config.transition(Settle(Ok("ready".to_owned())));
+assert_eq!(config.data().map(String::as_str), Some("ready"));
+```
+
+`Settle` is accepted only from `Idle`. `Complete` remains reserved for a
+running task, so a late `Complete` after cancellation cannot settle an idle
+operation.
+
 ## Refresh-only operation
 
 Deliver the message that matches the current settled state:
@@ -88,7 +109,7 @@ Cancelling a running operation restores its exact previous settled state.
 No transition requires Data, Problem, Repair, or Task to implement `Clone`.
 
 The complete runtime enums implement
-`Transition<Load/Refresh/Retry/Repair/Complete/Cancel>` for
+`Transition<Settle/Load/Refresh/Retry/Repair/Complete/Cancel>` for
 `&mut Operation`. A message that is invalid for the current variant leaves
 the operation unchanged and drops the message and its payload. Enable the
 optional `tracing` feature to emit a debug event for ignored messages. Match

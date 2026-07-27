@@ -14,6 +14,25 @@
 数据库查询或远程 catalog 通常使用 `refresh`。损坏的配置文件或无法打开的数据库通常使用
 `repair`。
 
+## 同步初始化
+
+如果调用者已经同步完成首次工作，直接用 `Settle` 发送结果，不需要构造 task：
+
+```rust
+use std::io;
+
+use gpui_operation::{Settle, Transition, refresh::Operation};
+
+struct Task;
+
+let mut config = Operation::<String, io::Error, Task>::new();
+config.transition(Settle(Ok("ready".to_owned())));
+assert_eq!(config.data().map(String::as_str), Some("ready"));
+```
+
+`Settle` 只在 `Idle` 生效。`Complete` 仍专用于运行中的 task，因此取消后迟到的
+`Complete` 不能把 idle operation 结算为新状态。
+
 ## 只刷新 Operation
 
 发送与当前稳定状态匹配的消息：
@@ -86,7 +105,7 @@ assert!(matches!(
 Repair 或 Task 实现 `Clone`。
 
 完整 runtime enum 为 `&mut Operation` 实现
-`Transition<Load/Refresh/Retry/Repair/Complete/Cancel>`。如果消息不适用于当前 variant，
+`Transition<Settle/Load/Refresh/Retry/Repair/Complete/Cancel>`。如果消息不适用于当前 variant，
 operation 保持不变，消息及其 payload 会被 drop。开启可选的 `tracing` feature 后，库会为
 被忽略的消息记录 debug event。如果 payload 不能被丢弃，应先匹配当前 variant，再构造工作。
 

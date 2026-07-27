@@ -1,22 +1,14 @@
-pub(crate) mod attachments;
 pub(crate) mod config;
-pub(crate) mod conversation_index;
-pub(crate) mod conversation_runtime;
 pub(crate) mod conversations;
 pub(crate) mod hotkey;
 pub(crate) mod layout;
 pub(crate) mod mcp;
-pub(crate) mod mcp_oauth;
-pub(crate) mod persistence;
 pub(crate) mod projects;
 pub(crate) mod prompts;
-pub(crate) mod provider_secrets;
 pub(crate) mod providers;
 pub(crate) mod selectors;
-pub(crate) mod session;
 pub(crate) mod shortcuts;
 pub(crate) mod skills;
-pub(crate) mod temporary;
 pub(crate) mod theme;
 pub(crate) mod workspace;
 

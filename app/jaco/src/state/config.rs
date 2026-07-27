@@ -1,5 +1,10 @@
+use crate::{
+    app::APP_NAME,
+    errors::{JacoError, JacoResult},
+    foundation::persistence,
+};
 use gpui::{App, AppContext, Task};
-use gpui_operation::{Complete, Load, Refresh, Repair, Transition, repair};
+use gpui_operation::{Complete, Refresh, Repair, Settle, Transition, repair};
 use gpui_store::Store;
 use jaco_core::{
     AppLanguage, AppSettingsPayload, AppThemeMode, AppThemeSettings, ProjectId, ProviderId,
@@ -14,13 +19,6 @@ use std::{
     ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
-};
-use tokio::sync::oneshot;
-
-use crate::{
-    app::APP_NAME,
-    errors::{JacoError, JacoResult},
-    state::persistence,
 };
 
 mod mcp;
@@ -417,79 +415,50 @@ impl From<AppThemeSettings> for AppThemeConfig {
 
 pub(crate) fn update_app_settings(
     cx: &mut App,
-    update: impl FnOnce(&mut AppSettingsPayload) + Send + 'static,
-) -> Task<JacoResult<AppSettingsPayload>> {
-    let current = match ready_data(cx) {
-        Ok(current) => current,
-        Err(error) => return Task::ready(Err(error)),
-    };
+    update: impl FnOnce(&mut AppSettingsPayload),
+) -> JacoResult<AppSettingsPayload> {
+    let current = ready_data(cx)?;
     let mut next_payload = current.app_settings_payload();
     update(&mut next_payload);
     let committed_payload = next_payload.clone();
-    let commit = commit_update(
+    commit_update(
         current,
         move |config| config.app_settings = AppSettingsConfig::from(committed_payload),
         cx,
-    );
-    cx.spawn(async move |cx| {
-        commit.await?;
-        cx.update(|cx| cx.refresh_windows());
-        Ok(next_payload)
-    })
+    )?;
+    Ok(next_payload)
 }
 
 pub(crate) fn update_chat_form_config(
     cx: &mut App,
-    update: impl FnOnce(&mut ChatFormConfig) + Send + 'static,
-) -> Task<JacoResult<ChatFormConfig>> {
-    let current = match ready_data(cx) {
-        Ok(current) => current,
-        Err(error) => return Task::ready(Err(error)),
-    };
+    update: impl FnOnce(&mut ChatFormConfig),
+) -> JacoResult<ChatFormConfig> {
+    let current = ready_data(cx)?;
     let mut next_chat_form = current.chat_form.clone();
     update(&mut next_chat_form);
     let committed_chat_form = next_chat_form.clone();
-    let commit = commit_update(
+    commit_update(
         current,
         move |config| config.chat_form = committed_chat_form,
         cx,
-    );
-    cx.spawn(async move |_| {
-        commit.await?;
-        Ok(next_chat_form)
-    })
+    )?;
+    Ok(next_chat_form)
 }
 
 pub(crate) fn init(cx: &mut App) -> JacoResult<()> {
-    JacoConfigStore::install_global(cx, ConfigOperation::new());
+    let result = JacoConfig::path()
+        .map_err(|error| ConfigProblem::ResolveDirectory {
+            message: error.to_string(),
+        })
+        .and_then(|path| load_for_operation(&path));
+    JacoConfigStore::install_global(cx, initial_operation(result));
     Ok(())
 }
 
-pub(crate) fn request_initial_load(cx: &mut App) {
-    let config_store = store(cx);
-    let completion_store = config_store.clone();
-    let task = cx.spawn(async move |cx| {
-        let result = smol::unblock(|| {
-            JacoConfig::path()
-                .map_err(|error| ConfigProblem::ResolveDirectory {
-                    message: error.to_string(),
-                })
-                .and_then(|path| load_for_operation(&path))
-        })
-        .await;
-        cx.update(|cx| {
-            completion_store.update(cx, |operation| {
-                if matches!(operation, ConfigOperation::Loading(_)) {
-                    operation.transition(Complete(result));
-                }
-            });
-        });
-    });
-    config_store.update(cx, |operation| {
-        if matches!(operation, ConfigOperation::Idle(_)) {
-            operation.transition(Load(task));
-        }
-    });
+fn initial_operation(result: Result<ConfigData, ConfigProblem>) -> ConfigOperation {
+    let mut operation = ConfigOperation::new();
+    operation.transition(Settle(result));
+    operation
 }
 
 #[cfg(test)]
@@ -501,10 +470,7 @@ pub(crate) fn install_for_test(cx: &mut App, path: PathBuf, config: JacoConfig) 
     });
     let data = data_from_value(path, config, source_bytes)
         .map_err(|error| JacoError::Config(error.to_string()))?;
-    let mut operation = ConfigOperation::new();
-    operation.transition(Load(Task::ready(())));
-    operation.transition(Complete(Ok(data)));
-    JacoConfigStore::install_global(cx, operation);
+    JacoConfigStore::install_global(cx, initial_operation(Ok(data)));
     Ok(())
 }
 
@@ -527,78 +493,41 @@ fn ready_data(cx: &impl AppContext) -> JacoResult<ConfigData> {
     })
 }
 
-fn update_config<R>(
-    cx: &mut App,
-    update: impl FnOnce(&mut JacoConfig) -> R + Send + 'static,
-) -> Task<JacoResult<R>>
-where
-    R: Send + 'static,
-{
-    let current = match ready_data(cx) {
-        Ok(current) => current,
-        Err(error) => return Task::ready(Err(error)),
-    };
+fn update_config<R>(cx: &mut App, update: impl FnOnce(&mut JacoConfig) -> R) -> JacoResult<R> {
+    let current = ready_data(cx)?;
     let mut next = current.value.clone();
     let result = update(&mut next);
-    let commit = commit_update(current, move |config| *config = next, cx);
-    cx.spawn(async move |_| {
-        commit.await?;
-        Ok(result)
-    })
+    commit_update(current, move |config| *config = next, cx)?;
+    Ok(result)
 }
 
 fn commit_update(
     current: ConfigData,
-    update: impl FnOnce(&mut JacoConfig) + Send + 'static,
+    update: impl FnOnce(&mut JacoConfig),
     cx: &mut App,
-) -> Task<JacoResult<()>> {
+) -> JacoResult<()> {
     let mut value = current.value.clone();
     update(&mut value);
+    if value == current.value {
+        return Ok(());
+    }
     let bytes = toml::to_string_pretty(&value)
-        .map_err(|error| JacoError::Config(format!("encode config: {error}")));
-    let bytes = match bytes {
-        Ok(bytes) => bytes.into_bytes(),
-        Err(error) => return Task::ready(Err(error)),
-    };
+        .map_err(|error| JacoError::Config(format!("encode config: {error}")))?
+        .into_bytes();
     let pending = Arc::new(PendingConfig {
-        data: match data_from_value(current.path.clone(), value, bytes.clone()) {
-            Ok(data) => data,
-            Err(error) => return Task::ready(Err(JacoError::Config(error.to_string()))),
-        },
+        data: data_from_value(current.path.clone(), value, bytes.clone())
+            .map_err(|error| JacoError::Config(error.to_string()))?,
         bytes,
     });
-    let config_store = store(cx);
-    config_store.update(cx, |operation| {
-        let ConfigOperation::Ready(_) = operation else {
+    let committed =
+        write_pending(&current, pending).map_err(|error| JacoError::Config(error.to_string()))?;
+    store(cx).update(cx, |operation| {
+        let ConfigOperation::Ready(ready) = operation else {
             return;
         };
-        operation.transition(Refresh(Task::ready(())));
+        ready.transition(ReplaceConfig(committed));
     });
-    let completion_store = config_store.clone();
-    let (sender, receiver) = oneshot::channel();
-    cx.spawn(async move |cx| {
-        let result = smol::unblock(move || write_pending(&current, pending)).await;
-        let outcome = result
-            .as_ref()
-            .map(|_| ())
-            .map_err(|error| JacoError::Config(error.to_string()));
-        cx.update(|cx| {
-            completion_store.update(cx, |operation| {
-                if matches!(operation, ConfigOperation::Refreshing(_)) {
-                    operation.transition(Complete(result));
-                }
-            });
-        });
-        let _ = sender.send(outcome);
-    })
-    .detach();
-    cx.spawn(async move |_| {
-        receiver.await.unwrap_or_else(|_| {
-            Err(JacoError::Config(
-                "config write driver ended without a result".to_string(),
-            ))
-        })
-    })
+    Ok(())
 }
 
 fn load_for_operation(path: &Path) -> Result<ConfigData, ConfigProblem> {

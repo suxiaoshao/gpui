@@ -8,14 +8,14 @@ keep the ownership and transition patterns concrete.
 
 ## 1. Purpose
 
-`gpui-operation` describes safe state transitions for fallible asynchronous
-work. It is a transition library, not an executor or owner:
+`gpui-operation` describes safe state transitions for fallible synchronous or
+asynchronous work. It is a transition library, not an executor or owner:
 
 ```text
 current state + message -> next state
 ```
 
-The caller is responsible for:
+For asynchronous work, the caller is responsible for:
 
 - constructing and starting the task;
 - delivering its eventual result as a message;
@@ -81,6 +81,10 @@ pub struct Complete<Data, Problem: std::error::Error>(
     pub Result<Data, Problem>,
 );
 
+pub struct Settle<Data, Problem: std::error::Error>(
+    pub Result<Data, Problem>,
+);
+
 pub struct Cancel;
 ```
 
@@ -89,12 +93,28 @@ state; they do not require Data, Problem, Repair, or Task to implement
 `Clone`, `PartialEq`, `Send`, or `Sync`. Problem must implement
 `std::error::Error`.
 
+`Settle(result)` records synchronous initial work directly from `Idle`, without
+creating a running state or storing a Task. `Complete(result)` is deliberately
+different: it is accepted only by a running state. Consequently, a late
+`Complete` delivered after cancellation is ignored while the operation remains
+`Idle`; only a deliberate `Settle` can synchronously initialize it.
+
+Named states preserve the same distinction:
+
+```rust
+use gpui_operation::{Settle, Transition};
+use gpui_operation::refresh::{FetchCompleted, Idle};
+
+let settled: FetchCompleted<CatalogData, CatalogProblem> =
+    Idle::new().transition(Settle(read_catalog_synchronously()));
+```
+
 The complete runtime enums accept the messages valid for their family:
 
 | Runtime family | In-place messages |
 | --- | --- |
-| `refresh::Operation` | `Load`, `Refresh`, `Retry`, `Complete`, `Cancel` |
-| `repair::Operation` | `Load`, `Refresh`, `Repair`, `Complete`, `Cancel` |
+| `refresh::Operation` | `Settle`, `Load`, `Refresh`, `Retry`, `Complete`, `Cancel` |
+| `repair::Operation` | `Settle`, `Load`, `Refresh`, `Repair`, `Complete`, `Cancel` |
 
 A message that is not valid for the current runtime variant leaves the
 operation unchanged and drops the message and its owned payload. There is no
@@ -395,6 +415,9 @@ The library treats Task as an owned generic value. It does not poll, abort, or
 inspect it. Entering a running state moves Task into that state; completing or
 cancelling consumes the running state and drops Task.
 
+Synchronous initial work uses `Idle + Settle(result)` and does not enter this
+Task lifecycle.
+
 For GPUI `Task`, dropping the handle cancels the task. Therefore the intended
 UI contract is:
 
@@ -473,6 +496,7 @@ The enums implement `Transition<Message>` for `&mut Operation`. The
 refresh-only runtime routes explicit messages as follows:
 
 ```text
+Idle + Settle<Result<Data, Problem>> -> Ready / Unavailable
 Idle + Load<Task> -> Loading
 Ready + Refresh<Task> -> Refreshing
 Unavailable + Retry<Task> -> Retrying
@@ -481,7 +505,8 @@ running + Complete<Result<Data, Problem>> -> settled
 running + Cancel -> exact previous settled state
 ```
 
-The repair-capable runtime uses `Load` from `Idle`, `Refresh` from `Ready`,
+The repair-capable runtime also accepts `Settle` from `Idle`, uses `Load` from
+`Idle`, `Refresh` from `Ready`,
 and `Repair { repair, task }` from `Unavailable` or `Degraded`. `Complete`
 and `Cancel` apply to all of its running variants.
 

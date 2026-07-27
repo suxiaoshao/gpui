@@ -69,7 +69,7 @@ pub(crate) fn open(shortcut: ShortcutRecord, cx: &mut App) -> Result<(), Capture
         is_primary: primary_id == Some(u64::from(display_id)),
     };
     event!(
-        Level::INFO,
+        Level::DEBUG,
         shortcut_id = %shortcut.id,
         display_id = display_info.id_hint,
         "opening jaco screenshot overlay"
@@ -308,7 +308,7 @@ impl ScreenshotOverlayView {
         window.remove_window();
 
         let timer = cx.background_executor().timer(CAPTURE_START_DELAY);
-        cx.spawn(async move |_this, cx| {
+        let task = cx.spawn(async move |_this, cx| {
             timer.await;
             let captured_display = display.clone();
             let captured = smol::unblock(move || capture_region(&captured_display, rect)).await;
@@ -324,8 +324,8 @@ impl ScreenshotOverlayView {
                     });
                 }
             }
-        })
-        .detach();
+        });
+        cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| hotkeys.retain_task(task));
     }
 }
 

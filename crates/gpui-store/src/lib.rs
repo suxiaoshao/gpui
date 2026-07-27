@@ -49,15 +49,12 @@
 //! ```
 
 mod change;
-mod observation;
-mod select;
-mod selection;
+mod projection;
 mod store;
 
 #[cfg(test)]
 mod tests;
 
 pub use change::StoreChange;
-pub use select::Select;
-pub use selection::StoreSelection;
+pub use projection::{Select, StoreSelection};
 pub use store::Store;

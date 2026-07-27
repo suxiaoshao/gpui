@@ -10,10 +10,10 @@ use jaco_db::{NewProject, ProjectRecord};
 use tokio::sync::oneshot;
 
 use crate::{
-    database,
+    database::{self, session::CatalogMutation},
     errors::JacoResult,
     foundation::I18n,
-    state::{config, session::CatalogMutation},
+    state::config,
 };
 
 const SCRATCH_PROJECTS_DIR: &str = "scratch-projects";
@@ -306,7 +306,8 @@ where
         Err(error) => return Task::ready(Err(error)),
     };
     let (sender, receiver) = oneshot::channel();
-    cx.spawn(async move |cx| {
+    let task_binding = binding.clone();
+    let driver = cx.spawn(async move |cx| {
         let result = executor.mutate(CatalogMutation::Project, command).await;
         if let Ok(value) = &result {
             cx.update(|cx| {
@@ -316,8 +317,8 @@ where
             });
         }
         let _ = sender.send(result);
-    })
-    .detach();
+    });
+    crate::app::session::retain_task(task_binding, driver, cx);
     cx.spawn(async move |_| {
         receiver.await.unwrap_or_else(|_| {
             Err(jaco_db::DbError::Invariant(

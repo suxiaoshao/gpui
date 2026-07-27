@@ -15,6 +15,7 @@
 //!
 //! | Current | Message | Output |
 //! |---|---|---|
+//! | `Idle<Repair>` | `Settle<Result<Data, Problem>>` | `FetchCompleted<Data, Problem, Repair>` |
 //! | `Idle<Repair>` | `Load<Task>` | `Fetching<Idle<Repair>, Task>` |
 //! | `Ready<Data, Repair>` | `Refresh<Task>` | `Fetching<Ready<Data, Repair>, Task>` |
 //! | `Unavailable<Problem, Repair>` | `Repair<Repair, Task>` | `Repairing<Unavailable<Problem, Repair>, Repair, Task>` |
@@ -24,7 +25,7 @@
 
 use std::marker::PhantomData;
 
-use crate::{Cancel, Complete, Load, Refresh, Transition};
+use crate::{Cancel, Complete, Load, Refresh, Settle, Transition};
 
 /// No fetch has ever been requested.
 #[must_use = "operation states must be retained or transitioned"]
@@ -316,6 +317,35 @@ fn trace_ignored<Message>(phase: Phase) {
 
 // ── Complete runtime enum transitions ──────────────────────────────────
 
+impl<Data, Problem: std::error::Error, Repair, Task> Transition<Settle<Data, Problem>>
+    for &mut Operation<Data, Problem, Repair, Task>
+{
+    type Output = ();
+
+    fn transition(self, message: Settle<Data, Problem>) {
+        let current = std::mem::take(self);
+        match current {
+            Operation::Idle(_) => {
+                *self = match message.0 {
+                    Ok(data) => Operation::Ready(Ready {
+                        data,
+                        marker: PhantomData,
+                    }),
+                    Err(problem) => Operation::Unavailable(Unavailable {
+                        problem,
+                        marker: PhantomData,
+                    }),
+                };
+            }
+            current => {
+                *self = current;
+                trace_ignored::<Settle<Data, Problem>>(self.phase());
+                drop(message);
+            }
+        }
+    }
+}
+
 impl<Data, Problem: std::error::Error, Repair, Task> Transition<Load<Task>>
     for &mut Operation<Data, Problem, Repair, Task>
 {
@@ -531,6 +561,23 @@ impl<Data, Problem: std::error::Error, Repair, Task> Transition<Cancel>
 }
 
 // ── Transition implementations ──────────────────────────────────────────
+
+impl<Data, Problem: std::error::Error, Repair> Transition<Settle<Data, Problem>> for Idle<Repair> {
+    type Output = FetchCompleted<Data, Problem, Repair>;
+
+    fn transition(self, message: Settle<Data, Problem>) -> Self::Output {
+        match message.0 {
+            Ok(data) => FetchCompleted::Ready(Ready {
+                data,
+                marker: PhantomData,
+            }),
+            Err(problem) => FetchCompleted::Unavailable(Unavailable {
+                problem,
+                marker: PhantomData,
+            }),
+        }
+    }
+}
 
 impl<Repair, Task> Transition<Load<Task>> for Idle<Repair> {
     type Output = Fetching<Idle<Repair>, Task>;

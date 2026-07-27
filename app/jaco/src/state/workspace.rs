@@ -12,7 +12,8 @@ use jaco_db::{ConversationRecord, ProjectRecord};
 use crate::{
     database,
     state::{
-        conversation_index, projects,
+        conversations::index as conversation_index,
+        projects,
         selectors::{
             SelectWorkspaceConversations, SelectWorkspaceProjects, WorkspaceConversationInput,
             WorkspaceProjectInput,
@@ -309,7 +310,7 @@ pub(crate) fn create(cx: &mut App) -> Entity<JacoWorkspaceStore> {
 }
 
 pub(crate) fn workspace(cx: &App) -> Entity<JacoWorkspaceStore> {
-    crate::app::ready_workspace(cx).expect("workspace requires a ready main-window session")
+    crate::app::ready_workspace(cx).expect("workspace requires a ready application session")
 }
 
 fn build_sidebar_snapshot(

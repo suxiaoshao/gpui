@@ -19,9 +19,8 @@ use crate::{
 pub(crate) struct JacoRoot {
     focus_handle: FocusHandle,
     home: Option<Entity<HomeView>>,
-    home_binding: Option<state::session::DatabaseBinding>,
-    runtime: Option<Entity<state::conversation_runtime::ConversationRuntimeStore>>,
-    workspace: Option<Entity<state::JacoWorkspaceStore>>,
+    home_binding: Option<database::session::DatabaseBinding>,
+    _theme_binding: state::theme::WindowThemeBinding,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -29,26 +28,26 @@ impl JacoRoot {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let config = state::config::store(cx);
         let database = database::store(cx);
+        let session = super::session::store(cx);
         let shutdown = super::AppShutdownStore::global(cx);
         let mut root = Self {
             focus_handle: cx.focus_handle(),
             home: None,
             home_binding: None,
-            runtime: None,
-            workspace: None,
+            _theme_binding: state::theme::WindowThemeBinding::new(window, cx),
             _subscriptions: Vec::new(),
         };
-        root._subscriptions
-            .push(config.observe_in(cx, window, |root, _, window, cx| root.sync_home(window, cx)));
         root._subscriptions.push(config.observe_select_in(
             cx,
             window,
-            state::selectors::SelectAppPresentation::current(cx),
-            |root, _presentation, window, cx| root.apply_presentation(window, cx),
+            state::selectors::SelectConfigGateStatus,
+            |_root, _status, _window, cx| cx.notify(),
         ));
         root._subscriptions.push(
             database.observe_in(cx, window, |root, _, window, cx| root.sync_home(window, cx)),
         );
+        root._subscriptions
+            .push(session.observe_in(cx, window, |root, _, window, cx| root.sync_home(window, cx)));
         root._subscriptions
             .push(shutdown.observe_in(cx, window, |_root, _, _window, cx| cx.notify()));
         root.sync_home(window, cx);
@@ -76,82 +75,29 @@ impl JacoRoot {
                 );
             }
         }
-        database::sync_from_config(cx);
-        if let Err(error) = super::init_ready_services(cx) {
-            tracing::error!(?error, "initialize ready Jaco services failed");
-        }
-        let binding = database::store(cx).read(cx, |resource| match resource {
-            DatabaseResource::Bound { operation, .. } => {
-                operation.data().map(|data| data.binding.clone())
-            }
-            DatabaseResource::AwaitingConfig => None,
-        });
+        let session = super::session::ready_data(cx);
+        let binding = session.as_ref().map(|session| session.binding.clone());
         if binding != self.home_binding {
-            if let Some(runtime) = self.runtime.take() {
-                runtime
-                    .update(cx, |runtime, cx| runtime.shutdown_all(cx))
-                    .detach();
-            }
-            self.workspace = None;
             self.home = None;
             self.home_binding = binding.clone();
         }
-        if binding.is_some() {
+        if let Some(session) = session {
             if self.home.is_none() && database::is_ready(cx) {
-                if self.runtime.is_none() {
-                    match state::conversation_runtime::create(cx) {
-                        Ok(runtime) => self.runtime = Some(runtime),
-                        Err(error) => {
-                            tracing::error!(?error, "initialize conversation runtime failed");
-                            return;
-                        }
-                    }
-                }
-                if self.workspace.is_none() {
-                    self.workspace = Some(state::workspace::create(cx));
-                }
-                let workspace = self
-                    .workspace
-                    .as_ref()
-                    .expect("workspace was initialized")
-                    .clone();
-                let runtime = self
-                    .runtime
-                    .as_ref()
-                    .expect("conversation runtime was initialized")
-                    .clone();
-                self.home = Some(cx.new(|cx| HomeView::new(workspace, runtime, window, cx)));
-            }
-            if let Some(runtime) = self.runtime.as_ref() {
-                state::conversation_runtime::retry_recovery_if_needed(runtime, cx);
+                self.home = Some(
+                    cx.new(|cx| HomeView::new(session.workspace, session.runtime, window, cx)),
+                );
             }
         } else {
             self.home = None;
             self.home_binding = None;
-            self.runtime = None;
-            self.workspace = None;
         }
         cx.notify();
     }
 
-    fn apply_presentation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        crate::foundation::init_i18n(cx);
-        super::menus::sync_app_menus(cx);
-        state::theme::apply_current_theme(window, cx);
+    pub(crate) fn reload_app_menu_bar(&mut self, cx: &mut Context<Self>) {
         if let Some(home) = self.home.as_ref() {
             home.update(cx, |home, cx| home.reload_app_menu_bar(cx));
         }
-        cx.refresh_windows();
-    }
-
-    pub(crate) fn runtime(
-        &self,
-    ) -> Option<Entity<state::conversation_runtime::ConversationRuntimeStore>> {
-        self.runtime.clone()
-    }
-
-    pub(crate) fn workspace(&self) -> Option<Entity<state::JacoWorkspaceStore>> {
-        self.workspace.clone()
     }
 
     pub(crate) fn focus_primary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -286,9 +232,7 @@ impl JacoRoot {
                     .as_ref()
                     .cloned()
                     .map(IntoElement::into_any_element)
-                    .unwrap_or_else(|| {
-                        loading_page(cx.global::<I18n>().t("critical-session-loading"))
-                    }),
+                    .unwrap_or_else(|| self.render_session_pending(cx)),
                 gpui_operation::repair::Phase::Refreshing => self.render_read_only_home(cx),
                 gpui_operation::repair::Phase::Unavailable
                 | gpui_operation::repair::Phase::RepairingUnavailable
@@ -333,6 +277,42 @@ impl JacoRoot {
                     .into_any_element(),
             },
         }
+    }
+
+    fn render_session_pending(&self, cx: &mut Context<Self>) -> AnyElement {
+        let failure = super::session::store(cx).read(cx, |session| match session {
+            super::session::AppSessionState::Failed { binding, message } => {
+                Some((binding.target.database_path.clone(), message.clone()))
+            }
+            super::session::AppSessionState::AwaitingDatabase
+            | super::session::AppSessionState::Ready(_) => None,
+        });
+        let Some((path, message)) = failure else {
+            return loading_page(cx.global::<I18n>().t("critical-session-loading"));
+        };
+        let mut args = fluent_bundle::FluentArgs::new();
+        args.set("path", path.display().to_string());
+        args.set("message", message);
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_4()
+            .p_8()
+            .child(
+                Alert::error(
+                    "critical-session-error",
+                    cx.global::<I18n>()
+                        .t_with_args("critical-session-error-description", &args),
+                )
+                .title(cx.global::<I18n>().t("critical-session-error-title")),
+            )
+            .child(
+                Button::new("critical-session-retry")
+                    .label(cx.global::<I18n>().t("critical-session-retry"))
+                    .on_click(|_, _, cx| super::session::request_retry(cx)),
+            )
+            .into_any_element()
     }
 
     fn render_read_only_home(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -477,32 +457,30 @@ fn choose_database_backup_path(window: &mut Window, cx: &mut App) {
     );
     let prompt = cx.prompt_for_new_path(&initial_dir, Some(&suggested));
     let window_handle = window.window_handle();
-    window
-        .spawn(cx, async move |cx| {
-            let backup_dir = match prompt.await {
-                Ok(Ok(Some(path))) => path,
-                Ok(Ok(None)) => return,
-                Ok(Err(error)) => {
-                    tracing::error!(?error, "choose database backup path failed");
-                    return;
-                }
-                Err(error) => {
-                    tracing::error!(?error, "database backup path prompt canceled");
-                    return;
-                }
-            };
-            if let Err(error) =
-                window_handle.update(
-                    cx,
-                    |_, _window, cx| match database::backup_and_create_fresh(backup_dir.clone(), cx)
-                    {
-                        Ok(()) => {}
-                        Err(error) => tracing::error!(?error, "repair database failed"),
-                    },
-                )
-            {
-                tracing::error!(?error, "complete database repair failed");
+    let task = window.spawn(cx, async move |cx| {
+        let backup_dir = match prompt.await {
+            Ok(Ok(Some(path))) => path,
+            Ok(Ok(None)) => return,
+            Ok(Err(error)) => {
+                tracing::error!(?error, "choose database backup path failed");
+                return;
             }
-        })
-        .detach();
+            Err(error) => {
+                tracing::error!(?error, "database backup path prompt canceled");
+                return;
+            }
+        };
+        if let Err(error) =
+            window_handle.update(
+                cx,
+                |_, _window, cx| match database::backup_and_create_fresh(backup_dir.clone(), cx) {
+                    Ok(()) => {}
+                    Err(error) => tracing::error!(?error, "repair database failed"),
+                },
+            )
+        {
+            tracing::error!(?error, "complete database repair failed");
+        }
+    });
+    super::tasks::retain_window(window, task, cx);
 }

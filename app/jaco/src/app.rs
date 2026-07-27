@@ -1,6 +1,8 @@
 pub(crate) mod about;
 pub(crate) mod menus;
 pub(crate) mod root;
+pub(crate) mod session;
+pub(crate) mod tasks;
 pub(crate) mod temporary_window;
 pub(crate) mod title_bar_menu;
 
@@ -19,7 +21,9 @@ use std::{
     time::Duration,
 };
 use tracing::{Level, event, level_filters::LevelFilter};
-use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{
+    Layer, filter::Targets, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+};
 use window_ext::{NativeWindowHandle, WindowExt};
 
 pub(crate) static APP_NAME: &str = "top.sushao.jaco";
@@ -36,10 +40,6 @@ pub(crate) enum AppShutdownPhase {
 }
 
 pub(crate) type AppShutdownStore = Store<AppShutdownPhase>;
-
-struct ReadyServicesBinding(state::session::DatabaseBinding);
-
-impl Global for ReadyServicesBinding {}
 
 pub(crate) fn run() -> crate::errors::JacoResult<()> {
     init_tracing()?;
@@ -58,7 +58,6 @@ pub(crate) fn run() -> crate::errors::JacoResult<()> {
         }
 
         show_or_create_main_window(cx);
-        state::config::request_initial_load(cx);
     });
 
     if let Some(err) = startup_error.borrow_mut().take() {
@@ -114,6 +113,11 @@ fn logs_dir_from_base(base_dir: PathBuf) -> PathBuf {
 fn init_tracing() -> crate::errors::JacoResult<()> {
     let logs_dir = get_logs_dir()?;
     let log_file = logs_dir.join("data.log");
+    let targets = Targets::new()
+        .with_default(LevelFilter::WARN)
+        .with_target("jaco::", LevelFilter::INFO)
+        .with_target("gpui_operation", LevelFilter::DEBUG)
+        .with_target("gpui_macos::text_system", LevelFilter::ERROR);
 
     tracing_subscriber::registry()
         .with(
@@ -126,22 +130,15 @@ fn init_tracing() -> crate::errors::JacoResult<()> {
                         .open(&log_file)
                         .map_err(|_| crate::errors::JacoError::LogFileNotFound)?,
                 )
-                .with_filter(LevelFilter::INFO),
+                .with_filter(targets.clone()),
         )
         .with(
             fmt::layer()
                 .with_timer(fmt::time::LocalTime::rfc_3339())
                 .event_format(fmt::format().pretty())
-                .with_filter(LevelFilter::INFO),
+                .with_filter(targets),
         )
         .init();
-
-    event!(
-        Level::INFO,
-        logs_dir = %logs_dir.display(),
-        log_file = %log_file.display(),
-        "tracing initialized"
-    );
 
     Ok(())
 }
@@ -149,19 +146,24 @@ fn init_tracing() -> crate::errors::JacoResult<()> {
 fn init(cx: &mut App) -> crate::errors::JacoResult<()> {
     SHUTTING_DOWN.store(false, Ordering::Release);
     AppShutdownStore::install_global(cx, AppShutdownPhase::Running);
+    tasks::init(cx);
     gpui_component::init(cx);
     foundation::init_bootstrap(cx);
+
     state::config::init(cx)?;
+    foundation::init_i18n(cx);
     state::layout::init(cx)?;
     gpui_tokio::init(cx);
     state::theme::init(cx);
+
     database::init_store(cx);
-    init_ready_services(cx)?;
+    session::init(cx);
     title_bar_menu::init(cx);
     temporary_window::init(cx);
     crate::features::init(cx);
 
     menus::init(cx);
+    foundation::init_i18n_runtime(cx);
     menus::sync_app_menus(cx);
     reload_app_menu_bars(cx);
     #[cfg(target_os = "macos")]
@@ -171,23 +173,16 @@ fn init(cx: &mut App) -> crate::errors::JacoResult<()> {
     Ok(())
 }
 
-pub(crate) fn init_ready_services(cx: &mut App) -> crate::errors::JacoResult<()> {
-    let Some(binding) = database::ready_binding(cx) else {
-        return Ok(());
-    };
-    if cx.has_global::<ReadyServicesBinding>() && cx.global::<ReadyServicesBinding>().0 == binding {
-        return Ok(());
-    }
+fn init_ready_services(cx: &mut App) -> crate::errors::JacoResult<()> {
     state::mcp::init(cx)?;
     state::providers::init(cx);
     state::projects::init(cx);
     state::prompts::init(cx);
     state::shortcuts::init(cx);
-    state::conversation_index::init(cx);
+    state::conversations::index::init(cx);
     if let Err(err) = state::hotkey::init(cx) {
         event!(Level::ERROR, error = ?err, "failed to initialize jaco hotkeys");
     }
-    cx.set_global(ReadyServicesBinding(binding));
     Ok(())
 }
 
@@ -213,7 +208,7 @@ pub(crate) fn quit_app(cx: &mut App) {
     show_or_create_main_window(cx);
     event!(Level::INFO, "managed jaco shutdown started");
 
-    cx.spawn(async move |cx| {
+    let shutdown_task = cx.spawn(async move |cx| {
         if let Some(runtime_task) = runtime_task {
             runtime_task.await;
         }
@@ -233,8 +228,8 @@ pub(crate) fn quit_app(cx: &mut App) {
             event!(Level::INFO, "managed jaco shutdown completed");
             cx.quit();
         });
-    })
-    .detach();
+    });
+    tasks::retain_application(shutdown_task, cx);
 }
 
 pub(crate) fn is_shutting_down() -> bool {
@@ -332,18 +327,12 @@ pub(crate) fn find_main_window(cx: &App) -> Option<WindowHandle<Root>> {
 
 pub(crate) fn ready_runtime(
     cx: &App,
-) -> Option<Entity<state::conversation_runtime::ConversationRuntimeStore>> {
-    let window = find_main_window(cx)?;
-    let root = window.read(cx).ok()?;
-    let view = root.view().clone().downcast::<root::JacoRoot>().ok()?;
-    view.read(cx).runtime()
+) -> Option<Entity<state::conversations::runtime::ConversationRuntimeStore>> {
+    session::ready_runtime(cx)
 }
 
 pub(crate) fn ready_workspace(cx: &App) -> Option<Entity<state::JacoWorkspaceStore>> {
-    let window = find_main_window(cx)?;
-    let root = window.read(cx).ok()?;
-    let view = root.view().clone().downcast::<root::JacoRoot>().ok()?;
-    view.read(cx).workspace()
+    session::ready_workspace(cx)
 }
 
 pub(crate) fn reload_app_menu_bars(cx: &mut App) {
@@ -355,6 +344,9 @@ pub(crate) fn reload_app_menu_bars(cx: &mut App) {
 
     for root in roots {
         let _ = root.update(cx, |root, _window, cx| {
+            let _ = with_root_view::<root::JacoRoot, _>(root, cx, |view, cx| {
+                view.update(cx, |view, cx| view.reload_app_menu_bar(cx));
+            });
             let _ = with_root_view::<HomeView, _>(root, cx, |view, cx| {
                 view.update(cx, |view, cx| view.reload_app_menu_bar(cx));
             });

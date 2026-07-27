@@ -39,6 +39,8 @@
    `Data: Clone`。
 9. 默认不引入日志依赖；启用 `tracing` feature 后记录非法 runtime 消息。
 10. 保持英文默认文档，并同步中文 README 与完整指南。
+11. 同步完成的首次工作使用独立 `Settle(Result)` 消息，只允许从 `Idle` 直接进入
+    `Ready` 或 `Unavailable`；异步 Task 的结果继续使用 `Complete(Result)`。
 
 ### 1.2 非目标
 
@@ -72,6 +74,7 @@
 | OP-R14 | 默认 feature 只使用 `std`；可选 `tracing` feature 提供非法消息 debug；GPUI 仅作为 dev dependency |
 | OP-R15 | `&mut Ready<Data>` 把业务消息委托给 `&mut Data` 的 `Transition`，只允许 Ready -> Ready 更新 |
 | OP-R16 | 不保留 `start_fetch`、`start_repair`、`complete`、`cancel`、`can_*` 或 `Rejected` 兼容层 |
+| OP-R17 | `Settle(Result)` 只处理 `Idle` 中同步完成的首次工作；`Complete(Result)` 只处理 running state，取消后迟到的 `Complete` 不得结算 `Idle` |
 
 ## 2. 当前证据
 
@@ -79,7 +82,7 @@
 
 | 文件 | 当前责任 |
 | --- | --- |
-| `src/message.rs` | `Load`、`Refresh`、`Retry`、`Repair`、`Complete`、`Cancel` |
+| `src/message.rs` | `Settle`、`Load`、`Refresh`、`Retry`、`Repair`、`Complete`、`Cancel` |
 | `src/transition.rs` | named-state consuming 与 runtime `&mut` 共用的 `Transition<Message>` |
 | `src/refresh.rs` | refresh 具名状态、转换矩阵、`refresh::Operation` 与 `Phase` |
 | `src/repair.rs` | repair 具名状态、转换矩阵、`repair::Operation` 与 `Phase` |
@@ -132,6 +135,7 @@ consuming Transition。
 
 ```rust
 let mut operation = refresh::Operation::new();
+operation.transition(Settle(sync_result));
 operation.transition(Load(task));
 operation.transition(Complete(result));
 operation.transition(Cancel);
@@ -209,6 +213,7 @@ pub fn is_running(&self) -> bool;
 runtime 消息矩阵：
 
 ```text
+Idle        + Settle(result) -> Ready / Unavailable
 Idle        + Load(task)    -> Loading
 Ready       + Refresh(task) -> Refreshing
 Unavailable + Retry(task)   -> Retrying
@@ -263,6 +268,7 @@ pub fn is_running(&self) -> bool;
 runtime 消息矩阵：
 
 ```text
+Idle        + Settle(result)         -> Ready / Unavailable
 Idle        + Load(task)            -> Loading
 Ready       + Refresh(task)         -> Refreshing
 Unavailable + Repair(repair, task)  -> RepairingUnavailable
@@ -271,7 +277,16 @@ running     + Complete              -> Ready / Unavailable / Degraded
 running     + Cancel                -> exact previous state
 ```
 
-### 3.5 完成与取消
+### 3.5 同步结算、异步完成与取消
+
+`Settle(Result<Data, Problem>)` 与 `Complete(Result<Data, Problem>)` 不能合并：
+
+- `Settle` 只在 `Idle` 合法，用于调用者已经同步完成的首次工作，不产生 running state，
+  也不保存 Task；
+- `Complete` 只在 running variant 合法，是此前某个 Task 的完成消息；
+- async load 被 `Cancel` 恢复到 `Idle` 后，即使迟到的 `Complete` 仍被送达，也必须按非法
+  消息处理，不能覆盖当前状态；
+- 调用者若要在此后同步初始化，必须明确发送新的 `Settle`。
 
 `Transition<Message> for &mut Operation` 内部可以短暂使用 `mem::take(self)`，但必须遵守：
 
@@ -397,11 +412,12 @@ runtime Transition 返回 `()`，所以调用者应先根据当前 variant 和�
 **内容**
 
 1. 保留 refresh `Operation`、`Phase` 与具名状态 consuming Transition；
-2. 为 `&mut refresh::Operation` 实现 `Load`、`Refresh`、`Retry`、`Complete`、`Cancel`；
+2. 为 `&mut refresh::Operation` 实现 `Settle`、`Load`、`Refresh`、`Retry`、`Complete`、
+   `Cancel`；
 3. 删除命令式 runtime API、`can_*` 与 `Rejected`；
 4. 非法消息恢复状态后 drop，合法 completion/cancel 先安装最终状态；
 5. 为 `&mut refresh::Ready<Data>` 实现 Data 消息委托；
-6. 覆盖八态、非法消息、空 Data、Ready 更新与无 Clone/Send/Default bound。
+6. 覆盖同步结算、八态、非法消息、空 Data、Ready 更新与无 Clone/Send/Default bound。
 
 ### OP-20：Repair enum
 
@@ -414,11 +430,11 @@ runtime Transition 返回 `()`，所以调用者应先根据当前 variant 和�
 
 1. 保留 repair `Operation`、`Phase`、具名状态 consuming Transition 与
    `active_repair`；
-2. 为 `&mut repair::Operation` 实现 `Load`、`Refresh`、`Repair`、`Complete`、
+2. 为 `&mut repair::Operation` 实现 `Settle`、`Load`、`Refresh`、`Repair`、`Complete`、
    `Cancel`；
 3. 问题态只接受 caller-selected `Repair` 消息；
 4. 为 `&mut repair::Ready<Data, Repair>` 实现 Data 消息委托；
-5. 覆盖八态、非法消息、Repair 所有权、完成、取消、drop 和无 hidden bound。
+5. 覆盖同步结算、八态、非法消息、Repair 所有权、完成、取消、drop 和无 hidden bound。
 
 ### OP-30：tracing 与真实 GPUI Task
 

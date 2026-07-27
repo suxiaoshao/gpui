@@ -23,15 +23,14 @@ use tracing::{Level, event};
 
 use crate::{
     app::{menus::ToggleTemporaryConversation, temporary_window},
-    components::run_settings::reasoning_selection_is_valid,
+    components::chat::run_settings::reasoning_selection_is_valid,
     errors::{JacoError, JacoResult},
     features::screenshot::overlay as screenshot_overlay,
     foundation::I18n,
     platform::capture::CaptureError,
     state::{
-        self,
-        attachments::{ComposerAttachment, generated_image_attachment},
-        config,
+        self, config,
+        conversations::attachments::{ComposerAttachment, generated_image_attachment},
         providers::ProviderModelChoice,
         selectors::{SelectShortcutRegistrations, SelectTemporaryHotkey, ShortcutRegistration},
     },
@@ -108,6 +107,7 @@ pub(crate) struct GlobalHotkeyState {
     registration_errors: BTreeMap<String, String>,
     last_pressed: Option<HotkeyPressDiagnostics>,
     _task: Task<()>,
+    tasks: Vec<Task<()>>,
 }
 
 impl Global for GlobalHotkeyState {}
@@ -193,13 +193,6 @@ pub(crate) fn init(cx: &mut App) -> JacoResult<()> {
             .registration_errors
             .insert("manager".to_string(), err);
     }
-    event!(
-        Level::INFO,
-        temporary_hotkey = ?hotkeys.temporary_hotkey,
-        registered_shortcuts = hotkeys.registered_shortcuts.len(),
-        registration_errors = hotkeys.registration_errors.len(),
-        "initialized jaco global hotkeys"
-    );
     cx.set_global(hotkeys);
     let observer = cx.new(HotkeyResourceObserver::new);
     cx.set_global(HotkeyResourceObserverGlobal {
@@ -275,10 +268,12 @@ impl GlobalHotkeyState {
             registration_errors: BTreeMap::new(),
             last_pressed: None,
             _task: task,
+            tasks: Vec::new(),
         }
     }
 
     fn shutdown_runtime(&mut self) {
+        self.tasks.clear();
         let registered = self
             .temporary_hotkey
             .iter()
@@ -315,7 +310,7 @@ impl GlobalHotkeyState {
 
         self.backend.register(hotkey)?;
         event!(
-            Level::INFO,
+            Level::DEBUG,
             hotkey = %hotkey,
             hotkey_id = hotkey.id(),
             action = ?action,
@@ -333,7 +328,7 @@ impl GlobalHotkeyState {
         let hotkey = Self::parse_hotkey(hotkey)?;
         if self.hotkey_actions.get(&hotkey.id()) != Some(&expected_action) {
             event!(
-                Level::INFO,
+                Level::DEBUG,
                 hotkey = %hotkey,
                 hotkey_id = hotkey.id(),
                 expected_action = ?expected_action,
@@ -345,7 +340,7 @@ impl GlobalHotkeyState {
         self.backend.unregister(hotkey)?;
         self.hotkey_actions.remove(&hotkey.id());
         event!(
-            Level::INFO,
+            Level::DEBUG,
             hotkey = %hotkey,
             hotkey_id = hotkey.id(),
             action = ?expected_action,
@@ -372,7 +367,6 @@ impl GlobalHotkeyState {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn update_temporary_hotkey(
         old_hotkey: Option<&str>,
         new_hotkey: Option<&str>,
@@ -395,7 +389,7 @@ impl GlobalHotkeyState {
         new_hotkey: Option<&str>,
     ) -> JacoResult<()> {
         event!(
-            Level::INFO,
+            Level::DEBUG,
             old_hotkey = ?old_hotkey,
             new_hotkey = ?new_hotkey,
             "updating jaco temporary hotkey"
@@ -606,7 +600,7 @@ impl GlobalHotkeyState {
     fn handle_pressed_hotkey(&mut self, hotkey_id: u32) -> Option<RegisteredHotkeyAction> {
         let Some(action) = self.hotkey_actions.get(&hotkey_id).cloned() else {
             event!(
-                Level::INFO,
+                Level::DEBUG,
                 hotkey_id,
                 "ignoring jaco hotkey press with no registered action"
             );
@@ -620,7 +614,7 @@ impl GlobalHotkeyState {
             pressed_at: SystemTime::now(),
         });
         event!(
-            Level::INFO,
+            Level::DEBUG,
             hotkey_id,
             action = %action_label,
             "recorded jaco hotkey press"
@@ -631,7 +625,7 @@ impl GlobalHotkeyState {
     fn dispatch_shortcut_trigger(&mut self, shortcut_id: ShortcutId, cx: &mut App) {
         if screenshot_overlay::is_active(cx) {
             event!(
-                Level::INFO,
+                Level::DEBUG,
                 shortcut_id = %shortcut_id,
                 "ignoring shortcut while screenshot overlay is active"
             );
@@ -686,7 +680,7 @@ impl GlobalHotkeyState {
         let shortcut = shortcut?;
         if !shortcut.enabled {
             event!(
-                Level::INFO,
+                Level::DEBUG,
                 shortcut_id = %shortcut.id,
                 "ignoring disabled shortcut hotkey"
             );
@@ -753,13 +747,13 @@ impl GlobalHotkeyState {
     }
 
     fn trigger_selection_or_clipboard_shortcut(
-        &self,
+        &mut self,
         trigger: ShortcutTriggerContext,
         cx: &mut App,
     ) {
-        cx.spawn(async move |cx| {
+        let task = cx.spawn(async move |cx| {
             event!(
-                Level::INFO,
+                Level::DEBUG,
                 shortcut_id = %trigger.shortcut.id,
                 hotkey = %trigger.shortcut.hotkey,
                 "triggering selection or clipboard shortcut"
@@ -775,8 +769,8 @@ impl GlobalHotkeyState {
                     None => hotkeys.handle_empty_shortcut_input(cx),
                 }
             });
-        })
-        .detach();
+        });
+        self.retain_task(task);
     }
 
     fn resolve_clipboard_fallback(
@@ -787,7 +781,7 @@ impl GlobalHotkeyState {
         let selected_text = normalized_text(selected_text);
         if selected_text.is_some() {
             event!(
-                Level::INFO,
+                Level::DEBUG,
                 source = "selected_text",
                 "resolved shortcut input"
             );
@@ -799,10 +793,14 @@ impl GlobalHotkeyState {
             .and_then(|item| item.text())
             .and_then(|text| normalized_text(Some(text.to_string())));
         if clipboard_text.is_some() {
-            event!(Level::INFO, source = "clipboard", "resolved shortcut input");
+            event!(
+                Level::DEBUG,
+                source = "clipboard",
+                "resolved shortcut input"
+            );
         } else {
             event!(
-                Level::INFO,
+                Level::DEBUG,
                 "no selected text or clipboard text available for shortcut"
             );
         }
@@ -851,12 +849,12 @@ impl GlobalHotkeyState {
     }
 
     fn trigger_screenshot_ocr_shortcut(
-        &self,
+        &mut self,
         trigger: ShortcutTriggerContext,
         image: ImageFrame,
         cx: &mut App,
     ) {
-        cx.spawn(async move |cx| {
+        let task = cx.spawn(async move |cx| {
             let recognized = smol::unblock(move || platform_ext::ocr::recognize_text(&image)).await;
             cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| match recognized {
                 Ok(text) => match normalized_text(Some(text)) {
@@ -868,8 +866,8 @@ impl GlobalHotkeyState {
                 },
                 Err(err) => hotkeys.handle_screenshot_ocr_failure(err, cx),
             });
-        })
-        .detach();
+        });
+        self.retain_task(task);
     }
 
     fn trigger_shortcut_with_image(
@@ -889,7 +887,7 @@ impl GlobalHotkeyState {
             title_seed,
             cx,
         );
-        Self::finish_shortcut_creation(created, cx);
+        self.finish_shortcut_creation(created, cx);
         Ok(())
     }
 
@@ -902,7 +900,7 @@ impl GlobalHotkeyState {
     ) {
         let task =
             self.create_shortcut_conversation(&trigger, content_parts, Vec::new(), title_seed, cx);
-        Self::finish_shortcut_creation(task, cx);
+        self.finish_shortcut_creation(task, cx);
     }
 
     fn create_shortcut_conversation(
@@ -950,10 +948,11 @@ impl GlobalHotkeyState {
     }
 
     fn finish_shortcut_creation(
+        &mut self,
         task: Task<JacoResult<state::conversations::CreatedConversation>>,
         cx: &mut App,
     ) {
-        cx.spawn(async move |cx| {
+        let task = cx.spawn(async move |cx| {
             let result = task.await;
             cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| match result {
                 Ok(created) => hotkeys.finish_shortcut_trigger(created, cx),
@@ -964,8 +963,13 @@ impl GlobalHotkeyState {
                     cx,
                 ),
             });
-        })
-        .detach();
+        });
+        self.retain_task(task);
+    }
+
+    pub(crate) fn retain_task(&mut self, task: Task<()>) {
+        self.tasks.retain(|task| !task.is_ready());
+        self.tasks.push(task);
     }
 
     fn finish_shortcut_trigger(
@@ -1133,7 +1137,7 @@ mod tests {
     use crate::{
         foundation::I18n,
         platform::capture::CaptureError,
-        state::attachments::{ComposerAttachmentKind, ComposerAttachmentSource},
+        state::conversations::attachments::{ComposerAttachmentKind, ComposerAttachmentSource},
     };
     use global_hotkey::hotkey::HotKey;
     use gpui::Task;

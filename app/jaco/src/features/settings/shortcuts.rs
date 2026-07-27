@@ -64,8 +64,12 @@ impl ShortcutsSettingsPage {
             state::selectors::SelectShortcutRecords,
             |_page, _shortcuts, _window, cx| cx.notify(),
         );
-        let shortcut_phase_subscription =
-            shortcut_catalog.observe_in(cx, window, |_page, _operation, _window, cx| cx.notify());
+        let shortcut_phase_subscription = shortcut_catalog.observe_select_in(
+            cx,
+            window,
+            state::selectors::SelectShortcutStatus,
+            |_page, _status, _window, cx| cx.notify(),
+        );
         let prompt_catalog = state::prompts::catalog(cx);
         let prompt_subscription = prompt_catalog.observe_select_in(
             cx,
@@ -73,8 +77,12 @@ impl ShortcutsSettingsPage {
             state::selectors::SelectPromptRecords,
             |_page, _catalog, _window, cx| cx.notify(),
         );
-        let prompt_phase_subscription =
-            prompt_catalog.observe_in(cx, window, |_page, _operation, _window, cx| cx.notify());
+        let prompt_phase_subscription = prompt_catalog.observe_select_in(
+            cx,
+            window,
+            state::selectors::SelectPromptStatus,
+            |_page, _status, _window, cx| cx.notify(),
+        );
         let provider_catalog = state::providers::catalog(cx);
         let provider_subscription = provider_catalog.observe_select_in(
             cx,
@@ -82,8 +90,12 @@ impl ShortcutsSettingsPage {
             state::selectors::SelectProviderRecordsWithModels,
             |_page, _catalog, _window, cx| cx.notify(),
         );
-        let provider_phase_subscription =
-            provider_catalog.observe_in(cx, window, |_page, _operation, _window, cx| cx.notify());
+        let provider_phase_subscription = provider_catalog.observe_select_in(
+            cx,
+            window,
+            state::selectors::SelectProviderStatus,
+            |_page, _status, _window, cx| cx.notify(),
+        );
         let diagnostics_subscription =
             cx.observe_global_in::<state::GlobalHotkeyState>(window, |_page, _window, cx| {
                 cx.notify();
@@ -279,17 +291,16 @@ impl ShortcutsSettingsPage {
         cx: &mut Context<Self>,
     ) {
         let mutation = state::shortcuts::set_shortcut_enabled(cx, shortcut_id, enabled);
-        window
-            .spawn(cx, async move |cx| {
-                let result = mutation.await;
-                if let Err(err) = result {
-                    let _ = cx.update(|window, cx| {
-                        let title = cx.global::<I18n>().t("notify-save-shortcut-failed");
-                        push_settings_error(window, cx, title, err);
-                    });
-                }
-            })
-            .detach();
+        let completion = window.spawn(cx, async move |cx| {
+            let result = mutation.await;
+            if let Err(err) = result {
+                let _ = cx.update(|window, cx| {
+                    let title = cx.global::<I18n>().t("notify-save-shortcut-failed");
+                    push_settings_error(window, cx, title, err);
+                });
+            }
+        });
+        crate::app::tasks::retain_window(window, completion, cx);
     }
 
     fn reregister_shortcut(

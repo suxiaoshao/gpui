@@ -9,5 +9,5 @@ use gpui::App;
 
 pub(crate) fn init(cx: &mut App) {
     actions::init(cx);
-    crate::components::chat_input::init(cx);
+    crate::components::chat::input::init(cx);
 }

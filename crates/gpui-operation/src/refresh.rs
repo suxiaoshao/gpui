@@ -11,6 +11,7 @@
 //!
 //! | Current | Message | Output |
 //! |---|---|---|
+//! | `Idle` | `Settle<Result<Data, Problem>>` | `FetchCompleted<Data, Problem>` |
 //! | `Idle` | `Load<Task>` | `Fetching<Idle, Task>` |
 //! | `Ready<Data>` | `Refresh<Task>` | `Fetching<Ready<Data>, Task>` |
 //! | `Unavailable<Problem>` | `Retry<Task>` | `Fetching<Unavailable<Problem>, Task>` |
@@ -21,11 +22,12 @@
 //! | `Fetching<Ready<Data>, Task>` | `Complete<Data, Problem>` | `RefreshCompleted<Data, Problem>` |
 //! | `Fetching<Degraded<Data, Problem>, Task>` | `Complete<Data, Problem>` | `RefreshCompleted<Data, Problem>` |
 
-use crate::{Cancel, Complete, Load, Refresh, Retry, Transition};
+use crate::{Cancel, Complete, Load, Refresh, Retry, Settle, Transition};
 
 /// No fetch has ever been requested.
 ///
-/// The only valid transition is [`Load`].
+/// Valid transitions are [`Settle`] for synchronous initial work and [`Load`]
+/// for asynchronous initial work.
 ///
 /// ```compile_fail
 /// use gpui_operation::{Cancel, Transition};
@@ -265,6 +267,29 @@ fn trace_ignored<Message>(phase: Phase) {
 
 // ── Complete runtime enum transitions ──────────────────────────────────
 
+impl<Data, Problem: std::error::Error, Task> Transition<Settle<Data, Problem>>
+    for &mut Operation<Data, Problem, Task>
+{
+    type Output = ();
+
+    fn transition(self, message: Settle<Data, Problem>) {
+        let current = std::mem::take(self);
+        match current {
+            Operation::Idle(_) => {
+                *self = match message.0 {
+                    Ok(data) => Operation::Ready(Ready { data }),
+                    Err(problem) => Operation::Unavailable(Unavailable { problem }),
+                };
+            }
+            current => {
+                *self = current;
+                trace_ignored::<Settle<Data, Problem>>(self.phase());
+                drop(message);
+            }
+        }
+    }
+}
+
 impl<Data, Problem: std::error::Error, Task> Transition<Load<Task>>
     for &mut Operation<Data, Problem, Task>
 {
@@ -445,6 +470,17 @@ impl<Data, Problem: std::error::Error, Task> Transition<Cancel>
 }
 
 // ── Transition implementations ──────────────────────────────────────────
+
+impl<Data, Problem: std::error::Error> Transition<Settle<Data, Problem>> for Idle {
+    type Output = FetchCompleted<Data, Problem>;
+
+    fn transition(self, message: Settle<Data, Problem>) -> Self::Output {
+        match message.0 {
+            Ok(data) => FetchCompleted::Ready(Ready { data }),
+            Err(problem) => FetchCompleted::Unavailable(Unavailable { problem }),
+        }
+    }
+}
 
 impl<Task> Transition<Load<Task>> for Idle {
     type Output = Fetching<Idle, Task>;

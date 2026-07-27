@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use gpui::{App, Task};
+use gpui::App;
 use jaco_agent::{
     McpServerConfig, McpServerRuntimeConfig, McpServerTransport, McpStdioTransport,
     McpStreamableHttpTransport,
@@ -351,18 +351,16 @@ pub(crate) fn upsert_mcp_server(
     original_server_id: Option<&str>,
     server_id: String,
     server: McpServerTomlConfig,
-) -> Task<JacoResult<()>> {
-    if let Err(error) = server.validate(&server_id) {
-        return Task::ready(Err(error));
-    }
+) -> JacoResult<()> {
+    server.validate(&server_id)?;
     let duplicate = read(cx, |config| {
         config.mcp_servers.contains_key(&server_id)
             && original_server_id.is_none_or(|original_server_id| original_server_id != server_id)
     });
     if duplicate {
-        return Task::ready(Err(JacoError::Config(format!(
+        return Err(JacoError::Config(format!(
             "mcp server `{server_id}` already exists"
-        ))));
+        )));
     }
     let original_server_id = original_server_id.map(ToOwned::to_owned);
     update_config(cx, move |config| {
@@ -376,7 +374,7 @@ pub(crate) fn upsert_mcp_server(
     })
 }
 
-pub(crate) fn delete_mcp_server(cx: &mut App, server_id: &str) -> Task<JacoResult<bool>> {
+pub(crate) fn delete_mcp_server(cx: &mut App, server_id: &str) -> JacoResult<bool> {
     let server_id = server_id.to_string();
     update_config(cx, move |config| {
         let servers = &mut config.mcp_servers;
@@ -388,12 +386,12 @@ pub(crate) fn set_mcp_server_enabled(
     cx: &mut App,
     server_id: &str,
     enabled: bool,
-) -> Task<JacoResult<()>> {
+) -> JacoResult<()> {
     let exists = read(cx, |config| config.mcp_servers.contains_key(server_id));
     if !exists {
-        return Task::ready(Err(JacoError::Config(format!(
+        return Err(JacoError::Config(format!(
             "mcp server `{server_id}` was not found"
-        ))));
+        )));
     }
     let server_id = server_id.to_string();
     update_config(cx, move |config| {

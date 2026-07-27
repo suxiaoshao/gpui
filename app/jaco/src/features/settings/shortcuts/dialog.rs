@@ -1,14 +1,14 @@
 use crate::{
-    components::chat_form::{
+    components::chat::form::{
         AddAttachmentControl, AttachmentControlState, ChatForm, ChatFormControls, ControlSlot,
         PrimaryActionControlState, RunSettingsControls,
     },
-    components::chat_input::ComposerEditor,
-    components::delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
-    components::hotkey_input::{HotkeyInput, HotkeyInputEvent, string_to_keystroke},
-    components::run_settings::{
+    components::chat::input::ComposerEditor,
+    components::chat::run_settings::{
         RunSettingsController, RunSettingsSubmitError, resolve_run_settings,
     },
+    components::delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
+    components::hotkey_input::{HotkeyInput, HotkeyInputEvent, string_to_keystroke},
     foundation::{I18n, assets::IconName},
     state::{self, shortcuts::ShortcutDraft},
 };
@@ -677,24 +677,23 @@ pub(super) fn open_shortcut_delete_confirm(
             let mutation = state::shortcuts::delete_shortcut(cx, shortcut_id.clone());
             let deleted_title = deleted_title.clone();
             let delete_failed_title = delete_failed_title.clone();
-            window
-                .spawn(cx, async move |cx| {
-                    let result = mutation.await;
-                    let _ = cx.update(|window, cx| match result {
-                        Ok(_) => {
-                            window.push_notification(
-                                Notification::new()
-                                    .title(deleted_title)
-                                    .with_type(NotificationType::Success),
-                                cx,
-                            );
-                        }
-                        Err(err) => {
-                            push_settings_error(window, cx, delete_failed_title, err);
-                        }
-                    });
-                })
-                .detach();
+            let completion = window.spawn(cx, async move |cx| {
+                let result = mutation.await;
+                let _ = cx.update(|window, cx| match result {
+                    Ok(_) => {
+                        window.push_notification(
+                            Notification::new()
+                                .title(deleted_title)
+                                .with_type(NotificationType::Success),
+                            cx,
+                        );
+                    }
+                    Err(err) => {
+                        push_settings_error(window, cx, delete_failed_title, err);
+                    }
+                });
+            });
+            crate::app::tasks::retain_window(window, completion, cx);
         },
         window,
         cx,

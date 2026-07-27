@@ -1,3 +1,5 @@
+pub(crate) mod secrets;
+
 use std::fmt;
 
 use gpui::{App, Task};
@@ -9,7 +11,7 @@ use jaco_db::{
 };
 use tokio::sync::oneshot;
 
-use crate::{database, state::session::CatalogMutation};
+use crate::{database, database::session::CatalogMutation};
 
 pub(crate) type ProviderOperation = refresh::Operation<ProviderData, ProviderProblem, Task<()>>;
 pub(crate) type ProviderStore = Store<ProviderOperation>;
@@ -369,7 +371,8 @@ where
         Err(error) => return Task::ready(Err(error)),
     };
     let (sender, receiver) = oneshot::channel();
-    cx.spawn(async move |cx| {
+    let task_binding = binding.clone();
+    let driver = cx.spawn(async move |cx| {
         let result = executor.mutate(CatalogMutation::Provider, command).await;
         if let Ok(value) = &result {
             let message = message(value);
@@ -381,8 +384,8 @@ where
             });
         }
         let _ = sender.send(result);
-    })
-    .detach();
+    });
+    crate::app::session::retain_task(task_binding, driver, cx);
     cx.spawn(async move |_| {
         receiver.await.unwrap_or_else(|_| {
             Err(DbError::Invariant(
