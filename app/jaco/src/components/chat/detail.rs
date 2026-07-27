@@ -26,20 +26,21 @@ use crate::{
     components::chat::input::{
         ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
     },
+    features::conversation,
     foundation::{I18n, conversation_format as format},
-    state::{self, conversations::ConversationLoadSnapshot},
 };
+use conversation::ConversationLoadSnapshot;
 
 pub(crate) struct ConversationDetailPage {
     conversation_id: ConversationId,
-    operation: state::conversations::ConversationTimelineOperation,
+    operation: conversation::ConversationTimelineOperation,
     pending_changes: Vec<jaco_db::ConversationChange>,
     chat_form: Entity<ChatInputController>,
     timeline: ListState,
     timeline_rows: timeline::ConversationTimelineRows,
     message_text_states: Vec<MessageTextState>,
     expanded_agent_runs: HashMap<AgentRunId, bool>,
-    runtime: Entity<state::conversations::runtime::ConversationRuntimeStore>,
+    runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -127,7 +128,7 @@ fn message_text_update<'a>(previous: &str, next: &'a str) -> MessageTextUpdate<'
 impl ConversationDetailPage {
     pub(crate) fn new(
         conversation_id: ConversationId,
-        runtime: Entity<state::conversations::runtime::ConversationRuntimeStore>,
+        runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -136,7 +137,7 @@ impl ConversationDetailPage {
 
     pub(crate) fn new_without_focus(
         conversation_id: ConversationId,
-        runtime: Entity<state::conversations::runtime::ConversationRuntimeStore>,
+        runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -145,7 +146,7 @@ impl ConversationDetailPage {
 
     fn new_with_focus(
         conversation_id: ConversationId,
-        runtime: Entity<state::conversations::runtime::ConversationRuntimeStore>,
+        runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
         focus_composer: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -178,18 +179,14 @@ impl ConversationDetailPage {
         let runtime_subscription = cx.subscribe_in(
             &runtime,
             window,
-            |page,
-             runtime,
-             event: &state::conversations::runtime::ConversationRuntimeEvent,
-             window,
-             cx| {
+            |page, runtime, event: &conversation::runtime::ConversationRuntimeEvent, window, cx| {
                 page.handle_runtime_event(runtime, event, window, cx);
             },
         );
 
         let mut page = Self {
             conversation_id,
-            operation: state::conversations::ConversationTimelineOperation::new(),
+            operation: conversation::ConversationTimelineOperation::new(),
             pending_changes: Vec::new(),
             chat_form,
             timeline,
@@ -222,7 +219,7 @@ impl ConversationDetailPage {
         if self.runtime.read(cx).is_running(&self.conversation_id) {
             return;
         }
-        let request = state::conversations::SendConversationMessageRequest {
+        let request = conversation::SendConversationMessageRequest {
             conversation_id: self.conversation_id.clone(),
             content_parts: submit.composer.content_parts.clone(),
             attachments: submit.attachments.clone(),
@@ -231,82 +228,80 @@ impl ConversationDetailPage {
             reasoning_selection: submit.reasoning_selection,
             approval_mode: submit.approval_mode,
         };
-        let task = state::conversations::send_conversation_message(request, cx);
+        let task = conversation::send_conversation_message(request, cx);
         let page = cx.entity().downgrade();
         let completion = window.spawn(cx, async move |cx| {
-                let result = task.await;
-                let _ = page.update_in(cx, |page, window, cx| match result {
-                    Ok(sent) => {
-                        page.chat_form.update(cx, |chat_form, cx| {
-                            chat_form.clear_after_submit(window, cx);
-                        });
-                        let runtime = page.runtime.clone();
-                        page.handle_runtime_event(
-                            &runtime,
-                            &state::conversations::runtime::ConversationRuntimeEvent::ConversationChanges {
-                                conversation_id: sent.conversation.id.clone(),
-                                conversation: Some(Box::new(sent.conversation)),
-                                changes: vec![jaco_db::ConversationChange::EntryAppended {
-                                    entry: sent.item,
-                                }],
-                            },
-                            window,
-                            cx,
-                        );
-                        page.timeline.set_follow_mode(FollowMode::Tail);
-                        page.timeline.scroll_to_end();
-                        page.runtime.update(cx, |runtime, cx| {
-                            runtime.start_run(sent.run_request, window, cx);
-                        });
-                    }
-                    Err(err) => {
-                        let title = cx.global::<I18n>().t("conversation-send-failed");
-                        push_conversation_notification(
-                            window,
-                            cx,
-                            title,
-                            err.to_string(),
-                            NotificationType::Error,
-                        );
-                    }
-                });
+            let result = task.await;
+            let _ = page.update_in(cx, |page, window, cx| match result {
+                Ok(sent) => {
+                    page.chat_form.update(cx, |chat_form, cx| {
+                        chat_form.clear_after_submit(window, cx);
+                    });
+                    let runtime = page.runtime.clone();
+                    page.handle_runtime_event(
+                        &runtime,
+                        &conversation::runtime::ConversationRuntimeEvent::ConversationChanges {
+                            conversation_id: sent.conversation.id.clone(),
+                            conversation: Some(Box::new(sent.conversation)),
+                            changes: vec![jaco_db::ConversationChange::EntryAppended {
+                                entry: sent.item,
+                            }],
+                        },
+                        window,
+                        cx,
+                    );
+                    page.timeline.set_follow_mode(FollowMode::Tail);
+                    page.timeline.scroll_to_end();
+                    page.runtime.update(cx, |runtime, cx| {
+                        runtime.start_run(sent.run_request, window, cx);
+                    });
+                }
+                Err(err) => {
+                    let title = cx.global::<I18n>().t("conversation-send-failed");
+                    push_conversation_notification(
+                        window,
+                        cx,
+                        title,
+                        err.to_string(),
+                        NotificationType::Error,
+                    );
+                }
             });
+        });
         crate::app::tasks::retain_window(window, completion, cx);
     }
 
     fn handle_runtime_event(
         &mut self,
-        runtime: &Entity<state::conversations::runtime::ConversationRuntimeStore>,
-        event: &state::conversations::runtime::ConversationRuntimeEvent,
+        runtime: &Entity<conversation::runtime::ConversationRuntimeStore>,
+        event: &conversation::runtime::ConversationRuntimeEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let event_conversation_id = match event {
-            state::conversations::runtime::ConversationRuntimeEvent::RunStarted {
+            conversation::runtime::ConversationRuntimeEvent::RunStarted { conversation_id }
+            | conversation::runtime::ConversationRuntimeEvent::ConversationChanged {
                 conversation_id,
             }
-            | state::conversations::runtime::ConversationRuntimeEvent::ConversationChanged {
-                conversation_id,
-            }
-            | state::conversations::runtime::ConversationRuntimeEvent::ConversationChanges {
+            | conversation::runtime::ConversationRuntimeEvent::ConversationChanges {
                 conversation_id,
                 ..
             }
-            | state::conversations::runtime::ConversationRuntimeEvent::RunFinished {
-                conversation_id,
-            } => conversation_id,
+            | conversation::runtime::ConversationRuntimeEvent::RunFinished { conversation_id } => {
+                conversation_id
+            }
         };
         if event_conversation_id != &self.conversation_id {
             return;
         }
 
         match event {
-            state::conversations::runtime::ConversationRuntimeEvent::ConversationChanges {
+            conversation::runtime::ConversationRuntimeEvent::ConversationChanges {
                 conversation,
                 changes,
                 ..
             } => {
-                if let state::conversations::ConversationTimelineOperation::Ready(ready) =
+                if let conversation::ConversationTimelineOperation::Ready(ready) =
                     &mut self.operation
                 {
                     ready.transition(TimelineCommit {
@@ -321,20 +316,18 @@ impl ConversationDetailPage {
                     self.pending_changes.extend(changes.iter().cloned());
                 }
             }
-            state::conversations::runtime::ConversationRuntimeEvent::ConversationChanged {
-                ..
-            } => {
+            conversation::runtime::ConversationRuntimeEvent::ConversationChanged { .. } => {
                 self.reload(window, cx);
             }
-            state::conversations::runtime::ConversationRuntimeEvent::RunStarted { .. }
-            | state::conversations::runtime::ConversationRuntimeEvent::RunFinished { .. } => {
+            conversation::runtime::ConversationRuntimeEvent::RunStarted { .. }
+            | conversation::runtime::ConversationRuntimeEvent::RunFinished { .. } => {
                 self.sync_agent_running(cx);
                 cx.notify();
             }
         }
         if matches!(
             event,
-            state::conversations::runtime::ConversationRuntimeEvent::RunFinished { .. }
+            conversation::runtime::ConversationRuntimeEvent::RunFinished { .. }
         ) {
             runtime.update(cx, |runtime, cx| {
                 if let Some(error) = runtime.take_last_error(&self.conversation_id) {
@@ -359,9 +352,7 @@ impl ConversationDetailPage {
             return;
         }
         let changes = std::mem::take(&mut self.pending_changes);
-        if let state::conversations::ConversationTimelineOperation::Ready(ready) =
-            &mut self.operation
-        {
+        if let conversation::ConversationTimelineOperation::Ready(ready) = &mut self.operation {
             ready.transition(TimelineCommit {
                 conversation: None,
                 changes,
@@ -385,7 +376,7 @@ impl ConversationDetailPage {
                     repository.conversation_timeline_records(&conversation_id)
                 })
                 .await
-                .map_err(state::conversations::ConversationTimelineProblem::from);
+                .map_err(conversation::ConversationTimelineProblem::from);
             let _ = page.update_in(cx, |page, window, cx| {
                 if page.conversation_id != completion_id || !page.operation.is_running() {
                     return;
@@ -400,20 +391,20 @@ impl ConversationDetailPage {
             });
         });
         match &mut self.operation {
-            state::conversations::ConversationTimelineOperation::Idle(_) => {
+            conversation::ConversationTimelineOperation::Idle(_) => {
                 self.operation.transition(Load(task))
             }
-            state::conversations::ConversationTimelineOperation::Ready(_)
-            | state::conversations::ConversationTimelineOperation::Degraded(_) => {
+            conversation::ConversationTimelineOperation::Ready(_)
+            | conversation::ConversationTimelineOperation::Degraded(_) => {
                 self.operation.transition(Refresh(task))
             }
-            state::conversations::ConversationTimelineOperation::Unavailable(_) => {
+            conversation::ConversationTimelineOperation::Unavailable(_) => {
                 self.operation.transition(Retry(task))
             }
-            state::conversations::ConversationTimelineOperation::Loading(_)
-            | state::conversations::ConversationTimelineOperation::Refreshing(_)
-            | state::conversations::ConversationTimelineOperation::Retrying(_)
-            | state::conversations::ConversationTimelineOperation::RefreshingDegraded(_) => {}
+            conversation::ConversationTimelineOperation::Loading(_)
+            | conversation::ConversationTimelineOperation::Refreshing(_)
+            | conversation::ConversationTimelineOperation::Retrying(_)
+            | conversation::ConversationTimelineOperation::RefreshingDegraded(_) => {}
         }
         self.refresh_chat_form_context(cx);
         self.sync_message_text_states(cx);
@@ -696,7 +687,7 @@ impl ConversationDetailPage {
         let running = self.operation.is_running();
         (!matches!(
             self.operation,
-            state::conversations::ConversationTimelineOperation::Ready(_)
+            conversation::ConversationTimelineOperation::Ready(_)
         ))
         .then(|| {
             v_flex()

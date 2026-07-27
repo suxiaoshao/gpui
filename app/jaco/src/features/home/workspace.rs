@@ -5,21 +5,85 @@ use std::{
 };
 
 use gpui::{App, AppContext, Context, Entity, SharedString, Subscription, Task};
-use gpui_store::StoreSelection;
+use gpui_store::{Select, StoreSelection};
 use jaco_core::{ConversationId, ConversationStatus, ProjectId, ProjectKind};
 use jaco_db::{ConversationRecord, ProjectRecord};
 
 use crate::{
     database,
-    state::{
-        conversations::index as conversation_index,
-        projects,
-        selectors::{
-            SelectWorkspaceConversations, SelectWorkspaceProjects, WorkspaceConversationInput,
-            WorkspaceProjectInput,
-        },
-    },
+    state::{conversation_index, projects},
 };
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorkspaceProjectInput {
+    id: ProjectId,
+    kind: ProjectKind,
+    path: PathBuf,
+    display_name: String,
+    pinned: bool,
+    updated_at: i128,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SelectWorkspaceProjects;
+
+impl Select<projects::ProjectOperation> for SelectWorkspaceProjects {
+    type Output = Option<Vec<WorkspaceProjectInput>>;
+
+    fn select(&self, operation: &projects::ProjectOperation) -> Self::Output {
+        operation.data().map(|data| {
+            data.projects()
+                .iter()
+                .filter(|project| !project.removed)
+                .map(|project| WorkspaceProjectInput {
+                    id: project.id.clone(),
+                    kind: project.kind,
+                    path: PathBuf::from(&project.path),
+                    display_name: project.display_name.clone(),
+                    pinned: project.pinned,
+                    updated_at: project.updated_at.unix_timestamp_nanos(),
+                })
+                .collect()
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorkspaceConversationInput {
+    id: ConversationId,
+    project_id: ProjectId,
+    title: String,
+    pinned: bool,
+    status: ConversationStatus,
+    updated_at: i128,
+    deleted_at: Option<i128>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SelectWorkspaceConversations;
+
+impl Select<conversation_index::ConversationIndexOperation> for SelectWorkspaceConversations {
+    type Output = Option<Vec<WorkspaceConversationInput>>;
+
+    fn select(&self, operation: &conversation_index::ConversationIndexOperation) -> Self::Output {
+        operation.data().map(|data| {
+            data.conversations()
+                .iter()
+                .map(|conversation| WorkspaceConversationInput {
+                    id: conversation.id.clone(),
+                    project_id: conversation.project_id.clone(),
+                    title: conversation.title.clone(),
+                    pinned: conversation.pinned,
+                    status: conversation.status,
+                    updated_at: conversation.updated_at.unix_timestamp_nanos(),
+                    deleted_at: conversation
+                        .deleted_at
+                        .map(|deleted_at| deleted_at.unix_timestamp_nanos()),
+                })
+                .collect()
+        })
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HomeRoute {
@@ -71,7 +135,7 @@ pub(crate) struct SidebarSearchResult {
     pub(crate) project: Option<SidebarProjectHeader>,
 }
 
-pub(crate) struct JacoWorkspaceStore {
+pub(crate) struct HomeWorkspace {
     route: HomeRoute,
     snapshot: SidebarSnapshot,
     expanded_project_ids: HashSet<ProjectId>,
@@ -81,7 +145,7 @@ pub(crate) struct JacoWorkspaceStore {
     _subscriptions: Vec<Subscription>,
 }
 
-impl JacoWorkspaceStore {
+impl HomeWorkspace {
     fn new(
         project_catalog: projects::ProjectStore,
         conversation_catalog: conversation_index::ConversationIndexStore,
@@ -206,7 +270,7 @@ impl JacoWorkspaceStore {
         pinned: bool,
         cx: &mut Context<Self>,
     ) -> Task<jaco_db::Result<ConversationRecord>> {
-        super::conversations::set_conversation_pinned(conversation_id, pinned, cx)
+        crate::features::conversation::set_conversation_pinned(conversation_id, pinned, cx)
     }
 
     pub(crate) fn delete_conversation(
@@ -217,7 +281,7 @@ impl JacoWorkspaceStore {
         if matches!(&self.route, HomeRoute::Conversation(id) if id == &conversation_id) {
             self.route = HomeRoute::NewConversation;
         }
-        super::conversations::delete_conversation(conversation_id, cx)
+        crate::features::conversation::delete_conversation(conversation_id, cx)
     }
 
     pub(crate) fn search_conversations(
@@ -303,14 +367,10 @@ impl JacoWorkspaceStore {
     }
 }
 
-pub(crate) fn create(cx: &mut App) -> Entity<JacoWorkspaceStore> {
+pub(crate) fn create(cx: &mut App) -> Entity<HomeWorkspace> {
     let project_catalog = projects::catalog(cx);
     let conversation_catalog = conversation_index::catalog(cx);
-    cx.new(|cx| JacoWorkspaceStore::new(project_catalog, conversation_catalog, cx))
-}
-
-pub(crate) fn workspace(cx: &App) -> Entity<JacoWorkspaceStore> {
-    crate::app::ready_workspace(cx).expect("workspace requires a ready application session")
+    cx.new(|cx| HomeWorkspace::new(project_catalog, conversation_catalog, cx))
 }
 
 fn build_sidebar_snapshot(
@@ -413,27 +473,13 @@ fn project_header(project: &WorkspaceProjectInput) -> SidebarProjectHeader {
     }
 }
 
-pub(crate) fn conversation_node(
-    conversation: &WorkspaceConversationInput,
-) -> SidebarConversationNode {
+fn conversation_node(conversation: &WorkspaceConversationInput) -> SidebarConversationNode {
     debug_assert_eq!(conversation.status, ConversationStatus::Active);
     SidebarConversationNode {
         id: conversation.id.clone(),
         project_id: conversation.project_id.clone(),
         title: conversation.title.clone().into(),
         updated_at: conversation.updated_at,
-        pinned: conversation.pinned,
-    }
-}
-
-pub(crate) fn conversation_record_node(
-    conversation: ConversationRecord,
-) -> SidebarConversationNode {
-    SidebarConversationNode {
-        id: conversation.id,
-        project_id: conversation.project_id,
-        title: conversation.title.into(),
-        updated_at: conversation.updated_at.unix_timestamp_nanos(),
         pinned: conversation.pinned,
     }
 }

@@ -396,7 +396,7 @@ impl ConversationRuntimeStore {
             } => {
                 let conversation = *conversation;
                 let conversation_id = conversation.id.clone();
-                crate::state::conversations::index::publish_committed(
+                crate::state::conversation_index::publish_committed(
                     conversation.clone(),
                     index_delta,
                     cx,

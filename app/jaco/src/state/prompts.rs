@@ -2,7 +2,7 @@ use std::fmt;
 
 use gpui::{App, AppContext, Task};
 use gpui_operation::{Complete, Load, Refresh, Retry, Transition, refresh};
-use gpui_store::Store;
+use gpui_store::{Select, Store};
 use jaco_core::{PromptContent, PromptId};
 use jaco_db::{DbError, NewPrompt, PromptRecord, UpdatePrompt};
 use tokio::sync::oneshot;
@@ -13,6 +13,31 @@ const DEFAULT_SORT_ORDER_STEP: i32 = 10;
 
 pub(crate) type PromptOperation = refresh::Operation<PromptData, PromptProblem, Task<()>>;
 pub(crate) type PromptStore = Store<PromptOperation>;
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectPromptRecords;
+
+impl Select<PromptOperation> for SelectPromptRecords {
+    type Output = Option<Vec<PromptRecord>>;
+
+    fn select(&self, operation: &PromptOperation) -> Self::Output {
+        operation.data().map(|data| data.prompts().to_vec())
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectPromptStatus;
+
+impl Select<PromptOperation> for SelectPromptStatus {
+    type Output = (gpui_operation::refresh::Phase, Option<String>);
+
+    fn select(&self, operation: &PromptOperation) -> Self::Output {
+        (
+            operation.phase(),
+            operation.problem().map(ToString::to_string),
+        )
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct PromptData {

@@ -6,7 +6,7 @@ use crate::{
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, StyledExt, WindowExt as NotificationWindowExt,
+    ActiveTheme, Disableable, Icon, StyledExt, WindowExt as NotificationWindowExt,
     button::{Button, ButtonVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
     form::field as component_form_field,
@@ -261,13 +261,16 @@ pub(super) fn open_prompt_edit_dialog(
     let form_to_focus = form.clone();
     let form_to_return = form.clone();
 
-    window.open_dialog(cx, move |dialog, _window, _cx| {
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let mutable = prompt_resource_is_ready(cx);
         dialog
             .title(title.clone())
             .w(px(620.))
             .on_ok({
                 let form = form.clone();
-                move |_, window, cx| confirm_prompt_edit_dialog(&form, window, cx)
+                move |_, window, cx| {
+                    prompt_resource_is_ready(cx) && confirm_prompt_edit_dialog(&form, window, cx)
+                }
             })
             .child(form.clone())
             .footer(
@@ -281,7 +284,8 @@ pub(super) fn open_prompt_edit_dialog(
                             Button::new("prompt-dialog-save")
                                 .primary()
                                 .icon(IconName::FilePen)
-                                .label(save_label.clone()),
+                                .label(save_label.clone())
+                                .disabled(!mutable),
                         ),
                     ),
             )
@@ -309,6 +313,8 @@ pub(super) fn open_prompt_preview_dialog(prompt: PromptRecord, window: &mut Wind
     let close_label = cx.global::<I18n>().t("button-cancel");
 
     window.open_dialog(cx, move |dialog, _window, cx| {
+        let mutable = prompt_resource_is_ready(cx);
+        let read_only = cx.global::<I18n>().t("resource-picker-read-only");
         dialog
             .title(title.clone())
             .w(px(680.))
@@ -320,6 +326,12 @@ pub(super) fn open_prompt_preview_dialog(prompt: PromptRecord, window: &mut Wind
                             Button::new("prompt-dialog-edit")
                                 .icon(IconName::Pencil)
                                 .label(edit_label.clone())
+                                .disabled(!mutable)
+                                .tooltip(
+                                    (!mutable)
+                                        .then_some(read_only.clone())
+                                        .unwrap_or_else(|| edit_label.clone()),
+                                )
                                 .on_click({
                                     let prompt = prompt.clone();
                                     move |_, window, cx| {
@@ -340,6 +352,12 @@ pub(super) fn open_prompt_preview_dialog(prompt: PromptRecord, window: &mut Wind
                                 .danger()
                                 .icon(IconName::Trash)
                                 .label(delete_label.clone())
+                                .disabled(!mutable)
+                                .tooltip(
+                                    (!mutable)
+                                        .then_some(read_only.clone())
+                                        .unwrap_or_else(|| delete_label.clone()),
+                                )
                                 .on_click({
                                     let prompt = prompt.clone();
                                     move |_, window, cx| {
@@ -355,6 +373,13 @@ pub(super) fn open_prompt_preview_dialog(prompt: PromptRecord, window: &mut Wind
                     ),
             )
     });
+}
+
+fn prompt_resource_is_ready(cx: &App) -> bool {
+    crate::app::critical_resources_ready(cx)
+        && state::prompts::catalog(cx).read(cx, |operation| {
+            matches!(operation, state::prompts::PromptOperation::Ready(_))
+        })
 }
 
 pub(super) fn open_prompt_delete_confirm(prompt: PromptRecord, window: &mut Window, cx: &mut App) {
@@ -620,8 +645,10 @@ mod tests {
             gpui_component::init(cx);
             database::install_for_test(cx, dir.path());
             foundation::init_i18n(cx);
-            state::prompts::init(cx);
+            state::hotkey::set_test_hotkey_state(cx);
+            crate::app::session::init(cx);
         });
+        cx.run_until_parked();
         dir
     }
 

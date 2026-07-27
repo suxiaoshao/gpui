@@ -1,7 +1,6 @@
 use crate::{
     components::delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
     foundation::{I18n, assets::IconName},
-    state,
 };
 use fluent_bundle::FluentArgs;
 use gpui::*;
@@ -15,11 +14,12 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::state::workspace::{SidebarConversationNode, SidebarProjectHeader};
+use super::super::workspace::{HomeWorkspace, SidebarConversationNode, SidebarProjectHeader};
 
 pub(super) fn project_popup_menu(
     menu: PopupMenu,
     project: SidebarProjectHeader,
+    workspace: Entity<HomeWorkspace>,
     _window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
@@ -36,6 +36,9 @@ pub(super) fn project_popup_menu(
     let project_for_show = project.clone();
     let project_for_rename = project.clone();
     let project_for_remove = project;
+    let workspace_for_pin = workspace.clone();
+    let workspace_for_rename = workspace.clone();
+    let workspace_for_remove = workspace;
 
     menu.item(
         PopupMenuItem::new(pin_label)
@@ -45,10 +48,9 @@ pub(super) fn project_popup_menu(
                 IconName::Pin
             })
             .on_click(move |_, window, cx| {
-                let workspace = state::workspace::workspace(cx);
                 let project_id = project_for_pin.id.clone();
                 let pinned = !project_for_pin.pinned;
-                let task = workspace.update(cx, |workspace, cx| {
+                let task = workspace_for_pin.update(cx, |workspace, cx| {
                     workspace.pin_project(project_id, pinned, cx)
                 });
                 let completion = window.spawn(cx, async move |cx| {
@@ -77,7 +79,12 @@ pub(super) fn project_popup_menu(
         PopupMenuItem::new(rename_label)
             .icon(IconName::Pencil)
             .on_click(move |_, window, cx| {
-                open_rename_project_dialog(project_for_rename.clone(), window, cx);
+                open_rename_project_dialog(
+                    project_for_rename.clone(),
+                    workspace_for_rename.clone(),
+                    window,
+                    cx,
+                );
             }),
     )
     .item(PopupMenuItem::separator())
@@ -85,13 +92,19 @@ pub(super) fn project_popup_menu(
         PopupMenuItem::new(remove_label)
             .icon(IconName::FolderMinus)
             .on_click(move |_, window, cx| {
-                open_remove_project_confirm(project_for_remove.clone(), window, cx);
+                open_remove_project_confirm(
+                    project_for_remove.clone(),
+                    workspace_for_remove.clone(),
+                    window,
+                    cx,
+                );
             }),
     )
 }
 
 pub(super) fn open_delete_conversation_confirm(
     conversation: SidebarConversationNode,
+    workspace: Entity<HomeWorkspace>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -108,7 +121,6 @@ pub(super) fn open_delete_conversation_confirm(
         message,
         DestructiveAction::Delete,
         move |window, cx| {
-            let workspace = state::workspace::workspace(cx);
             let task = workspace.update(cx, |workspace, cx| {
                 workspace.delete_conversation(conversation_id.clone(), cx)
             });
@@ -131,7 +143,12 @@ pub(super) fn open_delete_conversation_confirm(
     );
 }
 
-fn open_rename_project_dialog(project: SidebarProjectHeader, window: &mut Window, cx: &mut App) {
+fn open_rename_project_dialog(
+    project: SidebarProjectHeader,
+    workspace: Entity<HomeWorkspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let input = cx.new(|cx| {
         InputState::new(window, cx)
             .default_value(project.display_name.to_string())
@@ -168,13 +185,13 @@ fn open_rename_project_dialog(project: SidebarProjectHeader, window: &mut Window
                                 .on_click({
                                     let input = input.clone();
                                     let project_id = project_id.clone();
+                                    let workspace = workspace.clone();
                                     move |_, window, cx| {
                                         let display_name =
                                             input.read(cx).value().trim().to_string();
                                         if display_name.is_empty() {
                                             return;
                                         }
-                                        let workspace = state::workspace::workspace(cx);
                                         let task = workspace.update(cx, |workspace, cx| {
                                             workspace.rename_project(
                                                 project_id.clone(),
@@ -208,7 +225,12 @@ fn open_rename_project_dialog(project: SidebarProjectHeader, window: &mut Window
     });
 }
 
-fn open_remove_project_confirm(project: SidebarProjectHeader, window: &mut Window, cx: &mut App) {
+fn open_remove_project_confirm(
+    project: SidebarProjectHeader,
+    workspace: Entity<HomeWorkspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let mut args = FluentArgs::new();
     args.set("name", project.display_name.as_ref().to_string());
     let title = cx.global::<I18n>().t("sidebar-remove-project-title");
@@ -222,7 +244,6 @@ fn open_remove_project_confirm(project: SidebarProjectHeader, window: &mut Windo
         message,
         DestructiveAction::Delete,
         move |window, cx| {
-            let workspace = state::workspace::workspace(cx);
             let task = workspace.update(cx, |workspace, cx| {
                 workspace.remove_project(project_id.clone(), cx)
             });

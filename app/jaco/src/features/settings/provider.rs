@@ -379,7 +379,7 @@ impl ProviderSettingsPage {
         let resource_data_subscription = resource.observe_select_in(
             cx,
             window,
-            state::selectors::SelectProviderRecordsWithModels,
+            state::providers::SelectProviderRecordsWithModels,
             |page, _providers, window, cx| {
                 page.reload_from_resource(window, cx);
             },
@@ -387,8 +387,11 @@ impl ProviderSettingsPage {
         let resource_status_subscription = resource.observe_select_in(
             cx,
             window,
-            state::selectors::SelectProviderStatus,
-            |_page, _status, _window, cx| cx.notify(),
+            state::providers::SelectProviderStatus,
+            |page, _status, window, cx| {
+                page.sync_model_list(window, cx);
+                cx.notify();
+            },
         );
         Self {
             resource,
@@ -569,6 +572,17 @@ impl ProviderSettingsPage {
             .is_some_and(|editor| editor_is_saving(editor, cx))
     }
 
+    fn resource_is_ready(&self, cx: &App) -> bool {
+        crate::app::critical_resources_ready(cx)
+            && self.resource.read(cx, |operation| {
+                matches!(operation, state::providers::ProviderOperation::Ready(_))
+            })
+    }
+
+    fn selected_editor_is_locked(&self, cx: &App) -> bool {
+        !self.resource_is_ready(cx) || self.selected_editor_is_saving(cx)
+    }
+
     fn selected_spec(&self) -> Option<&ProviderSpec> {
         self.spec_for_key(&self.selected_key)
     }
@@ -625,7 +639,7 @@ impl ProviderSettingsPage {
         let ListEvent::Confirm(ix) = event else {
             return;
         };
-        if self.selected_editor_is_saving(cx) {
+        if self.selected_editor_is_locked(cx) {
             return;
         }
         let Some(row) = self
@@ -661,7 +675,7 @@ impl ProviderSettingsPage {
             .selected_editor()
             .map(|editor| model_list_rows(&editor.models))
             .unwrap_or_default();
-        let locked = self.selected_editor_is_saving(cx);
+        let locked = self.selected_editor_is_locked(cx);
         self.model_list.update(cx, |list, cx| {
             list.delegate_mut().set_rows(rows);
             list.delegate_mut().set_disabled(locked);
@@ -695,6 +709,9 @@ impl ProviderSettingsPage {
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.resource_is_ready(cx) {
+            return;
+        }
         let key = self.selected_key.clone();
         if self
             .editors
@@ -885,6 +902,9 @@ impl ProviderSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.resource_is_ready(cx) {
+            return;
+        }
         let key = self.selected_key.clone();
         let Some(metadata) = self.editors.get(&key).map(|editor| editor.metadata.clone()) else {
             return;
@@ -928,6 +948,9 @@ impl ProviderSettingsPage {
     }
 
     fn fetch_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.resource_is_ready(cx) {
+            return;
+        }
         let key = self.selected_key.clone();
         if self
             .editors
@@ -1191,7 +1214,8 @@ impl ProviderSettingsPage {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let dirty = self.is_dirty(cx);
-        let locked = editor_is_saving(editor, cx);
+        let resource_ready = self.resource_is_ready(cx);
+        let locked = !resource_ready || editor_is_saving(editor, cx);
         let enabled = editor.form.enabled(cx);
         h_flex()
             .flex_none()
@@ -1237,6 +1261,9 @@ impl ProviderSettingsPage {
                 Switch::new("provider-settings-enabled")
                     .checked(enabled)
                     .disabled(locked)
+                    .when(!resource_ready, |control| {
+                        control.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
+                    })
                     .on_click(cx.listener(|page, checked, window, cx| {
                         if let Some(editor) = page.selected_editor_mut() {
                             editor.form.set_enabled(*checked, window, cx);
@@ -1254,7 +1281,8 @@ impl ProviderSettingsPage {
         editor: &ProviderEditorState,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let locked = editor_is_saving(editor, cx);
+        let resource_ready = self.resource_is_ready(cx);
+        let locked = !resource_ready || editor_is_saving(editor, cx);
         v_flex()
             .flex_none()
             .w_full()
@@ -1293,7 +1321,10 @@ impl ProviderSettingsPage {
                             .small()
                             .primary()
                             .loading(editor_is_saving(editor, cx))
-                            .disabled(editor_is_saving(editor, cx))
+                            .disabled(locked)
+                            .when(!resource_ready, |button| {
+                                button.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
+                            })
                             .on_click(cx.listener(|page, _, window, cx| page.save(window, cx))),
                     ),
             )
@@ -1538,7 +1569,8 @@ impl ProviderSettingsPage {
     }
 
     fn render_models(&self, editor: &ProviderEditorState, cx: &mut Context<Self>) -> AnyElement {
-        let locked = editor_is_saving(editor, cx);
+        let resource_ready = self.resource_is_ready(cx);
+        let locked = !resource_ready || editor_is_saving(editor, cx);
         v_flex()
             .flex_none()
             .w_full()
@@ -1568,6 +1600,9 @@ impl ProviderSettingsPage {
                             .small()
                             .loading(editor_is_fetching(editor))
                             .disabled(editor_is_fetching(editor) || locked)
+                            .when(!resource_ready, |button| {
+                                button.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
+                            })
                             .on_click(cx.listener(|page, _, window, cx| {
                                 page.fetch_models(window, cx);
                             })),
@@ -2526,6 +2561,8 @@ mod tests {
                 }],
             },
         );
+        cx.update(crate::state::providers::request_refresh);
+        cx.run_until_parked();
         let (window, page) = open_provider_settings_root_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let ollama = provider_editor_key("ollama");
@@ -2735,9 +2772,11 @@ mod tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             database::install_for_test(cx, dir.path());
-            crate::state::providers::init(cx);
             crate::foundation::i18n::init(cx);
+            crate::state::hotkey::set_test_hotkey_state(cx);
+            crate::app::session::init(cx);
         });
+        cx.run_until_parked();
         dir
     }
 
@@ -2746,7 +2785,6 @@ mod tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             database::install_for_test(cx, dir.path());
-            crate::state::providers::init(cx);
             crate::foundation::i18n::init(cx);
 
             let repository = test_repository(cx);
@@ -2772,7 +2810,10 @@ mod tests {
                     ProviderSecretRefs { refs: Vec::new() },
                 ))
                 .unwrap();
+            crate::state::hotkey::set_test_hotkey_state(cx);
+            crate::app::session::init(cx);
         });
+        cx.run_until_parked();
         dir
     }
 

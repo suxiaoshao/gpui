@@ -1,9 +1,7 @@
 use std::rc::Rc;
 
-use crate::{
-    foundation::{I18n, assets::IconName},
-    state::{self, workspace::SidebarSearchResult},
-};
+use super::super::workspace::{HomeWorkspace, SidebarSearchResult};
+use crate::foundation::{I18n, assets::IconName};
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Icon, IndexPath, Selectable, Sizable, WindowExt,
@@ -23,9 +21,13 @@ const SEARCH_RESULT_LIMIT: usize = 50;
 
 type OnConfirm = Rc<dyn Fn(ConversationId, &mut Window, &mut App) + 'static>;
 
-pub(crate) fn open_conversation_search_dialog(window: &mut Window, cx: &mut App) {
+pub(crate) fn open_conversation_search_dialog(
+    workspace: Entity<HomeWorkspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let title = cx.global::<I18n>().t("sidebar-search-title");
-    let view = cx.new(|cx| ConversationSearchView::new(window, cx));
+    let view = cx.new(|cx| ConversationSearchView::new(workspace, window, cx));
     let view_to_focus = view.clone();
 
     window.open_dialog(cx, move |dialog, _window, _cx| {
@@ -214,6 +216,7 @@ impl ListDelegate for ConversationSearchDelegate {
 }
 
 pub(crate) struct ConversationSearchView {
+    workspace: Entity<HomeWorkspace>,
     search_input: Entity<InputState>,
     results: Entity<ListState<ConversationSearchDelegate>>,
     query: String,
@@ -222,15 +225,16 @@ pub(crate) struct ConversationSearchView {
 }
 
 impl ConversationSearchView {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(workspace: Entity<HomeWorkspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(cx.global::<I18n>().t("sidebar-search-placeholder"))
         });
         let _search_input_subscription =
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
-        let results = Self::build_list(Vec::new(), window, cx);
+        let results = Self::build_list(Vec::new(), workspace.clone(), window, cx);
         let view = Self {
+            workspace,
             search_input,
             results,
             query: String::new(),
@@ -251,6 +255,7 @@ impl ConversationSearchView {
 
     fn build_list(
         items: Vec<SidebarSearchResult>,
+        workspace: Entity<HomeWorkspace>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<ListState<ConversationSearchDelegate>> {
@@ -258,8 +263,8 @@ impl ConversationSearchView {
             .global::<I18n>()
             .t("sidebar-section-no-project-conversations")
             .into();
-        let on_confirm: OnConfirm = Rc::new(|conversation_id, window, cx| {
-            state::workspace::workspace(cx).update(cx, |workspace, cx| {
+        let on_confirm: OnConfirm = Rc::new(move |conversation_id, window, cx| {
+            workspace.update(cx, |workspace, cx| {
                 workspace.open_conversation(conversation_id.clone(), cx);
             });
             window.close_dialog(cx);
@@ -299,7 +304,7 @@ impl ConversationSearchView {
 
     fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let query = self.query.clone();
-        let search = state::workspace::workspace(cx).update(cx, |workspace, cx| {
+        let search = self.workspace.update(cx, |workspace, cx| {
             workspace.search_conversations(query.clone(), SEARCH_RESULT_LIMIT, cx)
         });
         let view = cx.entity().downgrade();
@@ -311,7 +316,7 @@ impl ConversationSearchView {
                 }
                 view.operation.transition(Complete(result));
                 let items = view.operation.data().cloned().unwrap_or_default();
-                view.results = Self::build_list(items, window, cx);
+                view.results = Self::build_list(items, view.workspace.clone(), window, cx);
                 cx.notify();
             });
         });
@@ -495,8 +500,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::workspace::{SidebarConversationNode, SidebarSearchResult};
     use super::ConversationSearchDelegate;
-    use crate::state::workspace::{SidebarConversationNode, SidebarSearchResult};
     use gpui::{
         App, AppContext, Context, Entity, IntoElement, Render, TestAppContext, Window, div,
     };

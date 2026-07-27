@@ -1,7 +1,7 @@
 use super::ComposerSnapshot;
 use crate::{
     components::chat::run_settings::RunSettingsInput,
-    state::conversations::attachments::ComposerAttachment,
+    features::conversation::attachments::ComposerAttachment,
 };
 #[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
 #[form(store = ChatInputFormStore)]

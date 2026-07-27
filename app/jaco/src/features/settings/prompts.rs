@@ -3,7 +3,7 @@ use crate::{
     foundation::{I18n, assets::IconName},
     state,
 };
-use gpui::*;
+use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, Sizable,
     button::Button,
@@ -34,17 +34,24 @@ pub(super) struct PromptsSettingsPage {
 }
 
 impl PromptsSettingsPage {
+    fn can_mutate(&self, cx: &App) -> bool {
+        crate::app::critical_resources_ready(cx)
+            && self.resource.read(cx, |operation| {
+                matches!(operation, state::prompts::PromptOperation::Ready(_))
+            })
+    }
+
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(cx.global::<I18n>().t("prompt-search-placeholder"))
         });
         let prompt_catalog = state::prompts::catalog(cx);
-        let prompts = prompt_catalog.select(cx, state::selectors::SelectPromptRecords);
+        let prompts = prompt_catalog.select(cx, state::prompts::SelectPromptRecords);
         let resource_subscription = prompt_catalog.observe_select_in(
             cx,
             window,
-            state::selectors::SelectPromptStatus,
+            state::prompts::SelectPromptStatus,
             |_page, _status, _window, cx| cx.notify(),
         );
         let search_subscription =
@@ -85,6 +92,9 @@ impl PromptsSettingsPage {
     }
 
     fn open_add_prompt_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_mutate(cx) {
+            return;
+        }
         open_prompt_edit_dialog(PromptEditMode::Create, None, window, cx);
     }
 
@@ -94,6 +104,9 @@ impl PromptsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_mutate(cx) {
+            return;
+        }
         let Some(prompt) = self.prompt_by_id(&prompt_id) else {
             let title = cx.global::<I18n>().t("notify-load-prompts-failed");
             push_settings_error(window, cx, title, prompt_id);
@@ -108,6 +121,9 @@ impl PromptsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_mutate(cx) {
+            return;
+        }
         let Some(prompt) = self.prompt_by_id(&prompt_id) else {
             let title = cx.global::<I18n>().t("notify-load-prompts-failed");
             push_settings_error(window, cx, title, prompt_id);
@@ -145,9 +161,10 @@ impl PromptsSettingsPage {
                 Button::new("prompt-settings-add")
                     .icon(IconName::Plus)
                     .label(cx.global::<I18n>().t("button-add-prompt"))
-                    .disabled(!self.resource.read(cx, |operation| {
-                        matches!(operation, state::prompts::PromptOperation::Ready(_))
-                    }))
+                    .disabled(!self.can_mutate(cx))
+                    .when(!self.can_mutate(cx), |button| {
+                        button.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
+                    })
                     .on_click(cx.listener(|page, _, window, cx| {
                         page.open_add_prompt_dialog(window, cx);
                     })),
@@ -161,6 +178,7 @@ impl PromptsSettingsPage {
         let delete_page = view_page.clone();
 
         PromptManagementEntry::new(row)
+            .mutable(self.can_mutate(cx))
             .on_view(move |prompt_id, window, cx| {
                 let _ = view_page.update(cx, |page, cx| {
                     page.open_view_prompt_dialog(prompt_id, window, cx);
@@ -232,6 +250,10 @@ impl PromptsSettingsPage {
                     .icon(IconName::Plus)
                     .label(cx.global::<I18n>().t("button-add-prompt"))
                     .small()
+                    .disabled(!self.can_mutate(cx))
+                    .when(!self.can_mutate(cx), |button| {
+                        button.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
+                    })
                     .on_click(cx.listener(|page, _, window, cx| {
                         page.open_add_prompt_dialog(window, cx);
                     })),

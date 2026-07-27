@@ -2,14 +2,14 @@
 
 关联 issue：[suxiaoshao/gpui#177](https://github.com/suxiaoshao/gpui/issues/177)
 
-状态：**设计草案，等待用户审阅**。
+状态：**已实施；可见行为等待用户人工 UI 验证**。
 
 本文只规划 Jaco 在已经接入 `gpui-store` 与 `gpui-operation` 后的 UI 组合、订阅和生命周期
 重构。本文不会修改 `gpui-store`、`gpui-operation` 的公共 API，也不会取代
 [issue #177 总计划](README.md)。
 
-本轮只记录已经确认的设计和实施顺序，不执行最终完整性检查。用户审阅通过后再实施或补充
-尚未确认的细节。
+本文记录已经确认并实施的设计与工作包。按照用户要求，本轮不执行 UI 自动化，最终可见行为
+由用户人工验证。
 
 ## 1. 目标
 

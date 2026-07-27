@@ -22,10 +22,10 @@ use crate::{
         chat::run_settings,
         picker::{PickerPopoverConfig, picker_popover},
     },
-    foundation::assets::IconName,
-    state::conversations::attachments::{
+    features::conversation::attachments::{
         ComposerAttachment, ComposerAttachmentKind, ComposerAttachmentSource,
     },
+    foundation::assets::IconName,
 };
 
 pub(crate) const SKILL_COMPLETION_GAP: f32 = 6.;
@@ -697,6 +697,7 @@ impl Render for ChatForm {
                             .when_some(primary_action, |this, action| {
                                 let agent_running = action.read(cx).agent_running;
                                 let can_submit = action.read(cx).can_submit;
+                                let disabled_reason = action.read(cx).disabled_reason.clone();
                                 this.child(
                                     Button::new(if agent_running {
                                         "chat-form-stop"
@@ -709,6 +710,10 @@ impl Render for ChatForm {
                                     .p(px(0.))
                                     .rounded(px(999.))
                                     .disabled(!primary_enabled || (!agent_running && !can_submit))
+                                    .when_some(
+                                        (!agent_running).then_some(disabled_reason).flatten(),
+                                        |button, reason| button.tooltip(reason),
+                                    )
                                     .child(Icon::new(if agent_running {
                                         IconName::Square
                                     } else {

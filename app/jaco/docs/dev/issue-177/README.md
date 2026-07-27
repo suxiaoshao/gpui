@@ -7,6 +7,10 @@
 `480d4c025e41f19efea82624ece7beffab2268af` 及当时的新 `gpui-store` /
 `gpui-operation` 实现为规划基线。
 
+Conversation Index、Conversation Detail/Timeline 以及剩余 Operation UI 的后续目标架构见
+[Conversation 领域边界与剩余 Operation UI 接入计划](conversation-domain-and-operation-plan.md)。
+该计划取代本文对应部分的目标设计，但本文继续保留为已实施阶段的历史记录。
+
 实施验证：
 
 - `cargo fmt --all`

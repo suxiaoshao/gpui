@@ -1,6 +1,6 @@
 use crate::{
+    features::skills::GlobalSkillEntry,
     foundation::{I18n, assets::IconName, search::field_matches_query},
-    state::skills::GlobalSkillEntry,
 };
 use gpui::*;
 use gpui_component::{
@@ -347,7 +347,7 @@ mod tests {
     use super::{
         filter_skill_catalog_rows, short_hash, skill_catalog_list_items, skill_catalog_rows,
     };
-    use crate::{foundation::I18n, state::skills::GlobalSkillEntry};
+    use crate::{features::skills::GlobalSkillEntry, foundation::I18n};
     use jaco_core::SkillSourceKind;
     use std::path::PathBuf;
 

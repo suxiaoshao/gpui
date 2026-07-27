@@ -21,6 +21,7 @@ use gpui_component::{
     scroll::ScrollableElement,
     v_flex,
 };
+use gpui_store::Select;
 
 use self::{
     detail::{render_config_summary, render_error, render_server_info, render_tools},
@@ -29,6 +30,17 @@ use self::{
         auth_tag, connection_tag, display_name, mcp_row_search_text, transport_icon, transport_tag,
     },
 };
+
+#[derive(Clone, Copy, Default)]
+struct SelectMcpConfig;
+
+impl Select<state::config::ConfigOperation> for SelectMcpConfig {
+    type Output = Option<std::collections::BTreeMap<String, state::config::McpServerTomlConfig>>;
+
+    fn select(&self, operation: &state::config::ConfigOperation) -> Self::Output {
+        operation.data().map(|config| config.mcp_servers.clone())
+    }
+}
 
 pub(super) struct McpSettingsPage {
     search_input: Entity<InputState>,
@@ -52,15 +64,10 @@ impl McpSettingsPage {
                     cx.notify();
                 },
             ),
-            config_store.observe_select_in(
-                cx,
-                window,
-                state::selectors::SelectMcpConfig,
-                |page, _, _window, cx| {
-                    page.selected_server_id = None;
-                    cx.notify();
-                },
-            ),
+            config_store.observe_select_in(cx, window, SelectMcpConfig, |page, _, _window, cx| {
+                page.selected_server_id = None;
+                cx.notify();
+            }),
         ];
         Self {
             search_input,

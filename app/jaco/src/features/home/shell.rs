@@ -1,6 +1,7 @@
 use crate::{
     app::{menus, title_bar_menu},
     components::chat::detail::ConversationDetailPage,
+    features::conversation,
     foundation, state,
 };
 use gpui::{prelude::FluentBuilder as _, *};
@@ -17,6 +18,7 @@ use super::{
     actions::{OpenConversationSearch, OpenNewConversation},
     new_conversation::NewConversationPage,
     sidebar::{self, HomeSidebar},
+    workspace::{self, HomeRoute, HomeWorkspace},
 };
 
 pub(crate) const KEY_CONTEXT: &str = "JacoHome";
@@ -25,8 +27,8 @@ pub(crate) struct HomeView {
     focus_handle: FocusHandle,
     app_menu_bar: Entity<title_bar_menu::TitleBarAppMenuBar>,
     layout_state: Entity<state::JacoLayoutState>,
-    workspace: Entity<state::JacoWorkspaceStore>,
-    runtime: Entity<state::conversations::runtime::ConversationRuntimeStore>,
+    workspace: Entity<HomeWorkspace>,
+    runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
     sidebar: Entity<HomeSidebar>,
     new_conversation: Entity<NewConversationPage>,
     conversation_pages: HashMap<ConversationId, Entity<ConversationDetailPage>>,
@@ -35,8 +37,7 @@ pub(crate) struct HomeView {
 
 impl HomeView {
     pub(crate) fn new(
-        workspace: Entity<state::JacoWorkspaceStore>,
-        runtime: Entity<state::conversations::runtime::ConversationRuntimeStore>,
+        runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -44,6 +45,7 @@ impl HomeView {
         focus_handle.focus(window, cx);
         let app_menu_bar = title_bar_menu::TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
+        let workspace = workspace::create(cx);
         let sidebar_workspace = workspace.clone();
         let sidebar = cx.new(|cx| HomeSidebar::new(sidebar_workspace, cx));
         let new_conversation_workspace = workspace.clone();
@@ -135,7 +137,7 @@ impl HomeView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        sidebar::search::open_conversation_search_dialog(window, cx);
+        sidebar::search::open_conversation_search_dialog(self.workspace.clone(), window, cx);
     }
 
     fn conversation_page(
@@ -209,10 +211,10 @@ impl Render for HomeView {
                         .child(
                             resizable_panel().child(
                                 div().size_full().min_w_0().child(match route {
-                                    state::HomeRoute::NewConversation => {
+                                    HomeRoute::NewConversation => {
                                         self.new_conversation.clone().into_any_element()
                                     }
-                                    state::HomeRoute::Conversation(conversation_id) => self
+                                    HomeRoute::Conversation(conversation_id) => self
                                         .conversation_page(conversation_id, window, cx)
                                         .into_any_element(),
                                 }),

@@ -10,7 +10,7 @@ use std::{
 
 use gpui::{App, AppContext, BorrowAppContext, Entity, Global, Subscription, Task};
 use gpui_operation::{Complete, Load, Refresh, Repair, Settle, Transition, repair};
-use gpui_store::Store;
+use gpui_store::{Select, Store};
 use jaco_agent::AgentPersistence;
 #[cfg(test)]
 use jaco_db::FreshRepository;
@@ -19,7 +19,7 @@ use jaco_db::{DbError, FreshStore};
 use crate::{
     errors::{JacoError, JacoResult},
     foundation::persistence::FileLock,
-    state::{config, selectors::SelectDatabaseTarget},
+    state::config,
 };
 
 use self::session::{DatabaseBinding, DatabaseSession, DatabaseSessionKey};
@@ -30,6 +30,34 @@ static NEXT_SESSION_KEY: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct DatabaseTarget {
     pub(crate) data_dir: PathBuf,
     pub(crate) database_path: PathBuf,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SelectDatabaseTarget;
+
+impl Select<config::ConfigOperation> for SelectDatabaseTarget {
+    type Output = Option<DatabaseTarget>;
+
+    fn select(&self, operation: &config::ConfigOperation) -> Self::Output {
+        operation.data().map(DatabaseTarget::from_config)
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectDatabaseReady;
+
+impl Select<DatabaseResource> for SelectDatabaseReady {
+    type Output = bool;
+
+    fn select(&self, resource: &DatabaseResource) -> Self::Output {
+        matches!(
+            resource,
+            DatabaseResource::Bound {
+                operation: DatabaseOperation::Ready(_),
+                ..
+            }
+        )
+    }
 }
 
 impl DatabaseTarget {

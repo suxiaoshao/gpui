@@ -5,9 +5,9 @@ use crate::{
     foundation::{I18n, assets::IconName},
     state,
 };
-use gpui::*;
+use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, Sizable, WindowExt as NotificationWindowExt,
+    ActiveTheme, Disableable, Icon, Sizable, WindowExt as NotificationWindowExt,
     button::Button,
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -50,6 +50,23 @@ struct ShortcutSettingsSnapshot {
 }
 
 impl ShortcutsSettingsPage {
+    fn mutation_ready(&self, cx: &App) -> bool {
+        crate::app::critical_resources_ready(cx)
+            && self.shortcut_resource.read(cx, |operation| {
+                matches!(operation, state::shortcuts::ShortcutOperation::Ready(_))
+            })
+    }
+
+    fn editing_ready(&self, cx: &App) -> bool {
+        self.mutation_ready(cx)
+            && self.prompt_resource.read(cx, |operation| {
+                matches!(operation, state::prompts::PromptOperation::Ready(_))
+            })
+            && self.provider_resource.read(cx, |operation| {
+                matches!(operation, state::providers::ProviderOperation::Ready(_))
+            })
+    }
+
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -61,39 +78,39 @@ impl ShortcutsSettingsPage {
         let shortcut_subscription = shortcut_catalog.observe_select_in(
             cx,
             window,
-            state::selectors::SelectShortcutRecords,
+            state::shortcuts::SelectShortcutRecords,
             |_page, _shortcuts, _window, cx| cx.notify(),
         );
         let shortcut_phase_subscription = shortcut_catalog.observe_select_in(
             cx,
             window,
-            state::selectors::SelectShortcutStatus,
+            state::shortcuts::SelectShortcutStatus,
             |_page, _status, _window, cx| cx.notify(),
         );
         let prompt_catalog = state::prompts::catalog(cx);
         let prompt_subscription = prompt_catalog.observe_select_in(
             cx,
             window,
-            state::selectors::SelectPromptRecords,
+            state::prompts::SelectPromptRecords,
             |_page, _catalog, _window, cx| cx.notify(),
         );
         let prompt_phase_subscription = prompt_catalog.observe_select_in(
             cx,
             window,
-            state::selectors::SelectPromptStatus,
+            state::prompts::SelectPromptStatus,
             |_page, _status, _window, cx| cx.notify(),
         );
         let provider_catalog = state::providers::catalog(cx);
         let provider_subscription = provider_catalog.observe_select_in(
             cx,
             window,
-            state::selectors::SelectProviderRecordsWithModels,
+            state::providers::SelectProviderRecordsWithModels,
             |_page, _catalog, _window, cx| cx.notify(),
         );
         let provider_phase_subscription = provider_catalog.observe_select_in(
             cx,
             window,
-            state::selectors::SelectProviderStatus,
+            state::providers::SelectProviderStatus,
             |_page, _status, _window, cx| cx.notify(),
         );
         let diagnostics_subscription =
@@ -186,6 +203,9 @@ impl ShortcutsSettingsPage {
     }
 
     fn open_add_shortcut_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.editing_ready(cx) {
+            return;
+        }
         let existing_shortcuts = Self::load_snapshot(cx)
             .map(|snapshot| snapshot.shortcuts)
             .unwrap_or_default();
@@ -254,6 +274,9 @@ impl ShortcutsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.editing_ready(cx) {
+            return;
+        }
         let existing_shortcuts = Self::load_snapshot(cx)
             .map(|snapshot| snapshot.shortcuts)
             .unwrap_or_default();
@@ -275,6 +298,9 @@ impl ShortcutsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.mutation_ready(cx) {
+            return;
+        }
         let Some(shortcut) = self.shortcut_by_id(&shortcut_id, cx) else {
             let title = cx.global::<I18n>().t("notify-load-shortcuts-failed");
             push_settings_error(window, cx, title, shortcut_id);
@@ -290,6 +316,9 @@ impl ShortcutsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.mutation_ready(cx) {
+            return;
+        }
         let mutation = state::shortcuts::set_shortcut_enabled(cx, shortcut_id, enabled);
         let completion = window.spawn(cx, async move |cx| {
             let result = mutation.await;
@@ -309,6 +338,9 @@ impl ShortcutsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.mutation_ready(cx) {
+            return;
+        }
         match state::shortcuts::reregister_shortcut(cx, shortcut_id) {
             Ok(_) => {
                 window.push_notification(
@@ -340,6 +372,10 @@ impl ShortcutsSettingsPage {
                 Button::new("shortcut-settings-add")
                     .icon(IconName::Plus)
                     .label(cx.global::<I18n>().t("button-add-shortcut"))
+                    .disabled(!self.editing_ready(cx))
+                    .when(!self.editing_ready(cx), |button| {
+                        button.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
+                    })
                     .on_click(cx.listener(|page, _, window, cx| {
                         page.open_add_shortcut_dialog(window, cx);
                     })),
@@ -359,6 +395,7 @@ impl ShortcutsSettingsPage {
         let toggle_page = view_page.clone();
 
         ShortcutManagementEntry::new(row)
+            .availability(self.editing_ready(cx), self.mutation_ready(cx))
             .on_view(move |shortcut_id, window, cx| {
                 let _ = view_page.update(cx, |page, cx| {
                     page.open_view_shortcut_dialog(shortcut_id, window, cx);
@@ -447,6 +484,10 @@ impl ShortcutsSettingsPage {
                     .icon(IconName::Plus)
                     .label(cx.global::<I18n>().t("button-add-shortcut"))
                     .small()
+                    .disabled(!self.editing_ready(cx))
+                    .when(!self.editing_ready(cx), |button| {
+                        button.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
+                    })
                     .on_click(cx.listener(|page, _, window, cx| {
                         page.open_add_shortcut_dialog(window, cx);
                     })),

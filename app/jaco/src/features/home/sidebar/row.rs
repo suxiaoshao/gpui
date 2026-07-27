@@ -1,7 +1,4 @@
-use crate::{
-    foundation::assets::IconName,
-    state::{self, HomeRoute},
-};
+use crate::foundation::assets::IconName;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Icon, Sizable, StyledExt,
@@ -14,8 +11,10 @@ use gpui_component::{
 use jaco_core::ConversationId;
 use std::rc::Rc;
 
+use super::super::workspace::{
+    HomeRoute, HomeWorkspace, SidebarConversationNode, SidebarProjectNode,
+};
 use super::menu;
-use crate::state::workspace::{SidebarConversationNode, SidebarProjectNode};
 
 type ShortcutActionHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
@@ -124,14 +123,11 @@ impl RenderOnce for ShortcutSidebarActionRow {
 #[derive(IntoElement)]
 pub(super) struct ProjectSidebarRow {
     node: SidebarProjectNode,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    workspace: Entity<HomeWorkspace>,
 }
 
 impl ProjectSidebarRow {
-    pub(super) fn new(
-        node: SidebarProjectNode,
-        workspace: Entity<state::JacoWorkspaceStore>,
-    ) -> Self {
+    pub(super) fn new(node: SidebarProjectNode, workspace: Entity<HomeWorkspace>) -> Self {
         Self { node, workspace }
     }
 }
@@ -143,6 +139,7 @@ impl RenderOnce for ProjectSidebarRow {
         let group = format!("sidebar-project-group-{project_id}");
         let workspace_for_toggle = self.workspace.clone();
         let workspace_for_new = self.workspace.clone();
+        let workspace_for_menu = self.workspace.clone();
         let new_project_id = project_id.clone();
         let more_tooltip = cx
             .global::<crate::foundation::I18n>()
@@ -206,8 +203,15 @@ impl RenderOnce for ProjectSidebarRow {
                             .on_click(|_, _window, cx| cx.stop_propagation())
                             .dropdown_menu({
                                 let project = project.clone();
+                                let workspace = workspace_for_menu.clone();
                                 move |menu, window, cx| {
-                                    menu::project_popup_menu(menu, project.clone(), window, cx)
+                                    menu::project_popup_menu(
+                                        menu,
+                                        project.clone(),
+                                        workspace.clone(),
+                                        window,
+                                        cx,
+                                    )
                                 }
                             }),
                     )
@@ -232,14 +236,14 @@ impl RenderOnce for ProjectSidebarRow {
 pub(super) struct ConversationSidebarRow {
     conversation: SidebarConversationNode,
     active: bool,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    workspace: Entity<HomeWorkspace>,
 }
 
 impl ConversationSidebarRow {
     pub(super) fn new(
         conversation: SidebarConversationNode,
         active: bool,
-        workspace: Entity<state::JacoWorkspaceStore>,
+        workspace: Entity<HomeWorkspace>,
     ) -> Self {
         Self {
             conversation,
@@ -255,6 +259,7 @@ impl RenderOnce for ConversationSidebarRow {
         let group = format!("sidebar-conversation-group-{conversation_id}");
         let workspace_for_open = self.workspace.clone();
         let workspace_for_pin = self.workspace.clone();
+        let workspace_for_delete = self.workspace.clone();
         let pin_tooltip = cx
             .global::<crate::foundation::I18n>()
             .t(if self.conversation.pinned {
@@ -362,6 +367,7 @@ impl RenderOnce for ConversationSidebarRow {
                             cx.stop_propagation();
                             menu::open_delete_conversation_confirm(
                                 delete_conversation.clone(),
+                                workspace_for_delete.clone(),
                                 window,
                                 cx,
                             );
@@ -373,7 +379,7 @@ impl RenderOnce for ConversationSidebarRow {
 
 pub(super) fn project_row(
     node: SidebarProjectNode,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    workspace: Entity<HomeWorkspace>,
     _cx: &mut App,
 ) -> AnyElement {
     ProjectSidebarRow::new(node, workspace).into_any_element()
@@ -382,7 +388,7 @@ pub(super) fn project_row(
 pub(super) fn conversation_row(
     conversation: SidebarConversationNode,
     active: bool,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    workspace: Entity<HomeWorkspace>,
     _cx: &mut App,
 ) -> AnyElement {
     ConversationSidebarRow::new(conversation, active, workspace).into_any_element()

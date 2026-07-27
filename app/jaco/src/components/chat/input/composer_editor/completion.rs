@@ -11,8 +11,8 @@ use gpui_component::{
 use jaco_core::SkillSourceKind;
 
 use crate::{
+    features::skills::GlobalSkillEntry,
     foundation::{I18n, search::field_matches_query},
-    state::skills::GlobalSkillEntry,
 };
 
 use super::{

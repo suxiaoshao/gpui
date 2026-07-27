@@ -1,9 +1,24 @@
 use gpui::{App, AppContext, Entity, Global, Subscription, Window, WindowAppearance};
 use gpui_component::{Theme, ThemeMode as ComponentThemeMode, ThemeRegistry};
+use gpui_store::Select;
 use jaco_core::{AppThemeMode, AppThemeSettings};
 use tracing::{Level, event};
 
 use crate::foundation::assets;
+
+#[derive(Clone, Copy, Default)]
+struct SelectThemeSettings;
+
+impl Select<crate::state::config::ConfigOperation> for SelectThemeSettings {
+    type Output = AppThemeSettings;
+
+    fn select(&self, operation: &crate::state::config::ConfigOperation) -> Self::Output {
+        operation
+            .data()
+            .map(|config| config.app_settings_payload().theme)
+            .unwrap_or_default()
+    }
+}
 
 pub(crate) use app_theme::SystemAccentThemeState;
 
@@ -47,7 +62,7 @@ pub(crate) fn init(cx: &mut App) {
     let runtime = cx.new(|cx| {
         let config_subscription = crate::state::config::store(cx).observe_select(
             cx,
-            crate::state::selectors::SelectThemeSettings,
+            SelectThemeSettings,
             |runtime: &mut ThemeRuntime, settings, cx| {
                 runtime.settings = settings.clone();
                 runtime.apply(cx);

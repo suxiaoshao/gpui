@@ -15,7 +15,7 @@ use crate::{
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, StyledExt, WindowExt as NotificationWindowExt,
+    ActiveTheme, Disableable, StyledExt, WindowExt as NotificationWindowExt,
     button::{Button, ButtonVariants, Toggle, ToggleGroup, ToggleVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
     form::field as component_form_field,
@@ -522,13 +522,16 @@ pub(super) fn open_shortcut_edit_dialog(
     let form_to_focus = form.clone();
     let form_to_return = form.clone();
 
-    window.open_dialog(cx, move |dialog, _window, _cx| {
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let editing_ready = shortcut_editing_ready(cx);
         dialog
             .title(title.clone())
             .w(px(640.))
             .on_ok({
                 let form = form.clone();
-                move |_, window, cx| confirm_shortcut_edit_dialog(&form, window, cx)
+                move |_, window, cx| {
+                    shortcut_editing_ready(cx) && confirm_shortcut_edit_dialog(&form, window, cx)
+                }
             })
             .child(form.clone())
             .footer(
@@ -543,7 +546,8 @@ pub(super) fn open_shortcut_edit_dialog(
                             Button::new("shortcut-dialog-save")
                                 .primary()
                                 .icon(IconName::Keyboard)
-                                .label(save_label.clone()),
+                                .label(save_label.clone())
+                                .disabled(!editing_ready),
                         ),
                     ),
             )
@@ -582,6 +586,9 @@ pub(super) fn open_shortcut_preview_dialog(
     let on_delete_handler = on_delete.clone();
 
     window.open_dialog(cx, move |dialog, _window, cx| {
+        let editing_ready = shortcut_editing_ready(cx);
+        let mutation_ready = shortcut_mutation_ready(cx);
+        let read_only = cx.global::<I18n>().t("resource-picker-read-only");
         dialog
             .title(title.clone())
             .w(px(680.))
@@ -593,6 +600,12 @@ pub(super) fn open_shortcut_preview_dialog(
                             Button::new("shortcut-dialog-edit")
                                 .icon(IconName::Pencil)
                                 .label(edit_label.clone())
+                                .disabled(!editing_ready)
+                                .tooltip(if editing_ready {
+                                    edit_label.clone()
+                                } else {
+                                    read_only.clone()
+                                })
                                 .on_click({
                                     let shortcut = shortcut.clone();
                                     let on_edit = on_edit_handler.clone();
@@ -608,6 +621,12 @@ pub(super) fn open_shortcut_preview_dialog(
                             Button::new("shortcut-dialog-reregister")
                                 .icon(IconName::RefreshCcw)
                                 .label(reregister_label.clone())
+                                .disabled(!mutation_ready)
+                                .tooltip(if mutation_ready {
+                                    reregister_label.clone()
+                                } else {
+                                    read_only.clone()
+                                })
                                 .on_click({
                                     let shortcut_id = shortcut_id.clone();
                                     move |_, window, cx| {
@@ -635,6 +654,12 @@ pub(super) fn open_shortcut_preview_dialog(
                                 .danger()
                                 .icon(IconName::Trash)
                                 .label(delete_label.clone())
+                                .disabled(!mutation_ready)
+                                .tooltip(if mutation_ready {
+                                    delete_label.clone()
+                                } else {
+                                    read_only.clone()
+                                })
                                 .on_click({
                                     let shortcut = shortcut.clone();
                                     let on_delete = on_delete_handler.clone();
@@ -652,6 +677,23 @@ pub(super) fn open_shortcut_preview_dialog(
                     ),
             )
     });
+}
+
+fn shortcut_mutation_ready(cx: &App) -> bool {
+    crate::app::critical_resources_ready(cx)
+        && state::shortcuts::catalog(cx).read(cx, |operation| {
+            matches!(operation, state::shortcuts::ShortcutOperation::Ready(_))
+        })
+}
+
+fn shortcut_editing_ready(cx: &App) -> bool {
+    shortcut_mutation_ready(cx)
+        && state::prompts::catalog(cx).read(cx, |operation| {
+            matches!(operation, state::prompts::PromptOperation::Ready(_))
+        })
+        && state::providers::catalog(cx).read(cx, |operation| {
+            matches!(operation, state::providers::ProviderOperation::Ready(_))
+        })
 }
 
 pub(super) fn open_shortcut_delete_confirm(
@@ -934,8 +976,11 @@ mod tests {
             gpui_component::init(cx);
             database::install_for_test(cx, dir.path());
             cx.set_global(foundation::I18n::english_for_test());
+            state::providers::init(cx);
+            state::prompts::init(cx);
             state::shortcuts::init(cx);
         });
+        cx.run_until_parked();
         dir
     }
 

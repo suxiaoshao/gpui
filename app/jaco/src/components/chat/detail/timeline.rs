@@ -9,7 +9,7 @@ use jaco_core::{AgentRunId, ConversationEntryId, ToolInvocationId};
 use jaco_db::{AgentRunRecord, ConversationEntryRecord};
 
 use crate::{
-    foundation::conversation_format as format, state::conversations::ConversationLoadSnapshot,
+    features::conversation::ConversationLoadSnapshot, foundation::conversation_format as format,
 };
 
 use super::attachments;

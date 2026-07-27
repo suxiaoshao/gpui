@@ -4,14 +4,14 @@ use gpui_store::{Select, Store};
 use crate::{
     database::{self, DatabaseOperation, DatabaseResource},
     errors::JacoResult,
+    features::conversation,
     state,
 };
 
 #[derive(Clone)]
 pub(crate) struct AppSessionData {
     pub(crate) binding: database::session::DatabaseBinding,
-    pub(crate) runtime: Entity<state::conversations::runtime::ConversationRuntimeStore>,
-    pub(crate) workspace: Entity<state::JacoWorkspaceStore>,
+    pub(crate) runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
 }
 
 pub(crate) enum AppSessionState {
@@ -97,6 +97,7 @@ impl AppSessionCoordinator {
             return;
         };
         if !dependency.exactly_ready {
+            state::hotkey::clear_shortcuts(cx);
             return;
         }
         let already_ready = AppSessionStore::global(cx).read(cx, |session| {
@@ -106,6 +107,7 @@ impl AppSessionCoordinator {
             )
         });
         if already_ready {
+            state::hotkey::sync_shortcuts(cx);
             return;
         }
 
@@ -126,6 +128,7 @@ impl AppSessionCoordinator {
 
     fn retire_current_session(&mut self, cx: &mut App) {
         self.session_tasks.clear();
+        state::hotkey::clear_shortcuts(cx);
         let runtime = AppSessionStore::global(cx).read(cx, |session| match session {
             AppSessionState::Ready(data) => Some(data.runtime.clone()),
             AppSessionState::AwaitingDatabase | AppSessionState::Failed { .. } => None,
@@ -158,14 +161,9 @@ fn initialize_ready_session(
     cx: &mut App,
 ) -> JacoResult<AppSessionData> {
     super::init_ready_services(cx)?;
-    let runtime = state::conversations::runtime::create(cx)?;
-    let workspace = state::workspace::create(cx);
-    state::conversations::runtime::retry_recovery_if_needed(&runtime, cx);
-    Ok(AppSessionData {
-        binding,
-        runtime,
-        workspace,
-    })
+    let runtime = conversation::runtime::create(cx)?;
+    conversation::runtime::retry_recovery_if_needed(&runtime, cx);
+    Ok(AppSessionData { binding, runtime })
 }
 
 pub(crate) fn store(cx: &impl AppContext) -> AppSessionStore {
@@ -181,12 +179,8 @@ pub(crate) fn ready_data(cx: &impl AppContext) -> Option<AppSessionData> {
 
 pub(crate) fn ready_runtime(
     cx: &impl AppContext,
-) -> Option<Entity<state::conversations::runtime::ConversationRuntimeStore>> {
+) -> Option<Entity<conversation::runtime::ConversationRuntimeStore>> {
     ready_data(cx).map(|session| session.runtime)
-}
-
-pub(crate) fn ready_workspace(cx: &impl AppContext) -> Option<Entity<state::JacoWorkspaceStore>> {
-    ready_data(cx).map(|session| session.workspace)
 }
 
 pub(crate) fn request_retry(cx: &mut App) {

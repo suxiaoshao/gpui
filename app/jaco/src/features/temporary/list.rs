@@ -172,7 +172,7 @@ impl ListDelegate for TemporaryConversationListDelegate {
 #[cfg(test)]
 mod tests {
     use super::TemporaryConversationListDelegate;
-    use crate::state::workspace::SidebarConversationNode;
+    use crate::features::temporary::search::TemporaryConversationNode;
     use gpui::{
         App, AppContext, Context, Entity, IntoElement, Render, TestAppContext, Window, div,
     };
@@ -185,8 +185,8 @@ mod tests {
         rc::Rc,
     };
 
-    fn test_node() -> SidebarConversationNode {
-        SidebarConversationNode {
+    fn test_node() -> TemporaryConversationNode {
+        TemporaryConversationNode {
             id: "conversation".to_string(),
             project_id: String::new(),
             title: "Conversation".into(),

@@ -18,8 +18,8 @@ use gpui_component::{
 };
 
 use crate::{
+    features::skills::{self, GlobalSkillEntry},
     foundation::{I18n, assets::IconName},
-    state::{self, skills::GlobalSkillEntry},
 };
 
 use super::{completion::skill_source_label, token::ComposerSkill};
@@ -45,7 +45,7 @@ pub(super) struct SkillDetailDialog {
 impl SkillDetailDialog {
     fn new(skill: ComposerSkill, cx: &mut Context<Self>) -> Self {
         let entry = skill_to_entry(&skill);
-        let load = cx.background_spawn(async move { state::skills::load_skill_content(entry) });
+        let load = cx.background_spawn(async move { skills::load_skill_content(entry) });
         let _load_task = cx.spawn(async move |this, cx| {
             let result = load.await;
             this.update(cx, |this, cx| {

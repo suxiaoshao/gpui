@@ -11,13 +11,18 @@ use crate::{
     components::{
         chat::detail::ConversationDetailPage,
         chat::input::{COMPOSER_EDITOR_KEY_CONTEXT, ChatInputSubmit},
+        resource::{CriticalResourceAction, CriticalResourceProblem, CriticalResourcesView},
     },
+    database::DatabaseResource,
+    features::conversation,
     foundation::{I18n, assets::IconName},
     state,
 };
 use gpui::{actions, prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, IndexPath, Root, Sizable, WindowExt as _, h_flex,
+    ActiveTheme, Disableable, Icon, IndexPath, Root, Sizable, WindowExt as _,
+    button::Button,
+    h_flex,
     input::{Enter, Input, InputEvent, InputState, MoveDown, MoveUp},
     label::Label,
     list::{List, ListState},
@@ -78,14 +83,14 @@ pub(crate) struct TemporaryWindow {
     selected_index: Option<usize>,
     new_conversation: Entity<TemporaryNewConversationPane>,
     conversation_pages: HashMap<ConversationId, Entity<ConversationDetailPage>>,
-    runtime: Entity<state::conversations::runtime::ConversationRuntimeStore>,
+    runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
     _theme_binding: state::theme::WindowThemeBinding,
     _subscriptions: Vec<Subscription>,
 }
 
 impl TemporaryWindow {
     pub(crate) fn new(
-        runtime: Entity<state::conversations::runtime::ConversationRuntimeStore>,
+        runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -166,8 +171,12 @@ impl TemporaryWindow {
                     cx.refresh_windows();
                 }),
                 database_store.observe_in(cx, window, move |_view, _resource, window, cx| {
-                    if crate::database::retained_binding(cx).as_ref() != Some(&binding) {
+                    if !temporary_binding_is_retained(
+                        &binding,
+                        crate::database::retained_binding(cx).as_ref(),
+                    ) {
                         window.remove_window();
+                        crate::app::show_or_create_main_window(cx);
                     } else {
                         cx.notify();
                     }
@@ -470,7 +479,7 @@ impl TemporaryWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let request = state::conversations::CreateConversationRequest {
+        let request = conversation::CreateConversationRequest {
             project_id: None,
             content_parts: submit.composer.content_parts.clone(),
             attachments: submit.attachments.clone(),
@@ -484,7 +493,7 @@ impl TemporaryWindow {
             trigger_kind: jaco_core::AgentRunTriggerKind::User,
         };
 
-        let task = state::conversations::create_conversation(request, cx);
+        let task = conversation::create_conversation(request, cx);
         let page = cx.entity().downgrade();
         let completion = window.spawn(cx, async move |cx| {
             let result = task.await;
@@ -531,7 +540,7 @@ impl TemporaryWindow {
 
     pub(crate) fn open_created_conversation(
         &mut self,
-        created: state::conversations::CreatedConversation,
+        created: conversation::CreatedConversation,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -594,6 +603,8 @@ impl TemporaryWindow {
 
     fn render_left_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let last_error = self.search_operation.problem().map(ToString::to_string);
+        let running = self.search_operation.is_running();
+        let view = cx.entity().downgrade();
 
         v_flex()
             .id("temporary-conversation-list-panel")
@@ -620,9 +631,43 @@ impl TemporaryWindow {
                                 error
                             ))
                             .text_xs(),
+                        )
+                        .child(
+                            Button::new("temporary-reload-conversations")
+                                .label(cx.global::<I18n>().t("resource-status-refresh"))
+                                .loading(running)
+                                .disabled(running)
+                                .on_click(move |_, window, cx| {
+                                    let _ = view.update(cx, |view, cx| {
+                                        view.reload_conversations(
+                                            ReloadSelection::FirstMatch,
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                }),
                         ),
                 )
             })
+            .when(
+                running && self.search_operation.problem().is_none(),
+                |this| {
+                    this.child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .px_3()
+                            .py_2()
+                            .border_b_1()
+                            .border_color(cx.theme().border)
+                            .child(gpui_component::spinner::Spinner::new().small())
+                            .child(
+                                Label::new(cx.global::<I18n>().t("resource-status-loading"))
+                                    .text_xs(),
+                            ),
+                    )
+                },
+            )
             .child(List::new(&self.list).large().flex_1())
     }
 
@@ -704,23 +749,42 @@ impl Render for TemporaryWindow {
         if crate::database::is_ready(cx) {
             content.into_any_element()
         } else {
-            div()
-                .relative()
-                .size_full()
-                .child(content)
-                .child(
-                    v_flex()
-                        .absolute()
-                        .inset_0()
-                        .items_center()
-                        .justify_center()
-                        .p_8()
-                        .bg(cx.theme().background.opacity(0.92))
-                        .child(cx.global::<I18n>().t("critical-read-only-description")),
-                )
-                .into_any_element()
+            temporary_database_resource_view(cx).overlay(content, cx)
         }
     }
+}
+
+fn temporary_database_resource_view(cx: &App) -> CriticalResourcesView {
+    let snapshot = crate::database::store(cx).read(cx, |resource| match resource {
+        DatabaseResource::AwaitingConfig => None,
+        DatabaseResource::Bound { operation, .. } => Some((
+            operation.is_running(),
+            operation.problem().map(ToString::to_string),
+            operation
+                .problem()
+                .is_some_and(crate::database::DatabaseProblem::can_create_fresh),
+        )),
+    });
+    let Some((running, message, can_create_fresh)) = snapshot else {
+        return CriticalResourcesView::loading(cx.global::<I18n>().t("critical-database-loading"));
+    };
+    let mut actions = vec![CriticalResourceAction::RefreshDatabase];
+    if can_create_fresh {
+        actions.push(CriticalResourceAction::BackupAndCreateFreshDatabase);
+    }
+    CriticalResourcesView::problem(CriticalResourceProblem {
+        id: "temporary-critical-database",
+        title: cx
+            .global::<I18n>()
+            .t("critical-database-error-title")
+            .into(),
+        message: message
+            .unwrap_or_else(|| cx.global::<I18n>().t("critical-read-only-description"))
+            .into(),
+        running,
+        warning: true,
+        actions,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -758,6 +822,13 @@ fn selection_after_delta(current: Option<usize>, count: usize, delta: isize) -> 
     })
 }
 
+fn temporary_binding_is_retained(
+    expected: &crate::database::session::DatabaseBinding,
+    current: Option<&crate::database::session::DatabaseBinding>,
+) -> bool {
+    current == Some(expected)
+}
+
 fn push_temporary_notification(
     window: &mut Window,
     cx: &mut App,
@@ -776,7 +847,24 @@ fn push_temporary_notification(
 
 #[cfg(test)]
 mod tests {
-    use super::{TemporaryTabTarget, selection_after_delta, tab_focus_target};
+    use super::{
+        TemporaryTabTarget, selection_after_delta, tab_focus_target, temporary_binding_is_retained,
+    };
+    use crate::database::{
+        DatabaseTarget,
+        session::{DatabaseBinding, DatabaseSessionKey},
+    };
+    use std::path::PathBuf;
+
+    fn binding(key: u64) -> DatabaseBinding {
+        DatabaseBinding {
+            target: DatabaseTarget {
+                data_dir: PathBuf::from("/tmp/jaco-test"),
+                database_path: PathBuf::from("/tmp/jaco-test/jaco.sqlite3"),
+            },
+            session_key: DatabaseSessionKey(key),
+        }
+    }
 
     #[test]
     fn temporary_selection_wraps_up_and_down() {
@@ -795,5 +883,19 @@ mod tests {
     fn tab_toggles_between_search_and_route_composer() {
         assert_eq!(tab_focus_target(true), TemporaryTabTarget::RouteComposer);
         assert_eq!(tab_focus_target(false), TemporaryTabTarget::Search);
+    }
+
+    #[test]
+    fn temporary_window_only_retains_the_same_database_binding() {
+        let expected = binding(1);
+        let same = expected.clone();
+        let replacement = binding(2);
+
+        assert!(temporary_binding_is_retained(&expected, Some(&same)));
+        assert!(!temporary_binding_is_retained(
+            &expected,
+            Some(&replacement)
+        ));
+        assert!(!temporary_binding_is_retained(&expected, None));
     }
 }

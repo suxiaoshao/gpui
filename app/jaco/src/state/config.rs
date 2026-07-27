@@ -5,7 +5,7 @@ use crate::{
 };
 use gpui::{App, AppContext, Task};
 use gpui_operation::{Complete, Refresh, Repair, Settle, Transition, repair};
-use gpui_store::Store;
+use gpui_store::{Select, Store};
 use jaco_core::{
     AppLanguage, AppSettingsPayload, AppThemeMode, AppThemeSettings, ProjectId, ProviderId,
     ProviderModelId, ReasoningSelectionSnapshot, ToolApprovalMode, default_tool_approval_mode,
@@ -46,6 +46,26 @@ pub(crate) struct JacoConfig {
 pub(crate) type ConfigOperation =
     repair::Operation<ConfigData, ConfigProblem, ConfigRepair, Task<()>>;
 pub(crate) type JacoConfigStore = Store<ConfigOperation>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ConfigGateStatus {
+    phase: gpui_operation::repair::Phase,
+    problem: Option<String>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectConfigGateStatus;
+
+impl Select<ConfigOperation> for SelectConfigGateStatus {
+    type Output = ConfigGateStatus;
+
+    fn select(&self, operation: &ConfigOperation) -> Self::Output {
+        ConfigGateStatus {
+            phase: operation.phase(),
+            problem: operation.problem().map(ToString::to_string),
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct ConfigData {

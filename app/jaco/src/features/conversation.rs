@@ -1,5 +1,4 @@
 pub(crate) mod attachments;
-pub(crate) mod index;
 pub(crate) mod runtime;
 
 use std::{fmt, path::PathBuf};
@@ -26,17 +25,13 @@ use crate::{
     database::{self, session::CatalogMutation},
     errors::JacoResult,
     foundation::I18n,
-    state::{
-        config,
-        conversations::attachments::{
-            ComposerAttachment, cleanup_stored_attachment_files, prepare_message_attachments_in,
-        },
-        projects,
-        providers::ProviderModelChoice,
-    },
+    state::{config, projects, providers::ProviderModelChoice},
 };
 
-use self::index as conversation_index;
+use self::attachments::{
+    ComposerAttachment, cleanup_stored_attachment_files, prepare_message_attachments_in,
+};
+use crate::state::conversation_index;
 
 const DEFAULT_MAX_STEPS: u32 = 32;
 const TITLE_MAX_CHARS: usize = 48;
@@ -607,11 +602,9 @@ mod tests {
     use super::*;
     use crate::{
         database,
+        features::conversation::attachments::{ComposerAttachmentKind, ComposerAttachmentSource},
         foundation::I18n,
-        state::{
-            JacoConfig,
-            conversations::attachments::{ComposerAttachmentKind, ComposerAttachmentSource},
-        },
+        state::JacoConfig,
     };
     use gpui::TestAppContext;
     use jaco_core::{
@@ -884,10 +877,8 @@ mod tests {
 
     fn init_conversation_resources(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            crate::state::providers::init(cx);
-            crate::state::projects::init(cx);
-            crate::state::prompts::init(cx);
-            crate::state::conversations::index::init(cx);
+            crate::state::hotkey::set_test_hotkey_state(cx);
+            crate::app::session::init(cx);
         });
         cx.run_until_parked();
     }

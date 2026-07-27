@@ -2,7 +2,7 @@ use std::fmt;
 
 use gpui::{App, Task};
 use gpui_operation::{Complete, Load, Refresh, Retry, Transition, refresh};
-use gpui_store::Store;
+use gpui_store::{Select, Store};
 use jaco_core::{
     PromptId, ProviderId, ProviderModelId, ReasoningSelectionSnapshot, RunSettingsSnapshot,
     ShortcutAction, ShortcutId, ShortcutInputSource, ToolApprovalMode,
@@ -14,11 +14,37 @@ use tracing::{Level, event};
 use crate::{
     components::chat::run_settings::reasoning_selection_is_valid,
     database::{self, session::CatalogMutation},
+    features::conversation,
     state,
 };
 
 pub(crate) type ShortcutOperation = refresh::Operation<ShortcutData, ShortcutProblem, Task<()>>;
 pub(crate) type ShortcutStore = Store<ShortcutOperation>;
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectShortcutRecords;
+
+impl Select<ShortcutOperation> for SelectShortcutRecords {
+    type Output = Option<Vec<ShortcutRecord>>;
+
+    fn select(&self, operation: &ShortcutOperation) -> Self::Output {
+        operation.data().map(|data| data.shortcuts().to_vec())
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectShortcutStatus;
+
+impl Select<ShortcutOperation> for SelectShortcutStatus {
+    type Output = (gpui_operation::refresh::Phase, Option<String>);
+
+    fn select(&self, operation: &ShortcutOperation) -> Self::Output {
+        (
+            operation.phase(),
+            operation.problem().map(ToString::to_string),
+        )
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ShortcutData {
@@ -400,7 +426,7 @@ fn settings_snapshot_for_draft(
             provider_settings: provider.settings.clone(),
             reasoning_selection: draft.reasoning_selection.clone(),
             tool_policy: {
-                let mut policy = state::conversations::default_tool_policy();
+                let mut policy = conversation::default_tool_policy();
                 policy.approval_mode = draft.approval_mode;
                 policy
             },

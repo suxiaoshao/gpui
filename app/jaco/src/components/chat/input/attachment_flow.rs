@@ -1,11 +1,11 @@
 use super::ChatInputController;
 use crate::{
     components::chat::image_preview::{self, ImagePreviewAttachment},
-    foundation, state,
-    state::conversations::attachments::{
+    features::conversation::attachments::{
         AttachmentAddResult, ComposerAttachment, ComposerAttachmentKind, ComposerAttachmentSource,
         add_attachments_from_clipboard as attachments_from_clipboard, add_attachments_from_paths,
     },
+    foundation,
 };
 use gpui::*;
 use gpui_component::{
@@ -52,7 +52,7 @@ impl ChatInputController {
             );
             return;
         };
-        if !state::conversations::attachments::clipboard_item_has_attachments(&item) {
+        if !crate::features::conversation::attachments::clipboard_item_has_attachments(&item) {
             let message = cx
                 .global::<foundation::I18n>()
                 .t("chat-form-attachment-clipboard-empty");

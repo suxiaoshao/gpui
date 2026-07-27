@@ -1,10 +1,25 @@
 use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
 use gpui::{App, AppContext, Entity, Global, Subscription};
+use gpui_store::Select;
 use jaco_core::AppLanguage;
 use std::{collections::HashMap, rc::Rc};
 use unic_langid::LanguageIdentifier;
 
 use crate::state::config;
+
+#[derive(Clone, Copy, Default)]
+struct SelectLanguage;
+
+impl Select<config::ConfigOperation> for SelectLanguage {
+    type Output = AppLanguage;
+
+    fn select(&self, operation: &config::ConfigOperation) -> Self::Output {
+        operation
+            .data()
+            .map(|config| config.app_settings_payload().language)
+            .unwrap_or_default()
+    }
+}
 
 const EN_US: &str = include_str!("../../locales/en-US/main.ftl");
 const ZH_CN: &str = include_str!("../../locales/zh-CN/main.ftl");
@@ -48,7 +63,7 @@ pub(crate) fn init_runtime(cx: &mut App) {
     let runtime = cx.new(|cx| {
         let subscription = config::store(cx).observe_select(
             cx,
-            crate::state::selectors::SelectLanguage,
+            SelectLanguage,
             |runtime: &mut LocalizationRuntime, language, cx| runtime.apply(*language, cx),
         );
         LocalizationRuntime {

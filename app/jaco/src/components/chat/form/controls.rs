@@ -53,6 +53,7 @@ pub(crate) struct AddAttachmentControl;
 pub(crate) struct PrimaryActionControlState {
     pub(crate) agent_running: bool,
     pub(crate) can_submit: bool,
+    pub(crate) disabled_reason: Option<SharedString>,
 }
 
 #[derive(Clone)]

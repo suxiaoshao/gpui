@@ -16,6 +16,7 @@ use jaco_core::ProjectId;
 use jaco_db::ProjectRecord;
 use tracing::{Level, event};
 
+use super::workspace::HomeWorkspace;
 use crate::{
     components::{
         chat::form::{
@@ -27,6 +28,7 @@ use crate::{
         },
         picker::PickerListDelegate,
     },
+    features::conversation,
     foundation::I18n,
     state,
 };
@@ -36,20 +38,20 @@ pub(crate) struct NewConversationPage {
     projects: StoreSelection<Option<Vec<ProjectRecord>>>,
     selected_project_id: Option<ProjectId>,
     project: Entity<ProjectControlState>,
-    workspace: Entity<state::JacoWorkspaceStore>,
-    runtime: Entity<state::conversations::runtime::ConversationRuntimeStore>,
+    workspace: Entity<HomeWorkspace>,
+    runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl NewConversationPage {
     pub(crate) fn new(
-        workspace: Entity<state::JacoWorkspaceStore>,
-        runtime: Entity<state::conversations::runtime::ConversationRuntimeStore>,
+        workspace: Entity<HomeWorkspace>,
+        runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let projects =
-            state::projects::catalog(cx).select(cx, state::selectors::SelectNormalProjects);
+            state::projects::catalog(cx).select(cx, state::projects::SelectNormalProjects);
         let selected_project_id = projects.read(|projects| {
             initial_project_id(
                 projects.as_deref().unwrap_or_default(),
@@ -63,7 +65,6 @@ impl NewConversationPage {
                 .cloned()
         });
         let state = cx.entity().downgrade();
-        let empty_label = cx.global::<I18n>().t("new-conversation-project-empty");
         let none_label = cx.global::<I18n>().t("new-conversation-project-none");
         let sections = projects
             .read(|projects| project_sections(projects.as_deref().unwrap_or_default(), none_label));
@@ -90,7 +91,11 @@ impl NewConversationPage {
                 PickerListDelegate::new(
                     sections,
                     Some(selected_value),
-                    empty_label.clone().into(),
+                    |cx| {
+                        cx.global::<I18n>()
+                            .t("new-conversation-project-empty")
+                            .into()
+                    },
                     confirm,
                     cancel,
                 ),
@@ -119,7 +124,7 @@ impl NewConversationPage {
         let project_subscription = project_catalog.observe_select_in(
             cx,
             window,
-            state::selectors::SelectNormalProjectCatalog,
+            state::projects::SelectNormalProjectCatalog,
             |_, _catalog, window, cx| {
                 cx.defer_in(window, move |page, window, cx| {
                     page.reload_projects_from_catalog(window, cx);
@@ -392,7 +397,7 @@ impl NewConversationPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let request = state::conversations::CreateConversationRequest {
+        let request = conversation::CreateConversationRequest {
             project_id: self.selected_project_id.clone(),
             content_parts: submit.composer.content_parts.clone(),
             attachments: submit.attachments.clone(),
@@ -405,7 +410,7 @@ impl NewConversationPage {
             prompt_snapshot: None,
             trigger_kind: jaco_core::AgentRunTriggerKind::User,
         };
-        let task = state::conversations::create_conversation(request, cx);
+        let task = conversation::create_conversation(request, cx);
         let page = cx.entity().downgrade();
         let completion = window.spawn(cx, async move |cx| {
             let result = task.await;

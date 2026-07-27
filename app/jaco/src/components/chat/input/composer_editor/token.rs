@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, ops::Range};
 use jaco_agent::SkillActivationRequest;
 use jaco_core::SkillSourceKind;
 
-use crate::state::skills::GlobalSkillEntry;
+use crate::features::skills::GlobalSkillEntry;
 
 use super::buffer::is_word_char;
 

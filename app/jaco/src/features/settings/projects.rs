@@ -3,7 +3,7 @@ use crate::{
     foundation::{I18n, assets::IconName},
     state,
 };
-use gpui::*;
+use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
     button::Button,
@@ -26,12 +26,19 @@ pub(super) struct ProjectsSettingsPage {
 }
 
 impl ProjectsSettingsPage {
+    fn can_mutate(&self, cx: &App) -> bool {
+        crate::app::critical_resources_ready(cx)
+            && self.resource.read(cx, |operation| {
+                matches!(operation, state::projects::ProjectOperation::Ready(_))
+            })
+    }
+
     pub(super) fn new(cx: &mut Context<Self>) -> Self {
         let resource = state::projects::catalog(cx);
-        let projects = resource.select(cx, state::selectors::SelectNormalProjects);
+        let projects = resource.select(cx, state::projects::SelectNormalProjects);
         let resource_subscription = resource.observe_select(
             cx,
-            state::selectors::SelectProjectStatus,
+            state::projects::SelectProjectStatus,
             |_page, _status, cx| cx.notify(),
         );
         Self {
@@ -42,6 +49,9 @@ impl ProjectsSettingsPage {
     }
 
     fn open_add_project_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_mutate(cx) {
+            return;
+        }
         let title = cx.global::<I18n>().t("button-add-project");
         let failed_title = cx.global::<I18n>().t("notify-add-project-failed");
         let path_prompt = cx.prompt_for_paths(PathPromptOptions {
@@ -94,6 +104,9 @@ impl ProjectsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_mutate(cx) {
+            return;
+        }
         let mutation = state::projects::insert_existing_folder_project(cx, path);
         let page = cx.entity().downgrade();
         let completion = window.spawn(cx, async move |cx| {
@@ -137,9 +150,10 @@ impl ProjectsSettingsPage {
                 Button::new("project-settings-add")
                     .icon(IconName::Plus)
                     .label(cx.global::<I18n>().t("button-add-project"))
-                    .disabled(!self.resource.read(cx, |operation| {
-                        matches!(operation, state::projects::ProjectOperation::Ready(_))
-                    }))
+                    .disabled(!self.can_mutate(cx))
+                    .when(!self.can_mutate(cx), |button| {
+                        button.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
+                    })
                     .small()
                     .on_click(cx.listener(|page, _, window, cx| {
                         page.open_add_project_prompt(window, cx);

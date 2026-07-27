@@ -1,6 +1,6 @@
 use crate::{
+    features::skills,
     foundation::{I18n, assets::IconName},
-    state,
 };
 use gpui::*;
 use gpui_component::{
@@ -28,7 +28,7 @@ mod rows;
 
 pub(super) struct SkillsSettingsPage {
     search_input: Entity<InputState>,
-    skill_catalog: state::skills::SkillCatalogOperation,
+    skill_catalog: skills::SkillCatalogOperation,
     list: ListState,
     rows: Vec<SkillCatalogRow>,
     items: Vec<PathBuf>,
@@ -46,7 +46,7 @@ impl SkillsSettingsPage {
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
         let mut page = Self {
             search_input,
-            skill_catalog: state::skills::SkillCatalogOperation::new(),
+            skill_catalog: skills::SkillCatalogOperation::new(),
             list: ListState::new(0, ListAlignment::Top, px(2048.)).measure_all(),
             rows: Vec::new(),
             items: Vec::new(),
@@ -77,9 +77,8 @@ impl SkillsSettingsPage {
         if self.skill_catalog.is_running() {
             return;
         }
-        let load = cx.background_spawn(async {
-            state::skills::load_catalog(state::skills::SkillCatalogScope::Global)
-        });
+        let load =
+            cx.background_spawn(async { skills::load_catalog(skills::SkillCatalogScope::Global) });
         let task = cx.spawn(async move |page, cx| {
             let result = load.await;
             let Some(page) = page.upgrade() else {
@@ -91,20 +90,20 @@ impl SkillsSettingsPage {
             });
         });
         match &self.skill_catalog {
-            state::skills::SkillCatalogOperation::Idle(_) => {
+            skills::SkillCatalogOperation::Idle(_) => {
                 self.skill_catalog.transition(Load(task));
             }
-            state::skills::SkillCatalogOperation::Ready(_)
-            | state::skills::SkillCatalogOperation::Degraded(_) => {
+            skills::SkillCatalogOperation::Ready(_)
+            | skills::SkillCatalogOperation::Degraded(_) => {
                 self.skill_catalog.transition(Refresh(task));
             }
-            state::skills::SkillCatalogOperation::Unavailable(_) => {
+            skills::SkillCatalogOperation::Unavailable(_) => {
                 self.skill_catalog.transition(Retry(task));
             }
-            state::skills::SkillCatalogOperation::Loading(_)
-            | state::skills::SkillCatalogOperation::Refreshing(_)
-            | state::skills::SkillCatalogOperation::RefreshingDegraded(_)
-            | state::skills::SkillCatalogOperation::Retrying(_) => unreachable!(),
+            skills::SkillCatalogOperation::Loading(_)
+            | skills::SkillCatalogOperation::Refreshing(_)
+            | skills::SkillCatalogOperation::RefreshingDegraded(_)
+            | skills::SkillCatalogOperation::Retrying(_) => unreachable!(),
         }
         cx.notify();
     }
@@ -151,7 +150,7 @@ impl SkillsSettingsPage {
         let entries = self
             .skill_catalog
             .data()
-            .map(state::skills::SkillCatalogData::entries)
+            .map(skills::SkillCatalogData::entries)
             .unwrap_or_default();
         let all_paths = entries
             .iter()

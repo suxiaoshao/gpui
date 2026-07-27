@@ -4,7 +4,7 @@ use std::fmt;
 
 use gpui::{App, Task};
 use gpui_operation::{Complete, Load, Refresh, Retry, Transition, refresh};
-use gpui_store::Store;
+use gpui_store::{Select, Store};
 use jaco_core::{ProjectId, ProjectKind, ProjectMetadata, new_id};
 use jaco_db::{NewProject, ProjectRecord};
 use tokio::sync::oneshot;
@@ -21,6 +21,65 @@ const NO_PROJECT_SCRATCH_REASON: &str = "no-project";
 
 pub(crate) type ProjectOperation = refresh::Operation<ProjectData, ProjectProblem, Task<()>>;
 pub(crate) type ProjectStore = Store<ProjectOperation>;
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectNormalProjects;
+
+impl Select<ProjectOperation> for SelectNormalProjects {
+    type Output = Option<Vec<ProjectRecord>>;
+
+    fn select(&self, operation: &ProjectOperation) -> Self::Output {
+        operation.data().map(|data| {
+            data.projects()
+                .iter()
+                .filter(|project| project.kind == ProjectKind::Normal && !project.removed)
+                .cloned()
+                .collect()
+        })
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectProjectStatus;
+
+impl Select<ProjectOperation> for SelectProjectStatus {
+    type Output = (gpui_operation::refresh::Phase, Option<String>);
+
+    fn select(&self, operation: &ProjectOperation) -> Self::Output {
+        (
+            operation.phase(),
+            operation.problem().map(ToString::to_string),
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NormalProjectCatalogSnapshot {
+    projects: Option<Vec<ProjectRecord>>,
+    phase: gpui_operation::refresh::Phase,
+    problem: Option<String>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectNormalProjectCatalog;
+
+impl Select<ProjectOperation> for SelectNormalProjectCatalog {
+    type Output = NormalProjectCatalogSnapshot;
+
+    fn select(&self, operation: &ProjectOperation) -> Self::Output {
+        NormalProjectCatalogSnapshot {
+            projects: operation.data().map(|data| {
+                data.projects()
+                    .iter()
+                    .filter(|project| project.kind == ProjectKind::Normal && !project.removed)
+                    .cloned()
+                    .collect()
+            }),
+            phase: operation.phase(),
+            problem: operation.problem().map(ToString::to_string),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ProjectData {

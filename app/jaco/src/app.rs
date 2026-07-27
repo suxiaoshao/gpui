@@ -1,12 +1,14 @@
-pub(crate) mod about;
 pub(crate) mod menus;
-pub(crate) mod root;
 pub(crate) mod session;
 pub(crate) mod tasks;
 pub(crate) mod temporary_window;
 pub(crate) mod title_bar_menu;
 
-use crate::features::{home::HomeView, settings::SettingsView};
+use crate::features::{
+    about::AboutWindow,
+    home::{HomeView, JacoRoot},
+    settings::SettingsView,
+};
 use crate::{database, errors::JacoError, foundation, state};
 use gpui::*;
 use gpui_component::{Root, TitleBar};
@@ -155,6 +157,10 @@ fn init(cx: &mut App) -> crate::errors::JacoResult<()> {
     state::layout::init(cx)?;
     gpui_tokio::init(cx);
     state::theme::init(cx);
+    state::mcp::init(cx)?;
+    if let Err(err) = state::hotkey::init(cx) {
+        event!(Level::ERROR, error = ?err, "failed to initialize jaco hotkeys");
+    }
 
     database::init_store(cx);
     session::init(cx);
@@ -174,16 +180,19 @@ fn init(cx: &mut App) -> crate::errors::JacoResult<()> {
 }
 
 fn init_ready_services(cx: &mut App) -> crate::errors::JacoResult<()> {
-    state::mcp::init(cx)?;
     state::providers::init(cx);
     state::projects::init(cx);
     state::prompts::init(cx);
     state::shortcuts::init(cx);
-    state::conversations::index::init(cx);
-    if let Err(err) = state::hotkey::init(cx) {
-        event!(Level::ERROR, error = ?err, "failed to initialize jaco hotkeys");
-    }
+    state::conversation_index::init(cx);
+    state::hotkey::init_shortcuts(cx);
     Ok(())
+}
+
+pub(crate) fn critical_resources_ready(cx: &App) -> bool {
+    state::config::store(cx).read(cx, |operation| {
+        matches!(operation, state::config::ConfigOperation::Ready(_))
+    }) && database::is_ready(cx)
 }
 
 pub(crate) fn quit_app(cx: &mut App) {
@@ -256,7 +265,7 @@ const fn should_hide_main_window_on_close() -> bool {
 
 fn create_main_root(window: &mut Window, cx: &mut App) -> Entity<Root> {
     register_main_window_close_behavior(window, cx);
-    let view = cx.new(|cx| root::JacoRoot::new(window, cx));
+    let view = cx.new(|cx| JacoRoot::new(window, cx));
     cx.new(|cx| Root::new(view, window, cx))
 }
 
@@ -278,7 +287,7 @@ fn with_root_view<V: 'static, R>(
 }
 
 fn focus_main_window(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) {
-    let _ = with_root_view::<root::JacoRoot, _>(root, cx, |view, cx| {
+    let _ = with_root_view::<JacoRoot, _>(root, cx, |view, cx| {
         view.update(cx, |view, cx| {
             view.focus_primary(window, cx);
         });
@@ -322,17 +331,13 @@ fn main_titlebar_options(title: impl Into<SharedString>) -> TitlebarOptions {
 }
 
 pub(crate) fn find_main_window(cx: &App) -> Option<WindowHandle<Root>> {
-    find_window_by_view::<root::JacoRoot>(cx)
+    find_window_by_view::<JacoRoot>(cx)
 }
 
 pub(crate) fn ready_runtime(
     cx: &App,
-) -> Option<Entity<state::conversations::runtime::ConversationRuntimeStore>> {
+) -> Option<Entity<crate::features::conversation::runtime::ConversationRuntimeStore>> {
     session::ready_runtime(cx)
-}
-
-pub(crate) fn ready_workspace(cx: &App) -> Option<Entity<state::JacoWorkspaceStore>> {
-    session::ready_workspace(cx)
 }
 
 pub(crate) fn reload_app_menu_bars(cx: &mut App) {
@@ -344,13 +349,13 @@ pub(crate) fn reload_app_menu_bars(cx: &mut App) {
 
     for root in roots {
         let _ = root.update(cx, |root, _window, cx| {
-            let _ = with_root_view::<root::JacoRoot, _>(root, cx, |view, cx| {
+            let _ = with_root_view::<JacoRoot, _>(root, cx, |view, cx| {
                 view.update(cx, |view, cx| view.reload_app_menu_bar(cx));
             });
             let _ = with_root_view::<HomeView, _>(root, cx, |view, cx| {
                 view.update(cx, |view, cx| view.reload_app_menu_bar(cx));
             });
-            let _ = with_root_view::<about::AboutWindow, _>(root, cx, |view, cx| {
+            let _ = with_root_view::<AboutWindow, _>(root, cx, |view, cx| {
                 view.update(cx, |view, cx| view.reload_app_menu_bar(cx));
             });
             let _ = with_root_view::<SettingsView, _>(root, cx, |view, cx| {

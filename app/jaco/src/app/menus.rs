@@ -1,6 +1,6 @@
 use crate::{
-    app::{about, quit_app, show_or_create_main_window, temporary_window},
-    features::settings,
+    app::{quit_app, show_or_create_main_window, temporary_window},
+    features::{about, settings},
     foundation::I18n,
 };
 use fluent_bundle::FluentArgs;

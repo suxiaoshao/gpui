@@ -12,8 +12,10 @@ pub(crate) use snapshot::ComposerSendPolicy;
 pub(crate) use snapshot::ComposerSnapshot;
 
 use crate::{
+    features::{
+        conversation::attachments::clipboard_item_has_attachments, skills::GlobalSkillEntry,
+    },
     foundation::I18n,
-    state::{conversations::attachments::clipboard_item_has_attachments, skills::GlobalSkillEntry},
 };
 
 use std::{collections::BTreeMap, ops::Range, rc::Rc};
@@ -1596,7 +1598,7 @@ impl Render for ComposerEditor {
 mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
-    use crate::state::skills::GlobalSkillEntry;
+    use crate::features::skills::GlobalSkillEntry;
     use gpui::{AppContext as _, TestAppContext, VisualTestContext, px, size};
     use jaco_core::SkillSourceKind;
 

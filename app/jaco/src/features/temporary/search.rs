@@ -1,19 +1,27 @@
 use std::{collections::HashSet, fmt};
 
+use gpui::SharedString;
 use gpui::{App, Task};
 use gpui_operation::refresh;
-use jaco_core::ProjectKind;
+use jaco_core::{ConversationId, ProjectId, ProjectKind};
+use jaco_db::ConversationRecord;
 
 use crate::{
     database,
     state::{
-        conversations::index::{self as conversation_index, ConversationIndexOperation},
+        conversation_index::{self, ConversationIndexOperation},
         projects::{self, ProjectOperation},
-        workspace::{self, SidebarConversationNode},
     },
 };
 
-pub(crate) type TemporaryConversationNode = SidebarConversationNode;
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TemporaryConversationNode {
+    pub(crate) id: ConversationId,
+    pub(crate) project_id: ProjectId,
+    pub(crate) title: SharedString,
+    pub(crate) updated_at: i128,
+    pub(crate) pinned: bool,
+}
 pub(crate) type TemporarySearchOperation =
     refresh::Operation<TemporaryConversationSnapshot, TemporarySearchProblem, Task<()>>;
 
@@ -60,7 +68,7 @@ pub(crate) fn empty_snapshot(cx: &App) -> jaco_db::Result<TemporaryConversationS
                 .iter()
                 .filter(|conversation| scratch_projects.contains(&conversation.project_id))
                 .cloned()
-                .map(workspace::conversation_record_node)
+                .map(conversation_node)
                 .collect(),
         }),
         _ => Err(jaco_db::DbError::Invariant(
@@ -83,11 +91,21 @@ pub(crate) fn search(
                 let conversations = repository
                     .list_no_project_conversations(&query)?
                     .into_iter()
-                    .map(workspace::conversation_record_node)
+                    .map(conversation_node)
                     .collect();
                 Ok(TemporaryConversationSnapshot { conversations })
             })
             .await
             .map_err(TemporarySearchProblem)
     })
+}
+
+fn conversation_node(conversation: ConversationRecord) -> TemporaryConversationNode {
+    TemporaryConversationNode {
+        id: conversation.id,
+        project_id: conversation.project_id,
+        title: conversation.title.into(),
+        updated_at: conversation.updated_at.unix_timestamp_nanos(),
+        pinned: conversation.pinned,
+    }
 }

@@ -4,7 +4,7 @@ use std::fmt;
 
 use gpui::{App, Task};
 use gpui_operation::{Complete, Load, Refresh, Retry, Transition, refresh};
-use gpui_store::Store;
+use gpui_store::{Select, Store};
 use jaco_core::{ModelCapabilitiesSnapshot, ProviderId, ProviderModelId};
 use jaco_db::{
     DbError, NewProvider, NewProviderModel, ProviderModelRecord, ProviderRecord, UpdateProvider,
@@ -15,6 +15,54 @@ use crate::{database, database::session::CatalogMutation};
 
 pub(crate) type ProviderOperation = refresh::Operation<ProviderData, ProviderProblem, Task<()>>;
 pub(crate) type ProviderStore = Store<ProviderOperation>;
+pub(crate) type ProviderWithModels = (ProviderRecord, Vec<ProviderModelRecord>);
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectProviderRecordsWithModels;
+
+impl Select<ProviderOperation> for SelectProviderRecordsWithModels {
+    type Output = Option<Vec<ProviderWithModels>>;
+
+    fn select(&self, operation: &ProviderOperation) -> Self::Output {
+        operation.data().map(|data| data.providers.clone())
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectProviderStatus;
+
+impl Select<ProviderOperation> for SelectProviderStatus {
+    type Output = (gpui_operation::refresh::Phase, Option<String>);
+
+    fn select(&self, operation: &ProviderOperation) -> Self::Output {
+        (
+            operation.phase(),
+            operation.problem().map(ToString::to_string),
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProviderModelCatalogSnapshot {
+    models: Option<Vec<ProviderModelChoice>>,
+    phase: gpui_operation::refresh::Phase,
+    problem: Option<String>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectProviderModelCatalog;
+
+impl Select<ProviderOperation> for SelectProviderModelCatalog {
+    type Output = ProviderModelCatalogSnapshot;
+
+    fn select(&self, operation: &ProviderOperation) -> Self::Output {
+        ProviderModelCatalogSnapshot {
+            models: operation.data().map(|data| data.enabled_models.clone()),
+            phase: operation.phase(),
+            problem: operation.problem().map(ToString::to_string),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct ProviderProblem(DbError);

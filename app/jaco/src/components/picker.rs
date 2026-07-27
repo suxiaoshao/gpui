@@ -18,6 +18,7 @@ const PICKER_TRIGGER_RADIUS: f32 = 999.;
 type OnCancel = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 type OnConfirm<T> = Rc<dyn Fn(T, &mut Window, &mut App) + 'static>;
 type IsSelectable<T> = Rc<dyn Fn(&T) -> bool + 'static>;
+type EmptyLabel = Rc<dyn Fn(&App) -> SharedString + 'static>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PickerSection<T> {
@@ -61,7 +62,7 @@ where
     sections: Vec<PickerSection<T>>,
     last_query: String,
     selected_value: Option<T::Value>,
-    empty_label: SharedString,
+    empty_label: EmptyLabel,
     selectable: bool,
     read_only_reason: Option<SharedString>,
     is_item_selectable: IsSelectable<T>,
@@ -140,7 +141,7 @@ where
     pub(crate) fn new(
         sections: Vec<PickerSection<T>>,
         selected_value: Option<T::Value>,
-        empty_label: SharedString,
+        empty_label: impl Fn(&App) -> SharedString + 'static,
         on_confirm: OnConfirm<T>,
         on_cancel: OnCancel,
     ) -> Self {
@@ -150,7 +151,7 @@ where
             sections,
             last_query: String::new(),
             selected_value,
-            empty_label,
+            empty_label: Rc::new(empty_label),
             selectable: true,
             read_only_reason: None,
             is_item_selectable: Rc::new(|_| true),
@@ -185,11 +186,9 @@ where
     pub(crate) fn replace_projection(
         &mut self,
         sections: Vec<PickerSection<T>>,
-        empty_label: SharedString,
         selected_value: Option<T::Value>,
     ) {
         self.all_sections = sections;
-        self.empty_label = empty_label;
         self.selected_value = selected_value;
         self.apply_query();
     }
@@ -338,11 +337,12 @@ where
         _window: &mut Window,
         cx: &mut Context<ListState<Self>>,
     ) -> impl IntoElement {
+        let empty_label = (self.empty_label)(cx);
         h_flex()
             .justify_center()
             .py_6()
             .text_color(cx.theme().muted_foreground)
-            .child(Label::new(self.empty_label.clone()).text_sm())
+            .child(Label::new(empty_label).text_sm())
             .into_any_element()
     }
 
@@ -466,9 +466,52 @@ where
     pub(crate) on_open_change: F,
 }
 
+pub(crate) struct PickerContentPopoverConfig<F>
+where
+    F: Fn(&bool, &mut Window, &mut App) + 'static,
+{
+    pub(crate) id: &'static str,
+    pub(crate) open: bool,
+    pub(crate) trigger: Button,
+    pub(crate) content: AnyElement,
+    pub(crate) width: Pixels,
+    pub(crate) footer: Option<AnyElement>,
+    pub(crate) on_open_change: F,
+}
+
 pub(crate) fn picker_popover<D, F>(cx: &App, config: PickerPopoverConfig<D, F>) -> impl IntoElement
 where
     D: ListDelegate + 'static,
+    F: Fn(&bool, &mut Window, &mut App) + 'static,
+{
+    let content = List::new(&config.list)
+        .when_some(config.search_placeholder, |this, placeholder| {
+            this.search_placeholder(placeholder)
+        })
+        .with_size(Size::Small)
+        .scrollbar_visible(false)
+        .max_h(config.max_height)
+        .paddings(Edges::all(px(4.)))
+        .into_any_element();
+    picker_content_popover(
+        cx,
+        PickerContentPopoverConfig {
+            id: config.id,
+            open: config.open,
+            trigger: config.trigger,
+            content,
+            width: config.width,
+            footer: config.footer,
+            on_open_change: config.on_open_change,
+        },
+    )
+}
+
+pub(crate) fn picker_content_popover<F>(
+    cx: &App,
+    config: PickerContentPopoverConfig<F>,
+) -> impl IntoElement
+where
     F: Fn(&bool, &mut Window, &mut App) + 'static,
 {
     Popover::new(config.id)
@@ -487,16 +530,7 @@ where
                 .border_color(cx.theme().border)
                 .bg(cx.theme().tokens.popover.background)
                 .shadow_lg()
-                .child(
-                    List::new(&config.list)
-                        .when_some(config.search_placeholder, |this, placeholder| {
-                            this.search_placeholder(placeholder)
-                        })
-                        .with_size(Size::Small)
-                        .scrollbar_visible(false)
-                        .max_h(config.max_height)
-                        .paddings(Edges::all(px(4.))),
-                )
+                .child(config.content)
                 .when_some(config.footer, |this, footer| this.child(footer)),
         )
 }
@@ -602,7 +636,7 @@ mod tests {
                 },
             ]),
             Some(1),
-            "Empty".into(),
+            |_| "Empty".into(),
             Rc::new(|_, _, _| {}),
             Rc::new(|_, _| {}),
         );
@@ -629,7 +663,7 @@ mod tests {
                 },
             ]),
             None,
-            "Empty".into(),
+            |_| "Empty".into(),
             Rc::new(|_, _, _| {}),
             Rc::new(|_, _| {}),
         );
@@ -657,7 +691,7 @@ mod tests {
                 },
             ]),
             Some(1),
-            "Empty".into(),
+            |_| "Empty".into(),
             Rc::new(|_, _, _| {}),
             Rc::new(|_, _| {}),
         );
@@ -677,7 +711,6 @@ mod tests {
                     description: "beta",
                 },
             ]),
-            "Vacío".into(),
             Some(2),
         );
 
@@ -685,7 +718,6 @@ mod tests {
         assert_eq!(delegate.sections[0].items.len(), 1);
         assert_eq!(delegate.sections[0].items[0].value(), &2);
         assert_eq!(delegate.selected_index(), Some(IndexPath::default()));
-        assert_eq!(delegate.empty_label.as_ref(), "Vacío");
     }
 
     struct TestRoot;
@@ -694,6 +726,26 @@ mod tests {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             div()
         }
+    }
+
+    #[gpui::test]
+    fn empty_label_is_resolved_from_current_state(cx: &mut TestAppContext) {
+        let label = Rc::new(RefCell::new("Loading"));
+        let (_, _) = cx.add_window_view(move |_window, cx| {
+            let label_for_resolver = label.clone();
+            let delegate = PickerListDelegate::<TestItem>::new(
+                Vec::new(),
+                None,
+                move |_| SharedString::from(*label_for_resolver.borrow()),
+                Rc::new(|_, _, _| {}),
+                Rc::new(|_, _| {}),
+            );
+
+            assert_eq!((delegate.empty_label)(cx).as_ref(), "Loading");
+            *label.borrow_mut() = "No models";
+            assert_eq!((delegate.empty_label)(cx).as_ref(), "No models");
+            TestRoot
+        });
     }
 
     #[gpui::test]
@@ -724,7 +776,7 @@ mod tests {
                             description: "first",
                         }]),
                         None,
-                        "Empty".into(),
+                        |_| "Empty".into(),
                         on_confirm,
                         Rc::new(|_, _| {}),
                     ),
@@ -771,7 +823,7 @@ mod tests {
                             description: "first",
                         }]),
                         None,
-                        "Empty".into(),
+                        |_| "Empty".into(),
                         Rc::new(move |_, _, _| callback_ran.set(true)),
                         Rc::new(|_, _| {}),
                     ),
@@ -820,7 +872,7 @@ mod tests {
                             description: "first",
                         }]),
                         None,
-                        "Empty".into(),
+                        |_| "Empty".into(),
                         Rc::new(move |_, _, _| callback_ran.set(true)),
                         Rc::new(|_, _| {}),
                     ),

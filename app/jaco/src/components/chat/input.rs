@@ -20,13 +20,12 @@ use crate::{
         chat::run_settings::resolve_run_settings,
         chat::run_settings::{RunSettingsController, RunSettingsFormStore, RunSettingsInput},
     },
+    features::{conversation, skills},
     foundation, state,
+    state::config::ChatFormModelConfig,
     state::providers::{ProviderModelChoice, ProviderModelKey},
-    state::{
-        config::ChatFormModelConfig,
-        conversations::attachments::{ComposerAttachment, ModelAttachmentSupportIssue},
-    },
 };
+use conversation::attachments::{ComposerAttachment, ModelAttachmentSupportIssue};
 use gpui::*;
 use gpui_component::{
     WindowExt as _,
@@ -85,7 +84,7 @@ pub(crate) fn build_chat_input_submit(
     }
     let resolved = resolve_run_settings(&prepared.run_settings, catalog)
         .map_err(ChatInputSubmitError::RunSettings)?;
-    if let Some(issue) = state::conversations::attachments::model_support_issue(
+    if let Some(issue) = conversation::attachments::model_support_issue(
         &prepared.attachments,
         Some(&resolved.provider_model.capabilities),
     ) {
@@ -114,8 +113,8 @@ pub(crate) struct ChatInputController {
     primary_action_state: Entity<PrimaryActionControlState>,
     next_attachment_id: u64,
     agent_running: bool,
-    skill_catalog_scope: state::skills::SkillCatalogScope,
-    skill_catalog: state::skills::SkillCatalogOperation,
+    skill_catalog_scope: skills::SkillCatalogScope,
+    skill_catalog: skills::SkillCatalogOperation,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -151,10 +150,10 @@ impl ChatInputController {
         if focus_composer {
             composer.update(cx, |composer, cx| composer.focus(window, cx));
         }
-        let mut skill_catalog = state::skills::SkillCatalogOperation::new();
+        let mut skill_catalog = skills::SkillCatalogOperation::new();
         skill_catalog.transition(Load(Task::ready(())));
-        skill_catalog.transition(Complete(state::skills::load_catalog(
-            state::skills::SkillCatalogScope::Global,
+        skill_catalog.transition(Complete(skills::load_catalog(
+            skills::SkillCatalogScope::Global,
         )));
         if let Some(data) = skill_catalog.data() {
             composer.update(cx, |composer, cx| {
@@ -163,8 +162,7 @@ impl ChatInputController {
         }
         let model_choices = load_model_choices(cx);
         let configured_chat_form = state::config::read(cx, |config| config.chat_form.clone());
-        let selected_model_key =
-            configured_model_key_in(&model_choices, configured_chat_form.model.as_ref());
+        let selected_model_key = configured_model_key_in(configured_chat_form.model.as_ref());
         let selected_reasoning_selection = initial_reasoning_selection(
             &model_choices,
             selected_model_key.as_ref(),
@@ -294,6 +292,26 @@ impl ChatInputController {
             form.sync_chat_form_projection(cx);
             cx.notify();
         }));
+        subscriptions.push(state::config::store(cx).observe_select_in(
+            cx,
+            window,
+            state::config::SelectConfigGateStatus,
+            |form, _status, _window, cx| form.sync_chat_form_projection(cx),
+        ));
+        subscriptions.push(crate::database::store(cx).observe_select_in(
+            cx,
+            window,
+            crate::database::SelectDatabaseReady,
+            |form, _ready, _window, cx| form.sync_chat_form_projection(cx),
+        ));
+        if cx.has_global::<state::providers::ProviderStore>() {
+            subscriptions.push(state::providers::catalog(cx).observe_select_in(
+                cx,
+                window,
+                state::providers::SelectProviderStatus,
+                |form, _status, _window, cx| form.sync_chat_form_projection(cx),
+            ));
+        }
 
         let mut form = Self {
             composer,
@@ -303,7 +321,7 @@ impl ChatInputController {
             primary_action_state,
             next_attachment_id: 1,
             agent_running: false,
-            skill_catalog_scope: state::skills::SkillCatalogScope::Global,
+            skill_catalog_scope: skills::SkillCatalogScope::Global,
             skill_catalog,
             _subscriptions: subscriptions,
         };
@@ -334,21 +352,17 @@ impl ChatInputController {
         cx: &mut Context<Self>,
     ) {
         let scope = project_root
-            .map(|root| state::skills::SkillCatalogScope::Project {
+            .map(|root| skills::SkillCatalogScope::Project {
                 root: root.to_path_buf(),
             })
-            .unwrap_or(state::skills::SkillCatalogScope::Global);
+            .unwrap_or(skills::SkillCatalogScope::Global);
         self.skill_catalog_scope = scope.clone();
         self.load_skill_catalog(scope, cx);
     }
 
-    fn load_skill_catalog(
-        &mut self,
-        scope: state::skills::SkillCatalogScope,
-        cx: &mut Context<Self>,
-    ) {
+    fn load_skill_catalog(&mut self, scope: skills::SkillCatalogScope, cx: &mut Context<Self>) {
         let task_scope = scope.clone();
-        let load = cx.background_spawn(async move { state::skills::load_catalog(task_scope) });
+        let load = cx.background_spawn(async move { skills::load_catalog(task_scope) });
 
         let task = cx.spawn(async move |form, cx| {
             let result = load.await;
@@ -367,13 +381,13 @@ impl ChatInputController {
                 cx.notify();
             });
         });
-        self.skill_catalog = state::skills::SkillCatalogOperation::new();
+        self.skill_catalog = skills::SkillCatalogOperation::new();
         self.skill_catalog.transition(Load(task));
     }
 
     fn apply_skill_catalog_entries(
         &mut self,
-        entries: Vec<state::skills::GlobalSkillEntry>,
+        entries: Vec<skills::GlobalSkillEntry>,
         cx: &mut Context<Self>,
     ) {
         self.composer
@@ -402,9 +416,14 @@ impl ChatInputController {
     pub(crate) fn sync_chat_form_projection(&mut self, cx: &mut Context<Self>) {
         let agent_running = self.agent_running;
         let can_submit = self.can_send(cx);
+        let disabled_reason = (!agent_running)
+            .then(|| send_resource_problem(cx))
+            .flatten()
+            .map(|key| cx.global::<foundation::I18n>().t(key).into());
         self.primary_action_state.update(cx, |state, cx| {
             state.agent_running = agent_running;
             state.can_submit = can_submit;
+            state.disabled_reason = disabled_reason;
             cx.notify();
         });
     }
@@ -440,6 +459,9 @@ impl ChatInputController {
     }
 
     fn can_send(&self, cx: &Context<Self>) -> bool {
+        if send_resource_problem(cx).is_some() {
+            return false;
+        }
         let composer = self.composer.read(cx).snapshot();
         let attachments = ChatInputFormStore::attachments_field(&self.form)
             .value(cx)
@@ -462,7 +484,7 @@ impl ChatInputController {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<ChatInputSubmit> {
-        if self.agent_running {
+        if self.agent_running || send_resource_problem(cx).is_some() {
             return None;
         }
         let form_snapshot = snapshot.clone();
@@ -502,6 +524,25 @@ impl ChatInputController {
     }
 }
 
+fn send_resource_problem(cx: &App) -> Option<&'static str> {
+    if !state::config::store(cx).read(cx, |operation| {
+        matches!(operation, state::config::ConfigOperation::Ready(_))
+    }) {
+        return Some("chat-form-send-config-unavailable");
+    }
+    if !crate::database::is_ready(cx) {
+        return Some("chat-form-send-database-unavailable");
+    }
+    if !cx.has_global::<state::providers::ProviderStore>()
+        || !state::providers::catalog(cx).read(cx, |operation| {
+            matches!(operation, state::providers::ProviderOperation::Ready(_))
+        })
+    {
+        return Some("chat-form-send-provider-unavailable");
+    }
+    None
+}
+
 impl Render for ChatInputController {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.chat_form.clone()
@@ -532,16 +573,12 @@ fn selected_model_choice_in<'a>(
         .find(|choice| &choice.key() == key)
 }
 
-fn configured_model_key_in(
-    choices: &Result<Vec<ProviderModelChoice>, SharedString>,
-    model: Option<&ChatFormModelConfig>,
-) -> Option<ProviderModelKey> {
+fn configured_model_key_in(model: Option<&ChatFormModelConfig>) -> Option<ProviderModelKey> {
     let model = model?;
-    let key = ProviderModelKey {
+    Some(ProviderModelKey {
         provider_id: model.provider_id.clone(),
         model_id: model.model_id.clone(),
-    };
-    selected_model_choice_in(choices, Some(&key)).map(|_| key)
+    })
 }
 
 fn initial_reasoning_selection(
@@ -557,39 +594,30 @@ fn initial_reasoning_selection(
         .cloned()
 }
 
-fn model_empty_label(
-    choices: &Result<Vec<ProviderModelChoice>, SharedString>,
-    i18n: &foundation::I18n,
-) -> SharedString {
-    match choices {
-        Ok(_) => i18n.t("chat-form-model-none-configured").into(),
-        Err(err) => format!("{}: {}", i18n.t("chat-form-model-load-failed"), err).into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         ChatFormSkillCompletionPlacement, ChatInputController, ChatInputFormStore,
         ChatInputPrimaryButtonAction,
         composer_editor::{ComposerSendPolicy, ComposerSnapshot},
-        model_empty_label, selected_model_choice_in,
+        selected_model_choice_in,
     };
     use crate::{
         components::chat::form::{
             SKILL_COMPLETION_GAP, SKILL_COMPLETION_MAX_HEIGHT, skill_completion_popup_layout,
         },
         database,
-        foundation::I18n,
+        features::skills,
         state,
         state::config::ChatFormModelConfig,
         state::providers::{ProviderModelChoice, ProviderModelKey},
     };
     use gpui::{
         Anchor, App, AppContext as _, Bounds, Entity, IntoElement, ParentElement as _, Render,
-        SharedString, Styled as _, Subscription, TestAppContext, VisualTestContext, WindowHandle,
-        div, point, px, size,
+        Styled as _, Subscription, TestAppContext, VisualTestContext, WindowHandle, div, point, px,
+        size,
     };
+    use gpui_operation::Transition as _;
     use jaco_core::{
         CapabilitySourceSnapshot, ContentPart, ModelCapabilitiesSnapshot, ProviderModelMetadata,
         ProviderSecretRefs, ProviderSettingFieldValue, ProviderSettingValue,
@@ -625,20 +653,6 @@ mod tests {
         assert!(selected_model_choice_in(&choices, Some(&stale)).is_none());
         assert!(selected_model_choice_in(&choices, None).is_none());
         assert!(selected_model_choice_in(&Err("load failed".into()), Some(&selected)).is_none());
-    }
-
-    #[test]
-    fn model_empty_label_distinguishes_empty_and_error_states() {
-        let i18n = I18n::english_for_test();
-
-        assert_eq!(
-            model_empty_label(&Ok(vec![]), &i18n).as_ref(),
-            "No enabled models. Configure a provider and enable models first."
-        );
-        assert_eq!(
-            model_empty_label(&Err(SharedString::from("database is unavailable")), &i18n).as_ref(),
-            "Failed to load models: database is unavailable"
-        );
     }
 
     #[test]
@@ -743,18 +757,20 @@ mod tests {
 
         assert_eq!(selected_model_id(&form, &cx).as_deref(), Some("gpt-5"));
 
-        let task = cx.update(|_, cx| {
+        cx.update(|_, cx| {
             let provider_id = provider_id_for_kind(cx, "openai");
-            state::providers::set_provider_model_enabled(
-                cx,
-                provider_id,
-                "gpt-5".to_string(),
-                false,
-            )
+            let record = test_repository(cx)
+                .set_provider_model_enabled(&provider_id, "gpt-5", false)
+                .expect("disable provider model");
+            state::providers::catalog(cx).update(cx, |operation| {
+                let state::providers::ProviderOperation::Ready(ready) = operation else {
+                    panic!("provider catalog is ready");
+                };
+                ready.transition(state::providers::ProviderMessage::UpsertModel(Box::new(
+                    record,
+                )));
+            });
         });
-        cx.foreground_executor()
-            .block_test(task)
-            .expect("disable provider model");
 
         // Catalog refreshes update the available options, but must not silently
         // rewrite the form value or choose another model.
@@ -1023,6 +1039,7 @@ mod tests {
                 .unwrap();
             state::providers::init(cx);
         });
+        cx.run_until_parked();
         dir
     }
 
@@ -1051,11 +1068,12 @@ mod tests {
                 .unwrap();
             state::providers::init(cx);
         });
+        cx.run_until_parked();
         dir
     }
 
-    fn test_skill_entry(name: &str) -> state::skills::GlobalSkillEntry {
-        state::skills::GlobalSkillEntry {
+    fn test_skill_entry(name: &str) -> skills::GlobalSkillEntry {
+        skills::GlobalSkillEntry {
             name: name.to_string(),
             description: Some("GPUI framework knowledge".to_string()),
             source_kind: SkillSourceKind::User,

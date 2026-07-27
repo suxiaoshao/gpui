@@ -13,6 +13,7 @@ use gpui_component::{
     Root, WindowExt as NotificationWindowExt,
     notification::{Notification, NotificationType},
 };
+use gpui_store::Select;
 use jaco_core::{
     AgentRunTriggerKind, ContentPart, PromptContent, PromptId, ShortcutAction, ShortcutId,
     ShortcutInputSource,
@@ -25,16 +26,57 @@ use crate::{
     app::{menus::ToggleTemporaryConversation, temporary_window},
     components::chat::run_settings::reasoning_selection_is_valid,
     errors::{JacoError, JacoResult},
-    features::screenshot::overlay as screenshot_overlay,
+    features::{
+        conversation::{
+            self,
+            attachments::{ComposerAttachment, generated_image_attachment},
+        },
+        screenshot::overlay as screenshot_overlay,
+    },
     foundation::I18n,
     platform::capture::CaptureError,
-    state::{
-        self, config,
-        conversations::attachments::{ComposerAttachment, generated_image_attachment},
-        providers::ProviderModelChoice,
-        selectors::{SelectShortcutRegistrations, SelectTemporaryHotkey, ShortcutRegistration},
-    },
+    state::{self, config, providers::ProviderModelChoice},
 };
+
+#[derive(Clone, Copy, Default)]
+struct SelectTemporaryHotkey;
+
+impl Select<config::ConfigOperation> for SelectTemporaryHotkey {
+    type Output = Option<String>;
+
+    fn select(&self, operation: &config::ConfigOperation) -> Self::Output {
+        operation
+            .data()
+            .and_then(|config| config.app_settings.temporary_hotkey.clone())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ShortcutRegistration {
+    id: ShortcutId,
+    hotkey: String,
+    enabled: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SelectShortcutRegistrations;
+
+impl Select<state::shortcuts::ShortcutOperation> for SelectShortcutRegistrations {
+    type Output = Option<Vec<ShortcutRegistration>>;
+
+    fn select(&self, operation: &state::shortcuts::ShortcutOperation) -> Self::Output {
+        operation.data().map(|data| {
+            data.shortcuts()
+                .iter()
+                .map(|shortcut| ShortcutRegistration {
+                    id: shortcut.id.clone(),
+                    hotkey: shortcut.hotkey.clone(),
+                    enabled: shortcut.enabled,
+                })
+                .collect()
+        })
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum RegisteredHotkeyAction {
@@ -112,16 +154,27 @@ pub(crate) struct GlobalHotkeyState {
 
 impl Global for GlobalHotkeyState {}
 
-struct HotkeyResourceObserver {
-    _subscriptions: Vec<Subscription>,
+struct TemporaryHotkeyObserver {
+    _subscription: Subscription,
 }
 
 #[derive(Clone)]
-struct HotkeyResourceObserverGlobal {
-    _observer: Entity<HotkeyResourceObserver>,
+struct TemporaryHotkeyObserverGlobal {
+    _observer: Entity<TemporaryHotkeyObserver>,
 }
 
-impl Global for HotkeyResourceObserverGlobal {}
+impl Global for TemporaryHotkeyObserverGlobal {}
+
+struct ShortcutHotkeyObserver {
+    _subscription: Subscription,
+}
+
+#[derive(Clone)]
+struct ShortcutHotkeyObserverGlobal {
+    _observer: Entity<ShortcutHotkeyObserver>,
+}
+
+impl Global for ShortcutHotkeyObserverGlobal {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HotkeyPressDiagnostics {
@@ -194,11 +247,46 @@ pub(crate) fn init(cx: &mut App) -> JacoResult<()> {
             .insert("manager".to_string(), err);
     }
     cx.set_global(hotkeys);
-    let observer = cx.new(HotkeyResourceObserver::new);
-    cx.set_global(HotkeyResourceObserverGlobal {
+    let observer = cx.new(TemporaryHotkeyObserver::new);
+    cx.set_global(TemporaryHotkeyObserverGlobal {
         _observer: observer,
     });
+    let temporary = config::store(cx).read(cx, |operation| SelectTemporaryHotkey.select(operation));
+    cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| {
+        if let Err(error) = hotkeys.update_temporary_hotkey_runtime(None, temporary.as_deref()) {
+            event!(
+                Level::ERROR,
+                ?error,
+                "register initial temporary hotkey failed"
+            );
+        }
+    });
     Ok(())
+}
+
+pub(crate) fn init_shortcuts(cx: &mut App) {
+    let observer = cx.new(ShortcutHotkeyObserver::new);
+    cx.set_global(ShortcutHotkeyObserverGlobal {
+        _observer: observer,
+    });
+    sync_shortcuts(cx);
+}
+
+pub(crate) fn sync_shortcuts(cx: &mut App) {
+    let registrations = state::shortcuts::catalog(cx).read(cx, |operation| {
+        SelectShortcutRegistrations.select(operation)
+    });
+    cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| {
+        hotkeys.reconcile_shortcut_registrations(registrations.as_deref().unwrap_or_default());
+    });
+}
+
+pub(crate) fn clear_shortcuts(cx: &mut App) {
+    if cx.has_global::<GlobalHotkeyState>() {
+        cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| {
+            hotkeys.reconcile_shortcut_registrations(&[]);
+        });
+    }
 }
 
 pub(crate) fn shutdown(cx: &mut App) {
@@ -208,11 +296,10 @@ pub(crate) fn shutdown(cx: &mut App) {
     cx.update_global::<GlobalHotkeyState, _>(|hotkeys, _cx| hotkeys.shutdown_runtime());
 }
 
-impl HotkeyResourceObserver {
+impl TemporaryHotkeyObserver {
     fn new(cx: &mut Context<Self>) -> Self {
         let config_store = config::store(cx);
-        let shortcut_store = state::shortcuts::catalog(cx);
-        let temporary =
+        let subscription =
             config_store.observe_select(cx, SelectTemporaryHotkey, |_observer, temporary, cx| {
                 if crate::app::is_shutting_down() {
                     return;
@@ -230,7 +317,15 @@ impl HotkeyResourceObserver {
                     }
                 });
             });
-        let shortcuts = shortcut_store.observe_select(
+        Self {
+            _subscription: subscription,
+        }
+    }
+}
+
+impl ShortcutHotkeyObserver {
+    fn new(cx: &mut Context<Self>) -> Self {
+        let subscription = state::shortcuts::catalog(cx).observe_select(
             cx,
             SelectShortcutRegistrations,
             |_observer, registrations, cx| {
@@ -245,7 +340,7 @@ impl HotkeyResourceObserver {
             },
         );
         Self {
-            _subscriptions: vec![temporary, shortcuts],
+            _subscription: subscription,
         }
     }
 }
@@ -910,7 +1005,7 @@ impl GlobalHotkeyState {
         attachments: Vec<ComposerAttachment>,
         title_seed: String,
         cx: &mut App,
-    ) -> Task<JacoResult<state::conversations::CreatedConversation>> {
+    ) -> Task<JacoResult<conversation::CreatedConversation>> {
         if let Some(selection) = trigger
             .shortcut
             .settings_snapshot
@@ -925,8 +1020,8 @@ impl GlobalHotkeyState {
                 "shortcut reasoning setting is not supported by the selected model".to_string(),
             )));
         }
-        state::conversations::create_conversation(
-            state::conversations::CreateConversationRequest {
+        conversation::create_conversation(
+            conversation::CreateConversationRequest {
                 project_id: None,
                 content_parts,
                 attachments,
@@ -949,7 +1044,7 @@ impl GlobalHotkeyState {
 
     fn finish_shortcut_creation(
         &mut self,
-        task: Task<JacoResult<state::conversations::CreatedConversation>>,
+        task: Task<JacoResult<conversation::CreatedConversation>>,
         cx: &mut App,
     ) {
         let task = cx.spawn(async move |cx| {
@@ -972,11 +1067,7 @@ impl GlobalHotkeyState {
         self.tasks.push(task);
     }
 
-    fn finish_shortcut_trigger(
-        &self,
-        created: state::conversations::CreatedConversation,
-        cx: &mut App,
-    ) {
+    fn finish_shortcut_trigger(&self, created: conversation::CreatedConversation, cx: &mut App) {
         // Selection/OCR/screenshot completion normally arrives from inside a
         // `GlobalHotkeyState` update. The temporary-window lifecycle performs
         // nested global/window/entity updates, so dispatch it after the
@@ -1135,9 +1226,9 @@ mod tests {
         screenshot_title_seed,
     };
     use crate::{
+        features::conversation::attachments::{ComposerAttachmentKind, ComposerAttachmentSource},
         foundation::I18n,
         platform::capture::CaptureError,
-        state::conversations::attachments::{ComposerAttachmentKind, ComposerAttachmentSource},
     };
     use global_hotkey::hotkey::HotKey;
     use gpui::Task;

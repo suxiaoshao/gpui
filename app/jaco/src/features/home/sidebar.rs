@@ -6,7 +6,6 @@ mod row;
 use crate::{
     features::settings::{TOGGLE_SETTINGS_KEY, ToggleSettings},
     foundation::{self, assets::IconName},
-    state::{self, workspace::SidebarPinnedEntry},
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
@@ -20,13 +19,17 @@ use super::actions::{
     OPEN_CONVERSATION_SEARCH_KEY, OPEN_NEW_CONVERSATION_KEY, OpenConversationSearch,
     OpenNewConversation,
 };
+use super::workspace::{
+    HomeRoute, HomeWorkspace, SidebarConversationNode, SidebarPinnedEntry, SidebarProjectNode,
+    SidebarSnapshot,
+};
 
 pub(crate) struct HomeSidebar {
-    workspace: Entity<state::JacoWorkspaceStore>,
+    workspace: Entity<HomeWorkspace>,
 }
 
 impl HomeSidebar {
-    pub(crate) fn new(workspace: Entity<state::JacoWorkspaceStore>, _: &mut Context<Self>) -> Self {
+    pub(crate) fn new(workspace: Entity<HomeWorkspace>, _: &mut Context<Self>) -> Self {
         Self { workspace }
     }
 }
@@ -177,23 +180,23 @@ impl SidebarItem for SidebarRows {
 #[derive(Clone)]
 enum SidebarRow {
     Project {
-        node: state::workspace::SidebarProjectNode,
-        route: state::HomeRoute,
-        workspace: Entity<state::JacoWorkspaceStore>,
+        node: SidebarProjectNode,
+        route: HomeRoute,
+        workspace: Entity<HomeWorkspace>,
     },
     Conversation {
-        conversation: state::workspace::SidebarConversationNode,
+        conversation: SidebarConversationNode,
         active: bool,
-        workspace: Entity<state::JacoWorkspaceStore>,
+        workspace: Entity<HomeWorkspace>,
     },
     Empty(SharedString),
 }
 
 impl SidebarRow {
     fn project(
-        node: state::workspace::SidebarProjectNode,
-        route: state::HomeRoute,
-        workspace: Entity<state::JacoWorkspaceStore>,
+        node: SidebarProjectNode,
+        route: HomeRoute,
+        workspace: Entity<HomeWorkspace>,
     ) -> Self {
         Self::Project {
             node,
@@ -203,9 +206,9 @@ impl SidebarRow {
     }
 
     fn conversation(
-        conversation: state::workspace::SidebarConversationNode,
+        conversation: SidebarConversationNode,
         active: bool,
-        workspace: Entity<state::JacoWorkspaceStore>,
+        workspace: Entity<HomeWorkspace>,
     ) -> Self {
         Self::Conversation {
             conversation,
@@ -232,9 +235,9 @@ impl SidebarRow {
 }
 
 fn sidebar_sections(
-    snapshot: state::workspace::SidebarSnapshot,
-    route: state::HomeRoute,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    snapshot: SidebarSnapshot,
+    route: HomeRoute,
+    workspace: Entity<HomeWorkspace>,
     cx: &mut App,
 ) -> Vec<SidebarSection> {
     let mut sections = vec![SidebarSection::Actions(top_actions(cx))];
@@ -300,8 +303,8 @@ fn settings_action(label: impl Into<SharedString>) -> row::ShortcutSidebarAction
 
 fn render_pinned_section(
     pinned: Vec<SidebarPinnedEntry>,
-    route: state::HomeRoute,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    route: HomeRoute,
+    workspace: Entity<HomeWorkspace>,
     cx: &mut App,
 ) -> Vec<SidebarSection> {
     if pinned.is_empty() {
@@ -314,7 +317,7 @@ fn render_pinned_section(
             SidebarRow::conversation(conversation, active, workspace.clone())
         }
         SidebarPinnedEntry::Project(project) => SidebarRow::project(
-            state::workspace::SidebarProjectNode {
+            SidebarProjectNode {
                 project,
                 is_expanded: false,
                 conversations: Vec::new(),
@@ -331,9 +334,9 @@ fn render_pinned_section(
 }
 
 fn render_projects_section(
-    projects: Vec<state::workspace::SidebarProjectNode>,
-    route: state::HomeRoute,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    projects: Vec<SidebarProjectNode>,
+    route: HomeRoute,
+    workspace: Entity<HomeWorkspace>,
     cx: &mut App,
 ) -> Vec<SidebarSection> {
     let mut rows = Vec::new();
@@ -367,9 +370,9 @@ fn render_projects_section(
 }
 
 fn render_no_project_section(
-    conversations: Vec<state::workspace::SidebarConversationNode>,
-    route: state::HomeRoute,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    conversations: Vec<SidebarConversationNode>,
+    route: HomeRoute,
+    workspace: Entity<HomeWorkspace>,
     cx: &mut App,
 ) -> Vec<SidebarSection> {
     if conversations.is_empty() {
@@ -390,9 +393,9 @@ fn render_no_project_section(
 }
 
 fn project_tree_row(
-    node: state::workspace::SidebarProjectNode,
-    route: state::HomeRoute,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    node: SidebarProjectNode,
+    route: HomeRoute,
+    workspace: Entity<HomeWorkspace>,
     cx: &mut App,
 ) -> AnyElement {
     let project_id = node.project.id.clone();

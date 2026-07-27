@@ -49,7 +49,7 @@ pub(crate) fn open_temporary_window(cx: &mut App) -> Option<WindowHandle<Root>> 
 }
 
 pub(crate) fn show_created_conversation(
-    created: crate::state::conversations::CreatedConversation,
+    created: crate::features::conversation::CreatedConversation,
     cx: &mut App,
 ) -> Option<WindowHandle<Root>> {
     if !crate::database::is_ready(cx) {
@@ -115,7 +115,7 @@ fn with_lifecycle_state<R>(
 impl TemporaryWindowLifecycleState {
     fn show_created_conversation(
         &mut self,
-        created: crate::state::conversations::CreatedConversation,
+        created: crate::features::conversation::CreatedConversation,
         cx: &mut App,
     ) -> Option<WindowHandle<Root>> {
         let window = find_temporary_window(cx).or_else(|| self.create_temporary_window(cx))?;
