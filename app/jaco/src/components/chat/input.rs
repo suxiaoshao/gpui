@@ -14,9 +14,9 @@ use crate::components::chat::run_settings::reasoning_selection_is_valid;
 use crate::{
     components::{
         chat::form::{
-            AgentRunStatusSource, AttachmentControlState, ChatForm, ChatFormControls,
-            ChatFormUiEvent, ControlSlot, PrimaryActionControlState, ProjectControlState,
-            RunSettingsControls,
+            AgentRunControlStatus, AgentRunStatusSource, AttachmentControlState, ChatForm,
+            ChatFormControls, ChatFormUiEvent, ControlSlot, PrimaryActionControlState,
+            ProjectControlState, RunSettingsControls,
         },
         chat::run_settings::resolve_run_settings,
         chat::run_settings::{RunSettingsController, RunSettingsFormStore, RunSettingsInput},
@@ -472,11 +472,11 @@ impl ChatInputController {
 
     fn primary_action_busy(&self, cx: &App) -> bool {
         let state = self.primary_action_state.read(cx);
-        state.submission_pending() || state.agent_running(cx)
+        state.submission_pending() || state.agent_status(cx) != AgentRunControlStatus::Idle
     }
 
-    fn agent_running(&self, cx: &App) -> bool {
-        self.primary_action_state.read(cx).agent_running(cx)
+    fn agent_status(&self, cx: &App) -> AgentRunControlStatus {
+        self.primary_action_state.read(cx).agent_status(cx)
     }
 
     fn submission_is_pending(&self, cx: &App) -> bool {
@@ -556,8 +556,12 @@ impl ChatInputController {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<ChatInputPrimaryButtonAction> {
-        if self.agent_running(cx) {
-            return Some(ChatInputPrimaryButtonAction::Stop);
+        match self.agent_status(cx) {
+            AgentRunControlStatus::Running => {
+                return Some(ChatInputPrimaryButtonAction::Stop);
+            }
+            AgentRunControlStatus::Stopping => return None,
+            AgentRunControlStatus::Idle => {}
         }
         if self.submission_is_pending(cx) {
             return None;
@@ -704,8 +708,8 @@ mod tests {
     };
     use crate::{
         components::chat::form::{
-            AgentRunStatusSource, SKILL_COMPLETION_GAP, SKILL_COMPLETION_MAX_HEIGHT,
-            skill_completion_popup_layout,
+            AgentRunControlStatus, AgentRunStatusSource, SKILL_COMPLETION_GAP,
+            SKILL_COMPLETION_MAX_HEIGHT, skill_completion_popup_layout,
         },
         database,
         features::skills,
@@ -735,12 +739,12 @@ mod tests {
     }
 
     struct TestAgentRunStatus {
-        running: Rc<Cell<bool>>,
+        status: Rc<Cell<AgentRunControlStatus>>,
     }
 
     impl AgentRunStatusSource for TestAgentRunStatus {
-        fn is_running(&self, _cx: &App) -> bool {
-            self.running.get()
+        fn status(&self, _cx: &App) -> AgentRunControlStatus {
+            self.status.get()
         }
     }
 
@@ -1093,13 +1097,13 @@ mod tests {
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let form = window.root(&mut cx).unwrap();
-        let running = Rc::new(Cell::new(true));
+        let status = Rc::new(Cell::new(AgentRunControlStatus::Running));
 
         cx.update(|_, cx| {
             form.update(cx, |form, cx| {
                 form.set_agent_run_status(
                     Rc::new(TestAgentRunStatus {
-                        running: running.clone(),
+                        status: status.clone(),
                     }),
                     cx,
                 );
@@ -1112,9 +1116,35 @@ mod tests {
         });
         assert_eq!(action, Some(ChatInputPrimaryButtonAction::Stop));
 
-        running.set(false);
+        status.set(AgentRunControlStatus::Idle);
 
         assert!(submit_snapshot(&form, test_snapshot("hello"), &mut cx).is_some());
+    }
+
+    #[gpui::test]
+    fn stopping_agent_blocks_submit_and_primary_button_action(cx: &mut TestAppContext) {
+        let _dir = init_chat_form_test(cx);
+        configure_chat_form_model(cx, "gpt-5");
+        let window = open_chat_form_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let form = window.root(&mut cx).unwrap();
+
+        cx.update(|_, cx| {
+            form.update(cx, |form, cx| {
+                form.set_agent_run_status(
+                    Rc::new(TestAgentRunStatus {
+                        status: Rc::new(Cell::new(AgentRunControlStatus::Stopping)),
+                    }),
+                    cx,
+                );
+            });
+        });
+
+        assert!(submit_snapshot(&form, test_snapshot("hello"), &mut cx).is_none());
+        let action = cx.update(|window, cx| {
+            form.update(cx, |form, cx| form.primary_button_action(window, cx))
+        });
+        assert_eq!(action, None);
     }
 
     #[gpui::test]

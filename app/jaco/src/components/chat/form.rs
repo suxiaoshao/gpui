@@ -40,8 +40,8 @@ const COMPOSER_FOOTER_HORIZONTAL_PADDING: f32 = 8.;
 const COMPOSER_FOOTER_BOTTOM_MARGIN: f32 = 8.;
 
 pub(crate) use controls::{
-    AddAttachmentControl, AgentRunStatusSource, AttachmentControlState, ChatFormControls,
-    ControlSlot, PrimaryActionControlState, RunSettingsControls,
+    AddAttachmentControl, AgentRunControlStatus, AgentRunStatusSource, AttachmentControlState,
+    ChatFormControls, ControlSlot, PrimaryActionControlState, RunSettingsControls,
 };
 pub(crate) use project_control::{
     ProjectControlState, ProjectPickerOption, ProjectPickerOptionKind, ProjectPickerValue,
@@ -696,12 +696,15 @@ impl Render for ChatForm {
                             .when_some(model, |this, model| this.child(model))
                             .when_some(primary_action, |this, action| {
                                 let action = action.read(cx);
-                                let agent_running = action.agent_running(cx);
+                                let agent_status = action.agent_status(cx);
+                                let agent_active = agent_status != AgentRunControlStatus::Idle;
+                                let agent_stopping =
+                                    agent_status == AgentRunControlStatus::Stopping;
                                 let submission_pending = action.submission_pending();
                                 let can_submit = action.can_submit;
                                 let disabled_reason = action.disabled_reason.clone();
                                 this.child(
-                                    Button::new(if agent_running {
+                                    Button::new(if agent_active {
                                         "chat-form-stop"
                                     } else {
                                         "chat-form-send"
@@ -714,14 +717,27 @@ impl Render for ChatForm {
                                     .disabled(
                                         !primary_enabled
                                             || submission_pending
-                                            || (!agent_running && !can_submit),
+                                            || agent_stopping
+                                            || (!agent_active && !can_submit),
                                     )
                                     .loading(submission_pending)
                                     .when_some(
-                                        (!agent_running).then_some(disabled_reason).flatten(),
+                                        match agent_status {
+                                            AgentRunControlStatus::Running => Some(
+                                                cx.global::<crate::foundation::I18n>()
+                                                    .t("chat-form-stop-tooltip")
+                                                    .into(),
+                                            ),
+                                            AgentRunControlStatus::Stopping => Some(
+                                                cx.global::<crate::foundation::I18n>()
+                                                    .t("chat-form-stopping-tooltip")
+                                                    .into(),
+                                            ),
+                                            AgentRunControlStatus::Idle => disabled_reason,
+                                        },
                                         |button, reason| button.tooltip(reason),
                                     )
-                                    .child(Icon::new(if agent_running {
+                                    .child(Icon::new(if agent_active {
                                         IconName::Square
                                     } else {
                                         IconName::Send

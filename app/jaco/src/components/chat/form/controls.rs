@@ -51,8 +51,16 @@ pub(crate) struct AttachmentControlState {
 #[derive(Clone, Default)]
 pub(crate) struct AddAttachmentControl;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AgentRunControlStatus {
+    #[default]
+    Idle,
+    Running,
+    Stopping,
+}
+
 pub(crate) trait AgentRunStatusSource {
-    fn is_running(&self, cx: &App) -> bool;
+    fn status(&self, cx: &App) -> AgentRunControlStatus;
 }
 
 #[derive(Default)]
@@ -68,10 +76,10 @@ impl PrimaryActionControlState {
         self.submission_task.is_some()
     }
 
-    pub(crate) fn agent_running(&self, cx: &App) -> bool {
+    pub(crate) fn agent_status(&self, cx: &App) -> AgentRunControlStatus {
         self.agent_run_status
             .as_ref()
-            .is_some_and(|source| source.is_running(cx))
+            .map_or(AgentRunControlStatus::Idle, |source| source.status(cx))
     }
 
     pub(crate) fn begin_submission(&mut self, task: Task<()>) {

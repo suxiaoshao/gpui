@@ -240,6 +240,7 @@ chat-form-placeholder = 向 Jaco 发送消息...
 chat-form-add-tooltip = 添加上下文
 chat-form-send-tooltip = 发送消息
 chat-form-stop-tooltip = 停止生成
+chat-form-stopping-tooltip = 停止中
 chat-form-attachment-add-files = 添加文件
 chat-form-attachment-add-from-clipboard = 从剪贴板添加
 chat-form-attachment-add-failed = 添加附件失败

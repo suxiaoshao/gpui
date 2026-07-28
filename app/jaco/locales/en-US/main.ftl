@@ -240,6 +240,7 @@ chat-form-placeholder = Message Jaco...
 chat-form-add-tooltip = Add context
 chat-form-send-tooltip = Send message
 chat-form-stop-tooltip = Stop generation
+chat-form-stopping-tooltip = Stopping...
 chat-form-attachment-add-files = Add files
 chat-form-attachment-add-from-clipboard = Add from clipboard
 chat-form-attachment-add-failed = Add attachment failed

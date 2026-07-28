@@ -25,7 +25,7 @@ use jaco_core::{
 };
 
 use crate::{
-    components::chat::form::AgentRunStatusSource,
+    components::chat::form::{AgentRunControlStatus, AgentRunStatusSource},
     components::chat::input::{
         ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
     },
@@ -60,8 +60,14 @@ struct ConversationAgentRunStatus {
 }
 
 impl AgentRunStatusSource for ConversationAgentRunStatus {
-    fn is_running(&self, cx: &App) -> bool {
-        self.runtime.read(cx).is_running(&self.conversation_id)
+    fn status(&self, cx: &App) -> AgentRunControlStatus {
+        match self.runtime.read(cx).run_status(&self.conversation_id) {
+            conversation::runtime::ConversationRunStatus::Idle => AgentRunControlStatus::Idle,
+            conversation::runtime::ConversationRunStatus::Running => AgentRunControlStatus::Running,
+            conversation::runtime::ConversationRunStatus::Stopping => {
+                AgentRunControlStatus::Stopping
+            }
+        }
     }
 }
 

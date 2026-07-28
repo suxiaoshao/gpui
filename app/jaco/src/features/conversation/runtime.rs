@@ -22,7 +22,6 @@ pub(crate) struct ConversationRuntimeStore {
     next_run_key: u64,
     shutting_down: bool,
     recovery: refresh::Operation<(), ConversationRuntimeProblem, Task<()>>,
-    cleanup_tasks: Vec<Task<()>>,
 }
 
 #[derive(Debug)]
@@ -41,8 +40,20 @@ struct ActiveRun {
     agent_run_id: Option<AgentRunId>,
     cancellation_token: AgentCancellationToken,
     approval_broker: Arc<ConversationApprovalBroker>,
-    run_task: Option<Task<()>>,
+    task: ActiveRunTask,
     _event_task: Task<()>,
+}
+
+enum ActiveRunTask {
+    Running(Task<()>),
+    Stopping(Task<()>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConversationRunStatus {
+    Idle,
+    Running,
+    Stopping,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,7 +75,6 @@ impl ConversationRuntimeStore {
             next_run_key: 0,
             shutting_down: false,
             recovery: refresh::Operation::new(),
-            cleanup_tasks: Vec::new(),
         }
     }
 
@@ -76,8 +86,20 @@ impl ConversationRuntimeStore {
         runtime
     }
 
+    pub(crate) fn run_status(&self, conversation_id: &ConversationId) -> ConversationRunStatus {
+        match self
+            .active_runs
+            .get(conversation_id)
+            .map(|active| &active.task)
+        {
+            None => ConversationRunStatus::Idle,
+            Some(ActiveRunTask::Running(_)) => ConversationRunStatus::Running,
+            Some(ActiveRunTask::Stopping(_)) => ConversationRunStatus::Stopping,
+        }
+    }
+
     pub(crate) fn is_running(&self, conversation_id: &ConversationId) -> bool {
-        self.active_runs.contains_key(conversation_id)
+        self.run_status(conversation_id) != ConversationRunStatus::Idle
     }
 
     pub(crate) fn active_agent_run_id(
@@ -102,9 +124,12 @@ impl ConversationRuntimeStore {
         conversation_id: &ConversationId,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(mut active) = self.active_runs.remove(conversation_id) else {
+        let Some(active) = self.active_runs.get_mut(conversation_id) else {
             return false;
         };
+        if matches!(active.task, ActiveRunTask::Stopping(_)) {
+            return false;
+        }
 
         active.cancellation_token.cancel();
         if let Some(agent_run_id) = active.agent_run_id.as_ref() {
@@ -112,37 +137,31 @@ impl ConversationRuntimeStore {
         } else {
             active.approval_broker.cancel_all();
         }
-        active.run_task.take();
-        if let Ok(persistence) = database::ready_agent_persistence(cx) {
-            let conversation_id = conversation_id.clone();
-            let agent_run_id = active.agent_run_id.clone();
-            let cleanup = cx.spawn(async move |_, cx| {
-                if let Err(err) = AgentRuntime::new(persistence)
-                    .cancel_non_terminal_runs_for_conversation(&conversation_id, None)
+        let run_key = active.key;
+        let agent_run_id = active.agent_run_id.clone();
+        let persistence = database::ready_agent_persistence(cx).map_err(|error| error.to_string());
+        let cleanup_conversation_id = conversation_id.clone();
+        let cleanup = cx.spawn(async move |store, cx| {
+            let result = match persistence {
+                Ok(persistence) => AgentRuntime::new(persistence)
+                    .cancel_non_terminal_runs_for_conversation(&cleanup_conversation_id, None)
                     .await
-                {
-                    event!(
-                        Level::ERROR,
-                        error = ?err,
-                        conversation_id = %conversation_id,
-                        agent_run_id = ?agent_run_id,
-                        "cancel active conversation runs failed"
-                    );
-                } else {
-                    cx.update(|cx| {
-                        super::registry::refresh_conversation(&conversation_id, cx);
-                    });
-                }
-            });
-            self.cleanup_tasks.retain(|task| !task.is_ready());
-            self.cleanup_tasks.push(cleanup);
-        }
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+                Err(error) => Err(error),
+            };
+            finish_stop_from_task(
+                store,
+                cleanup_conversation_id,
+                run_key,
+                agent_run_id,
+                result,
+                cx,
+            );
+        });
+        active.task = ActiveRunTask::Stopping(cleanup);
 
         self.last_errors.remove(conversation_id);
-        super::registry::release_active(conversation_id, cx);
-        cx.emit(ConversationRuntimeEvent::RunFinished {
-            conversation_id: conversation_id.clone(),
-        });
         cx.notify();
         true
     }
@@ -214,7 +233,7 @@ impl ConversationRuntimeStore {
                 agent_run_id: None,
                 cancellation_token,
                 approval_broker,
-                run_task: Some(run_task),
+                task: ActiveRunTask::Running(run_task),
                 _event_task: event_task,
             },
         );
@@ -236,9 +255,8 @@ impl ConversationRuntimeStore {
         }
 
         let active_runs = std::mem::take(&mut self.active_runs);
-        let cleanup_tasks = std::mem::take(&mut self.cleanup_tasks);
         let mut tasks = Vec::with_capacity(active_runs.len());
-        for (conversation_id, mut active) in active_runs {
+        for (conversation_id, active) in active_runs {
             active.cancellation_token.cancel();
             if let Some(agent_run_id) = active.agent_run_id.as_ref() {
                 active.approval_broker.cancel_all_for_run(agent_run_id);
@@ -247,19 +265,16 @@ impl ConversationRuntimeStore {
             }
             self.last_errors.remove(&conversation_id);
             cx.emit(ConversationRuntimeEvent::RunFinished { conversation_id });
-            tasks.push((active.run_task.take(), active._event_task));
+            tasks.push((active.task, active._event_task));
         }
         cx.notify();
 
         cx.spawn(async move |_, _| {
-            for (run_task, event_task) in tasks {
-                if let Some(run_task) = run_task {
-                    run_task.await;
+            for (task, event_task) in tasks {
+                match task {
+                    ActiveRunTask::Running(task) | ActiveRunTask::Stopping(task) => task.await,
                 }
                 event_task.await;
-            }
-            for cleanup_task in cleanup_tasks {
-                cleanup_task.await;
             }
         })
     }
@@ -278,6 +293,9 @@ impl ConversationRuntimeStore {
         let Some(active) = self.active_runs.get(&conversation_id) else {
             return false;
         };
+        if !matches!(active.task, ActiveRunTask::Running(_)) {
+            return false;
+        }
         let Some(agent_run_id) = active.agent_run_id.as_ref() else {
             return false;
         };
@@ -317,6 +335,9 @@ impl ConversationRuntimeStore {
         let Some(active) = self.active_runs.get(&conversation_id) else {
             return false;
         };
+        if !matches!(active.task, ActiveRunTask::Running(_)) {
+            return false;
+        }
         let Some(agent_run_id) = active.agent_run_id.as_ref() else {
             return false;
         };
@@ -403,6 +424,9 @@ impl ConversationRuntimeStore {
                 let Some(active) = self.active_runs.get_mut(&conversation_id) else {
                     return;
                 };
+                if !matches!(active.task, ActiveRunTask::Running(_)) {
+                    return;
+                }
                 active.agent_run_id = Some(agent_run_id);
             }
             jaco_agent::AgentRuntimeEvent::AgentRunStatusChanged {
@@ -423,7 +447,7 @@ impl ConversationRuntimeStore {
         let Some(active) = self.active_runs.get(&conversation_id) else {
             return false;
         };
-        if active.key != run_key {
+        if active.key != run_key || !matches!(active.task, ActiveRunTask::Running(_)) {
             return false;
         }
 
@@ -431,6 +455,43 @@ impl ConversationRuntimeStore {
         super::registry::release_active(&conversation_id, cx);
         if let Err(err) = result {
             self.last_errors.insert(conversation_id.clone(), err);
+        }
+        cx.emit(ConversationRuntimeEvent::RunFinished { conversation_id });
+        cx.notify();
+        true
+    }
+
+    fn finish_stop(
+        &mut self,
+        conversation_id: ConversationId,
+        run_key: ActiveRunKey,
+        agent_run_id: Option<AgentRunId>,
+        result: Result<(), String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(active) = self.active_runs.get(&conversation_id) else {
+            return false;
+        };
+        if active.key != run_key || !matches!(active.task, ActiveRunTask::Stopping(_)) {
+            return false;
+        }
+
+        self.active_runs.remove(&conversation_id);
+        super::registry::release_active(&conversation_id, cx);
+        match result {
+            Ok(()) => {
+                super::registry::refresh_conversation(&conversation_id, cx);
+            }
+            Err(error) => {
+                event!(
+                    Level::ERROR,
+                    %error,
+                    %conversation_id,
+                    ?agent_run_id,
+                    "cancel active conversation runs failed"
+                );
+                self.last_errors.insert(conversation_id.clone(), error);
+            }
         }
         cx.emit(ConversationRuntimeEvent::RunFinished { conversation_id });
         cx.notify();
@@ -449,6 +510,21 @@ fn finish_run_from_task(
         store.finish_run(conversation_id, run_key, result, cx);
     }) {
         event!(Level::ERROR, error = ?err, "finish conversation agent run failed");
+    }
+}
+
+fn finish_stop_from_task(
+    store: WeakEntity<ConversationRuntimeStore>,
+    conversation_id: ConversationId,
+    run_key: ActiveRunKey,
+    agent_run_id: Option<AgentRunId>,
+    result: Result<(), String>,
+    cx: &mut AsyncApp,
+) {
+    if let Err(err) = store.update(cx, |store, cx| {
+        store.finish_stop(conversation_id, run_key, agent_run_id, result, cx);
+    }) {
+        event!(Level::ERROR, error = ?err, "finish stopping conversation agent run failed");
     }
 }
 
@@ -642,7 +718,7 @@ mod tests {
             agent_run_id: Some("run-1".to_string()),
             cancellation_token,
             approval_broker: Arc::new(ConversationApprovalBroker::new()),
-            run_task: Some(Task::ready(())),
+            task: ActiveRunTask::Running(Task::ready(())),
             _event_task: Task::ready(()),
         }
     }
@@ -727,7 +803,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn stop_run_cancels_active_run_immediately(cx: &mut gpui::TestAppContext) {
+    fn stop_run_keeps_conversation_gated_until_cleanup_finishes(cx: &mut gpui::TestAppContext) {
         let _dir = init_runtime_test(cx);
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let recorder = cx.update(|cx| cx.new(|cx| RuntimeEventRecorder::new(store.clone(), cx)));
@@ -755,12 +831,25 @@ mod tests {
 
                 assert!(store.stop_run(&conversation_id, cx));
                 assert!(!store.stop_run(&conversation_id, cx));
-                assert!(!store.active_runs.contains_key(&conversation_id));
+                assert!(!store.finish_run(
+                    conversation_id.clone(),
+                    ActiveRunKey(0),
+                    Err("stale run completion".to_string()),
+                    cx,
+                ));
+                assert_eq!(
+                    store.run_status(&conversation_id),
+                    ConversationRunStatus::Stopping
+                );
+                assert!(store.is_running(&conversation_id));
                 assert!(store.take_last_error(&conversation_id).is_none());
             });
         });
 
         assert!(cancellation_token.is_cancelled());
+        cx.update(|cx| {
+            assert!(recorder.read(cx).events.lock().unwrap().is_empty());
+        });
         cx.run_until_parked();
 
         cx.update(|cx| {
@@ -768,6 +857,10 @@ mod tests {
             let run = repository.get_agent_run(&agent_run_id).unwrap().unwrap();
             assert_eq!(run.status, AgentRunStatus::Canceled);
             assert!(run.error.is_none());
+            assert_eq!(
+                store.read(cx).run_status(&conversation_id),
+                ConversationRunStatus::Idle
+            );
             let events = recorder.read(cx).events.lock().unwrap().clone();
             assert!(events.contains(&ConversationRuntimeEvent::RunFinished {
                 conversation_id: conversation_id.clone(),
