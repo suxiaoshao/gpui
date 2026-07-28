@@ -54,7 +54,9 @@ impl RenderOnce for ConversationRuntimeStatus {
                     .loading(self.running)
                     .disabled(self.running)
                     .on_click(|_, _window, cx| {
-                        if let Some(runtime) = crate::app::session::ready_runtime(cx) {
+                        if let Some(runtime) =
+                            crate::features::conversation::resources::ready_runtime(cx)
+                        {
                             conversation::runtime::retry_recovery_if_needed(&runtime, cx);
                         }
                     }),

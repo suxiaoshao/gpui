@@ -11,7 +11,7 @@ use crate::{
         CriticalResourceAction, CriticalResourceProblem, CriticalResourcesView,
     },
     database::{self, DatabasePhase, DatabaseResource},
-    features::home::HomeView,
+    features::{conversation::resources, home::HomeView},
     foundation::I18n,
     state::{self, config::ConfigOperation},
 };
@@ -19,7 +19,6 @@ use crate::{
 pub(crate) struct JacoRoot {
     focus_handle: FocusHandle,
     home: Option<Entity<HomeView>>,
-    home_binding: Option<database::session::DatabaseBinding>,
     _theme_binding: state::theme::WindowThemeBinding,
     _subscriptions: Vec<Subscription>,
 }
@@ -28,12 +27,11 @@ impl JacoRoot {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let config = state::config::store(cx);
         let database = database::store(cx);
-        let session = crate::app::session::store(cx);
+        let conversation_resources = resources::store(cx);
         let shutdown = crate::app::AppShutdownStore::global(cx);
         let mut root = Self {
             focus_handle: cx.focus_handle(),
             home: None,
-            home_binding: None,
             _theme_binding: state::theme::WindowThemeBinding::new(window, cx),
             _subscriptions: Vec::new(),
         };
@@ -46,8 +44,11 @@ impl JacoRoot {
         root._subscriptions.push(
             database.observe_in(cx, window, |root, _, window, cx| root.sync_home(window, cx)),
         );
-        root._subscriptions
-            .push(session.observe_in(cx, window, |root, _, window, cx| root.sync_home(window, cx)));
+        root._subscriptions.push(conversation_resources.observe_in(
+            cx,
+            window,
+            |root, _, window, cx| root.sync_home(window, cx),
+        ));
         root._subscriptions
             .push(shutdown.observe_in(cx, window, |_root, _, _window, cx| cx.notify()));
         root.sync_home(window, cx);
@@ -75,19 +76,13 @@ impl JacoRoot {
                 );
             }
         }
-        let session = crate::app::session::ready_data(cx);
-        let binding = session.as_ref().map(|session| session.binding.clone());
-        if binding != self.home_binding {
-            self.home = None;
-            self.home_binding = binding.clone();
-        }
-        if let Some(session) = session {
+        let resources = resources::ready_data(cx);
+        if let Some(resources) = resources {
             if self.home.is_none() && database::is_ready(cx) {
-                self.home = Some(cx.new(|cx| HomeView::new(session.runtime, window, cx)));
+                self.home = Some(cx.new(|cx| HomeView::new(resources.runtime, window, cx)));
             }
         } else {
             self.home = None;
-            self.home_binding = None;
         }
         cx.notify();
     }
@@ -289,21 +284,27 @@ impl JacoRoot {
     }
 
     fn render_session_pending(&self, cx: &mut Context<Self>) -> AnyElement {
-        let failure = crate::app::session::store(cx).read(cx, |session| match session {
-            crate::app::session::AppSessionState::Failed { binding, message } => {
-                Some((binding.target.database_path.clone(), message.clone()))
-            }
-            crate::app::session::AppSessionState::AwaitingDatabase
-            | crate::app::session::AppSessionState::Ready(_) => None,
+        let message = resources::store(cx).read(cx, |resources| match resources {
+            resources::ConversationResourcesState::Failed(message) => Some(message.clone()),
+            resources::ConversationResourcesState::AwaitingDatabase
+            | resources::ConversationResourcesState::Ready(_) => None,
         });
-        let Some((path, message)) = failure else {
+        let path = database::store(cx).read(cx, |resource| match resource {
+            DatabaseResource::Bound { target, .. } => Some(target.database_path.clone()),
+            DatabaseResource::AwaitingConfig => None,
+        });
+        let Some(message) = message else {
             return CriticalResourcesView::loading(
                 cx.global::<I18n>().t("critical-session-loading"),
             )
             .into_any_element();
         };
         let mut args = fluent_bundle::FluentArgs::new();
-        args.set("path", path.display().to_string());
+        args.set(
+            "path",
+            path.map(|path| path.display().to_string())
+                .unwrap_or_default(),
+        );
         args.set("message", message);
         CriticalResourcesView::problem(CriticalResourceProblem {
             id: "critical-session-error",
@@ -314,7 +315,7 @@ impl JacoRoot {
                 .into(),
             running: false,
             warning: false,
-            actions: vec![CriticalResourceAction::RetrySession],
+            actions: vec![CriticalResourceAction::RetryConversationResources],
         })
         .into_any_element()
     }

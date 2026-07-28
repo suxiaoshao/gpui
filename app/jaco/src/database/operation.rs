@@ -93,20 +93,6 @@ impl DatabaseOperation {
         }
     }
 
-    /// Only exact Ready exposes business data. Refreshing owns the old session
-    /// solely so it can either be restored after validation or retired.
-    pub(crate) fn data(&self) -> Option<&DatabaseData> {
-        match self {
-            Self::Ready(data) => Some(data),
-            Self::Idle
-            | Self::Loading { .. }
-            | Self::Refreshing { .. }
-            | Self::Retiring { .. }
-            | Self::Unavailable(_)
-            | Self::Repairing { .. } => None,
-        }
-    }
-
     /// Lifecycle-only access used to drain a session during refresh failure or
     /// application shutdown. It does not expose database business data.
     pub(crate) fn session(&self) -> Option<&Entity<DatabaseSession>> {

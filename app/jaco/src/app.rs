@@ -1,5 +1,4 @@
 pub(crate) mod menus;
-pub(crate) mod session;
 pub(crate) mod tasks;
 pub(crate) mod temporary_window;
 pub(crate) mod title_bar_menu;
@@ -163,7 +162,11 @@ fn init(cx: &mut App) -> crate::errors::JacoResult<()> {
     }
 
     database::init_store(cx);
-    session::init(cx);
+    state::providers::init(cx);
+    state::projects::init(cx);
+    state::prompts::init(cx);
+    state::shortcuts::init(cx);
+    state::hotkey::init_shortcuts(cx);
     title_bar_menu::init(cx);
     temporary_window::init(cx);
     crate::features::init(cx);
@@ -176,15 +179,6 @@ fn init(cx: &mut App) -> crate::errors::JacoResult<()> {
     menus::ensure_localized_window_menu_registered();
 
     cx.activate(true);
-    Ok(())
-}
-
-fn init_ready_services(cx: &mut App) -> crate::errors::JacoResult<()> {
-    state::providers::init(cx);
-    state::projects::init(cx);
-    state::prompts::init(cx);
-    state::shortcuts::init(cx);
-    state::hotkey::init_shortcuts(cx);
     Ok(())
 }
 
@@ -334,7 +328,7 @@ pub(crate) fn find_main_window(cx: &App) -> Option<WindowHandle<Root>> {
 pub(crate) fn ready_runtime(
     cx: &App,
 ) -> Option<Entity<crate::features::conversation::runtime::ConversationRuntimeStore>> {
-    session::ready_runtime(cx)
+    crate::features::conversation::resources::ready_runtime(cx)
 }
 
 pub(crate) fn reload_app_menu_bars(cx: &mut App) {

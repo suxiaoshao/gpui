@@ -92,9 +92,9 @@ impl Render for TemporaryNewConversationPane {
                     .items_center()
                     .gap_3()
                     .children(
-                        crate::app::session::ready_runtime(cx).and_then(|runtime| {
-                            ConversationRuntimeStatus::from_runtime(&runtime, cx)
-                        }),
+                        crate::features::conversation::resources::ready_runtime(cx).and_then(
+                            |runtime| ConversationRuntimeStatus::from_runtime(&runtime, cx),
+                        ),
                     )
                     .child(self.chat_form.clone()),
             )

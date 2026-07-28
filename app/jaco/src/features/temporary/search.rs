@@ -57,9 +57,10 @@ pub(crate) fn empty_snapshot(cx: &App) -> jaco_db::Result<TemporaryConversationS
             "project resource is not ready".to_string(),
         )),
     })?;
-    let registry = crate::app::session::ready_conversations(cx).ok_or_else(|| {
-        jaco_db::DbError::Invariant("conversation session is not ready".to_string())
-    })?;
+    let registry =
+        crate::features::conversation::resources::ready_conversations(cx).ok_or_else(|| {
+            jaco_db::DbError::Invariant("conversation session is not ready".to_string())
+        })?;
     let catalog = registry.read(cx).catalog();
     match catalog.read(cx).operation() {
         ConversationCatalogOperation::Ready(ready) => Ok(TemporaryConversationSnapshot {

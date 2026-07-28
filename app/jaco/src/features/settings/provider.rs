@@ -2774,7 +2774,7 @@ mod tests {
             database::install_for_test(cx, dir.path());
             crate::foundation::i18n::init(cx);
             crate::state::hotkey::set_test_hotkey_state(cx);
-            crate::app::session::init(cx);
+            crate::state::providers::init(cx);
         });
         cx.run_until_parked();
         dir
@@ -2811,7 +2811,7 @@ mod tests {
                 ))
                 .unwrap();
             crate::state::hotkey::set_test_hotkey_state(cx);
-            crate::app::session::init(cx);
+            crate::state::providers::init(cx);
         });
         cx.run_until_parked();
         dir

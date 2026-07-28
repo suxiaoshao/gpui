@@ -22,18 +22,9 @@ use jaco_db::{
 };
 
 use crate::{
-    database::{DatabaseTarget, DatabaseTargetLease},
+    database::DatabaseTargetLease,
     errors::{JacoError, JacoResult},
 };
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct DatabaseSessionKey(pub(crate) u64);
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct DatabaseBinding {
-    pub(crate) target: DatabaseTarget,
-    pub(crate) session_key: DatabaseSessionKey,
-}
 
 pub(crate) struct DatabaseSession {
     active: Option<ActiveDatabaseSession>,

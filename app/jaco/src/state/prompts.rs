@@ -1,7 +1,7 @@
 use std::fmt;
 
-use gpui::{App, AppContext, Task};
-use gpui_operation::{Complete, Load, Refresh, Retry, Transition, refresh};
+use gpui::{App, AppContext, Entity, Global, Subscription, Task};
+use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh};
 use gpui_store::{Select, Store};
 use jaco_core::{PromptContent, PromptId};
 use jaco_db::{DbError, NewPrompt, PromptRecord, UpdatePrompt};
@@ -13,6 +13,15 @@ const DEFAULT_SORT_ORDER_STEP: i32 = 10;
 
 pub(crate) type PromptOperation = refresh::Operation<PromptData, PromptProblem, Task<()>>;
 pub(crate) type PromptStore = Store<PromptOperation>;
+
+struct PromptDatabaseOwner {
+    mutation_tasks: Vec<Task<()>>,
+    _database_subscription: Subscription,
+}
+
+struct PromptDatabaseOwnerGlobal(Entity<PromptDatabaseOwner>);
+
+impl Global for PromptDatabaseOwnerGlobal {}
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SelectPromptRecords;
@@ -111,13 +120,41 @@ fn sort_prompts(prompts: &mut [PromptRecord]) {
 
 pub(crate) fn init(cx: &mut App) {
     PromptStore::install_global(cx, PromptOperation::new());
-    let Some(binding) = database::ready_binding(cx) else {
-        return;
-    };
-    let Ok(executor) = database::ready_executor(cx) else {
-        return;
-    };
-    let task = cx.spawn(async move |cx| {
+    let owner = cx.new(|cx| {
+        let subscription = database::store(cx).observe_select(
+            cx,
+            database::SelectDatabaseReady,
+            |owner: &mut PromptDatabaseOwner, ready, cx| owner.sync(*ready, cx),
+        );
+        PromptDatabaseOwner {
+            mutation_tasks: Vec::new(),
+            _database_subscription: subscription,
+        }
+    });
+    cx.set_global(PromptDatabaseOwnerGlobal(owner.clone()));
+    let ready = database::is_ready(cx);
+    owner.update(cx, |owner, cx| owner.sync(ready, cx));
+}
+
+impl PromptDatabaseOwner {
+    fn sync(&mut self, ready: bool, cx: &mut App) {
+        if ready {
+            request_refresh(cx);
+        } else {
+            self.mutation_tasks.clear();
+            catalog(cx).update(cx, |operation| operation.transition(Cancel));
+        }
+    }
+
+    fn retain(&mut self, task: Task<()>) {
+        self.mutation_tasks.retain(|task| !task.is_ready());
+        self.mutation_tasks.push(task);
+    }
+}
+
+fn load_task(cx: &mut App) -> Option<Task<()>> {
+    let executor = database::ready_executor(cx).ok()?;
+    Some(cx.spawn(async move |cx| {
         let result = executor
             .execute(|repository| {
                 repository.list_prompts().map(|mut prompts| {
@@ -128,17 +165,13 @@ pub(crate) fn init(cx: &mut App) {
             .await
             .map_err(PromptProblem);
         cx.update(|cx| {
-            if database::ready_binding(cx).as_ref() != Some(&binding) {
-                return;
-            }
             catalog(cx).update(cx, |operation| {
-                if matches!(operation, PromptOperation::Loading(_)) {
+                if operation.is_running() {
                     operation.transition(Complete(result));
                 }
             });
         });
-    });
-    catalog(cx).update(cx, |operation| operation.transition(Load(task)));
+    }))
 }
 
 pub(crate) fn catalog(cx: &impl AppContext) -> PromptStore {
@@ -146,36 +179,15 @@ pub(crate) fn catalog(cx: &impl AppContext) -> PromptStore {
 }
 
 pub(crate) fn request_refresh(cx: &mut App) {
-    let Some(binding) = database::ready_binding(cx) else {
+    if !database::is_ready(cx) {
         return;
-    };
-    let Ok(executor) = database::ready_executor(cx) else {
-        return;
-    };
+    }
     if catalog(cx).read(cx, PromptOperation::is_running) {
         return;
     }
-    let task = cx.spawn(async move |cx| {
-        let result = executor
-            .execute(|repository| {
-                repository.list_prompts().map(|mut prompts| {
-                    sort_prompts(&mut prompts);
-                    PromptData { prompts }
-                })
-            })
-            .await
-            .map_err(PromptProblem);
-        cx.update(|cx| {
-            if database::ready_binding(cx).as_ref() != Some(&binding) {
-                return;
-            }
-            catalog(cx).update(cx, |operation| {
-                if operation.is_running() {
-                    operation.transition(Complete(result));
-                }
-            });
-        });
-    });
+    let Some(task) = load_task(cx) else {
+        return;
+    };
     catalog(cx).update(cx, |operation| match operation {
         PromptOperation::Idle(_) => operation.transition(Load(task)),
         PromptOperation::Ready(_) | PromptOperation::Degraded(_) => {
@@ -279,30 +291,29 @@ where
     if let Err(error) = ensure_ready(cx) {
         return Task::ready(Err(error));
     }
-    let Some(binding) = database::ready_binding(cx) else {
-        return Task::ready(Err(DbError::Invariant(
-            "prompt mutation requires an exact Ready session".to_string(),
-        )));
-    };
     let executor = match database::ready_executor(cx) {
         Ok(executor) => executor,
         Err(error) => return Task::ready(Err(error)),
     };
     let (sender, receiver) = oneshot::channel();
-    let task_binding = binding.clone();
     let driver = cx.spawn(async move |cx| {
         let result = executor.execute(command).await;
         if let Ok(value) = &result {
             let message = message(value);
             cx.update(|cx| {
-                if database::ready_binding(cx).as_ref() == Some(&binding) {
+                if database::is_ready(cx) {
                     apply(message, cx);
                 }
             });
         }
         let _ = sender.send(result);
     });
-    crate::app::session::retain_task(task_binding, driver, cx);
+    if cx.has_global::<PromptDatabaseOwnerGlobal>() {
+        let owner = cx.global::<PromptDatabaseOwnerGlobal>().0.clone();
+        owner.update(cx, |owner, _| owner.retain(driver));
+    } else {
+        crate::app::tasks::retain_application(driver, cx);
+    }
     cx.spawn(async move |_| {
         receiver.await.unwrap_or_else(|_| {
             Err(DbError::Invariant(

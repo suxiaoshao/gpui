@@ -261,14 +261,14 @@ fn sort_catalog(catalog: &mut [ConversationSummary]) {
 }
 
 pub(crate) fn publish_summary(summary: ConversationSummary, cx: &mut impl AppContext) {
-    let Some(registry) = crate::app::session::ready_conversations(cx) else {
+    let Some(registry) = super::resources::ready_conversations(cx) else {
         return;
     };
     registry.update(cx, |registry, cx| registry.publish_summary(summary, cx));
 }
 
 pub(crate) fn publish_removed(id: ConversationId, cx: &mut impl AppContext) {
-    let Some(registry) = crate::app::session::ready_conversations(cx) else {
+    let Some(registry) = super::resources::ready_conversations(cx) else {
         return;
     };
     registry.update(cx, |registry, cx| registry.publish_removed(id, cx));
@@ -280,7 +280,7 @@ pub(crate) fn publish_changes(
     changes: Vec<jaco_core::ConversationChange>,
     cx: &mut impl AppContext,
 ) {
-    let Some(registry) = crate::app::session::ready_conversations(cx) else {
+    let Some(registry) = super::resources::ready_conversations(cx) else {
         return;
     };
     registry.update(cx, |registry, cx| {
@@ -289,14 +289,14 @@ pub(crate) fn publish_changes(
 }
 
 pub(crate) fn refresh_conversation(id: &ConversationId, cx: &mut impl AppContext) {
-    let Some(registry) = crate::app::session::ready_conversations(cx) else {
+    let Some(registry) = super::resources::ready_conversations(cx) else {
         return;
     };
     registry.update(cx, |registry, cx| registry.refresh_conversation(id, cx));
 }
 
 pub(crate) fn is_catalog_ready(cx: &App) -> bool {
-    let Some(registry) = crate::app::session::ready_conversations(cx) else {
+    let Some(registry) = super::resources::ready_conversations(cx) else {
         return false;
     };
     let catalog = registry.read(cx).catalog();
@@ -307,7 +307,7 @@ pub(crate) fn is_catalog_ready(cx: &App) -> bool {
 }
 
 pub(crate) fn retain_active(id: ConversationId, cx: &mut impl AppContext) {
-    let Some(registry) = crate::app::session::ready_conversations(cx) else {
+    let Some(registry) = super::resources::ready_conversations(cx) else {
         return;
     };
     registry.update(cx, |registry, cx| {
@@ -316,7 +316,7 @@ pub(crate) fn retain_active(id: ConversationId, cx: &mut impl AppContext) {
 }
 
 pub(crate) fn release_active(id: &ConversationId, cx: &mut impl AppContext) {
-    let Some(registry) = crate::app::session::ready_conversations(cx) else {
+    let Some(registry) = super::resources::ready_conversations(cx) else {
         return;
     };
     registry.update(cx, |registry, _cx| registry.release_active(id));

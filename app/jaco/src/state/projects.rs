@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use std::fmt;
 
-use gpui::{App, Task};
-use gpui_operation::{Complete, Load, Refresh, Retry, Transition, refresh};
+use gpui::{App, AppContext, Entity, Global, Subscription, Task};
+use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh};
 use gpui_store::{Select, Store};
 use jaco_core::{ProjectId, ProjectKind, ProjectMetadata, new_id};
 use jaco_db::{NewProject, ProjectRecord};
@@ -16,6 +16,15 @@ const NO_PROJECT_SCRATCH_REASON: &str = "no-project";
 
 pub(crate) type ProjectOperation = refresh::Operation<ProjectData, ProjectProblem, Task<()>>;
 pub(crate) type ProjectStore = Store<ProjectOperation>;
+
+struct ProjectDatabaseOwner {
+    mutation_tasks: Vec<Task<()>>,
+    _database_subscription: Subscription,
+}
+
+struct ProjectDatabaseOwnerGlobal(Entity<ProjectDatabaseOwner>);
+
+impl Global for ProjectDatabaseOwnerGlobal {}
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SelectNormalProjects;
@@ -229,13 +238,41 @@ pub(crate) fn set_project_removed(
 
 pub(crate) fn init(cx: &mut App) {
     ProjectStore::install_global(cx, ProjectOperation::new());
-    let Some(binding) = database::ready_binding(cx) else {
-        return;
-    };
-    let Ok(executor) = database::ready_executor(cx) else {
-        return;
-    };
-    let task = cx.spawn(async move |cx| {
+    let owner = cx.new(|cx| {
+        let subscription = database::store(cx).observe_select(
+            cx,
+            database::SelectDatabaseReady,
+            |owner: &mut ProjectDatabaseOwner, ready, cx| owner.sync(*ready, cx),
+        );
+        ProjectDatabaseOwner {
+            mutation_tasks: Vec::new(),
+            _database_subscription: subscription,
+        }
+    });
+    cx.set_global(ProjectDatabaseOwnerGlobal(owner.clone()));
+    let ready = database::is_ready(cx);
+    owner.update(cx, |owner, cx| owner.sync(ready, cx));
+}
+
+impl ProjectDatabaseOwner {
+    fn sync(&mut self, ready: bool, cx: &mut App) {
+        if ready {
+            request_refresh(cx);
+        } else {
+            self.mutation_tasks.clear();
+            catalog(cx).update(cx, |operation| operation.transition(Cancel));
+        }
+    }
+
+    fn retain(&mut self, task: Task<()>) {
+        self.mutation_tasks.retain(|task| !task.is_ready());
+        self.mutation_tasks.push(task);
+    }
+}
+
+fn load_task(cx: &mut App) -> Option<Task<()>> {
+    let executor = database::ready_executor(cx).ok()?;
+    Some(cx.spawn(async move |cx| {
         let result = executor
             .execute(|repository| {
                 repository.list_projects().map(|mut projects| {
@@ -246,17 +283,13 @@ pub(crate) fn init(cx: &mut App) {
             .await
             .map_err(ProjectProblem);
         cx.update(|cx| {
-            if database::ready_binding(cx).as_ref() != Some(&binding) {
-                return;
-            }
             catalog(cx).update(cx, |operation| {
-                if matches!(operation, ProjectOperation::Loading(_)) {
+                if operation.is_running() {
                     operation.transition(Complete(result));
                 }
             });
         });
-    });
-    catalog(cx).update(cx, |operation| operation.transition(Load(task)));
+    }))
 }
 
 pub(crate) fn catalog(cx: &impl gpui::AppContext) -> ProjectStore {
@@ -264,36 +297,15 @@ pub(crate) fn catalog(cx: &impl gpui::AppContext) -> ProjectStore {
 }
 
 pub(crate) fn request_refresh(cx: &mut App) {
-    let Some(binding) = database::ready_binding(cx) else {
+    if !database::is_ready(cx) {
         return;
-    };
-    let Ok(executor) = database::ready_executor(cx) else {
-        return;
-    };
+    }
     if catalog(cx).read(cx, ProjectOperation::is_running) {
         return;
     }
-    let task = cx.spawn(async move |cx| {
-        let result = executor
-            .execute(|repository| {
-                repository.list_projects().map(|mut projects| {
-                    sort_projects(&mut projects);
-                    ProjectData { projects }
-                })
-            })
-            .await
-            .map_err(ProjectProblem);
-        cx.update(|cx| {
-            if database::ready_binding(cx).as_ref() != Some(&binding) {
-                return;
-            }
-            catalog(cx).update(cx, |operation| {
-                if operation.is_running() {
-                    operation.transition(Complete(result));
-                }
-            });
-        });
-    });
+    let Some(task) = load_task(cx) else {
+        return;
+    };
     catalog(cx).update(cx, |operation| match operation {
         ProjectOperation::Idle(_) => operation.transition(Load(task)),
         ProjectOperation::Ready(_) | ProjectOperation::Degraded(_) => {
@@ -350,29 +362,28 @@ where
     if let Err(error) = ensure_ready(cx) {
         return Task::ready(Err(error));
     }
-    let Some(binding) = database::ready_binding(cx) else {
-        return Task::ready(Err(jaco_db::DbError::Invariant(
-            "project mutation requires an exact Ready session".to_string(),
-        )));
-    };
     let executor = match database::ready_executor(cx) {
         Ok(executor) => executor,
         Err(error) => return Task::ready(Err(error)),
     };
     let (sender, receiver) = oneshot::channel();
-    let task_binding = binding.clone();
     let driver = cx.spawn(async move |cx| {
         let result = executor.execute(command).await;
         if let Ok(value) = &result {
             cx.update(|cx| {
-                if database::ready_binding(cx).as_ref() == Some(&binding) {
+                if database::is_ready(cx) {
                     publish(value, cx);
                 }
             });
         }
         let _ = sender.send(result);
     });
-    crate::app::session::retain_task(task_binding, driver, cx);
+    if cx.has_global::<ProjectDatabaseOwnerGlobal>() {
+        let owner = cx.global::<ProjectDatabaseOwnerGlobal>().0.clone();
+        owner.update(cx, |owner, _| owner.retain(driver));
+    } else {
+        crate::app::tasks::retain_application(driver, cx);
+    }
     cx.spawn(async move |_| {
         receiver.await.unwrap_or_else(|_| {
             Err(jaco_db::DbError::Invariant(

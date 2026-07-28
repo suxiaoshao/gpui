@@ -19,7 +19,7 @@ pub(crate) enum CriticalResourceAction {
     BackupAndOverwritePendingConfig,
     RefreshDatabase,
     BackupAndCreateFreshDatabase,
-    RetrySession,
+    RetryConversationResources,
 }
 
 #[derive(Clone)]
@@ -126,7 +126,7 @@ fn action_button(action: CriticalResourceAction, running: bool, cx: &App) -> But
             "critical-database-backup-fresh",
             "critical-database-backup-fresh",
         ),
-        CriticalResourceAction::RetrySession => {
+        CriticalResourceAction::RetryConversationResources => {
             ("critical-session-retry", "critical-session-retry")
         }
     };
@@ -159,7 +159,9 @@ fn run_action(action: CriticalResourceAction, window: &mut Window, cx: &mut App)
         ),
         CriticalResourceAction::RefreshDatabase => database::request_refresh(cx),
         CriticalResourceAction::BackupAndCreateFreshDatabase => confirm_database_repair(window, cx),
-        CriticalResourceAction::RetrySession => app::session::request_retry(cx),
+        CriticalResourceAction::RetryConversationResources => {
+            crate::features::conversation::resources::request_retry(cx)
+        }
     }
 }
 

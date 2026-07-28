@@ -577,10 +577,7 @@ async fn run_agent_with_saved_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        app::session::{AppSessionState, AppSessionStore},
-        database,
-    };
+    use crate::database;
     use gpui::{Subscription, WindowHandle};
     use jaco_agent::AgentRunHandleStatus;
     use jaco_core::{
@@ -772,7 +769,6 @@ mod tests {
 
     #[gpui::test]
     fn finish_run_records_uncanceled_error(cx: &mut gpui::TestAppContext) {
-        init_session_stub(cx);
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
 
@@ -798,7 +794,6 @@ mod tests {
 
     #[gpui::test]
     fn finish_run_removes_matching_active_run(cx: &mut gpui::TestAppContext) {
-        init_session_stub(cx);
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
         let agent_run = jaco_db::AgentRunRecord {
@@ -1047,15 +1042,8 @@ mod tests {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
             database::install_for_test(cx, dir.path());
-            AppSessionStore::install_global(cx, AppSessionState::AwaitingDatabase);
         });
         dir
-    }
-
-    fn init_session_stub(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| {
-            AppSessionStore::install_global(cx, AppSessionState::AwaitingDatabase);
-        });
     }
 
     fn test_repository(cx: &App) -> FreshRepository {

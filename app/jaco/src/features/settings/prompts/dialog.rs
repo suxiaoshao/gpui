@@ -648,7 +648,7 @@ mod tests {
             database::install_for_test(cx, dir.path());
             foundation::init_i18n(cx);
             state::hotkey::set_test_hotkey_state(cx);
-            crate::app::session::init(cx);
+            state::prompts::init(cx);
         });
         cx.run_until_parked();
         dir

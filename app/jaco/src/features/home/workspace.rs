@@ -436,8 +436,8 @@ impl HomeWorkspace {
 
 pub(crate) fn create(cx: &mut App) -> Entity<HomeWorkspace> {
     let project_catalog = projects::catalog(cx);
-    let conversation_catalog = crate::app::session::ready_conversations(cx)
-        .expect("home workspace requires a ready app session")
+    let conversation_catalog = crate::features::conversation::resources::ready_conversations(cx)
+        .expect("home workspace requires ready conversation resources")
         .read(cx)
         .catalog();
     cx.new(|cx| HomeWorkspace::new(project_catalog, conversation_catalog, cx))

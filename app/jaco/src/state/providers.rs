@@ -2,8 +2,8 @@ pub(crate) mod secrets;
 
 use std::fmt;
 
-use gpui::{App, Task};
-use gpui_operation::{Complete, Load, Refresh, Retry, Transition, refresh};
+use gpui::{App, AppContext, Entity, Global, Subscription, Task};
+use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh};
 use gpui_store::{Select, Store};
 use jaco_core::{ModelCapabilitiesSnapshot, ProviderId, ProviderModelId};
 use jaco_db::{
@@ -16,6 +16,15 @@ use crate::database;
 pub(crate) type ProviderOperation = refresh::Operation<ProviderData, ProviderProblem, Task<()>>;
 pub(crate) type ProviderStore = Store<ProviderOperation>;
 pub(crate) type ProviderWithModels = (ProviderRecord, Vec<ProviderModelRecord>);
+
+struct ProviderDatabaseOwner {
+    mutation_tasks: Vec<Task<()>>,
+    _database_subscription: Subscription,
+}
+
+struct ProviderDatabaseOwnerGlobal(Entity<ProviderDatabaseOwner>);
+
+impl Global for ProviderDatabaseOwnerGlobal {}
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SelectProviderRecordsWithModels;
@@ -240,13 +249,41 @@ fn sort_models(models: &mut [ProviderModelRecord]) {
 
 pub(crate) fn init(cx: &mut App) {
     ProviderStore::install_global(cx, ProviderOperation::new());
-    let Some(binding) = database::ready_binding(cx) else {
-        return;
-    };
-    let Ok(executor) = database::ready_executor(cx) else {
-        return;
-    };
-    let task = cx.spawn(async move |cx| {
+    let owner = cx.new(|cx| {
+        let subscription = database::store(cx).observe_select(
+            cx,
+            database::SelectDatabaseReady,
+            |owner: &mut ProviderDatabaseOwner, ready, cx| owner.sync(*ready, cx),
+        );
+        ProviderDatabaseOwner {
+            mutation_tasks: Vec::new(),
+            _database_subscription: subscription,
+        }
+    });
+    cx.set_global(ProviderDatabaseOwnerGlobal(owner.clone()));
+    let ready = database::is_ready(cx);
+    owner.update(cx, |owner, cx| owner.sync(ready, cx));
+}
+
+impl ProviderDatabaseOwner {
+    fn sync(&mut self, ready: bool, cx: &mut App) {
+        if ready {
+            request_refresh(cx);
+        } else {
+            self.mutation_tasks.clear();
+            catalog(cx).update(cx, |operation| operation.transition(Cancel));
+        }
+    }
+
+    fn retain(&mut self, task: Task<()>) {
+        self.mutation_tasks.retain(|task| !task.is_ready());
+        self.mutation_tasks.push(task);
+    }
+}
+
+fn load_task(cx: &mut App) -> Option<Task<()>> {
+    let executor = database::ready_executor(cx).ok()?;
+    Some(cx.spawn(async move |cx| {
         let result = executor
             .execute(|repository| {
                 let providers = repository
@@ -262,17 +299,13 @@ pub(crate) fn init(cx: &mut App) {
             .await
             .map_err(ProviderProblem);
         cx.update(|cx| {
-            if database::ready_binding(cx).as_ref() != Some(&binding) {
-                return;
-            }
             catalog(cx).update(cx, |operation| {
-                if matches!(operation, ProviderOperation::Loading(_)) {
+                if operation.is_running() {
                     operation.transition(Complete(result));
                 }
             });
         });
-    });
-    catalog(cx).update(cx, |operation| operation.transition(Load(task)));
+    }))
 }
 
 pub(crate) fn catalog(cx: &impl gpui::AppContext) -> ProviderStore {
@@ -280,41 +313,15 @@ pub(crate) fn catalog(cx: &impl gpui::AppContext) -> ProviderStore {
 }
 
 pub(crate) fn request_refresh(cx: &mut App) {
-    let Some(binding) = database::ready_binding(cx) else {
+    if !database::is_ready(cx) {
         return;
-    };
-    let Ok(executor) = database::ready_executor(cx) else {
-        return;
-    };
+    }
     if catalog(cx).read(cx, ProviderOperation::is_running) {
         return;
     }
-    let task = cx.spawn(async move |cx| {
-        let result = executor
-            .execute(|repository| {
-                let providers = repository
-                    .list_providers()?
-                    .into_iter()
-                    .map(|provider| {
-                        let models = repository.list_provider_models(&provider.id)?;
-                        Ok((provider, models))
-                    })
-                    .collect::<jaco_db::Result<Vec<_>>>()?;
-                Ok(ProviderData::new(providers))
-            })
-            .await
-            .map_err(ProviderProblem);
-        cx.update(|cx| {
-            if database::ready_binding(cx).as_ref() != Some(&binding) {
-                return;
-            }
-            catalog(cx).update(cx, |operation| {
-                if operation.is_running() {
-                    operation.transition(Complete(result));
-                }
-            });
-        });
-    });
+    let Some(task) = load_task(cx) else {
+        return;
+    };
     catalog(cx).update(cx, |operation| match operation {
         ProviderOperation::Idle(_) => operation.transition(Load(task)),
         ProviderOperation::Ready(_) | ProviderOperation::Degraded(_) => {
@@ -409,31 +416,29 @@ where
     if let Err(error) = ensure_ready(cx) {
         return Task::ready(Err(error));
     }
-    let Some(binding) = database::ready_binding(cx) else {
-        return Task::ready(Err(DbError::Invariant(
-            "provider mutation requires an exact Ready session".to_string(),
-        )));
-    };
     let executor = match database::ready_executor(cx) {
         Ok(executor) => executor,
         Err(error) => return Task::ready(Err(error)),
     };
     let (sender, receiver) = oneshot::channel();
-    let task_binding = binding.clone();
     let driver = cx.spawn(async move |cx| {
         let result = executor.execute(command).await;
         if let Ok(value) = &result {
             let message = message(value);
             cx.update(|cx| {
-                if database::ready_binding(cx).as_ref() != Some(&binding) {
-                    return;
+                if database::is_ready(cx) {
+                    apply(message, cx);
                 }
-                apply(message, cx);
             });
         }
         let _ = sender.send(result);
     });
-    crate::app::session::retain_task(task_binding, driver, cx);
+    if cx.has_global::<ProviderDatabaseOwnerGlobal>() {
+        let owner = cx.global::<ProviderDatabaseOwnerGlobal>().0.clone();
+        owner.update(cx, |owner, _| owner.retain(driver));
+    } else {
+        crate::app::tasks::retain_application(driver, cx);
+    }
     cx.spawn(async move |_| {
         receiver.await.unwrap_or_else(|_| {
             Err(DbError::Invariant(
@@ -483,7 +488,11 @@ pub(crate) fn ready_provider(
 
 #[cfg(test)]
 mod tests {
-    use super::{ProviderModelChoice, ProviderModelKey};
+    use super::{
+        ProviderDatabaseOwnerGlobal, ProviderModelChoice, ProviderModelKey, ProviderOperation,
+        catalog, init,
+    };
+    use crate::database;
     use jaco_core::conservative_model_capabilities;
 
     #[test]
@@ -509,5 +518,26 @@ mod tests {
         let mut choice_without_display_name = choice.clone();
         choice_without_display_name.model_display_name = None;
         assert_eq!(choice_without_display_name.display_label(), "gpt-5");
+    }
+
+    #[gpui::test]
+    fn losing_database_readiness_cancels_the_provider_load(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            database::install_for_test(cx, dir.path());
+            init(cx);
+            assert!(matches!(
+                catalog(cx).read(cx, |operation| operation.phase()),
+                gpui_operation::refresh::Phase::Loading
+            ));
+
+            let owner = cx.global::<ProviderDatabaseOwnerGlobal>().0.clone();
+            owner.update(cx, |owner, cx| owner.sync(false, cx));
+
+            assert!(catalog(cx).read(cx, |operation| matches!(
+                operation,
+                ProviderOperation::Idle(_)
+            )));
+        });
     }
 }

@@ -3,10 +3,10 @@ pub(crate) mod session;
 
 use std::{
     collections::VecDeque,
-    fmt, fs,
+    fmt,
+    fs::{self, OpenOptions},
     path::{Path, PathBuf},
     sync::Arc,
-    sync::atomic::{AtomicU64, Ordering},
 };
 
 use gpui::{App, AppContext, BorrowAppContext, Entity, Global, Subscription};
@@ -24,12 +24,7 @@ use crate::{
 };
 
 pub(crate) use self::operation::{DatabaseOperation, DatabasePhase};
-use self::{
-    operation::DatabaseMessage,
-    session::{DatabaseBinding, DatabaseSession, DatabaseSessionKey},
-};
-
-static NEXT_SESSION_KEY: AtomicU64 = AtomicU64::new(1);
+use self::{operation::DatabaseMessage, session::DatabaseSession};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct DatabaseTarget {
@@ -95,14 +90,12 @@ impl DatabaseTargetLease {
 }
 
 pub(crate) struct DatabaseData {
-    pub(crate) binding: DatabaseBinding,
     pub(crate) session: Entity<DatabaseSession>,
 }
 
 impl Clone for DatabaseData {
     fn clone(&self) -> Self {
         Self {
-            binding: self.binding.clone(),
             session: self.session.clone(),
         }
     }
@@ -110,9 +103,7 @@ impl Clone for DatabaseData {
 
 impl fmt::Debug for DatabaseData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DatabaseData")
-            .field("binding", &self.binding)
-            .finish_non_exhaustive()
+        f.debug_struct("DatabaseData").finish_non_exhaustive()
     }
 }
 
@@ -134,15 +125,11 @@ pub(crate) enum DatabaseProblem {
         target: DatabaseTarget,
         message: String,
     },
-    Internal {
-        target: DatabaseTarget,
-        message: String,
-    },
 }
 
 impl DatabaseProblem {
     pub(crate) fn can_create_fresh(&self) -> bool {
-        !matches!(self, Self::InUse { .. } | Self::Internal { .. })
+        !matches!(self, Self::InUse { .. })
     }
 }
 
@@ -173,9 +160,6 @@ impl fmt::Display for DatabaseProblem {
                 "the backup was preserved, but a fresh database could not be created at {}: {message}",
                 target.database_path.display()
             ),
-            Self::Internal { target, message } => {
-                write!(f, "{}: {message}", target.database_path.display())
-            }
         }
     }
 }
@@ -297,9 +281,7 @@ fn start_initial_open(target: DatabaseTarget, cx: &mut App) {
         })
         .await;
         cx.update(|cx| {
-            let result = opened.and_then(|(store, lease)| {
-                create_data(completion_target.clone(), store, lease, cx)
-            });
+            let result = opened.and_then(|(store, lease)| create_data(store, lease, cx));
             completion_store.update(cx, |resource| {
                 let DatabaseResource::Bound {
                     target: current,
@@ -341,29 +323,16 @@ fn open_initial(
             source,
         }
     })?;
-    create_data(target.clone(), store, lease, cx)
+    create_data(store, lease, cx)
 }
 
 fn create_data(
-    target: DatabaseTarget,
     store: FreshStore,
     lease: DatabaseTargetLease,
     cx: &mut impl AppContext,
 ) -> Result<DatabaseData, DatabaseProblem> {
-    let raw_key = NEXT_SESSION_KEY
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |key| {
-            key.checked_add(1)
-        })
-        .map_err(|_| DatabaseProblem::Internal {
-            target: target.clone(),
-            message: "database session key overflow".to_string(),
-        })?;
-    let binding = DatabaseBinding {
-        target,
-        session_key: DatabaseSessionKey(raw_key),
-    };
     let session = cx.new(|_| DatabaseSession::new(store, lease));
-    Ok(DatabaseData { binding, session })
+    Ok(DatabaseData { session })
 }
 
 pub(crate) fn store(cx: &impl AppContext) -> DatabaseStore {
@@ -459,28 +428,6 @@ fn ensure_config_ready(cx: &impl AppContext) -> jaco_db::Result<()> {
     })
 }
 
-pub(crate) fn ready_binding(cx: &impl AppContext) -> Option<DatabaseBinding> {
-    if crate::app::is_shutting_down() {
-        return None;
-    }
-    store(cx).read(cx, |resource| match resource {
-        DatabaseResource::Bound {
-            operation: DatabaseOperation::Ready(data),
-            ..
-        } => Some(data.binding.clone()),
-        _ => None,
-    })
-}
-
-pub(crate) fn retained_binding(cx: &impl AppContext) -> Option<DatabaseBinding> {
-    store(cx).read(cx, |resource| match resource {
-        DatabaseResource::AwaitingConfig => None,
-        DatabaseResource::Bound { operation, .. } => {
-            operation.data().map(|data| data.binding.clone())
-        }
-    })
-}
-
 pub(crate) fn request_refresh(cx: &mut App) {
     let database = store(cx);
     let phase = database.read(cx, |resource| match resource {
@@ -563,9 +510,7 @@ pub(crate) fn request_refresh(cx: &mut App) {
                 })
                 .await;
                 cx.update(|cx| {
-                    let result = opened.and_then(|(store, lease)| {
-                        create_data(completion_target.clone(), store, lease, cx)
-                    });
+                    let result = opened.and_then(|(store, lease)| create_data(store, lease, cx));
                     store(cx).update(cx, |resource| {
                         let DatabaseResource::Bound {
                             target: current,
@@ -687,7 +632,7 @@ pub(crate) fn backup_and_create_fresh(backup_dir: PathBuf, cx: &mut App) -> Jaco
         cx.update(|cx| {
             let (result, notice) = match repaired {
                 Ok((Ok(fresh), lease)) => (
-                    create_data(target.clone(), fresh, lease, cx),
+                    create_data(fresh, lease, cx),
                     Some(DatabaseBackupOutcome {
                         backup_dir: backup_dir.clone(),
                         fresh_error: None,
@@ -773,7 +718,10 @@ fn backup_database_files(
             backup_dir: backup_dir.to_path_buf(),
             message: error.to_string(),
         })?;
-        fs::File::open(&destination)
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&destination)
             .and_then(|file| file.sync_all())
             .map_err(|error| DatabaseProblem::Backup {
                 backup_dir: backup_dir.to_path_buf(),
@@ -789,10 +737,14 @@ fn backup_database_files(
 }
 
 fn create_fresh_database(target: &DatabaseTarget) -> Result<FreshStore, DatabaseProblem> {
-    let staging = target.data_dir.join(format!(
-        ".jaco-repair-{}.sqlite3",
-        NEXT_SESSION_KEY.load(Ordering::Relaxed)
-    ));
+    let staging_dir = tempfile::Builder::new()
+        .prefix(".jaco-repair-")
+        .tempdir_in(&target.data_dir)
+        .map_err(|error| DatabaseProblem::CreateFresh {
+            target: target.clone(),
+            message: error.to_string(),
+        })?;
+    let staging = staging_dir.path().join(jaco_db::DATABASE_FILE);
     let staging_store = FreshStore::create_fresh_staging(&staging).map_err(|error| {
         DatabaseProblem::CreateFresh {
             target: target.clone(),
@@ -908,7 +860,15 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let original = cx.update(|cx| retained_binding(cx).expect("ready database binding"));
+        let original = cx.update(|cx| {
+            store(cx).read(cx, |resource| match resource {
+                DatabaseResource::Bound {
+                    operation: DatabaseOperation::Ready(data),
+                    ..
+                } => data.session.clone(),
+                _ => panic!("database should be ready"),
+            })
+        });
         cx.update(|cx| {
             config::update_chat_form_config(cx, |chat_form| {
                 chat_form.model = Some(config::ChatFormModelConfig {
@@ -920,7 +880,15 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let current = cx.update(|cx| retained_binding(cx).expect("retained database binding"));
+        let current = cx.update(|cx| {
+            store(cx).read(cx, |resource| match resource {
+                DatabaseResource::Bound {
+                    operation: DatabaseOperation::Ready(data),
+                    ..
+                } => data.session.clone(),
+                _ => panic!("database should remain ready"),
+            })
+        });
         assert_eq!(current, original);
     }
 
@@ -959,7 +927,6 @@ mod tests {
                     panic!("database should be bound");
                 };
                 assert_eq!(operation.phase(), DatabasePhase::Unavailable);
-                assert!(operation.data().is_none());
                 assert!(operation.session().is_none());
             });
         });
@@ -1037,5 +1004,22 @@ mod tests {
             fs::read(backup_dir.join(format!("{}-wal", jaco_db::DATABASE_FILE))).unwrap(),
             b"wal"
         );
+    }
+
+    #[test]
+    fn stale_repair_staging_artifact_does_not_block_a_new_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let stale_dir = dir.path().join(".jaco-repair-stale");
+        fs::create_dir(&stale_dir).unwrap();
+        fs::write(stale_dir.join(jaco_db::DATABASE_FILE), b"interrupted").unwrap();
+        let target = DatabaseTarget {
+            data_dir: dir.path().to_path_buf(),
+            database_path: dir.path().join(jaco_db::DATABASE_FILE),
+        };
+
+        let store = create_fresh_database(&target).expect("create a fresh database");
+
+        store.validate().expect("fresh database is valid");
+        assert!(stale_dir.join(jaco_db::DATABASE_FILE).exists());
     }
 }

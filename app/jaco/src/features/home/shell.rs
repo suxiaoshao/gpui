@@ -149,8 +149,8 @@ impl HomeView {
         if let Some(page) = self.conversation_pages.get(&conversation_id) {
             return page.clone();
         }
-        let registry = crate::app::session::ready_conversations(cx)
-            .expect("conversation page requires a ready app session");
+        let registry = crate::features::conversation::resources::ready_conversations(cx)
+            .expect("conversation page requires ready conversation resources");
         let conversation = registry.update(cx, |registry, cx| {
             registry.conversation(conversation_id.clone(), cx)
         });

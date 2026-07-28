@@ -126,12 +126,11 @@ impl TemporaryWindow {
         let new_conversation = cx.new(|cx| TemporaryNewConversationPane::new(window, cx));
         let database_store = crate::database::store(cx);
         let project_catalog = state::projects::catalog(cx);
-        let conversation_catalog = crate::app::session::ready_conversations(cx)
-            .expect("temporary window requires a ready conversation session")
-            .read(cx)
-            .catalog();
-        let binding = crate::database::ready_binding(cx)
-            .expect("temporary window is only constructed for an exact Ready session");
+        let conversation_catalog =
+            crate::features::conversation::resources::ready_conversations(cx)
+                .expect("temporary window requires a ready conversation session")
+                .read(cx)
+                .catalog();
         let search_subscription =
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
         let new_conversation_subscription = cx.subscribe_in(
@@ -196,10 +195,7 @@ impl TemporaryWindow {
                     cx.refresh_windows();
                 }),
                 database_store.observe_in(cx, window, move |_view, _resource, window, cx| {
-                    if !temporary_binding_is_retained(
-                        &binding,
-                        crate::database::retained_binding(cx).as_ref(),
-                    ) {
+                    if !crate::database::is_ready(cx) {
                         window.remove_window();
                         crate::app::show_or_create_main_window(cx);
                     } else {
@@ -222,21 +218,23 @@ impl TemporaryWindow {
                     .unwrap_or_else(|| cx.global::<I18n>().t("resource-status-loading"))
             })
         });
-        let conversation_problem =
-            crate::app::session::ready_conversations(cx).and_then(|registry| {
-                let catalog = registry.read(cx).catalog();
-                let operation = catalog.read(cx).operation();
-                (!matches!(
-                    operation,
-                    conversation::registry::ConversationCatalogOperation::Ready(_)
-                ))
-                .then(|| {
-                    operation
-                        .problem()
-                        .map(ToString::to_string)
-                        .unwrap_or_else(|| cx.global::<I18n>().t("resource-status-loading"))
-                })
-            });
+        let conversation_problem = crate::features::conversation::resources::ready_conversations(
+            cx,
+        )
+        .and_then(|registry| {
+            let catalog = registry.read(cx).catalog();
+            let operation = catalog.read(cx).operation();
+            (!matches!(
+                operation,
+                conversation::registry::ConversationCatalogOperation::Ready(_)
+            ))
+            .then(|| {
+                operation
+                    .problem()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| cx.global::<I18n>().t("resource-status-loading"))
+            })
+        });
         let runtime_problem = {
             let runtime = self.runtime.read(cx);
             let recovery = runtime.recovery();
@@ -658,8 +656,8 @@ impl TemporaryWindow {
         if let Some(page) = self.conversation_pages.get(&conversation_id) {
             return page.clone();
         }
-        let registry = crate::app::session::ready_conversations(cx)
-            .expect("conversation page requires a ready app session");
+        let registry = crate::features::conversation::resources::ready_conversations(cx)
+            .expect("conversation page requires ready conversation resources");
         let conversation = registry.update(cx, |registry, cx| {
             registry.conversation(conversation_id.clone(), cx)
         });
@@ -913,13 +911,6 @@ fn selection_after_delta(current: Option<usize>, count: usize, delta: isize) -> 
     })
 }
 
-fn temporary_binding_is_retained(
-    expected: &crate::database::session::DatabaseBinding,
-    current: Option<&crate::database::session::DatabaseBinding>,
-) -> bool {
-    current == Some(expected)
-}
-
 fn push_temporary_notification(
     window: &mut Window,
     cx: &mut App,
@@ -938,24 +929,7 @@ fn push_temporary_notification(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        TemporaryTabTarget, selection_after_delta, tab_focus_target, temporary_binding_is_retained,
-    };
-    use crate::database::{
-        DatabaseTarget,
-        session::{DatabaseBinding, DatabaseSessionKey},
-    };
-    use std::path::PathBuf;
-
-    fn binding(key: u64) -> DatabaseBinding {
-        DatabaseBinding {
-            target: DatabaseTarget {
-                data_dir: PathBuf::from("/tmp/jaco-test"),
-                database_path: PathBuf::from("/tmp/jaco-test/jaco.sqlite3"),
-            },
-            session_key: DatabaseSessionKey(key),
-        }
-    }
+    use super::{TemporaryTabTarget, selection_after_delta, tab_focus_target};
 
     #[test]
     fn temporary_selection_wraps_up_and_down() {
@@ -974,19 +948,5 @@ mod tests {
     fn tab_toggles_between_search_and_route_composer() {
         assert_eq!(tab_focus_target(true), TemporaryTabTarget::RouteComposer);
         assert_eq!(tab_focus_target(false), TemporaryTabTarget::Search);
-    }
-
-    #[test]
-    fn temporary_window_only_retains_the_same_database_binding() {
-        let expected = binding(1);
-        let same = expected.clone();
-        let replacement = binding(2);
-
-        assert!(temporary_binding_is_retained(&expected, Some(&same)));
-        assert!(!temporary_binding_is_retained(
-            &expected,
-            Some(&replacement)
-        ));
-        assert!(!temporary_binding_is_retained(&expected, None));
     }
 }

@@ -1,6 +1,7 @@
 pub(crate) mod attachments;
 pub(crate) mod model;
 pub(crate) mod registry;
+pub(crate) mod resources;
 pub(crate) mod runtime;
 
 use std::path::PathBuf;
@@ -116,12 +117,6 @@ pub(crate) fn create_conversation(
         Ok(path) => path,
         Err(error) => return Task::ready(Err(error)),
     };
-    let Some(binding) = database::ready_binding(cx) else {
-        return Task::ready(Err(jaco_db::DbError::Invariant(
-            "conversation create requires an exact Ready session".to_string(),
-        )
-        .into()));
-    };
     let executor = match database::ready_executor(cx) {
         Ok(executor) => executor,
         Err(error) => return Task::ready(Err(error.into())),
@@ -149,7 +144,6 @@ pub(crate) fn create_conversation(
     let attachments = request.attachments.clone();
     let run_input = request;
     let (sender, receiver) = oneshot::channel();
-    let task_binding = binding.clone();
     let driver = cx.spawn(async move |cx| {
         let result = executor
             .execute(move |repository| {
@@ -208,7 +202,7 @@ pub(crate) fn create_conversation(
             });
         if let Ok((transaction, _)) = &result {
             cx.update(|cx| {
-                if database::ready_binding(cx).as_ref() == Some(&binding) {
+                if database::is_ready(cx) {
                     projects::publish_project(transaction.project.clone(), cx);
                     registry::publish_summary(transaction.record.conversation.clone(), cx);
                 }
@@ -222,7 +216,7 @@ pub(crate) fn create_conversation(
             .map_err(Into::into);
         let _ = sender.send(result);
     });
-    crate::app::session::retain_task(task_binding, driver, cx);
+    resources::retain_task(driver, cx);
     cx.spawn(async move |_| {
         receiver.await.unwrap_or_else(|_| {
             Err(jaco_db::DbError::Invariant(
@@ -246,12 +240,6 @@ pub(crate) fn send_conversation_message(
         Ok(path) => path,
         Err(error) => return Task::ready(Err(error)),
     };
-    let Some(binding) = database::ready_binding(cx) else {
-        return Task::ready(Err(jaco_db::DbError::Invariant(
-            "conversation send requires an exact Ready session".to_string(),
-        )
-        .into()));
-    };
     let executor = match database::ready_executor(cx) {
         Ok(executor) => executor,
         Err(error) => return Task::ready(Err(error.into())),
@@ -261,7 +249,6 @@ pub(crate) fn send_conversation_message(
     let attachments = request.attachments.clone();
     let content_parts = request.content_parts.clone();
     let (sender, receiver) = oneshot::channel();
-    let task_binding = binding.clone();
     let driver = cx.spawn(async move |cx| {
         let result = executor
             .execute(move |repository| {
@@ -317,7 +304,7 @@ pub(crate) fn send_conversation_message(
             });
         if let Ok((transaction, _)) = &result {
             cx.update(|cx| {
-                if database::ready_binding(cx).as_ref() == Some(&binding) {
+                if database::is_ready(cx) {
                     projects::publish_project(transaction.project.clone(), cx);
                     registry::publish_changes(
                         transaction.commit.conversation.id.clone(),
@@ -342,7 +329,7 @@ pub(crate) fn send_conversation_message(
                 .map_err(crate::errors::JacoError::from),
         );
     });
-    crate::app::session::retain_task(task_binding, driver, cx);
+    resources::retain_task(driver, cx);
     cx.spawn(async move |_| {
         receiver.await.unwrap_or_else(|_| {
             Err(jaco_db::DbError::Invariant(
@@ -408,29 +395,23 @@ where
             "conversation index is not ready".to_string(),
         )));
     }
-    let Some(binding) = database::ready_binding(cx) else {
-        return Task::ready(Err(jaco_db::DbError::Invariant(
-            "conversation mutation requires an exact Ready session".to_string(),
-        )));
-    };
     let executor = match database::ready_executor(cx) {
         Ok(executor) => executor,
         Err(error) => return Task::ready(Err(error)),
     };
     let (sender, receiver) = oneshot::channel();
-    let task_binding = binding.clone();
     let driver = cx.spawn(async move |cx| {
         let result = executor.execute(command).await;
         if let Ok(value) = &result {
             cx.update(|cx| {
-                if database::ready_binding(cx).as_ref() == Some(&binding) {
+                if database::is_ready(cx) {
                     publish(value, cx);
                 }
             });
         }
         let _ = sender.send(result);
     });
-    crate::app::session::retain_task(task_binding, driver, cx);
+    resources::retain_task(driver, cx);
     cx.spawn(async move |_| {
         receiver.await.unwrap_or_else(|_| {
             Err(jaco_db::DbError::Invariant(
@@ -594,8 +575,8 @@ mod tests {
         init_conversation_resources(cx);
 
         let task = cx.update(|cx| {
-            let registry = crate::app::session::ready_conversations(cx)
-                .expect("conversation registry is ready");
+            let registry =
+                resources::ready_conversations(cx).expect("conversation registry is ready");
             let catalog = registry.read(cx).catalog();
             catalog.update(cx, |catalog, cx| catalog.refresh(cx));
             assert!(matches!(
@@ -873,7 +854,7 @@ mod tests {
     fn init_conversation_resources(cx: &mut TestAppContext) {
         cx.update(|cx| {
             crate::state::hotkey::set_test_hotkey_state(cx);
-            crate::app::session::init(cx);
+            resources::init(cx);
         });
         cx.run_until_parked();
     }

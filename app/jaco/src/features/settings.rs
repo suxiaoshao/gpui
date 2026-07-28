@@ -62,7 +62,7 @@ pub(crate) struct SettingsView {
     focus_handle: FocusHandle,
     settings_search_input: Entity<InputState>,
     config_pages: Option<ConfigSettingsPages>,
-    session_pages: Option<SessionSettingsPages>,
+    database_pages: Option<DatabaseSettingsPages>,
     app_menu_bar: Entity<TitleBarAppMenuBar>,
     selected_page: SettingsPageKey,
     sidebar_width: Pixels,
@@ -86,22 +86,16 @@ impl ConfigSettingsPages {
     }
 }
 
-struct SessionSettingsPages {
-    binding: crate::database::session::DatabaseBinding,
+struct DatabaseSettingsPages {
     provider: Entity<ProviderSettingsPage>,
     projects: Entity<ProjectsSettingsPage>,
     prompts: Entity<PromptsSettingsPage>,
     shortcuts: Entity<ShortcutsSettingsPage>,
 }
 
-impl SessionSettingsPages {
-    fn new(
-        binding: crate::database::session::DatabaseBinding,
-        window: &mut Window,
-        cx: &mut Context<SettingsView>,
-    ) -> Self {
+impl DatabaseSettingsPages {
+    fn new(window: &mut Window, cx: &mut Context<SettingsView>) -> Self {
         Self {
-            binding,
             provider: cx.new(|cx| ProviderSettingsPage::new(window, cx)),
             projects: cx.new(ProjectsSettingsPage::new),
             prompts: cx.new(|cx| PromptsSettingsPage::new(window, cx)),
@@ -128,9 +122,8 @@ impl SettingsView {
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
         let database_store = crate::database::store(cx);
         let config_store = state::config::store(cx);
-        let session_store = crate::app::session::store(cx);
-        let session_pages = crate::app::session::ready_data(cx)
-            .map(|session| SessionSettingsPages::new(session.binding, window, cx));
+        let database_pages =
+            crate::database::is_ready(cx).then(|| DatabaseSettingsPages::new(window, cx));
         let _subscriptions = vec![
             cx.subscribe_in(
                 &settings_search_input,
@@ -167,18 +160,15 @@ impl SettingsView {
                     settings.sync_config_pages(window, cx);
                 },
             ),
-            database_store.observe_in(cx, window, |_settings, _resource, _window, cx| {
-                cx.notify();
-            }),
-            session_store.observe_in(cx, window, |settings, _session, window, cx| {
-                settings.sync_session_pages(window, cx);
+            database_store.observe_in(cx, window, |settings, _resource, window, cx| {
+                settings.sync_database_pages(window, cx);
             }),
         ];
         Self {
             focus_handle,
             settings_search_input,
             config_pages,
-            session_pages,
+            database_pages,
             app_menu_bar,
             selected_page,
             sidebar_width: SETTINGS_SIDEBAR_DEFAULT_WIDTH,
@@ -193,31 +183,20 @@ impl SettingsView {
             self.config_pages = Some(ConfigSettingsPages::new(window, cx));
         } else if !has_data {
             self.config_pages = None;
-            self.session_pages = None;
+            self.database_pages = None;
         }
         cx.notify();
     }
 
-    fn sync_session_pages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let session = crate::app::session::ready_data(cx);
-        let binding = session.as_ref().map(|session| &session.binding);
-        if self
-            .session_pages
-            .as_ref()
-            .is_some_and(|pages| Some(&pages.binding) != binding)
-        {
-            self.session_pages = None;
-        }
-        if self.session_pages.is_none()
-            && let Some(session) = session
-        {
-            self.session_pages = Some(SessionSettingsPages::new(session.binding, window, cx));
+    fn sync_database_pages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.database_pages.is_none() && crate::database::is_ready(cx) {
+            self.database_pages = Some(DatabaseSettingsPages::new(window, cx));
         }
         cx.notify();
     }
 
     fn database_page(&self, key: SettingsPageKey, cx: &mut Context<Self>) -> AnyElement {
-        if let Some(pages) = &self.session_pages {
+        if let Some(pages) = &self.database_pages {
             let page = match key {
                 SettingsPageKey::Provider => pages.provider.clone().into_any_element(),
                 SettingsPageKey::Projects => pages.projects.clone().into_any_element(),
@@ -496,30 +475,7 @@ fn settings_database_resource_view(cx: &App) -> CriticalResourcesView {
         return CriticalResourcesView::loading(cx.global::<I18n>().t("critical-database-loading"));
     }
     if matches!(phase, DatabasePhase::Ready) {
-        let failure = crate::app::session::store(cx).read(cx, |session| match session {
-            crate::app::session::AppSessionState::Failed { binding, message } => {
-                Some((binding.target.database_path.clone(), message.clone()))
-            }
-            crate::app::session::AppSessionState::AwaitingDatabase
-            | crate::app::session::AppSessionState::Ready(_) => None,
-        });
-        if let Some((path, message)) = failure {
-            let mut args = fluent_bundle::FluentArgs::new();
-            args.set("path", path.display().to_string());
-            args.set("message", message);
-            return CriticalResourcesView::problem(CriticalResourceProblem {
-                id: "settings-critical-session",
-                title: cx.global::<I18n>().t("critical-session-error-title").into(),
-                message: cx
-                    .global::<I18n>()
-                    .t_with_args("critical-session-error-description", &args)
-                    .into(),
-                running: false,
-                warning: false,
-                actions: vec![CriticalResourceAction::RetrySession],
-            });
-        }
-        return CriticalResourcesView::loading(cx.global::<I18n>().t("critical-session-loading"));
+        return CriticalResourcesView::loading(cx.global::<I18n>().t("critical-database-loading"));
     }
     let mut actions = vec![CriticalResourceAction::RefreshDatabase];
     if can_create_fresh {
