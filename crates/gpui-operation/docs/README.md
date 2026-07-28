@@ -8,7 +8,8 @@
 The guides describe the current public contract:
 
 - message-driven transitions for complete runtime enums and named states;
-- a distinct idle-only `Settle(Result)` message for synchronous initial work;
+- a distinct `Settle(Result)` message for synchronous work from `Idle` or
+  `Ready`;
 - separate refresh-only and repair-capable operation families;
 - one complete, predefined runtime `Operation` enum per family;
 - `Fetching<Previous, Task>` and

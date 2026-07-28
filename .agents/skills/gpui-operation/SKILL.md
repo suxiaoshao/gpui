@@ -107,6 +107,8 @@ Data produces `Unavailable`; failure with previous Data preserves it in
   complete enum out of a long-lived owner would push replacement complexity
   back into the application.
 - `new` and `default` start at `Idle`.
+- `Settle(result)` records synchronous work without a Task. It is legal from
+  `Idle` and `Ready`; a failure from `Ready` retains Data in `Degraded`.
 - `phase()` returns the family-specific comparable, copyable `Phase`.
 - `data()` and `problem()` borrow valid current payloads, including the previous
   settled payload retained by applicable running states.

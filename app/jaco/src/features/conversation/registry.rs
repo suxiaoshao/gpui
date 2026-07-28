@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt};
 
 use gpui::{App, AppContext, Context, Entity, Task, WeakEntity};
-use gpui_operation::{Complete, Load, Refresh, Retry, Transition, refresh};
+use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh};
 use jaco_conversation::{ConversationError, ConversationService};
 use jaco_core::{
     ConversationChange, ConversationChanges, ConversationId, ConversationStatus,
@@ -114,11 +114,21 @@ impl ConversationCatalogModel {
     }
 
     fn transition(&mut self, message: ConversationCatalogMessage, cx: &mut Context<Self>) {
-        let ConversationCatalogOperation::Ready(ready) = &mut self.operation else {
+        if matches!(self.operation, ConversationCatalogOperation::Refreshing(_)) {
+            self.operation.transition(Cancel);
+        }
+
+        if let ConversationCatalogOperation::Ready(ready) = &mut self.operation {
+            ready.transition(message);
+            cx.notify();
             return;
-        };
-        ready.transition(message);
-        cx.notify();
+        }
+
+        if self.operation.is_running() {
+            self.operation.transition(Cancel);
+        }
+        drop(message);
+        self.refresh(cx);
     }
 }
 
@@ -181,7 +191,9 @@ impl ConversationRegistry {
         if let Some(model) = self.conversations.get(&id).and_then(WeakEntity::upgrade) {
             model.update(cx, |model, cx| {
                 model.apply_changes(
-                    ConversationChanges(vec![ConversationChange::SummaryChanged { summary }]),
+                    ConversationChanges(vec![ConversationChange::SummaryChanged {
+                        summary: Box::new(summary),
+                    }]),
                     cx,
                 );
             });
@@ -210,7 +222,12 @@ impl ConversationRegistry {
             self.catalog.update(cx, |catalog, cx| {
                 catalog.transition(ConversationCatalogMessage::Upsert(summary.clone()), cx);
             });
-            changes.insert(0, ConversationChange::SummaryChanged { summary });
+            changes.insert(
+                0,
+                ConversationChange::SummaryChanged {
+                    summary: Box::new(summary),
+                },
+            );
         }
         let Some(model) = self.conversations.get(&id).and_then(WeakEntity::upgrade) else {
             return;
@@ -301,6 +318,11 @@ pub(crate) fn release_active(id: &ConversationId, cx: &mut impl AppContext) {
 #[cfg(test)]
 mod tests {
     use gpui::TestAppContext;
+    use jaco_core::{
+        ConversationMetadata, ConversationSettingsSnapshot, ToolApprovalMode, ToolApprovalPolicy,
+        ToolPolicySnapshot,
+    };
+    use time::OffsetDateTime;
 
     use super::*;
 
@@ -323,5 +345,72 @@ mod tests {
 
             assert_eq!(first, second);
         });
+    }
+
+    #[gpui::test]
+    fn committed_summary_cancels_catalog_refresh_and_updates_retained_data(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let store =
+            jaco_db::FreshStore::open_or_create_initial(directory.path().join("jaco.sqlite3"))
+                .unwrap();
+        let executor = SessionDatabaseExecutor::for_test(store);
+
+        cx.update(|cx| {
+            let catalog = cx.new(|_| {
+                let mut operation = ConversationCatalogOperation::new();
+                operation.transition(gpui_operation::Settle(Ok(vec![summary("Before")])));
+                ConversationCatalogModel {
+                    executor,
+                    operation,
+                }
+            });
+
+            catalog.update(cx, |catalog, cx| {
+                catalog.operation.transition(Refresh(Task::ready(())));
+                catalog.transition(ConversationCatalogMessage::Upsert(summary("After")), cx);
+
+                let ConversationCatalogOperation::Ready(ready) = &catalog.operation else {
+                    panic!("committed summary must restore an exact Ready catalog");
+                };
+                assert_eq!(ready.data()[0].title, "After");
+            });
+        });
+    }
+
+    fn summary(title: &str) -> ConversationSummary {
+        ConversationSummary {
+            id: "conversation-1".to_string(),
+            project_id: "project-1".to_string(),
+            title: title.to_string(),
+            status: ConversationStatus::Active,
+            pinned: false,
+            prompt_id: None,
+            default_provider_id: None,
+            default_model_id: None,
+            last_entry_seq: 1,
+            metadata: ConversationMetadata {
+                summary: None,
+                tags: Vec::new(),
+            },
+            settings_snapshot: ConversationSettingsSnapshot {
+                prompt: None,
+                provider_id: None,
+                model_id: None,
+                model_capabilities: None,
+                tool_policy: ToolPolicySnapshot {
+                    approval_policy: ToolApprovalPolicy::Never,
+                    enabled_sources: Vec::new(),
+                    max_steps: 1,
+                    approval_mode: ToolApprovalMode::RequestApproval,
+                    permission_scope: None,
+                },
+            },
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            archived_at: None,
+            deleted_at: None,
+        }
     }
 }

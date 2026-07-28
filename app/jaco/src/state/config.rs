@@ -112,7 +112,11 @@ pub(crate) enum ConfigProblem {
     #[error("could not derive the database target from {path}: {message}")]
     Target { path: PathBuf, message: String },
     #[error("another Jaco process is writing {path}: {message}")]
-    Locked { path: PathBuf, message: String },
+    Locked {
+        path: PathBuf,
+        message: String,
+        pending: Arc<PendingConfig>,
+    },
     #[error("{path} changed outside Jaco")]
     ExternalChange {
         path: PathBuf,
@@ -160,7 +164,10 @@ impl ConfigProblem {
         match repair {
             ConfigRepair::Reload => true,
             ConfigRepair::RetryWrite => {
-                matches!(self, Self::Write { .. } | Self::WriteAfterBackup { .. })
+                matches!(
+                    self,
+                    Self::Locked { .. } | Self::Write { .. } | Self::WriteAfterBackup { .. }
+                )
             }
             ConfigRepair::BackupAndCreateDefault => matches!(
                 self,
@@ -184,9 +191,9 @@ impl ConfigProblem {
 
     fn pending(&self) -> Option<Arc<PendingConfig>> {
         match self {
-            Self::ExternalChange { pending, .. } | Self::Write { pending, .. } => {
-                Some(pending.clone())
-            }
+            Self::Locked { pending, .. }
+            | Self::ExternalChange { pending, .. }
+            | Self::Write { pending, .. } => Some(pending.clone()),
             Self::Backup { pending, .. } | Self::WriteAfterBackup { pending, .. } => {
                 pending.clone()
             }
@@ -494,16 +501,6 @@ pub(crate) fn install_for_test(cx: &mut App, path: PathBuf, config: JacoConfig) 
     Ok(())
 }
 
-struct ReplaceConfig(ConfigData);
-
-impl Transition<ReplaceConfig> for &mut ConfigData {
-    type Output = ();
-
-    fn transition(self, message: ReplaceConfig) {
-        *self = message.0;
-    }
-}
-
 fn ready_data(cx: &impl AppContext) -> JacoResult<ConfigData> {
     store(cx).read(cx, |operation| match operation {
         ConfigOperation::Ready(ready) => Ok(ready.data().clone()),
@@ -539,15 +536,15 @@ fn commit_update(
             .map_err(|error| JacoError::Config(error.to_string()))?,
         bytes,
     });
-    let committed =
-        write_pending(&current, pending).map_err(|error| JacoError::Config(error.to_string()))?;
+    let result = write_pending(&current, pending);
+    let error = result
+        .as_ref()
+        .err()
+        .map(|problem| JacoError::Config(problem.to_string()));
     store(cx).update(cx, |operation| {
-        let ConfigOperation::Ready(ready) = operation else {
-            return;
-        };
-        ready.transition(ReplaceConfig(committed));
+        operation.transition(Settle(result));
     });
-    Ok(())
+    error.map_or(Ok(()), Err)
 }
 
 fn load_for_operation(path: &Path) -> Result<ConfigData, ConfigProblem> {
@@ -570,22 +567,7 @@ fn load_for_operation(path: &Path) -> Result<ConfigData, ConfigProblem> {
                 data: data_from_value(path.to_path_buf(), value, bytes.clone())?,
                 bytes,
             });
-            let lock_path = path.with_extension("toml.lock");
-            let _lock = persistence::FileLock::acquire(&lock_path).map_err(|error| {
-                ConfigProblem::Locked {
-                    path: path.to_path_buf(),
-                    message: error.to_string(),
-                }
-            })?;
-            let committed =
-                persistence::atomic_replace(path, None, &pending.bytes).map_err(|error| {
-                    ConfigProblem::Write {
-                        path: path.to_path_buf(),
-                        message: error.to_string(),
-                        pending: pending.clone(),
-                    }
-                })?;
-            data_from_value(path.to_path_buf(), pending.data.value.clone(), committed)
+            write_pending_at(path, None, pending)
         }
         Err(error) => Err(ConfigProblem::Read {
             path: path.to_path_buf(),
@@ -638,29 +620,37 @@ fn write_pending(
     current: &ConfigData,
     pending: Arc<PendingConfig>,
 ) -> Result<ConfigData, ConfigProblem> {
-    let lock_path = current.path.with_extension("toml.lock");
+    write_pending_at(&current.path, Some(&current.source_bytes), pending)
+}
+
+fn write_pending_at(
+    path: &Path,
+    expected: Option<&[u8]>,
+    pending: Arc<PendingConfig>,
+) -> Result<ConfigData, ConfigProblem> {
+    let lock_path = path.with_extension("toml.lock");
     let _lock =
         persistence::FileLock::acquire(&lock_path).map_err(|error| ConfigProblem::Locked {
-            path: current.path.clone(),
+            path: path.to_path_buf(),
             message: error.to_string(),
+            pending: pending.clone(),
         })?;
     let committed =
-        persistence::atomic_replace(&current.path, Some(&current.source_bytes), &pending.bytes)
-            .map_err(|error| {
-                if error.kind() == ErrorKind::AlreadyExists {
-                    ConfigProblem::ExternalChange {
-                        path: current.path.clone(),
-                        pending: pending.clone(),
-                    }
-                } else {
-                    ConfigProblem::Write {
-                        path: current.path.clone(),
-                        message: error.to_string(),
-                        pending: pending.clone(),
-                    }
+        persistence::atomic_replace(path, expected, &pending.bytes).map_err(|error| {
+            if error.kind() == ErrorKind::AlreadyExists {
+                ConfigProblem::ExternalChange {
+                    path: path.to_path_buf(),
+                    pending: pending.clone(),
                 }
-            })?;
-    data_from_value(current.path.clone(), pending.data.value.clone(), committed)
+            } else {
+                ConfigProblem::Write {
+                    path: path.to_path_buf(),
+                    message: error.to_string(),
+                    pending: pending.clone(),
+                }
+            }
+        })?;
+    data_from_value(path.to_path_buf(), pending.data.value.clone(), committed)
 }
 
 pub(crate) fn request_reload(cx: &mut App) {
@@ -741,7 +731,8 @@ pub(crate) fn request_repair(repair: ConfigRepair, cx: &mut App) -> JacoResult<(
             path: PathBuf,
         },
         RetryWrite {
-            current: ConfigData,
+            path: PathBuf,
+            current: Option<ConfigData>,
             pending: Arc<PendingConfig>,
             backup_path: Option<PathBuf>,
         },
@@ -756,11 +747,8 @@ pub(crate) fn request_repair(repair: ConfigRepair, cx: &mut App) -> JacoResult<(
     let attempt = match repair {
         ConfigRepair::Reload => RepairAttempt::Reload { path },
         ConfigRepair::RetryWrite => RepairAttempt::RetryWrite {
-            current: current.ok_or_else(|| {
-                JacoError::Config(
-                    "retrying a config write requires retained committed data".to_string(),
-                )
-            })?,
+            path,
+            current,
             pending: problem
                 .pending()
                 .ok_or_else(|| JacoError::Config("pending config is unavailable".to_string()))?,
@@ -780,16 +768,17 @@ pub(crate) fn request_repair(repair: ConfigRepair, cx: &mut App) -> JacoResult<(
         let result = smol::unblock(move || match attempt {
             RepairAttempt::Reload { path } => load_for_operation(&path),
             RepairAttempt::RetryWrite {
+                path,
                 current,
                 pending,
                 backup_path,
-            } => {
-                if let Some(backup_path) = backup_path {
+            } => match (current, backup_path) {
+                (Some(current), Some(backup_path)) => {
                     write_pending_after_backup(&current, pending, backup_path)
-                } else {
-                    write_pending(&current, pending)
                 }
-            }
+                (Some(current), None) => write_pending(&current, pending),
+                (None, _) => write_pending_at(&path, None, pending),
+            },
             RepairAttempt::BackupAndCreateDefault { path } => {
                 backup_and_replace(&path, ConfigBackupIntent::CreateDefault, None)
             }
@@ -829,11 +818,33 @@ fn backup_and_replace(
     if let Ok(valid) = load_for_operation(path) {
         return Ok(valid);
     }
+    let pending = match pending {
+        Some(pending) => pending,
+        None => {
+            let value = JacoConfig::default();
+            let bytes = toml::to_string_pretty(&value)
+                .map_err(|error| ConfigProblem::Write {
+                    path: path.to_path_buf(),
+                    message: error.to_string(),
+                    pending: Arc::new(PendingConfig {
+                        data: data_from_value(path.to_path_buf(), value.clone(), Vec::new())
+                            .expect("default config target must be valid"),
+                        bytes: Vec::new(),
+                    }),
+                })?
+                .into_bytes();
+            Arc::new(PendingConfig {
+                data: data_from_value(path.to_path_buf(), value, bytes.clone())?,
+                bytes,
+            })
+        }
+    };
     let lock_path = path.with_extension("toml.lock");
     let _lock =
         persistence::FileLock::acquire(&lock_path).map_err(|error| ConfigProblem::Locked {
             path: path.to_path_buf(),
             message: error.to_string(),
+            pending: pending.clone(),
         })?;
     let original = fs::read(path).map_err(|error| ConfigProblem::Read {
         path: path.to_path_buf(),
@@ -849,28 +860,9 @@ fn backup_and_replace(
             path: path.to_path_buf(),
             message: error.to_string(),
             intent,
-            pending: pending.clone(),
+            pending: Some(pending.clone()),
         }
     })?;
-    let pending = match pending {
-        Some(pending) => pending,
-        None => {
-            let value = JacoConfig::default();
-            let bytes = toml::to_string_pretty(&value)
-                .map_err(|error| ConfigProblem::WriteAfterBackup {
-                    path: path.to_path_buf(),
-                    backup_path: backup_path.clone(),
-                    message: error.to_string(),
-                    intent,
-                    pending: None,
-                })?
-                .into_bytes();
-            Arc::new(PendingConfig {
-                data: data_from_value(path.to_path_buf(), value, bytes.clone())?,
-                bytes,
-            })
-        }
-    };
     if fs::read(path).ok().as_deref() != Some(original.as_slice()) {
         return Err(ConfigProblem::ExternalChange {
             path: path.to_path_buf(),

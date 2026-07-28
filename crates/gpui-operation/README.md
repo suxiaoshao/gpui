@@ -16,26 +16,31 @@ A database query or remote catalog normally uses `refresh`. A malformed
 configuration file or a database that cannot be opened normally uses
 `repair`.
 
-## Synchronous initial work
+## Synchronous work
 
-When the caller has already completed the initial work synchronously, deliver
-its result with `Settle` instead of constructing a task:
+When the caller has already completed work synchronously, deliver its result
+with `Settle` instead of constructing a task:
 
 ```rust
 use std::io;
 
-use gpui_operation::{Settle, Transition, refresh::Operation};
+use gpui_operation::{Settle, Transition, refresh::{Operation, Phase}};
 
 struct Task;
 
 let mut config = Operation::<String, io::Error, Task>::new();
 config.transition(Settle(Ok("ready".to_owned())));
 assert_eq!(config.data().map(String::as_str), Some("ready"));
+
+config.transition(Settle(Err(io::Error::other("write failed"))));
+assert_eq!(config.phase(), Phase::Degraded);
+assert_eq!(config.data().map(String::as_str), Some("ready"));
 ```
 
-`Settle` is accepted only from `Idle`. `Complete` remains reserved for a
-running task, so a late `Complete` after cancellation cannot settle an idle
-operation.
+`Settle` is accepted from `Idle` and `Ready`. From `Ready`, success replaces
+the current data and failure preserves it in `Degraded`. It is ignored in all
+other states. `Complete` remains reserved for a running task, so a late
+`Complete` after cancellation cannot settle an idle operation.
 
 ## Refresh-only operation
 

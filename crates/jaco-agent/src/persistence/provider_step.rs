@@ -45,7 +45,7 @@ impl PersistenceContext {
         self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
             conversation_id: self.conversation_id.clone(),
             changes: vec![jaco_core::ConversationChange::ProviderStepChanged {
-                step: step.clone(),
+                step: Box::new(step.clone()),
             }],
         });
         Ok(step)
@@ -105,7 +105,7 @@ impl PersistenceContext {
         self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
             conversation_id: self.conversation_id.clone(),
             changes: vec![jaco_core::ConversationChange::ProviderStepChanged {
-                step: step.clone(),
+                step: Box::new(step.clone()),
             }],
         });
         let usage = provider_usage(response.usage);
@@ -203,7 +203,7 @@ impl PersistenceContext {
         self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
             conversation_id: self.conversation_id.clone(),
             changes: vec![jaco_core::ConversationChange::ProviderStepChanged {
-                step: step.clone(),
+                step: Box::new(step.clone()),
             }],
         });
         let usage = provider_usage(usage);
@@ -250,7 +250,7 @@ impl PersistenceContext {
         self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
             conversation_id: self.conversation_id.clone(),
             changes: vec![jaco_core::ConversationChange::ProviderStepChanged {
-                step: step.clone(),
+                step: Box::new(step.clone()),
             }],
         });
         self.push_event(AgentRunEvent::ProviderStepEvent {
@@ -283,7 +283,7 @@ impl PersistenceContext {
         self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
             conversation_id: self.conversation_id.clone(),
             changes: vec![jaco_core::ConversationChange::ProviderStepChanged {
-                step: step.clone(),
+                step: Box::new(step.clone()),
             }],
         });
         self.push_event(AgentRunEvent::ProviderStepEvent {

@@ -6,6 +6,15 @@ use std::{
 
 use tempfile::NamedTempFile;
 
+#[cfg(target_os = "windows")]
+use windows::{
+    Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_TEMPORARY, MOVEFILE_REPLACE_EXISTING,
+        MOVEFILE_WRITE_THROUGH, MoveFileExW, SetFileAttributesW,
+    },
+    core::PCWSTR,
+};
+
 pub(crate) struct FileLock {
     file: File,
 }
@@ -51,8 +60,7 @@ pub(crate) fn atomic_replace(
     staged.flush()?;
     staged.as_file().sync_all()?;
     compare_current(path, expected)?;
-    staged.persist(path).map_err(|error| error.error)?;
-    sync_directory(parent)?;
+    persist_staged(staged, path, parent)?;
 
     let committed = fs::read(path)?;
     if committed != contents {
@@ -108,6 +116,77 @@ fn compare_current(path: &Path, expected: Option<&[u8]>) -> std::io::Result<()> 
     }
 }
 
+#[cfg(not(target_os = "windows"))]
+fn persist_staged(staged: NamedTempFile, path: &Path, parent: &Path) -> std::io::Result<()> {
+    staged.persist(path).map_err(|error| error.error)?;
+    sync_directory(parent)
+}
+
+#[cfg(target_os = "windows")]
+fn persist_staged(staged: NamedTempFile, path: &Path, _parent: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    let staged_path = staged
+        .path()
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let destination = path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+
+    // NamedTempFile marks the staged file as temporary on Windows. Persisting
+    // it must first restore normal file semantics, just as tempfile::persist
+    // does, before the write-through replacement makes the rename durable.
+    unsafe {
+        SetFileAttributesW(PCWSTR(staged_path.as_ptr()), FILE_ATTRIBUTE_NORMAL)
+            .map_err(std::io::Error::from)?;
+        if let Err(error) = MoveFileExW(
+            PCWSTR(staged_path.as_ptr()),
+            PCWSTR(destination.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        ) {
+            let _ = SetFileAttributesW(PCWSTR(staged_path.as_ptr()), FILE_ATTRIBUTE_TEMPORARY);
+            return Err(std::io::Error::from(error));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
 fn sync_directory(path: &Path) -> std::io::Result<()> {
     File::open(path)?.sync_all()
+}
+
+#[cfg(target_os = "windows")]
+fn sync_directory(_path: &Path) -> std::io::Result<()> {
+    // Windows cannot open a directory with std::fs::File. Atomic replacement
+    // uses MOVEFILE_WRITE_THROUGH above, while newly created files have already
+    // been flushed and synced through their own file handle.
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::atomic_replace;
+
+    #[test]
+    fn atomic_replace_creates_and_replaces_the_destination() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("config.toml");
+
+        assert_eq!(
+            atomic_replace(&path, None, b"first").expect("create destination"),
+            b"first"
+        );
+        assert_eq!(
+            atomic_replace(&path, Some(b"first"), b"second").expect("replace destination"),
+            b"second"
+        );
+        assert_eq!(std::fs::read(path).expect("read destination"), b"second");
+    }
 }

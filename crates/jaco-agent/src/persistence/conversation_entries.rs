@@ -36,10 +36,12 @@ impl PersistenceContext {
                 .0
                 .iter()
                 .cloned()
-                .map(|entry| jaco_core::ConversationChange::EntryAppended { entry })
+                .map(|entry| jaco_core::ConversationChange::EntryAppended {
+                    entry: Box::new(entry),
+                })
                 .chain(std::iter::once(
                     jaco_core::ConversationChange::ToolInvocationChanged {
-                        invocation: commit.value.1.clone(),
+                        invocation: Box::new(commit.value.1.clone()),
                     },
                 ))
                 .collect(),
@@ -68,7 +70,7 @@ impl PersistenceContext {
         self.emit_conversation_commit_with_changes(
             &commit,
             vec![jaco_core::ConversationChange::EntryAppended {
-                entry: commit.value.clone(),
+                entry: Box::new(commit.value.clone()),
             }],
         );
         let item = commit.value;
@@ -96,7 +98,7 @@ impl PersistenceContext {
         self.emit_conversation_commit_with_changes(
             &commit,
             vec![jaco_core::ConversationChange::EntryAppended {
-                entry: commit.value.clone(),
+                entry: Box::new(commit.value.clone()),
             }],
         );
         let item = commit.value;
@@ -118,7 +120,7 @@ impl PersistenceContext {
         self.emit_conversation_commit_with_changes(
             &commit,
             vec![jaco_core::ConversationChange::EntryUpdated {
-                entry: commit.value.clone(),
+                entry: Box::new(commit.value.clone()),
                 kind: EntryChangeKind::TextAppended,
             }],
         );
@@ -163,7 +165,7 @@ impl PersistenceContext {
         self.emit_conversation_commit_with_changes(
             &commit,
             vec![jaco_core::ConversationChange::EntryAppended {
-                entry: commit.value.clone(),
+                entry: Box::new(commit.value.clone()),
             }],
         );
         let item = commit.value;
@@ -213,10 +215,12 @@ impl PersistenceContext {
                 .0
                 .iter()
                 .cloned()
-                .map(|entry| jaco_core::ConversationChange::EntryAppended { entry })
+                .map(|entry| jaco_core::ConversationChange::EntryAppended {
+                    entry: Box::new(entry),
+                })
                 .chain(std::iter::once(
                     jaco_core::ConversationChange::ToolInvocationChanged {
-                        invocation: commit.value.1.clone(),
+                        invocation: Box::new(commit.value.1.clone()),
                     },
                 ))
                 .collect(),
@@ -231,10 +235,10 @@ impl PersistenceContext {
             commit,
             vec![
                 jaco_core::ConversationChange::EntryAppended {
-                    entry: commit.value.0.clone(),
+                    entry: Box::new(commit.value.0.clone()),
                 },
                 jaco_core::ConversationChange::ToolInvocationChanged {
-                    invocation: commit.value.1.clone(),
+                    invocation: Box::new(commit.value.1.clone()),
                 },
             ],
         );

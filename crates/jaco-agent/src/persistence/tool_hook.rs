@@ -1009,7 +1009,7 @@ where
             .emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
                 conversation_id: self.context.conversation_id.clone(),
                 changes: vec![jaco_core::ConversationChange::ToolInvocationChanged {
-                    invocation: invocation.clone(),
+                    invocation: Box::new(invocation.clone()),
                 }],
             });
         let payload = ConversationEntryPayload::ToolResult(ToolResultEntry {

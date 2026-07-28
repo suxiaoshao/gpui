@@ -9,12 +9,7 @@ use jaco_core::{ProjectId, ProjectKind, ProjectMetadata, new_id};
 use jaco_db::{NewProject, ProjectRecord};
 use tokio::sync::oneshot;
 
-use crate::{
-    database::{self, session::CatalogMutation},
-    errors::JacoResult,
-    foundation::I18n,
-    state::config,
-};
+use crate::{database, errors::JacoResult, foundation::I18n, state::config};
 
 const SCRATCH_PROJECTS_DIR: &str = "scratch-projects";
 const NO_PROJECT_SCRATCH_REASON: &str = "no-project";
@@ -367,7 +362,7 @@ where
     let (sender, receiver) = oneshot::channel();
     let task_binding = binding.clone();
     let driver = cx.spawn(async move |cx| {
-        let result = executor.mutate(CatalogMutation::Project, command).await;
+        let result = executor.execute(command).await;
         if let Ok(value) = &result {
             cx.update(|cx| {
                 if database::ready_binding(cx).as_ref() == Some(&binding) {

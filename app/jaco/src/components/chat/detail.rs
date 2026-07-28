@@ -313,13 +313,7 @@ impl ConversationDetailPage {
                 self.sync_message_text_state(entry_id, cx);
                 self.update_timeline_entry(entry_id, cx);
             }
-            ConversationEffect::EntryRemoved { entry_id } => {
-                self.message_text_states
-                    .retain(|state| &state.id != entry_id);
-                self.sync_timeline(cx, None);
-            }
-            ConversationEffect::AttachmentChanged { attachment_id }
-            | ConversationEffect::AttachmentRemoved { attachment_id } => {
+            ConversationEffect::AttachmentChanged { attachment_id } => {
                 self.sync_attachment_rows(attachment_id, cx);
             }
             ConversationEffect::RunChanged { run_id } => self.update_timeline_run(run_id, cx),

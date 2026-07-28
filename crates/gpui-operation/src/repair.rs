@@ -16,6 +16,7 @@
 //! | Current | Message | Output |
 //! |---|---|---|
 //! | `Idle<Repair>` | `Settle<Result<Data, Problem>>` | `FetchCompleted<Data, Problem, Repair>` |
+//! | `Ready<Data, Repair>` | `Settle<Result<Data, Problem>>` | `RefreshCompleted<Data, Problem, Repair>` |
 //! | `Idle<Repair>` | `Load<Task>` | `Fetching<Idle<Repair>, Task>` |
 //! | `Ready<Data, Repair>` | `Refresh<Task>` | `Fetching<Ready<Data, Repair>, Task>` |
 //! | `Unavailable<Problem, Repair>` | `Repair<Repair, Task>` | `Repairing<Unavailable<Problem, Repair>, Repair, Task>` |
@@ -340,6 +341,22 @@ impl<Data, Problem: std::error::Error, Repair, Task> Transition<Settle<Data, Pro
                     }),
                 };
             }
+            Operation::Ready(Ready { data: previous, .. }) => match message.0 {
+                Ok(data) => {
+                    *self = Operation::Ready(Ready {
+                        data,
+                        marker: PhantomData,
+                    });
+                    drop(previous);
+                }
+                Err(problem) => {
+                    *self = Operation::Degraded(Degraded {
+                        data: previous,
+                        problem,
+                        marker: PhantomData,
+                    });
+                }
+            },
             current => {
                 *self = current;
                 trace_ignored::<Settle<Data, Problem>>(self.phase());
@@ -575,6 +592,26 @@ impl<Data, Problem: std::error::Error, Repair> Transition<Settle<Data, Problem>>
                 marker: PhantomData,
             }),
             Err(problem) => FetchCompleted::Unavailable(Unavailable {
+                problem,
+                marker: PhantomData,
+            }),
+        }
+    }
+}
+
+impl<Data, Problem: std::error::Error, Repair> Transition<Settle<Data, Problem>>
+    for Ready<Data, Repair>
+{
+    type Output = RefreshCompleted<Data, Problem, Repair>;
+
+    fn transition(self, message: Settle<Data, Problem>) -> Self::Output {
+        match message.0 {
+            Ok(data) => RefreshCompleted::Ready(Ready {
+                data,
+                marker: PhantomData,
+            }),
+            Err(problem) => RefreshCompleted::Degraded(Degraded {
+                data: self.data,
                 problem,
                 marker: PhantomData,
             }),

@@ -10,8 +10,8 @@
 //! Each family provides a complete runtime `Operation` enum for long-term
 //! storage, plus concrete named states. Both layers receive owned messages
 //! through [`Transition<Message>`].
-//! Synchronous initial work can move `Idle` directly to a settled state with
-//! [`Settle`]; [`Complete`] is reserved for an active task.
+//! Synchronous work can settle directly from `Idle` or `Ready` with [`Settle`];
+//! [`Complete`] is reserved for an active task.
 //!
 //! # Quick start
 //!

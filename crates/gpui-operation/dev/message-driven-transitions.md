@@ -39,8 +39,9 @@
    `Data: Clone`。
 9. 默认不引入日志依赖；启用 `tracing` feature 后记录非法 runtime 消息。
 10. 保持英文默认文档，并同步中文 README 与完整指南。
-11. 同步完成的首次工作使用独立 `Settle(Result)` 消息，只允许从 `Idle` 直接进入
-    `Ready` 或 `Unavailable`；异步 Task 的结果继续使用 `Complete(Result)`。
+11. 同步完成的工作使用独立 `Settle(Result)` 消息：从 `Idle` 进入 `Ready` 或
+    `Unavailable`，从 `Ready` 进入 `Ready` 或 `Degraded`；异步 Task 的结果继续使用
+    `Complete(Result)`。
 
 ### 1.2 非目标
 
@@ -74,7 +75,7 @@
 | OP-R14 | 默认 feature 只使用 `std`；可选 `tracing` feature 提供非法消息 debug；GPUI 仅作为 dev dependency |
 | OP-R15 | `&mut Ready<Data>` 把业务消息委托给 `&mut Data` 的 `Transition`，只允许 Ready -> Ready 更新 |
 | OP-R16 | 不保留 `start_fetch`、`start_repair`、`complete`、`cancel`、`can_*` 或 `Rejected` 兼容层 |
-| OP-R17 | `Settle(Result)` 只处理 `Idle` 中同步完成的首次工作；`Complete(Result)` 只处理 running state，取消后迟到的 `Complete` 不得结算 `Idle` |
+| OP-R17 | `Settle(Result)` 处理 `Idle` 或 `Ready` 中同步完成的工作；`Ready + Err` 保留旧 Data 并进入 `Degraded`；`Complete(Result)` 只处理 running state，取消后迟到的 `Complete` 不得结算 `Idle` |
 
 ## 2. 当前证据
 
@@ -214,6 +215,7 @@ runtime 消息矩阵：
 
 ```text
 Idle        + Settle(result) -> Ready / Unavailable
+Ready       + Settle(result) -> Ready / Degraded
 Idle        + Load(task)    -> Loading
 Ready       + Refresh(task) -> Refreshing
 Unavailable + Retry(task)   -> Retrying
@@ -269,6 +271,7 @@ runtime 消息矩阵：
 
 ```text
 Idle        + Settle(result)         -> Ready / Unavailable
+Ready       + Settle(result)         -> Ready / Degraded
 Idle        + Load(task)            -> Loading
 Ready       + Refresh(task)         -> Refreshing
 Unavailable + Repair(repair, task)  -> RepairingUnavailable
@@ -281,8 +284,9 @@ running     + Cancel                -> exact previous state
 
 `Settle(Result<Data, Problem>)` 与 `Complete(Result<Data, Problem>)` 不能合并：
 
-- `Settle` 只在 `Idle` 合法，用于调用者已经同步完成的首次工作，不产生 running state，
-  也不保存 Task；
+- `Settle` 只在 `Idle` 或 `Ready` 合法，用于调用者已经同步完成的工作，不产生 running
+  state，也不保存 Task；`Ready + Ok` 替换 Data，`Ready + Err` 保留旧 Data 并进入
+  `Degraded`；
 - `Complete` 只在 running variant 合法，是此前某个 Task 的完成消息；
 - async load 被 `Cancel` 恢复到 `Idle` 后，即使迟到的 `Complete` 仍被送达，也必须按非法
   消息处理，不能覆盖当前状态；

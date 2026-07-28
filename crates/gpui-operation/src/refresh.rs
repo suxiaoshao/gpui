@@ -12,6 +12,7 @@
 //! | Current | Message | Output |
 //! |---|---|---|
 //! | `Idle` | `Settle<Result<Data, Problem>>` | `FetchCompleted<Data, Problem>` |
+//! | `Ready<Data>` | `Settle<Result<Data, Problem>>` | `RefreshCompleted<Data, Problem>` |
 //! | `Idle` | `Load<Task>` | `Fetching<Idle, Task>` |
 //! | `Ready<Data>` | `Refresh<Task>` | `Fetching<Ready<Data>, Task>` |
 //! | `Unavailable<Problem>` | `Retry<Task>` | `Fetching<Unavailable<Problem>, Task>` |
@@ -284,6 +285,18 @@ impl<Data, Problem: std::error::Error, Task> Transition<Settle<Data, Problem>>
                     Err(problem) => Operation::Unavailable(Unavailable { problem }),
                 };
             }
+            Operation::Ready(Ready { data: previous }) => match message.0 {
+                Ok(data) => {
+                    *self = Operation::Ready(Ready { data });
+                    drop(previous);
+                }
+                Err(problem) => {
+                    *self = Operation::Degraded(Degraded {
+                        data: previous,
+                        problem,
+                    });
+                }
+            },
             current => {
                 *self = current;
                 trace_ignored::<Settle<Data, Problem>>(self.phase());
@@ -481,6 +494,20 @@ impl<Data, Problem: std::error::Error> Transition<Settle<Data, Problem>> for Idl
         match message.0 {
             Ok(data) => FetchCompleted::Ready(Ready { data }),
             Err(problem) => FetchCompleted::Unavailable(Unavailable { problem }),
+        }
+    }
+}
+
+impl<Data, Problem: std::error::Error> Transition<Settle<Data, Problem>> for Ready<Data> {
+    type Output = RefreshCompleted<Data, Problem>;
+
+    fn transition(self, message: Settle<Data, Problem>) -> Self::Output {
+        match message.0 {
+            Ok(data) => RefreshCompleted::Ready(Ready { data }),
+            Err(problem) => RefreshCompleted::Degraded(Degraded {
+                data: self.data,
+                problem,
+            }),
         }
     }
 }

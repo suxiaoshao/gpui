@@ -7,7 +7,7 @@ use jaco_core::{PromptContent, PromptId};
 use jaco_db::{DbError, NewPrompt, PromptRecord, UpdatePrompt};
 use tokio::sync::oneshot;
 
-use crate::{database, database::session::CatalogMutation};
+use crate::database;
 
 const DEFAULT_SORT_ORDER_STEP: i32 = 10;
 
@@ -291,7 +291,7 @@ where
     let (sender, receiver) = oneshot::channel();
     let task_binding = binding.clone();
     let driver = cx.spawn(async move |cx| {
-        let result = executor.mutate(CatalogMutation::Prompt, command).await;
+        let result = executor.execute(command).await;
         if let Ok(value) = &result {
             let message = message(value);
             cx.update(|cx| {

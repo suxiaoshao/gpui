@@ -187,7 +187,6 @@ pub(super) struct AgentTurnRow {
     pub(super) run_id: Option<AgentRunId>,
     pub(super) run: Option<AgentRun>,
     pub(super) items: Vec<ConversationEntry>,
-    pub(super) final_item: Option<ConversationEntry>,
     pub(super) text_states: HashMap<ConversationEntryId, Entity<TextViewState>>,
     pub(super) expanded: bool,
     pub(super) on_toggle: OnToggleAgent,
@@ -224,7 +223,7 @@ impl RenderOnce for AgentTurnRow {
                 i18n.t("conversation-copy-tooltip"),
                 i18n.t("conversation-copy-success"),
                 hover_time,
-                agent_final_markdown(self.final_item.as_ref(), i18n),
+                agent_final_markdown(self.final_item(), i18n),
             )
         };
         let status_row = self.render_status_row(&id_suffix, cx);
@@ -242,8 +241,7 @@ impl RenderOnce for AgentTurnRow {
             cx,
         );
         let final_text_state = self
-            .final_item
-            .as_ref()
+            .final_item()
             .and_then(|item| self.text_states.get(&item.id).cloned());
 
         v_flex()
@@ -278,6 +276,11 @@ impl RenderOnce for AgentTurnRow {
 }
 
 impl AgentTurnRow {
+    pub(super) fn final_item(&self) -> Option<&ConversationEntry> {
+        let final_entry_id = &self.run.as_ref()?.output.as_ref()?.final_entry_id;
+        self.items.iter().find(|item| &item.id == final_entry_id)
+    }
+
     fn render_status_row(&self, id_suffix: &str, cx: &mut App) -> AnyElement {
         let i18n = cx.global::<I18n>();
         let (label, icon) = if let Some(run) = &self.run {
@@ -335,14 +338,11 @@ impl AgentTurnRow {
     }
 
     fn render_details(&self, window: &mut Window, cx: &mut App) -> AnyElement {
+        let final_item_id = self.final_item().map(|item| &item.id);
         let detail_items = self
             .items
             .iter()
-            .filter(|item| {
-                self.final_item
-                    .as_ref()
-                    .is_none_or(|final_item| final_item.id != item.id)
-            })
+            .filter(|item| final_item_id != Some(&item.id))
             .cloned()
             .collect::<Vec<_>>();
         let text_states = self.text_states.clone();
@@ -520,7 +520,7 @@ fn copy_button(
 }
 
 fn agent_copy_text(row: &AgentTurnRow, i18n: &I18n) -> String {
-    let final_markdown = agent_final_markdown(row.final_item.as_ref(), i18n);
+    let final_markdown = agent_final_markdown(row.final_item(), i18n);
     if !row.expanded && !final_markdown.trim().is_empty() {
         return final_markdown;
     }

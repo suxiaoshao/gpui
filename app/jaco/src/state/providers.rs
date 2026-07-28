@@ -11,7 +11,7 @@ use jaco_db::{
 };
 use tokio::sync::oneshot;
 
-use crate::{database, database::session::CatalogMutation};
+use crate::database;
 
 pub(crate) type ProviderOperation = refresh::Operation<ProviderData, ProviderProblem, Task<()>>;
 pub(crate) type ProviderStore = Store<ProviderOperation>;
@@ -421,7 +421,7 @@ where
     let (sender, receiver) = oneshot::channel();
     let task_binding = binding.clone();
     let driver = cx.spawn(async move |cx| {
-        let result = executor.mutate(CatalogMutation::Provider, command).await;
+        let result = executor.execute(command).await;
         if let Ok(value) = &result {
             let message = message(value);
             cx.update(|cx| {

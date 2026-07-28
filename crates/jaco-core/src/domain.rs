@@ -160,32 +160,26 @@ pub enum EntryChangeKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConversationChange {
     SummaryChanged {
-        summary: ConversationSummary,
+        summary: Box<ConversationSummary>,
     },
     EntryAppended {
-        entry: ConversationEntry,
+        entry: Box<ConversationEntry>,
     },
     EntryUpdated {
-        entry: ConversationEntry,
+        entry: Box<ConversationEntry>,
         kind: EntryChangeKind,
     },
-    EntryRemoved {
-        entry_id: ConversationEntryId,
-    },
     AttachmentUpserted {
-        attachment: ConversationAttachment,
-    },
-    AttachmentRemoved {
-        attachment_id: AttachmentId,
+        attachment: Box<ConversationAttachment>,
     },
     ProviderStepChanged {
-        step: ProviderStep,
+        step: Box<ProviderStep>,
     },
     ToolInvocationChanged {
-        invocation: ToolInvocation,
+        invocation: Box<ToolInvocation>,
     },
     RunStatusChanged {
-        run: AgentRun,
+        run: Box<AgentRun>,
     },
     Deleted,
 }
@@ -209,13 +203,7 @@ pub enum ConversationEffect {
         entry_id: ConversationEntryId,
         kind: EntryChangeKind,
     },
-    EntryRemoved {
-        entry_id: ConversationEntryId,
-    },
     AttachmentChanged {
-        attachment_id: AttachmentId,
-    },
-    AttachmentRemoved {
         attachment_id: AttachmentId,
     },
     RunChanged {
@@ -236,7 +224,7 @@ impl Transition<ConversationChange> for &mut Conversation {
     fn transition(self, change: ConversationChange) -> Self::Output {
         match change {
             ConversationChange::SummaryChanged { summary } => {
-                self.summary = summary;
+                self.summary = *summary;
                 ConversationEffect::SummaryChanged
             }
             ConversationChange::EntryAppended { entry } => {
@@ -246,9 +234,9 @@ impl Transition<ConversationChange> for &mut Conversation {
                     .iter_mut()
                     .find(|current| current.id == entry_id)
                 {
-                    *current = entry;
+                    *current = *entry;
                 } else {
-                    self.entries.push(entry);
+                    self.entries.push(*entry);
                     self.entries.sort_by(|left, right| {
                         left.seq
                             .cmp(&right.seq)
@@ -264,10 +252,10 @@ impl Transition<ConversationChange> for &mut Conversation {
                     .iter_mut()
                     .find(|current| current.id == entry_id)
                 {
-                    *current = entry;
+                    *current = *entry;
                     ConversationEffect::EntryChanged { entry_id, kind }
                 } else {
-                    self.entries.push(entry);
+                    self.entries.push(*entry);
                     self.entries.sort_by(|left, right| {
                         left.seq
                             .cmp(&right.seq)
@@ -276,10 +264,6 @@ impl Transition<ConversationChange> for &mut Conversation {
                     ConversationEffect::EntryInserted { entry_id }
                 }
             }
-            ConversationChange::EntryRemoved { entry_id } => {
-                self.entries.retain(|entry| entry.id != entry_id);
-                ConversationEffect::EntryRemoved { entry_id }
-            }
             ConversationChange::AttachmentUpserted { attachment } => {
                 let attachment_id = attachment.id.clone();
                 if let Some(current) = self
@@ -287,23 +271,18 @@ impl Transition<ConversationChange> for &mut Conversation {
                     .iter_mut()
                     .find(|current| current.id == attachment_id)
                 {
-                    *current = attachment;
+                    *current = *attachment;
                 } else {
-                    self.attachments.push(attachment);
+                    self.attachments.push(*attachment);
                 }
                 ConversationEffect::AttachmentChanged { attachment_id }
-            }
-            ConversationChange::AttachmentRemoved { attachment_id } => {
-                self.attachments
-                    .retain(|attachment| attachment.id != attachment_id);
-                ConversationEffect::AttachmentRemoved { attachment_id }
             }
             ConversationChange::RunStatusChanged { run } => {
                 let run_id = run.id.clone();
                 if let Some(current) = self.runs.iter_mut().find(|current| current.id == run_id) {
-                    *current = run;
+                    *current = *run;
                 } else {
-                    self.runs.push(run);
+                    self.runs.push(*run);
                 }
                 ConversationEffect::RunChanged { run_id }
             }
@@ -314,9 +293,9 @@ impl Transition<ConversationChange> for &mut Conversation {
                     .iter_mut()
                     .find(|current| current.id == provider_step_id)
                 {
-                    *current = step;
+                    *current = *step;
                 } else {
-                    self.provider_steps.push(step);
+                    self.provider_steps.push(*step);
                     self.provider_steps.sort_by(|left, right| {
                         left.agent_run_id
                             .cmp(&right.agent_run_id)
@@ -333,9 +312,9 @@ impl Transition<ConversationChange> for &mut Conversation {
                     .iter_mut()
                     .find(|current| current.id == tool_invocation_id)
                 {
-                    *current = invocation;
+                    *current = *invocation;
                 } else {
-                    self.tool_invocations.push(invocation);
+                    self.tool_invocations.push(*invocation);
                 }
                 ConversationEffect::ToolInvocationChanged { tool_invocation_id }
             }
@@ -389,7 +368,7 @@ mod tests {
         let untouched = conversation.entries[1].clone();
         let updated = entry("entry-1", 1, "before and after");
         let changes = ConversationChanges(vec![ConversationChange::EntryUpdated {
-            entry: updated.clone(),
+            entry: Box::new(updated.clone()),
             kind: EntryChangeKind::TextAppended,
         }]);
 
@@ -413,7 +392,7 @@ mod tests {
 
         let effects = (&mut conversation).transition(ConversationChanges(vec![
             ConversationChange::EntryUpdated {
-                entry: inserted.clone(),
+                entry: Box::new(inserted.clone()),
                 kind: EntryChangeKind::Replaced,
             },
         ]));

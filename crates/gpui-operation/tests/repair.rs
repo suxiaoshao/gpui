@@ -98,6 +98,26 @@ fn synchronous_settle_produces_ready_or_unavailable_without_a_task() {
 }
 
 #[test]
+fn synchronous_settle_from_ready_replaces_or_retains_data() {
+    let completed: RefreshCompleted<IntData, IntProblem, IntRepair> =
+        make_ready(IntData(40)).transition(Settle(Ok(IntData(41))));
+    match completed {
+        RefreshCompleted::Ready(ready) => assert_eq!(ready.data(), &IntData(41)),
+        RefreshCompleted::Degraded(_) => panic!("expected Ready"),
+    }
+
+    let completed: RefreshCompleted<IntData, IntProblem, IntRepair> =
+        make_ready(IntData(42)).transition(Settle(Err(IntProblem(43))));
+    match completed {
+        RefreshCompleted::Ready(_) => panic!("expected Degraded"),
+        RefreshCompleted::Degraded(degraded) => {
+            assert_eq!(degraded.data(), &IntData(42));
+            assert_eq!(degraded.problem(), &IntProblem(43));
+        }
+    }
+}
+
+#[test]
 fn load_completion_produces_repair_ready_or_unavailable() {
     let fetching = Idle::<IntRepair>::new().transition(Load(Task));
 
@@ -478,7 +498,7 @@ fn repair_transitions_accept_non_clone_non_send_payloads() {
 // ── Runtime enum ────────────────────────────────────────────────────────
 
 #[test]
-fn runtime_settle_is_idle_only_and_distinct_from_async_completion() {
+fn runtime_settle_accepts_idle_and_ready_but_not_other_states() {
     let mut success = RepairOperation::<IntData, IntProblem, IntRepair, Task>::new();
     success.transition(Settle(Ok(IntData(1))));
     assert_eq!(success.phase(), RepairPhase::Ready);
@@ -486,22 +506,34 @@ fn runtime_settle_is_idle_only_and_distinct_from_async_completion() {
 
     success.transition(Settle(Ok(IntData(2))));
     assert_eq!(success.phase(), RepairPhase::Ready);
-    assert_eq!(success.data(), Some(&IntData(1)));
+    assert_eq!(success.data(), Some(&IntData(2)));
+
+    success.transition(Settle(Err(IntProblem(3))));
+    assert_eq!(success.phase(), RepairPhase::Degraded);
+    assert_eq!(success.data(), Some(&IntData(2)));
+    assert_eq!(success.problem(), Some(&IntProblem(3)));
+    success.transition(Settle(Ok(IntData(4))));
+    assert_eq!(success.phase(), RepairPhase::Degraded);
+    assert_eq!(success.data(), Some(&IntData(2)));
 
     let mut failure = RepairOperation::<IntData, IntProblem, IntRepair, Task>::new();
-    failure.transition(Settle(Err(IntProblem(3))));
+    failure.transition(Settle(Err(IntProblem(5))));
     assert_eq!(failure.phase(), RepairPhase::Unavailable);
-    assert_eq!(failure.problem(), Some(&IntProblem(3)));
+    assert_eq!(failure.problem(), Some(&IntProblem(5)));
+    failure.transition(Settle(Ok(IntData(6))));
+    assert_eq!(failure.phase(), RepairPhase::Unavailable);
 
     let mut cancelled = RepairOperation::<IntData, IntProblem, IntRepair, Task>::new();
     cancelled.transition(Load(Task));
+    cancelled.transition(Settle(Ok(IntData(7))));
+    assert_eq!(cancelled.phase(), RepairPhase::Loading);
     cancelled.transition(Cancel);
-    cancelled.transition(Complete(Ok(IntData(4))));
+    cancelled.transition(Complete(Ok(IntData(8))));
     assert_eq!(cancelled.phase(), RepairPhase::Idle);
 
-    cancelled.transition(Settle(Ok(IntData(5))));
+    cancelled.transition(Settle(Ok(IntData(9))));
     assert_eq!(cancelled.phase(), RepairPhase::Ready);
-    assert_eq!(cancelled.data(), Some(&IntData(5)));
+    assert_eq!(cancelled.data(), Some(&IntData(9)));
 }
 
 fn runtime_ready(data: IntData) -> RepairOperation<IntData, IntProblem, IntRepair, Task> {

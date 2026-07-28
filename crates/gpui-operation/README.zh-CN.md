@@ -14,24 +14,29 @@
 数据库查询或远程 catalog 通常使用 `refresh`。损坏的配置文件或无法打开的数据库通常使用
 `repair`。
 
-## 同步初始化
+## 同步工作
 
-如果调用者已经同步完成首次工作，直接用 `Settle` 发送结果，不需要构造 task：
+如果调用者已经同步完成工作，直接用 `Settle` 发送结果，不需要构造 task：
 
 ```rust
 use std::io;
 
-use gpui_operation::{Settle, Transition, refresh::Operation};
+use gpui_operation::{Settle, Transition, refresh::{Operation, Phase}};
 
 struct Task;
 
 let mut config = Operation::<String, io::Error, Task>::new();
 config.transition(Settle(Ok("ready".to_owned())));
 assert_eq!(config.data().map(String::as_str), Some("ready"));
+
+config.transition(Settle(Err(io::Error::other("write failed"))));
+assert_eq!(config.phase(), Phase::Degraded);
+assert_eq!(config.data().map(String::as_str), Some("ready"));
 ```
 
-`Settle` 只在 `Idle` 生效。`Complete` 仍专用于运行中的 task，因此取消后迟到的
-`Complete` 不能把 idle operation 结算为新状态。
+`Settle` 在 `Idle` 和 `Ready` 生效。从 `Ready` 结算成功会替换当前数据，失败则保留数据
+并进入 `Degraded`；其他状态会忽略该消息。`Complete` 仍专用于运行中的 task，因此取消后
+迟到的 `Complete` 不能把 idle operation 结算为新状态。
 
 ## 只刷新 Operation
 

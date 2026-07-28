@@ -161,7 +161,7 @@ impl AgentRuntime {
             AgentRuntimeEvent::ConversationTimelineChanged {
                 conversation_id: agent_run.conversation_id.clone(),
                 changes: vec![jaco_core::ConversationChange::RunStatusChanged {
-                    run: agent_run.clone(),
+                    run: Box::new(agent_run.clone()),
                 }],
             },
         );
@@ -809,11 +809,11 @@ impl AgentRuntime {
                 conversation: Box::new(commit.conversation.clone()),
                 changes: {
                     let mut changes = vec![jaco_core::ConversationChange::RunStatusChanged {
-                        run: commit.value.run.clone(),
+                        run: Box::new(commit.value.run.clone()),
                     }];
                     if commit.value.appended_final_entry {
                         changes.push(jaco_core::ConversationChange::EntryAppended {
-                            entry: commit.value.final_entry.clone(),
+                            entry: Box::new(commit.value.final_entry.clone()),
                         });
                     }
                     changes

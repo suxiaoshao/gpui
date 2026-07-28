@@ -93,11 +93,14 @@ state; they do not require Data, Problem, Repair, or Task to implement
 `Clone`, `PartialEq`, `Send`, or `Sync`. Problem must implement
 `std::error::Error`.
 
-`Settle(result)` records synchronous initial work directly from `Idle`, without
-creating a running state or storing a Task. `Complete(result)` is deliberately
-different: it is accepted only by a running state. Consequently, a late
-`Complete` delivered after cancellation is ignored while the operation remains
-`Idle`; only a deliberate `Settle` can synchronously initialize it.
+`Settle(result)` records synchronous work directly from `Idle` or `Ready`,
+without creating a running state or storing a Task. From `Idle`, it produces
+`Ready` or `Unavailable`. From `Ready`, success replaces the current Data and
+failure preserves it in `Degraded`. It is ignored in every other state.
+`Complete(result)` is deliberately different: it is accepted only by a running
+state. Consequently, a late `Complete` delivered after cancellation is ignored
+while the operation remains `Idle`; only a deliberate `Settle` can
+synchronously initialize it.
 
 Named states preserve the same distinction:
 
@@ -415,8 +418,8 @@ The library treats Task as an owned generic value. It does not poll, abort, or
 inspect it. Entering a running state moves Task into that state; completing or
 cancelling consumes the running state and drops Task.
 
-Synchronous initial work uses `Idle + Settle(result)` and does not enter this
-Task lifecycle.
+Synchronous work uses `Settle(result)` from `Idle` or `Ready` and does not
+enter this Task lifecycle.
 
 For GPUI `Task`, dropping the handle cancels the task. Therefore the intended
 UI contract is:
@@ -497,6 +500,7 @@ refresh-only runtime routes explicit messages as follows:
 
 ```text
 Idle + Settle<Result<Data, Problem>> -> Ready / Unavailable
+Ready + Settle<Result<Data, Problem>> -> Ready / Degraded
 Idle + Load<Task> -> Loading
 Ready + Refresh<Task> -> Refreshing
 Unavailable + Retry<Task> -> Retrying
@@ -505,8 +509,8 @@ running + Complete<Result<Data, Problem>> -> settled
 running + Cancel -> exact previous settled state
 ```
 
-The repair-capable runtime also accepts `Settle` from `Idle`, uses `Load` from
-`Idle`, `Refresh` from `Ready`,
+The repair-capable runtime also accepts `Settle` from `Idle` and `Ready`, uses
+`Load` from `Idle`, `Refresh` from `Ready`,
 and `Repair { repair, task }` from `Unavailable` or `Degraded`. `Complete`
 and `Cancel` apply to all of its running variants.
 

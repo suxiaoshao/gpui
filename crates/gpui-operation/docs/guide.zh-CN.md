@@ -87,9 +87,11 @@ pub struct Cancel;
 统一实现 `Clone`、`PartialEq`、`Send` 或 `Sync`，但 Problem 必须实现
 `std::error::Error`。
 
-`Settle(result)` 用于把同步完成的首次工作从 `Idle` 直接记录为稳定状态，不创建运行状态，
-也不保存 Task。`Complete(result)` 则只在运行状态生效。这样，取消后迟到的 `Complete`
-会被忽略，operation 仍保持 `Idle`；只有调用者明确发送 `Settle` 才能同步初始化。
+`Settle(result)` 用于把同步完成的工作从 `Idle` 或 `Ready` 直接记录为稳定状态，不创建
+运行状态，也不保存 Task。从 `Idle` 发送时会得到 `Ready` 或 `Unavailable`；从 `Ready`
+发送时，成功替换当前 Data，失败保留 Data 并进入 `Degraded`。其他状态会忽略该消息。
+`Complete(result)` 则只在运行状态生效。这样，取消后迟到的 `Complete` 会被忽略，
+operation 仍保持 `Idle`；只有调用者明确发送 `Settle` 才能同步初始化。
 
 具名状态也保留同样的区分：
 
@@ -395,7 +397,7 @@ let settled = match repairing.transition(Complete(result)) {
 库把 Task 当作 owned generic value，不 poll、不 abort、也不检查它。进入运行状态会把 Task 移入
 该状态；完成或取消会消费运行状态并 drop Task。
 
-同步首次工作使用 `Idle + Settle(result)`，不会进入这套 Task 生命周期。
+同步工作从 `Idle` 或 `Ready` 使用 `Settle(result)`，不会进入这套 Task 生命周期。
 
 对于 GPUI `Task`，drop handle 会取消 task。因此预期的 UI 契约是：
 
@@ -468,6 +470,7 @@ Degraded / RepairingDegraded
 
 ```text
 Idle + Settle<Result<Data, Problem>> -> Ready / Unavailable
+Ready + Settle<Result<Data, Problem>> -> Ready / Degraded
 Idle + Load<Task> -> Loading
 Ready + Refresh<Task> -> Refreshing
 Unavailable + Retry<Task> -> Retrying
@@ -476,8 +479,8 @@ Degraded + Refresh<Task> -> RefreshingDegraded
 运行状态 + Cancel -> 准确的上一个稳定状态
 ```
 
-可修复 runtime 也在 `Idle` 接收 `Settle`，并在 `Idle` 接收 `Load`、在 `Ready` 接收
-`Refresh`，在 `Unavailable` 或
+可修复 runtime 也在 `Idle` 和 `Ready` 接收 `Settle`，并在 `Idle` 接收 `Load`、
+在 `Ready` 接收 `Refresh`，在 `Unavailable` 或
 `Degraded` 接收 `Repair { repair, task }`。`Complete` 与 `Cancel` 适用于它的所有运行
 variant。
 

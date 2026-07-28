@@ -12,9 +12,7 @@ use tokio::sync::oneshot;
 use tracing::{Level, event};
 
 use crate::{
-    components::chat::run_settings::reasoning_selection_is_valid,
-    database::{self, session::CatalogMutation},
-    features::conversation,
+    components::chat::run_settings::reasoning_selection_is_valid, database, features::conversation,
     state,
 };
 
@@ -457,7 +455,7 @@ where
     let (sender, receiver) = oneshot::channel();
     let task_binding = binding.clone();
     let driver = cx.spawn(async move |cx| {
-        let result = executor.mutate(CatalogMutation::Shortcut, command).await;
+        let result = executor.execute(command).await;
         if let Ok(value) = &result {
             cx.update(|cx| {
                 if database::ready_binding(cx).as_ref() == Some(&binding) {

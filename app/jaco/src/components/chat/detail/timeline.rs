@@ -85,13 +85,6 @@ impl ConversationTimelineRows {
                     {
                         *current = entry.clone();
                     }
-                    if agent
-                        .final_item
-                        .as_ref()
-                        .is_some_and(|current| current.id == entry.id)
-                    {
-                        agent.final_item = Some(entry.clone());
-                    }
                     if let Some(text_state) = text_state {
                         agent.text_states.insert(entry.id.clone(), text_state);
                     } else {
@@ -235,7 +228,6 @@ fn agent_turn_row(
     text_states: &HashMap<ConversationEntryId, Entity<TextViewState>>,
     callbacks: TimelineCallbacks,
 ) -> AgentTurnRow {
-    let final_item = final_item_for_run(run.as_ref(), &items);
     let default_expanded = !run.as_ref().is_some_and(format::is_terminal_run);
     let expanded = run_id
         .as_ref()
@@ -246,26 +238,12 @@ fn agent_turn_row(
         run_id,
         run,
         items,
-        final_item,
         text_states: text_states.clone(),
         expanded,
         on_toggle: callbacks.on_toggle,
         on_copy: callbacks.on_copy,
         on_approval_decision: callbacks.on_approval_decision,
     }
-}
-
-fn final_item_for_run(
-    run: Option<&AgentRun>,
-    items: &[ConversationEntry],
-) -> Option<ConversationEntry> {
-    run.and_then(|run| run.output.as_ref().map(|output| &output.final_entry_id))
-        .and_then(|final_entry_id| {
-            items
-                .iter()
-                .find(|item| &item.id == final_entry_id)
-                .cloned()
-        })
 }
 
 #[allow(clippy::type_complexity)]
@@ -285,10 +263,11 @@ pub(super) fn callbacks(
 mod tests {
     use super::*;
     use jaco_core::{
-        AgentEngineKind, AgentRunInput, AgentRunStatus, AgentRunTriggerKind, AgentRuntimeSnapshot,
-        ContentPart, ConversationEntryPayload, ConversationEntryStatus, ProviderSettingsPayload,
-        RunErrorPayload, RunSettingsSnapshot, ToolApprovalMode, ToolApprovalPolicy,
-        ToolNameStrategy, ToolPolicySnapshot, TranscriptRole, conservative_model_capabilities,
+        AgentEngineKind, AgentRunInput, AgentRunOutput, AgentRunStatus, AgentRunTriggerKind,
+        AgentRuntimeSnapshot, AgentStoppedReason, ContentPart, ConversationEntryPayload,
+        ConversationEntryStatus, ProviderSettingsPayload, RunErrorPayload, RunSettingsSnapshot,
+        ToolApprovalMode, ToolApprovalPolicy, ToolNameStrategy, ToolPolicySnapshot, TranscriptRole,
+        conservative_model_capabilities,
     };
     use time::OffsetDateTime;
 
@@ -454,6 +433,47 @@ mod tests {
         };
         assert_eq!(first.item, updated);
         assert_eq!(second_row.item, second);
+    }
+
+    #[test]
+    fn final_item_is_derived_after_run_completion() {
+        let run_id = AgentRunId::from("run-1");
+        let final_entry = entry(
+            "entry-final",
+            1,
+            Some(run_id.clone()),
+            ConversationEntryPayload::Message {
+                role: TranscriptRole::Assistant,
+                content: vec![ContentPart::Text {
+                    text: "final response".to_string(),
+                }],
+            },
+        );
+        let callbacks = callbacks(|_, _, _| {}, |_, _, _| true, |_, _, _, _| {});
+        let row = agent_turn_row(
+            Some(run_id.clone()),
+            Some(active_run(run_id.clone())),
+            vec![final_entry.clone()],
+            &HashMap::new(),
+            &HashMap::new(),
+            callbacks,
+        );
+        assert!(row.final_item().is_none());
+        let mut rows = ConversationTimelineRows::new(vec![TimelineRow::Agent(Box::new(row))]);
+        let mut completed = active_run(run_id);
+        completed.status = AgentRunStatus::Completed;
+        completed.output = Some(AgentRunOutput {
+            final_entry_id: final_entry.id.clone(),
+            stopped_reason: AgentStoppedReason::Completed,
+        });
+        completed.completed_at = Some(OffsetDateTime::UNIX_EPOCH);
+
+        rows.update_run(completed);
+
+        let TimelineRow::Agent(row) = &rows.rows[0] else {
+            panic!("run row must remain an agent row");
+        };
+        assert_eq!(row.final_item(), Some(&final_entry));
     }
 
     fn active_run(id: AgentRunId) -> AgentRun {

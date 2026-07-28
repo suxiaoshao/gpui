@@ -237,11 +237,11 @@ impl PersistenceContext {
             )
             .await?;
         let mut changes = vec![jaco_core::ConversationChange::RunStatusChanged {
-            run: commit.value.run.clone(),
+            run: Box::new(commit.value.run.clone()),
         }];
         if commit.value.appended_final_entry {
             changes.push(jaco_core::ConversationChange::EntryAppended {
-                entry: commit.value.final_entry.clone(),
+                entry: Box::new(commit.value.final_entry.clone()),
             });
         }
         self.emit_conversation_commit_with_changes(&commit, changes);

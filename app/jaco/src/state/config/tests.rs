@@ -57,6 +57,22 @@ fn missing_config_is_atomically_created_as_ready() {
 }
 
 #[test]
+fn locked_initial_config_retains_a_retryable_pending_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let lock = persistence::FileLock::acquire(&path.with_extension("toml.lock")).unwrap();
+
+    let ConfigProblem::Locked { pending, .. } = load_for_operation(&path).unwrap_err() else {
+        panic!("expected locked config");
+    };
+    drop(lock);
+
+    let data = write_pending_at(&path, None, pending).unwrap();
+    assert_eq!(data.value, JacoConfig::default());
+    assert_eq!(data.source_bytes, fs::read(path).unwrap());
+}
+
+#[test]
 fn initial_operation_is_settled_before_installation() {
     let dir = tempfile::tempdir().unwrap();
     let valid_path = dir.path().join("valid.toml");
@@ -179,4 +195,90 @@ fn chat_preferences_commit_synchronously_without_leaving_ready(cx: &mut TestAppC
             .map(|model| (model.provider_id.as_str(), model.model_id.as_str())),
         Some(("provider-1", "gpt-5"))
     );
+}
+
+#[gpui::test]
+fn external_change_during_synchronous_commit_degrades_with_old_and_pending_data(
+    cx: &mut TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let initial = JacoConfig::default();
+    fs::write(&path, toml::to_string_pretty(&initial).unwrap()).unwrap();
+    let external = b"# changed outside Jaco\n".to_vec();
+
+    cx.update(|cx| {
+        install_for_test(cx, path.clone(), initial).unwrap();
+        fs::write(&path, &external).unwrap();
+
+        let result = update_chat_form_config(cx, |config| {
+            config.model = Some(ChatFormModelConfig {
+                provider_id: "provider-1".to_string(),
+                model_id: "gpt-5".to_string(),
+            });
+        });
+
+        assert!(result.is_err());
+        store(cx).read(cx, |operation| {
+            let ConfigOperation::Degraded(degraded) = operation else {
+                panic!("expected degraded config");
+            };
+            assert_eq!(degraded.data().chat_form.model, None);
+            let ConfigProblem::ExternalChange { pending, .. } = degraded.problem() else {
+                panic!("expected external-change problem");
+            };
+            assert_eq!(
+                pending
+                    .data
+                    .chat_form
+                    .model
+                    .as_ref()
+                    .map(|model| (model.provider_id.as_str(), model.model_id.as_str())),
+                Some(("provider-1", "gpt-5"))
+            );
+        });
+    });
+
+    assert_eq!(fs::read(path).unwrap(), external);
+}
+
+#[gpui::test]
+fn locked_synchronous_commit_degrades_with_old_and_pending_data(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let initial = JacoConfig::default();
+    fs::write(&path, toml::to_string_pretty(&initial).unwrap()).unwrap();
+
+    cx.update(|cx| {
+        install_for_test(cx, path.clone(), initial).unwrap();
+        let _lock = persistence::FileLock::acquire(&path.with_extension("toml.lock")).unwrap();
+
+        let result = update_chat_form_config(cx, |config| {
+            config.model = Some(ChatFormModelConfig {
+                provider_id: "provider-1".to_string(),
+                model_id: "gpt-5".to_string(),
+            });
+        });
+
+        assert!(result.is_err());
+        store(cx).read(cx, |operation| {
+            let ConfigOperation::Degraded(degraded) = operation else {
+                panic!("expected degraded config");
+            };
+            assert_eq!(degraded.data().chat_form.model, None);
+            let ConfigProblem::Locked { pending, .. } = degraded.problem() else {
+                panic!("expected locked problem");
+            };
+            assert!(degraded.problem().supports(ConfigRepair::RetryWrite));
+            assert_eq!(
+                pending
+                    .data
+                    .chat_form
+                    .model
+                    .as_ref()
+                    .map(|model| (model.provider_id.as_str(), model.model_id.as_str())),
+                Some(("provider-1", "gpt-5"))
+            );
+        });
+    });
 }

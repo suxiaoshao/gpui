@@ -214,7 +214,7 @@ mod tests {
             model.update(cx, |model, cx| {
                 model.apply_changes(
                     ConversationChanges(vec![jaco_core::ConversationChange::EntryUpdated {
-                        entry: updated.clone(),
+                        entry: Box::new(updated.clone()),
                         kind: EntryChangeKind::TextAppended,
                     }]),
                     cx,
@@ -269,7 +269,7 @@ mod tests {
                 ));
                 model.apply_changes(
                     ConversationChanges(vec![jaco_core::ConversationChange::EntryUpdated {
-                        entry: updated.clone(),
+                        entry: Box::new(updated.clone()),
                         kind: EntryChangeKind::TextAppended,
                     }]),
                     cx,
@@ -308,7 +308,7 @@ mod tests {
                 model.refresh(cx);
                 model.apply_changes(
                     ConversationChanges(vec![jaco_core::ConversationChange::EntryUpdated {
-                        entry: entry("committed while loading"),
+                        entry: Box::new(entry("committed while loading")),
                         kind: EntryChangeKind::Replaced,
                     }]),
                     cx,
@@ -348,7 +348,7 @@ mod tests {
 
                 model.apply_changes(
                     ConversationChanges(vec![jaco_core::ConversationChange::EntryUpdated {
-                        entry: entry("committed while degraded"),
+                        entry: Box::new(entry("committed while degraded")),
                         kind: EntryChangeKind::Replaced,
                     }]),
                     cx,

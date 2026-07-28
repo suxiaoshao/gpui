@@ -120,20 +120,6 @@ impl DatabaseSession {
 struct DatabaseActivity {
     accepting: AtomicBool,
     active_jobs: AtomicUsize,
-    provider_mutation: AtomicBool,
-    project_mutation: AtomicBool,
-    prompt_mutation: AtomicBool,
-    shortcut_mutation: AtomicBool,
-    conversation_mutation: AtomicBool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CatalogMutation {
-    Provider,
-    Project,
-    Prompt,
-    Shortcut,
-    Conversation,
 }
 
 #[derive(Clone)]
@@ -149,11 +135,6 @@ impl SessionDatabaseExecutor {
             activity: Arc::new(DatabaseActivity {
                 accepting: AtomicBool::new(true),
                 active_jobs: AtomicUsize::new(0),
-                provider_mutation: AtomicBool::new(false),
-                project_mutation: AtomicBool::new(false),
-                prompt_mutation: AtomicBool::new(false),
-                shortcut_mutation: AtomicBool::new(false),
-                conversation_mutation: AtomicBool::new(false),
             }),
         }
     }
@@ -204,112 +185,12 @@ impl SessionDatabaseExecutor {
         }
     }
 
-    pub(crate) async fn mutate<R, F>(
-        &self,
-        resource: CatalogMutation,
-        command: F,
-    ) -> jaco_db::Result<R>
-    where
-        R: Send + 'static,
-        F: FnOnce(&FreshRepository) -> jaco_db::Result<R> + Send + 'static,
-    {
-        #[cfg(test)]
-        {
-            let _permit = DatabaseJobPermit::acquire(self.activity.clone())?;
-            let _mutation = CatalogMutationPermit::acquire(self.activity.clone(), resource)?;
-            command(&self.store.repository())
-        }
-        #[cfg(not(test))]
-        {
-            let store = self.store.clone();
-            let activity = self.activity.clone();
-            smol::unblock(move || {
-                let _permit = DatabaseJobPermit::acquire(activity.clone())?;
-                let _mutation = CatalogMutationPermit::acquire(activity, resource)?;
-                let repository = store.repository();
-                command(&repository)
-            })
-            .await
-        }
-    }
-
-    pub(crate) async fn mutate_two<R, F>(
-        &self,
-        first: CatalogMutation,
-        second: CatalogMutation,
-        command: F,
-    ) -> jaco_db::Result<R>
-    where
-        R: Send + 'static,
-        F: FnOnce(&FreshRepository) -> jaco_db::Result<R> + Send + 'static,
-    {
-        debug_assert_ne!(first, second);
-        #[cfg(test)]
-        {
-            let _permit = DatabaseJobPermit::acquire(self.activity.clone())?;
-            let _first = CatalogMutationPermit::acquire(self.activity.clone(), first)?;
-            let _second = CatalogMutationPermit::acquire(self.activity.clone(), second)?;
-            command(&self.store.repository())
-        }
-        #[cfg(not(test))]
-        {
-            let store = self.store.clone();
-            let activity = self.activity.clone();
-            smol::unblock(move || {
-                let _permit = DatabaseJobPermit::acquire(activity.clone())?;
-                let _first = CatalogMutationPermit::acquire(activity.clone(), first)?;
-                let _second = CatalogMutationPermit::acquire(activity, second)?;
-                let repository = store.repository();
-                command(&repository)
-            })
-            .await
-        }
-    }
-
     pub(crate) fn begin_draining(&self) {
         self.activity.accepting.store(false, Ordering::Release);
     }
 
     pub(crate) fn active_jobs(&self) -> usize {
         self.activity.active_jobs.load(Ordering::Acquire)
-    }
-}
-
-struct CatalogMutationPermit {
-    activity: Arc<DatabaseActivity>,
-    resource: CatalogMutation,
-}
-
-impl CatalogMutationPermit {
-    fn acquire(
-        activity: Arc<DatabaseActivity>,
-        resource: CatalogMutation,
-    ) -> jaco_db::Result<Self> {
-        let flag = match resource {
-            CatalogMutation::Provider => &activity.provider_mutation,
-            CatalogMutation::Project => &activity.project_mutation,
-            CatalogMutation::Prompt => &activity.prompt_mutation,
-            CatalogMutation::Shortcut => &activity.shortcut_mutation,
-            CatalogMutation::Conversation => &activity.conversation_mutation,
-        };
-        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| {
-                jaco_db::DbError::Invariant(format!("{resource:?} mutation is already in progress"))
-            })?;
-        Ok(Self { activity, resource })
-    }
-}
-
-impl Drop for CatalogMutationPermit {
-    fn drop(&mut self) {
-        let flag = match self.resource {
-            CatalogMutation::Provider => &self.activity.provider_mutation,
-            CatalogMutation::Project => &self.activity.project_mutation,
-            CatalogMutation::Prompt => &self.activity.prompt_mutation,
-            CatalogMutation::Shortcut => &self.activity.shortcut_mutation,
-            CatalogMutation::Conversation => &self.activity.conversation_mutation,
-        };
-        flag.store(false, Ordering::Release);
     }
 }
 
@@ -533,5 +414,50 @@ impl fmt::Debug for DatabaseSession {
             .field("active", &self.active.is_some())
             .field("shutting_down", &self.shutting_down)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::mpsc, thread, time::Duration};
+
+    use super::*;
+
+    #[test]
+    fn executor_allows_overlapping_database_jobs() {
+        let directory = tempfile::tempdir().expect("create database directory");
+        let store = FreshStore::open_or_create_initial(directory.path().join("jaco.sqlite3"))
+            .expect("open database");
+        let executor = SessionDatabaseExecutor::for_test(store);
+        let first_executor = executor.clone();
+        let second_executor = executor;
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let first_entered = entered_tx.clone();
+        let first = thread::spawn(move || {
+            smol::block_on(first_executor.execute(move |_| {
+                first_entered.send(()).expect("report first job");
+                release_rx.recv().expect("release first job");
+                Ok(())
+            }))
+        });
+        entered_rx.recv().expect("first job entered executor");
+
+        let second = thread::spawn(move || {
+            smol::block_on(second_executor.execute(move |_| {
+                entered_tx.send(()).expect("report second job");
+                Ok(())
+            }))
+        });
+        let overlapped = entered_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+        release_tx.send(()).expect("release first job");
+
+        first.join().expect("join first job").expect("first job");
+        second.join().expect("join second job").expect("second job");
+        assert!(
+            overlapped,
+            "the executor must leave database concurrency to repository transactions"
+        );
     }
 }
