@@ -16,6 +16,11 @@ use tracing::{Level, event};
 use self::approval::ConversationApprovalBroker;
 use crate::{database, errors::JacoResult, state::providers::secrets::ProviderSecretStore};
 
+enum RuntimePublication {
+    Event(jaco_agent::AgentRuntimeEvent),
+    Drain(Sender<()>),
+}
+
 pub(crate) struct ConversationRuntimeStore {
     active_runs: HashMap<ConversationId, ActiveRun>,
     last_errors: HashMap<ConversationId, String>,
@@ -218,11 +223,19 @@ impl ConversationRuntimeStore {
                 persistence,
                 provider,
                 request,
-                tx,
+                tx.clone(),
                 runtime_approval_broker,
                 cx,
             )
             .await;
+            if let Err(error) = drain_runtime_publications(&tx).await {
+                event!(
+                    Level::ERROR,
+                    %error,
+                    conversation_id = %run_conversation_id,
+                    "drain conversation runtime publications failed"
+                );
+            }
             finish_run_from_task(store, run_conversation_id, run_key, result, cx);
         });
 
@@ -372,17 +385,25 @@ impl ConversationRuntimeStore {
 
     fn spawn_event_listener(
         &self,
-        rx: Receiver<jaco_agent::AgentRuntimeEvent>,
+        rx: Receiver<RuntimePublication>,
         cx: &mut Context<Self>,
     ) -> Task<()> {
         cx.spawn(async move |this, cx| {
-            while let Ok(runtime_event) = rx.recv().await {
-                let Some(this) = this.upgrade() else {
-                    break;
-                };
-                this.update(cx, |store, cx| {
-                    store.handle_runtime_event(runtime_event, cx);
-                });
+            while let Ok(publication) = rx.recv().await {
+                match publication {
+                    RuntimePublication::Event(runtime_event) => {
+                        let Some(this) = this.upgrade() else {
+                            break;
+                        };
+                        this.update(cx, |store, cx| {
+                            store.handle_runtime_event(runtime_event, cx);
+                        });
+                    }
+                    RuntimePublication::Drain(acknowledgement) => {
+                        let _ = acknowledgement.send(()).await;
+                        break;
+                    }
+                }
             }
         })
     }
@@ -528,6 +549,16 @@ fn finish_stop_from_task(
     }
 }
 
+async fn drain_runtime_publications(tx: &Sender<RuntimePublication>) -> Result<(), String> {
+    let (acknowledgement_tx, acknowledgement_rx) = smol::channel::bounded(1);
+    tx.send(RuntimePublication::Drain(acknowledgement_tx))
+        .await
+        .map_err(|_| "conversation runtime publication listener is unavailable".to_string())?;
+    acknowledgement_rx.recv().await.map_err(|_| {
+        "conversation runtime publication listener did not acknowledge drain".to_string()
+    })
+}
+
 pub(crate) fn create(cx: &mut App) -> JacoResult<Entity<ConversationRuntimeStore>> {
     let store = cx.new(|_| ConversationRuntimeStore::new());
     request_recovery(store.clone(), cx)?;
@@ -602,12 +633,12 @@ async fn run_agent_with_saved_provider(
     persistence: Arc<dyn AgentPersistence>,
     provider: ProviderRecord,
     request: AgentRunRequest,
-    tx: Sender<jaco_agent::AgentRuntimeEvent>,
+    tx: Sender<RuntimePublication>,
     approval_broker: Arc<ConversationApprovalBroker>,
     cx: &mut AsyncApp,
 ) -> Result<AgentRunHandle, String> {
     let observer = AgentRuntimeObserver::new(move |event| {
-        if let Err(err) = tx.send_blocking(event) {
+        if let Err(err) = tx.send_blocking(RuntimePublication::Event(event)) {
             event!(Level::ERROR, error = ?err, "send conversation runtime event failed");
         }
     });
@@ -677,7 +708,10 @@ mod tests {
         FreshRepository, NewAgentRun, NewConversation, NewConversationEntry, NewProject,
         NewToolInvocation, NewToolInvocationApproval,
     };
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
     use tempfile::{TempDir, tempdir};
 
     struct RuntimeEventRecorder {
@@ -728,6 +762,59 @@ mod tests {
             agent_run_id: Some(agent_run_id),
             ..active_run(key)
         }
+    }
+
+    #[gpui::test]
+    fn publication_drain_acknowledges_after_queued_events_are_applied(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
+        let conversation_id = "conversation-1".to_string();
+        let agent_run_id = "run-final".to_string();
+        let event_applied = Arc::new(AtomicBool::new(false));
+
+        let driver = cx.update(|cx| {
+            store.update(cx, |runtime, cx| {
+                let (tx, rx) = smol::channel::unbounded();
+                let event_task = runtime.spawn_event_listener(rx, cx);
+                runtime.active_runs.insert(
+                    conversation_id.clone(),
+                    ActiveRun {
+                        agent_run_id: None,
+                        _event_task: event_task,
+                        ..active_run(ActiveRunKey(0))
+                    },
+                );
+                tx.send_blocking(RuntimePublication::Event(
+                    jaco_agent::AgentRuntimeEvent::AgentRunStarted {
+                        agent_run_id: agent_run_id.clone(),
+                        conversation_id: conversation_id.clone(),
+                    },
+                ))
+                .expect("queue runtime event");
+
+                let store = store.downgrade();
+                let event_applied = event_applied.clone();
+                let conversation_id = conversation_id.clone();
+                let agent_run_id = agent_run_id.clone();
+                cx.spawn(async move |_, cx| {
+                    drain_runtime_publications(&tx)
+                        .await
+                        .expect("drain runtime publications");
+                    let applied = store
+                        .update(cx, |runtime, _| {
+                            runtime.active_agent_run_id(&conversation_id).as_ref()
+                                == Some(&agent_run_id)
+                        })
+                        .unwrap_or(false);
+                    event_applied.store(applied, Ordering::SeqCst);
+                })
+            })
+        });
+
+        cx.run_until_parked();
+        assert!(event_applied.load(Ordering::SeqCst));
+        drop(driver);
     }
 
     #[gpui::test]
