@@ -31,7 +31,7 @@ impl std::error::Error for ConversationCatalogProblem {
 }
 
 pub(crate) enum ConversationCatalogMessage {
-    Upsert(ConversationSummary),
+    Upsert(Box<ConversationSummary>),
     Remove(ConversationId),
 }
 
@@ -41,6 +41,7 @@ impl Transition<ConversationCatalogMessage> for &mut Vec<ConversationSummary> {
     fn transition(self, message: ConversationCatalogMessage) {
         match message {
             ConversationCatalogMessage::Upsert(summary) => {
+                let summary = *summary;
                 if summary.status != ConversationStatus::Active {
                     self.retain(|current| current.id != summary.id);
                 } else if let Some(current) =
@@ -186,7 +187,10 @@ impl ConversationRegistry {
     pub(crate) fn publish_summary(&mut self, summary: ConversationSummary, cx: &mut Context<Self>) {
         let id = summary.id.clone();
         self.catalog.update(cx, |catalog, cx| {
-            catalog.transition(ConversationCatalogMessage::Upsert(summary.clone()), cx);
+            catalog.transition(
+                ConversationCatalogMessage::Upsert(Box::new(summary.clone())),
+                cx,
+            );
         });
         if let Some(model) = self.conversations.get(&id).and_then(WeakEntity::upgrade) {
             model.update(cx, |model, cx| {
@@ -220,7 +224,10 @@ impl ConversationRegistry {
     ) {
         if let Some(summary) = summary {
             self.catalog.update(cx, |catalog, cx| {
-                catalog.transition(ConversationCatalogMessage::Upsert(summary.clone()), cx);
+                catalog.transition(
+                    ConversationCatalogMessage::Upsert(Box::new(summary.clone())),
+                    cx,
+                );
             });
             changes.insert(
                 0,
@@ -369,7 +376,10 @@ mod tests {
 
             catalog.update(cx, |catalog, cx| {
                 catalog.operation.transition(Refresh(Task::ready(())));
-                catalog.transition(ConversationCatalogMessage::Upsert(summary("After")), cx);
+                catalog.transition(
+                    ConversationCatalogMessage::Upsert(Box::new(summary("After"))),
+                    cx,
+                );
 
                 let ConversationCatalogOperation::Ready(ready) = &catalog.operation else {
                     panic!("committed summary must restore an exact Ready catalog");

@@ -10,7 +10,7 @@ use crate::{
     components::resource::{
         CriticalResourceAction, CriticalResourceProblem, CriticalResourcesView,
     },
-    database::{self, DatabaseResource},
+    database::{self, DatabasePhase, DatabaseResource},
     features::home::HomeView,
     foundation::I18n,
     state::{self, config::ConfigOperation},
@@ -213,34 +213,28 @@ impl JacoRoot {
                     .into_any_element()
             }
             Some((phase, running, problem, can_create_fresh)) => match phase {
-                gpui_operation::repair::Phase::Idle | gpui_operation::repair::Phase::Loading => {
-                    CriticalResourcesView::loading(
-                        cx.global::<I18n>().t("critical-database-loading"),
-                    )
-                    .into_any_element()
-                }
-                gpui_operation::repair::Phase::Ready => self
+                DatabasePhase::Idle | DatabasePhase::Loading => CriticalResourcesView::loading(
+                    cx.global::<I18n>().t("critical-database-loading"),
+                )
+                .into_any_element(),
+                DatabasePhase::Ready => self
                     .home
                     .as_ref()
                     .cloned()
                     .map(IntoElement::into_any_element)
                     .unwrap_or_else(|| self.render_session_pending(cx)),
-                gpui_operation::repair::Phase::Refreshing if self.home.is_some() => self
-                    .database_problem(
-                        cx.global::<I18n>().t("critical-read-only-description"),
-                        running,
-                        false,
-                        true,
-                        cx,
-                    ),
-                gpui_operation::repair::Phase::Refreshing => CriticalResourcesView::loading(
+                DatabasePhase::Refreshing if self.home.is_some() => self.database_problem(
+                    cx.global::<I18n>().t("critical-read-only-description"),
+                    running,
+                    false,
+                    true,
+                    cx,
+                ),
+                DatabasePhase::Refreshing => CriticalResourcesView::loading(
                     cx.global::<I18n>().t("critical-database-loading"),
                 )
                 .into_any_element(),
-                gpui_operation::repair::Phase::Unavailable
-                | gpui_operation::repair::Phase::RepairingUnavailable
-                | gpui_operation::repair::Phase::Degraded
-                | gpui_operation::repair::Phase::RepairingDegraded
+                DatabasePhase::Retiring | DatabasePhase::Unavailable | DatabasePhase::Repairing
                     if self.home.is_some() =>
                 {
                     self.database_problem(
@@ -251,16 +245,15 @@ impl JacoRoot {
                         cx,
                     )
                 }
-                gpui_operation::repair::Phase::Unavailable
-                | gpui_operation::repair::Phase::RepairingUnavailable
-                | gpui_operation::repair::Phase::Degraded
-                | gpui_operation::repair::Phase::RepairingDegraded => self.database_problem(
-                    problem.unwrap_or_default(),
-                    running,
-                    can_create_fresh,
-                    false,
-                    cx,
-                ),
+                DatabasePhase::Retiring | DatabasePhase::Unavailable | DatabasePhase::Repairing => {
+                    self.database_problem(
+                        problem.unwrap_or_default(),
+                        running,
+                        can_create_fresh,
+                        false,
+                        cx,
+                    )
+                }
             },
         }
     }
@@ -368,10 +361,8 @@ impl Render for JacoRoot {
         if !config_has_data {
             return self.render_config(cx);
         }
-        if !config_exact_ready && self.home.is_some() {
-            return self
-                .config_problem_layer(cx)
-                .overlay(self.home.as_ref().expect("checked home").clone(), cx);
+        if !config_exact_ready && let Some(home) = self.home.as_ref() {
+            return self.config_problem_layer(cx).overlay(home.clone(), cx);
         }
         self.render_database(cx)
     }

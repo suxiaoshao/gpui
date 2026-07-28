@@ -315,6 +315,16 @@ pub(super) fn open_prompt_preview_dialog(prompt: PromptRecord, window: &mut Wind
     window.open_dialog(cx, move |dialog, _window, cx| {
         let mutable = prompt_resource_is_ready(cx);
         let read_only = cx.global::<I18n>().t("resource-picker-read-only");
+        let edit_tooltip = if mutable {
+            edit_label.clone()
+        } else {
+            read_only.clone()
+        };
+        let delete_tooltip = if mutable {
+            delete_label.clone()
+        } else {
+            read_only
+        };
         dialog
             .title(title.clone())
             .w(px(680.))
@@ -327,11 +337,7 @@ pub(super) fn open_prompt_preview_dialog(prompt: PromptRecord, window: &mut Wind
                                 .icon(IconName::Pencil)
                                 .label(edit_label.clone())
                                 .disabled(!mutable)
-                                .tooltip(
-                                    (!mutable)
-                                        .then_some(read_only.clone())
-                                        .unwrap_or_else(|| edit_label.clone()),
-                                )
+                                .tooltip(edit_tooltip)
                                 .on_click({
                                     let prompt = prompt.clone();
                                     move |_, window, cx| {
@@ -353,11 +359,7 @@ pub(super) fn open_prompt_preview_dialog(prompt: PromptRecord, window: &mut Wind
                                 .icon(IconName::Trash)
                                 .label(delete_label.clone())
                                 .disabled(!mutable)
-                                .tooltip(
-                                    (!mutable)
-                                        .then_some(read_only.clone())
-                                        .unwrap_or_else(|| delete_label.clone()),
-                                )
+                                .tooltip(delete_tooltip)
                                 .on_click({
                                     let prompt = prompt.clone();
                                     move |_, window, cx| {

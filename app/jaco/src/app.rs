@@ -201,9 +201,7 @@ pub(crate) fn quit_app(cx: &mut App) {
     }
 
     let session = database::store(cx).read(cx, |resource| match resource {
-        database::DatabaseResource::Bound { operation, .. } => {
-            operation.data().map(|data| data.session.clone())
-        }
+        database::DatabaseResource::Bound { operation, .. } => operation.session().cloned(),
         database::DatabaseResource::AwaitingConfig => None,
     });
     let runtime_task =

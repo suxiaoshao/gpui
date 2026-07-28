@@ -197,6 +197,11 @@ impl RenderOnce for ShortcutManagementEntry {
         let provider_icon = provider_visual_icon(provider_visual_for_kind(
             self.row.provider_kind.as_deref().unwrap_or_default(),
         ));
+        let toggle_tooltip = if self.mutation_enabled {
+            self.row.status_label.to_string()
+        } else {
+            read_only_label.clone()
+        };
 
         h_flex()
             .id(format!("shortcut-settings-row-{}", self.row.id))
@@ -285,11 +290,7 @@ impl RenderOnce for ShortcutManagementEntry {
                             .small()
                             .checked(self.row.enabled)
                             .disabled(!self.mutation_enabled)
-                            .tooltip(
-                                (!self.mutation_enabled)
-                                    .then_some(read_only_label.clone())
-                                    .unwrap_or_else(|| self.row.status_label.to_string()),
-                            )
+                            .tooltip(toggle_tooltip)
                             .on_click(move |checked, window, cx| {
                                 cx.stop_propagation();
                                 on_toggle(toggle_id.clone(), *checked, window, cx);

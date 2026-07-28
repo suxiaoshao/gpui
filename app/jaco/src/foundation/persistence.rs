@@ -158,12 +158,12 @@ fn persist_staged(staged: NamedTempFile, path: &Path, _parent: &Path) -> std::io
 }
 
 #[cfg(not(target_os = "windows"))]
-fn sync_directory(path: &Path) -> std::io::Result<()> {
+pub(crate) fn sync_directory(path: &Path) -> std::io::Result<()> {
     File::open(path)?.sync_all()
 }
 
 #[cfg(target_os = "windows")]
-fn sync_directory(_path: &Path) -> std::io::Result<()> {
+pub(crate) fn sync_directory(_path: &Path) -> std::io::Result<()> {
     // Windows cannot open a directory with std::fs::File. Atomic replacement
     // uses MOVEFILE_WRITE_THROUGH above, while newly created files have already
     // been flushed and synced through their own file handle.

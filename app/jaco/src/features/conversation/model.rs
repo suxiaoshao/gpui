@@ -229,7 +229,7 @@ mod tests {
         cx.update(|cx| {
             assert_eq!(
                 first.read(cx).events.lock().unwrap().as_slice(),
-                &[expected.clone()]
+                std::slice::from_ref(&expected)
             );
             assert_eq!(
                 second.read(cx).events.lock().unwrap().as_slice(),

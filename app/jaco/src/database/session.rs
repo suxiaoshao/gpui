@@ -41,10 +41,9 @@ pub(crate) struct DatabaseSession {
 }
 
 pub(crate) struct ActiveDatabaseSession {
-    pub(crate) store: FreshStore,
-    pub(crate) lease: DatabaseTargetLease,
     persistence: Arc<dyn AgentPersistence>,
     executor: SessionDatabaseExecutor,
+    _lease: DatabaseTargetLease,
 }
 
 impl ActiveDatabaseSession {
@@ -53,8 +52,7 @@ impl ActiveDatabaseSession {
         Self {
             persistence: Arc::new(SessionAgentPersistence::new(executor.clone())),
             executor,
-            store,
-            lease,
+            _lease: lease,
         }
     }
 
@@ -80,7 +78,7 @@ impl DatabaseSession {
         }
         self.active
             .as_ref()
-            .map(|active| active.store.repository())
+            .map(|active| active.executor.store.repository())
             .ok_or_else(|| JacoError::Config("database session is paused".to_string()))
     }
 

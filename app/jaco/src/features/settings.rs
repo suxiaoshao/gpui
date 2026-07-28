@@ -6,7 +6,7 @@ use crate::{
     components::resource::{
         CriticalResourceAction, CriticalResourceProblem, CriticalResourcesView,
     },
-    database::DatabaseResource,
+    database::{DatabasePhase, DatabaseResource},
     foundation::{I18n, assets::IconName},
     state,
 };
@@ -472,7 +472,7 @@ fn settings_config_resource_view(cx: &App) -> CriticalResourcesView {
             .unwrap_or_else(|| cx.global::<I18n>().t("critical-read-only-description"))
             .into(),
         running,
-        warning: operation_phase_has_data(phase),
+        warning: config_operation_phase_has_data(phase),
         actions,
     })
 }
@@ -492,13 +492,10 @@ fn settings_database_resource_view(cx: &App) -> CriticalResourcesView {
     let Some((phase, running, message, can_create_fresh)) = snapshot else {
         return CriticalResourcesView::loading(cx.global::<I18n>().t("critical-database-loading"));
     };
-    if matches!(
-        phase,
-        gpui_operation::repair::Phase::Idle | gpui_operation::repair::Phase::Loading
-    ) {
+    if matches!(phase, DatabasePhase::Idle | DatabasePhase::Loading) {
         return CriticalResourcesView::loading(cx.global::<I18n>().t("critical-database-loading"));
     }
-    if matches!(phase, gpui_operation::repair::Phase::Ready) {
+    if matches!(phase, DatabasePhase::Ready) {
         let failure = crate::app::session::store(cx).read(cx, |session| match session {
             crate::app::session::AppSessionState::Failed { binding, message } => {
                 Some((binding.target.database_path.clone(), message.clone()))
@@ -538,12 +535,12 @@ fn settings_database_resource_view(cx: &App) -> CriticalResourcesView {
             .unwrap_or_else(|| cx.global::<I18n>().t("critical-read-only-description"))
             .into(),
         running,
-        warning: operation_phase_has_data(phase),
+        warning: database_operation_phase_has_data(phase),
         actions,
     })
 }
 
-fn operation_phase_has_data(phase: gpui_operation::repair::Phase) -> bool {
+fn config_operation_phase_has_data(phase: gpui_operation::repair::Phase) -> bool {
     matches!(
         phase,
         gpui_operation::repair::Phase::Ready
@@ -551,6 +548,10 @@ fn operation_phase_has_data(phase: gpui_operation::repair::Phase) -> bool {
             | gpui_operation::repair::Phase::Degraded
             | gpui_operation::repair::Phase::RepairingDegraded
     )
+}
+
+fn database_operation_phase_has_data(phase: DatabasePhase) -> bool {
+    matches!(phase, DatabasePhase::Ready | DatabasePhase::Refreshing)
 }
 
 pub(crate) fn open_settings_window_to_provider(cx: &mut App) {
@@ -823,11 +824,14 @@ pub(super) fn push_settings_error(
 #[cfg(test)]
 mod tests {
     use super::{
-        SettingsPageKey, SettingsPageSpec, TOGGLE_SETTINGS_KEY, operation_phase_has_data,
-        settings_page_matches, settings_page_specs_for_i18n, settings_search_text,
-        settings_titlebar_options,
+        SettingsPageKey, SettingsPageSpec, TOGGLE_SETTINGS_KEY, config_operation_phase_has_data,
+        database_operation_phase_has_data, settings_page_matches, settings_page_specs_for_i18n,
+        settings_search_text, settings_titlebar_options,
     };
-    use crate::foundation::{I18n, assets::IconName};
+    use crate::{
+        database::DatabasePhase,
+        foundation::{I18n, assets::IconName},
+    };
     use gpui::Keystroke;
     use gpui_component::TitleBar;
     use gpui_component::kbd::Kbd;
@@ -986,17 +990,32 @@ mod tests {
     }
 
     #[test]
-    fn settings_only_treats_repair_phases_with_data_as_stale() {
+    fn settings_only_treats_config_repair_phases_with_data_as_stale() {
         use gpui_operation::repair::Phase;
 
-        assert!(operation_phase_has_data(Phase::Ready));
-        assert!(operation_phase_has_data(Phase::Refreshing));
-        assert!(operation_phase_has_data(Phase::Degraded));
-        assert!(operation_phase_has_data(Phase::RepairingDegraded));
-        assert!(!operation_phase_has_data(Phase::Idle));
-        assert!(!operation_phase_has_data(Phase::Loading));
-        assert!(!operation_phase_has_data(Phase::Unavailable));
-        assert!(!operation_phase_has_data(Phase::RepairingUnavailable));
+        assert!(config_operation_phase_has_data(Phase::Ready));
+        assert!(config_operation_phase_has_data(Phase::Refreshing));
+        assert!(config_operation_phase_has_data(Phase::Degraded));
+        assert!(config_operation_phase_has_data(Phase::RepairingDegraded));
+        assert!(!config_operation_phase_has_data(Phase::Idle));
+        assert!(!config_operation_phase_has_data(Phase::Loading));
+        assert!(!config_operation_phase_has_data(Phase::Unavailable));
+        assert!(!config_operation_phase_has_data(
+            Phase::RepairingUnavailable
+        ));
+    }
+
+    #[test]
+    fn settings_only_treats_database_phases_with_retained_data_as_stale() {
+        assert!(database_operation_phase_has_data(DatabasePhase::Ready));
+        assert!(database_operation_phase_has_data(DatabasePhase::Refreshing));
+        assert!(!database_operation_phase_has_data(DatabasePhase::Idle));
+        assert!(!database_operation_phase_has_data(DatabasePhase::Loading));
+        assert!(!database_operation_phase_has_data(DatabasePhase::Retiring));
+        assert!(!database_operation_phase_has_data(
+            DatabasePhase::Unavailable
+        ));
+        assert!(!database_operation_phase_has_data(DatabasePhase::Repairing));
     }
 
     #[test]

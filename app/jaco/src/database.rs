@@ -1,3 +1,4 @@
+pub(crate) mod operation;
 pub(crate) mod session;
 
 use std::{
@@ -8,8 +9,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use gpui::{App, AppContext, BorrowAppContext, Entity, Global, Subscription, Task};
-use gpui_operation::{Complete, Load, Refresh, Repair, Settle, Transition, repair};
+use gpui::{App, AppContext, BorrowAppContext, Entity, Global, Subscription};
+use gpui_operation::Transition;
 use gpui_store::{Select, Store};
 use jaco_agent::AgentPersistence;
 #[cfg(test)]
@@ -22,7 +23,11 @@ use crate::{
     state::config,
 };
 
-use self::session::{DatabaseBinding, DatabaseSession, DatabaseSessionKey};
+pub(crate) use self::operation::{DatabaseOperation, DatabasePhase};
+use self::{
+    operation::DatabaseMessage,
+    session::{DatabaseBinding, DatabaseSession, DatabaseSessionKey},
+};
 
 static NEXT_SESSION_KEY: AtomicU64 = AtomicU64::new(1);
 
@@ -190,9 +195,6 @@ pub(crate) enum DatabaseRepair {
     BackupAndCreateFresh { backup_dir: PathBuf },
 }
 
-pub(crate) type DatabaseOperation =
-    repair::Operation<DatabaseData, DatabaseProblem, DatabaseRepair, Task<()>>;
-
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum DatabaseResource {
     AwaitingConfig,
@@ -227,7 +229,7 @@ pub(crate) fn init_store(cx: &mut App) {
         Some(target) => {
             let result = open_initial(&target, cx);
             let mut operation = DatabaseOperation::new();
-            operation.transition(Settle(result));
+            operation.transition(DatabaseMessage::Settle(result));
             DatabaseResource::Bound { target, operation }
         }
         None => DatabaseResource::AwaitingConfig,
@@ -307,9 +309,9 @@ fn start_initial_open(target: DatabaseTarget, cx: &mut App) {
                     return;
                 };
                 if current == &completion_target
-                    && matches!(operation, DatabaseOperation::Loading(_))
+                    && matches!(operation, DatabaseOperation::Loading { .. })
                 {
-                    operation.transition(Complete(result));
+                    operation.transition(DatabaseMessage::Loaded(result));
                 }
             });
         });
@@ -322,8 +324,8 @@ fn start_initial_open(target: DatabaseTarget, cx: &mut App) {
         else {
             return;
         };
-        if current == &target && matches!(operation, DatabaseOperation::Idle(_)) {
-            operation.transition(Load(task));
+        if current == &target && matches!(operation, DatabaseOperation::Idle) {
+            operation.transition(DatabaseMessage::Load(task));
         }
     });
 }
@@ -392,9 +394,9 @@ pub(crate) fn with_ready_repository<R>(
     ensure_config_ready(cx)?;
     let session = store(cx).read(cx, |resource| match resource {
         DatabaseResource::Bound {
-            operation: DatabaseOperation::Ready(ready),
+            operation: DatabaseOperation::Ready(data),
             ..
-        } => Some(ready.data().session.clone()),
+        } => Some(data.session.clone()),
         _ => None,
     });
     let session = session.ok_or_else(|| {
@@ -412,9 +414,9 @@ pub(crate) fn ready_agent_persistence(
     ensure_config_ready(cx)?;
     let session = store(cx).read(cx, |resource| match resource {
         DatabaseResource::Bound {
-            operation: DatabaseOperation::Ready(ready),
+            operation: DatabaseOperation::Ready(data),
             ..
-        } => Some(ready.data().session.clone()),
+        } => Some(data.session.clone()),
         _ => None,
     });
     let session = session.ok_or_else(|| {
@@ -431,9 +433,9 @@ pub(crate) fn ready_executor(
     ensure_config_ready(cx)?;
     let session = store(cx).read(cx, |resource| match resource {
         DatabaseResource::Bound {
-            operation: DatabaseOperation::Ready(ready),
+            operation: DatabaseOperation::Ready(data),
             ..
-        } => Some(ready.data().session.clone()),
+        } => Some(data.session.clone()),
         _ => None,
     });
     let session = session.ok_or_else(|| {
@@ -463,9 +465,9 @@ pub(crate) fn ready_binding(cx: &impl AppContext) -> Option<DatabaseBinding> {
     }
     store(cx).read(cx, |resource| match resource {
         DatabaseResource::Bound {
-            operation: DatabaseOperation::Ready(ready),
+            operation: DatabaseOperation::Ready(data),
             ..
-        } => Some(ready.data().binding.clone()),
+        } => Some(data.binding.clone()),
         _ => None,
     })
 }
@@ -481,52 +483,152 @@ pub(crate) fn retained_binding(cx: &impl AppContext) -> Option<DatabaseBinding> 
 
 pub(crate) fn request_refresh(cx: &mut App) {
     let database = store(cx);
-    let snapshot = database.read(cx, |resource| match resource {
+    let phase = database.read(cx, |resource| match resource {
         DatabaseResource::AwaitingConfig => None,
-        DatabaseResource::Bound { target, operation } => (!operation.is_running())
-            .then(|| (target.clone(), operation.phase(), operation.data().cloned())),
+        DatabaseResource::Bound { target, operation } => Some((target.clone(), operation.phase())),
     });
-    let Some((target, phase, existing)) = snapshot else {
+    let Some((target, phase)) = phase else {
         return;
     };
-    let executor = existing.as_ref().and_then(|data| {
-        data.session
-            .read_with(cx, |session, _| session.executor().ok())
-    });
-    let completion_target = target.clone();
-    let task = cx.spawn(async move |cx| {
-        let result = if let Some(data) = existing {
-            let validation = match executor {
-                Some(executor) => executor.validate().await,
-                None => Err(DbError::Invariant(
-                    "database session executor is unavailable".to_string(),
-                )),
-            };
-            validation
-                .map(|()| data)
-                .map_err(|source| DatabaseProblem::Open {
-                    target: completion_target.clone(),
-                    source,
-                })
-        } else {
-            let open_target = completion_target.clone();
-            match smol::unblock(move || {
-                let lease = DatabaseTargetLease::acquire(&open_target)?;
-                let store = FreshStore::reopen_validated_existing(&open_target.database_path)
-                    .map_err(|source| DatabaseProblem::Open {
+
+    match phase {
+        DatabasePhase::Ready => {
+            let executor = database.read(cx, |resource| match resource {
+                DatabaseResource::Bound {
+                    target: current,
+                    operation: DatabaseOperation::Ready(data),
+                } if current == &target => data
+                    .session
+                    .read_with(cx, |session, _| session.executor().ok()),
+                DatabaseResource::AwaitingConfig | DatabaseResource::Bound { .. } => None,
+            });
+            let completion_target = target.clone();
+            let task = cx.spawn(async move |cx| {
+                let result = match executor {
+                    Some(executor) => executor.validate().await,
+                    None => Err(DbError::Invariant(
+                        "database session executor is unavailable".to_string(),
+                    )),
+                };
+                cx.update(|cx| match result {
+                    Ok(()) => store(cx).update(cx, |resource| {
+                        let DatabaseResource::Bound {
+                            target: current,
+                            operation,
+                        } = resource
+                        else {
+                            return;
+                        };
+                        if current == &completion_target
+                            && matches!(operation, DatabaseOperation::Refreshing { .. })
+                        {
+                            operation.transition(DatabaseMessage::Refreshed);
+                        }
+                    }),
+                    Err(source) => retire_failed_refresh(
+                        &completion_target,
+                        DatabaseProblem::Open {
+                            target: completion_target.clone(),
+                            source,
+                        },
+                        cx,
+                    ),
+                });
+            });
+            database.update(cx, |resource| {
+                let DatabaseResource::Bound {
+                    target: current,
+                    operation,
+                } = resource
+                else {
+                    return;
+                };
+                if current == &target && matches!(operation, DatabaseOperation::Ready(_)) {
+                    operation.transition(DatabaseMessage::Refresh(task));
+                }
+            });
+        }
+        DatabasePhase::Unavailable => {
+            let completion_target = target.clone();
+            let task = cx.spawn(async move |cx| {
+                let open_target = completion_target.clone();
+                let opened = smol::unblock(move || {
+                    let lease = DatabaseTargetLease::acquire(&open_target)?;
+                    let store = FreshStore::reopen_validated_existing(&open_target.database_path)
+                        .map_err(|source| DatabaseProblem::Open {
                         target: open_target.clone(),
                         source,
                     })?;
-                Ok::<_, DatabaseProblem>((store, lease))
-            })
-            .await
-            {
-                Ok((store, lease)) => {
-                    cx.update(|cx| create_data(completion_target.clone(), store, lease, cx))
+                    Ok::<_, DatabaseProblem>((store, lease))
+                })
+                .await;
+                cx.update(|cx| {
+                    let result = opened.and_then(|(store, lease)| {
+                        create_data(completion_target.clone(), store, lease, cx)
+                    });
+                    store(cx).update(cx, |resource| {
+                        let DatabaseResource::Bound {
+                            target: current,
+                            operation,
+                        } = resource
+                        else {
+                            return;
+                        };
+                        if current == &completion_target
+                            && matches!(operation, DatabaseOperation::Repairing { .. })
+                        {
+                            operation.transition(DatabaseMessage::Repaired(result));
+                        }
+                    });
+                });
+            });
+            database.update(cx, |resource| {
+                let DatabaseResource::Bound {
+                    target: current,
+                    operation,
+                } = resource
+                else {
+                    return;
+                };
+                if current == &target && matches!(operation, DatabaseOperation::Unavailable(_)) {
+                    operation.transition(DatabaseMessage::Repair {
+                        repair: DatabaseRepair::Refresh,
+                        task,
+                    });
                 }
-                Err(error) => Err(error),
+            });
+        }
+        DatabasePhase::Idle
+        | DatabasePhase::Loading
+        | DatabasePhase::Refreshing
+        | DatabasePhase::Retiring
+        | DatabasePhase::Repairing => {}
+    }
+}
+
+fn retire_failed_refresh(target: &DatabaseTarget, problem: DatabaseProblem, cx: &mut App) {
+    let database = store(cx);
+    let session = database.read(cx, |resource| match resource {
+        DatabaseResource::Bound {
+            target: current,
+            operation,
+        } if current == target && matches!(operation, DatabaseOperation::Refreshing { .. }) => {
+            operation.session().cloned()
+        }
+        DatabaseResource::AwaitingConfig | DatabaseResource::Bound { .. } => None,
+    });
+    let Some(session) = session else {
+        return;
+    };
+    let active = session.update(cx, |session, _| session.take_active());
+    let completion_target = target.clone();
+    let retire = cx.spawn(async move |cx| {
+        if let Some(active) = active.as_ref() {
+            while active.active_jobs() != 0 {
+                smol::Timer::after(std::time::Duration::from_millis(10)).await;
             }
-        };
+        }
+        drop(active);
         cx.update(|cx| {
             store(cx).update(cx, |resource| {
                 let DatabaseResource::Bound {
@@ -536,8 +638,10 @@ pub(crate) fn request_refresh(cx: &mut App) {
                 else {
                     return;
                 };
-                if current == &completion_target && operation.is_running() {
-                    operation.transition(Complete(result));
+                if current == &completion_target
+                    && matches!(operation, DatabaseOperation::Retiring { .. })
+                {
+                    operation.transition(DatabaseMessage::Retired);
                 }
             });
         });
@@ -550,69 +654,31 @@ pub(crate) fn request_refresh(cx: &mut App) {
         else {
             return;
         };
-        if current != &target {
-            return;
-        }
-        match phase {
-            repair::Phase::Ready => operation.transition(Refresh(task)),
-            repair::Phase::Unavailable | repair::Phase::Degraded => operation.transition(Repair {
-                repair: DatabaseRepair::Refresh,
-                task,
-            }),
-            _ => {}
+        if current == target && matches!(operation, DatabaseOperation::Refreshing { .. }) {
+            operation.transition(DatabaseMessage::RefreshFailed { problem, retire });
         }
     });
 }
 
 pub(crate) fn backup_and_create_fresh(backup_dir: PathBuf, cx: &mut App) -> JacoResult<()> {
     let database = store(cx);
-    let (target, existing, allowed) = database.read(cx, |resource| match resource {
-        DatabaseResource::Bound { target, operation } => (
-            Some(target.clone()),
-            operation.data().cloned(),
-            operation
-                .problem()
-                .is_some_and(DatabaseProblem::can_create_fresh),
-        ),
-        DatabaseResource::AwaitingConfig => (None, None, false),
+    let target = database.read(cx, |resource| match resource {
+        DatabaseResource::Bound {
+            target,
+            operation: DatabaseOperation::Unavailable(problem),
+        } if problem.can_create_fresh() => Some(target.clone()),
+        DatabaseResource::AwaitingConfig | DatabaseResource::Bound { .. } => None,
     });
-    if !allowed {
-        return Err(JacoError::Config(
-            "fresh database repair is not available for this problem".to_string(),
-        ));
-    }
-    let target =
-        target.ok_or_else(|| JacoError::Config("database target is unavailable".to_string()))?;
-
-    let active = if let Some(data) = existing {
-        let active = data
-            .session
-            .update(cx, |session, _| session.take_active())
-            .ok_or_else(|| JacoError::Config("database session is already paused".to_string()))?;
-        Some(active)
-    } else {
-        None
-    };
+    let target = target.ok_or_else(|| {
+        JacoError::Config("fresh database repair is not available for this problem".to_string())
+    })?;
     let repair_target = target.clone();
     let repair_backup_dir = backup_dir.clone();
     let transition_target = target.clone();
     let transition_backup_dir = backup_dir.clone();
     let task = cx.spawn(async move |cx| {
-        if let Some(active) = active.as_ref() {
-            while active.active_jobs() != 0 {
-                smol::Timer::after(std::time::Duration::from_millis(10)).await;
-            }
-        }
         let repaired = smol::unblock(move || {
-            let lease = match active {
-                Some(active) => {
-                    let crate::database::session::ActiveDatabaseSession { store, lease, .. } =
-                        active;
-                    drop(store);
-                    lease
-                }
-                None => DatabaseTargetLease::acquire(&repair_target)?,
-            };
+            let lease = DatabaseTargetLease::acquire(&repair_target)?;
             backup_database_files(&repair_target, &repair_backup_dir)?;
             let fresh = create_fresh_database(&repair_target);
             Ok::<_, DatabaseProblem>((fresh, lease))
@@ -652,8 +718,8 @@ pub(crate) fn backup_and_create_fresh(backup_dir: PathBuf, cx: &mut App) -> Jaco
                 else {
                     return;
                 };
-                if current == &target && operation.is_running() {
-                    operation.transition(Complete(result));
+                if current == &target && matches!(operation, DatabaseOperation::Repairing { .. }) {
+                    operation.transition(DatabaseMessage::Repaired(result));
                 }
             });
         });
@@ -666,13 +732,8 @@ pub(crate) fn backup_and_create_fresh(backup_dir: PathBuf, cx: &mut App) -> Jaco
         else {
             return;
         };
-        if current == &transition_target
-            && matches!(
-                operation,
-                DatabaseOperation::Unavailable(_) | DatabaseOperation::Degraded(_)
-            )
-        {
-            operation.transition(Repair {
+        if current == &transition_target && matches!(operation, DatabaseOperation::Unavailable(_)) {
+            operation.transition(DatabaseMessage::Repair {
                 repair: DatabaseRepair::BackupAndCreateFresh {
                     backup_dir: transition_backup_dir.clone(),
                 },
@@ -719,12 +780,12 @@ fn backup_database_files(
                 message: error.to_string(),
             })?;
     }
-    fs::File::open(backup_dir)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| DatabaseProblem::Backup {
+    crate::foundation::persistence::sync_directory(backup_dir).map_err(|error| {
+        DatabaseProblem::Backup {
             backup_dir: backup_dir.to_path_buf(),
             message: error.to_string(),
-        })
+        }
+    })
 }
 
 fn create_fresh_database(target: &DatabaseTarget) -> Result<FreshStore, DatabaseProblem> {
@@ -758,12 +819,12 @@ fn create_fresh_database(target: &DatabaseTarget) -> Result<FreshStore, Database
         target: target.clone(),
         message: error.to_string(),
     })?;
-    fs::File::open(&target.data_dir)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| DatabaseProblem::CreateFresh {
+    crate::foundation::persistence::sync_directory(&target.data_dir).map_err(|error| {
+        DatabaseProblem::CreateFresh {
             target: target.clone(),
             message: error.to_string(),
-        })?;
+        }
+    })?;
     FreshStore::reopen_validated_existing(&target.database_path).map_err(|error| {
         DatabaseProblem::CreateFresh {
             target: target.clone(),
@@ -795,7 +856,7 @@ pub(crate) fn install_for_test(cx: &mut App, data_dir: &Path) {
     };
     let result = open_initial(&target, cx);
     let mut operation = DatabaseOperation::new();
-    operation.transition(Settle(result));
+    operation.transition(DatabaseMessage::Settle(result));
     let resource = DatabaseResource::Bound { target, operation };
     DatabaseStore::install_global(cx, resource);
 }
@@ -803,7 +864,7 @@ pub(crate) fn install_for_test(cx: &mut App, data_dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::TestAppContext;
+    use gpui::{Task, TestAppContext};
 
     #[gpui::test]
     fn initial_database_open_is_settled_before_init_returns(cx: &mut TestAppContext) {
@@ -861,5 +922,120 @@ mod tests {
 
         let current = cx.update(|cx| retained_binding(cx).expect("retained database binding"));
         assert_eq!(current, original);
+    }
+
+    #[gpui::test]
+    fn failed_destructive_repair_remains_retryable_without_retained_data(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| install_for_test(cx, dir.path()));
+        let target = cx.update(|cx| {
+            store(cx).read(cx, |resource| match resource {
+                DatabaseResource::Bound { target, .. } => target.clone(),
+                DatabaseResource::AwaitingConfig => panic!("database should be bound"),
+            })
+        });
+
+        cx.update(|cx| {
+            store(cx).update(cx, |resource| {
+                let DatabaseResource::Bound { operation, .. } = resource else {
+                    panic!("database should be bound");
+                };
+                operation.transition(DatabaseMessage::Refresh(Task::ready(())));
+            });
+            retire_failed_refresh(
+                &target,
+                DatabaseProblem::Open {
+                    target: target.clone(),
+                    source: DbError::Invariant("validation failed".to_string()),
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            store(cx).read(cx, |resource| {
+                let DatabaseResource::Bound { operation, .. } = resource else {
+                    panic!("database should be bound");
+                };
+                assert_eq!(operation.phase(), DatabasePhase::Unavailable);
+                assert!(operation.data().is_none());
+                assert!(operation.session().is_none());
+            });
+        });
+
+        let first_backup = dir.path().join("first-backup");
+        cx.update(|cx| {
+            store(cx).update(cx, |resource| {
+                let DatabaseResource::Bound { operation, .. } = resource else {
+                    panic!("database should be bound");
+                };
+                operation.transition(DatabaseMessage::Repair {
+                    repair: DatabaseRepair::BackupAndCreateFresh {
+                        backup_dir: first_backup.clone(),
+                    },
+                    task: Task::ready(()),
+                });
+                operation.transition(DatabaseMessage::Repaired(Err(DatabaseProblem::Backup {
+                    backup_dir: first_backup.clone(),
+                    message: "first backup failed".to_string(),
+                })));
+                assert_eq!(operation.phase(), DatabasePhase::Unavailable);
+                assert!(matches!(
+                    operation.problem(),
+                    Some(DatabaseProblem::Backup { backup_dir, .. })
+                        if backup_dir == &first_backup
+                ));
+            });
+        });
+
+        let second_backup = dir.path().join("second-backup");
+        cx.update(|cx| {
+            store(cx).update(cx, |resource| {
+                let DatabaseResource::Bound { operation, .. } = resource else {
+                    panic!("database should be bound");
+                };
+                operation.transition(DatabaseMessage::Repair {
+                    repair: DatabaseRepair::BackupAndCreateFresh {
+                        backup_dir: second_backup.clone(),
+                    },
+                    task: Task::ready(()),
+                });
+                operation.transition(DatabaseMessage::Repaired(Err(DatabaseProblem::Backup {
+                    backup_dir: second_backup.clone(),
+                    message: "second backup failed".to_string(),
+                })));
+                assert_eq!(operation.phase(), DatabasePhase::Unavailable);
+                assert!(matches!(
+                    operation.problem(),
+                    Some(DatabaseProblem::Backup { backup_dir, .. })
+                        if backup_dir == &second_backup
+                ));
+            });
+        });
+    }
+
+    #[test]
+    fn backup_database_files_copies_and_syncs_existing_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let database_path = dir.path().join(jaco_db::DATABASE_FILE);
+        fs::write(&database_path, b"database").unwrap();
+        fs::write(format!("{}-wal", database_path.display()), b"wal").unwrap();
+        let target = DatabaseTarget {
+            data_dir: dir.path().to_path_buf(),
+            database_path,
+        };
+        let backup_dir = dir.path().join("backup");
+
+        backup_database_files(&target, &backup_dir).expect("backup database artifacts");
+
+        assert_eq!(
+            fs::read(backup_dir.join(jaco_db::DATABASE_FILE)).unwrap(),
+            b"database"
+        );
+        assert_eq!(
+            fs::read(backup_dir.join(format!("{}-wal", jaco_db::DATABASE_FILE))).unwrap(),
+            b"wal"
+        );
     }
 }
