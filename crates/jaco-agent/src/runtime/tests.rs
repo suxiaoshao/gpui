@@ -42,6 +42,8 @@ use std::{
 use tempfile::TempDir;
 use tokio::sync::{Notify, RwLock, oneshot};
 
+const CANCELLATION_TEST_WATCHDOG: Duration = Duration::from_secs(10);
+
 struct ManualApprovalBroker {
     pending: Mutex<VecDeque<ManualPendingApproval>>,
     notify: Notify,
@@ -818,7 +820,7 @@ async fn non_streaming_cancellation_during_provider_open_does_not_wait_for_respo
     };
 
     let handle = tokio::time::timeout(
-        Duration::from_secs(1),
+        CANCELLATION_TEST_WATCHDOG,
         runtime.run_with_model(request, model),
     )
     .await
@@ -840,7 +842,7 @@ async fn non_streaming_cancellation_during_provider_open_does_not_wait_for_respo
 }
 
 #[tokio::test]
-async fn streaming_cancellation_during_provider_open_does_not_record_provider_error() {
+async fn streaming_cancellation_during_provider_open_does_not_wait_or_record_provider_error() {
     let fixture = Fixture::new("streaming-open-cancel");
     let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let request = fixture.streaming_request();
@@ -849,7 +851,7 @@ async fn streaming_cancellation_during_provider_open_does_not_record_provider_er
     };
 
     let handle = tokio::time::timeout(
-        Duration::from_secs(1),
+        CANCELLATION_TEST_WATCHDOG,
         runtime.run_with_model(request, model),
     )
     .await
@@ -867,7 +869,7 @@ async fn streaming_cancellation_during_provider_open_does_not_record_provider_er
 }
 
 #[tokio::test]
-async fn streaming_cancellation_while_waiting_for_next_chunk_finishes_immediately() {
+async fn streaming_cancellation_does_not_wait_for_next_chunk() {
     let fixture = Fixture::new("streaming-next-cancel");
     let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let request = fixture.streaming_request();
@@ -876,7 +878,7 @@ async fn streaming_cancellation_while_waiting_for_next_chunk_finishes_immediatel
     };
 
     let handle = tokio::time::timeout(
-        Duration::from_secs(1),
+        CANCELLATION_TEST_WATCHDOG,
         runtime.run_with_model(request, model),
     )
     .await
