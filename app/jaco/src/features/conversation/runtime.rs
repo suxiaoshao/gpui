@@ -2,7 +2,7 @@ mod approval;
 
 use std::{collections::HashMap, sync::Arc};
 
-use gpui::{App, AppContext, AsyncWindowContext, Context, Entity, EventEmitter, Task};
+use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use gpui_operation::{Cancel, Complete, Load, Retry, Transition, refresh};
 use jaco_agent::{
     AgentCancellationToken, AgentPersistence, AgentRunHandle, AgentRunRequest, AgentRuntime,
@@ -150,7 +150,6 @@ impl ConversationRuntimeStore {
     pub(crate) fn start_run(
         &mut self,
         request: AgentRunRequest,
-        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         if self.shutting_down || !matches!(self.recovery, refresh::Operation::Ready(_)) {
@@ -192,11 +191,10 @@ impl ConversationRuntimeStore {
         let (tx, rx) = smol::channel::unbounded();
         let event_task = self.spawn_event_listener(rx, cx);
         let approval_broker = Arc::new(ConversationApprovalBroker::new());
-        let store = cx.entity().downgrade();
         let run_conversation_id = conversation_id.clone();
         let cancellation_token = request.cancellation_token.clone();
         let runtime_approval_broker = approval_broker.clone();
-        let run_task = window.spawn(cx, async move |cx| {
+        let run_task = cx.spawn(async move |store, cx| {
             let result = run_agent_with_saved_provider(
                 persistence,
                 provider,
@@ -206,11 +204,7 @@ impl ConversationRuntimeStore {
                 cx,
             )
             .await;
-            if let Err(err) = store.update_in(cx, |store, _window, cx| {
-                store.finish_run(run_conversation_id.clone(), run_key, result, cx);
-            }) {
-                event!(Level::ERROR, error = ?err, "finish conversation agent run failed");
-            }
+            finish_run_from_task(store, run_conversation_id, run_key, result, cx);
         });
 
         self.active_runs.insert(
@@ -444,6 +438,20 @@ impl ConversationRuntimeStore {
     }
 }
 
+fn finish_run_from_task(
+    store: WeakEntity<ConversationRuntimeStore>,
+    conversation_id: ConversationId,
+    run_key: ActiveRunKey,
+    result: Result<AgentRunHandle, String>,
+    cx: &mut AsyncApp,
+) {
+    if let Err(err) = store.update(cx, |store, cx| {
+        store.finish_run(conversation_id, run_key, result, cx);
+    }) {
+        event!(Level::ERROR, error = ?err, "finish conversation agent run failed");
+    }
+}
+
 pub(crate) fn create(cx: &mut App) -> JacoResult<Entity<ConversationRuntimeStore>> {
     let store = cx.new(|_| ConversationRuntimeStore::new());
     request_recovery(store.clone(), cx)?;
@@ -520,7 +528,7 @@ async fn run_agent_with_saved_provider(
     request: AgentRunRequest,
     tx: Sender<jaco_agent::AgentRuntimeEvent>,
     approval_broker: Arc<ConversationApprovalBroker>,
-    cx: &mut AsyncWindowContext,
+    cx: &mut AsyncApp,
 ) -> Result<AgentRunHandle, String> {
     let observer = AgentRuntimeObserver::new(move |event| {
         if let Err(err) = tx.send_blocking(event) {
@@ -843,6 +851,44 @@ mod tests {
                     cx
                 ));
                 assert!(!store.active_runs.contains_key(&conversation_id));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn app_owned_completion_does_not_require_window(cx: &mut gpui::TestAppContext) {
+        let _dir = init_runtime_test(cx);
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
+        let conversation_id = "conversation-1".to_string();
+
+        let completion = cx.update(|cx| {
+            store.update(cx, |store, _cx| {
+                store
+                    .active_runs
+                    .insert(conversation_id.clone(), active_run(ActiveRunKey(0)));
+            });
+            let store = store.downgrade();
+            let conversation_id = conversation_id.clone();
+            cx.spawn(async move |cx| {
+                finish_run_from_task(
+                    store,
+                    conversation_id,
+                    ActiveRunKey(0),
+                    Err("provider failed".to_string()),
+                    cx,
+                );
+            })
+        });
+
+        cx.run_until_parked();
+        drop(completion);
+        cx.update(|cx| {
+            store.update(cx, |store, _cx| {
+                assert!(!store.active_runs.contains_key(&conversation_id));
+                assert_eq!(
+                    store.take_last_error(&conversation_id).as_deref(),
+                    Some("provider failed")
+                );
             });
         });
     }

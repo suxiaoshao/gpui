@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use gpui::{App, AppContext, AsyncWindowContext, Context, Entity, EventEmitter, Global, Task};
+use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Global, Task};
 use jaco_agent::{
     AgentRunRequest, McpOAuthCredentialsSnapshot, McpOAuthStatusSnapshot, McpPreparedTools,
     McpRuntimeEvent, McpServerConnectionState, McpServerInfoSnapshot, McpServerRuntimeConfig,
@@ -664,18 +664,17 @@ pub(crate) fn runtime(cx: &App) -> Entity<McpRuntimeStore> {
 
 pub(crate) async fn prepare_run_request(
     mut request: AgentRunRequest,
-    cx: &mut AsyncWindowContext,
+    cx: &mut AsyncApp,
 ) -> Result<McpPreparedRun, McpPrepareRunError> {
     let inherited_approval_mode =
         mcp_default_approval_from_chat_form(request.settings_snapshot.tool_policy.approval_mode);
-    let setup = match cx
-        .update(|_, cx| build_mcp_runtime_setup(cx, inherited_approval_mode))
-        .map_err(|err| err.to_string())
-        .and_then(|result| result.map_err(|err| err.to_string()))
-    {
+    let setup = match cx.update(|cx| build_mcp_runtime_setup(cx, inherited_approval_mode)) {
         Ok(setup) => setup,
-        Err(message) => {
-            return Err(McpPrepareRunError { request, message });
+        Err(error) => {
+            return Err(McpPrepareRunError {
+                request,
+                message: error.to_string(),
+            });
         }
     };
     if setup.configs.is_empty() {
@@ -694,15 +693,7 @@ pub(crate) async fn prepare_run_request(
         }
     };
 
-    let manager = match cx.update(|_, cx| runtime(cx).read(cx).manager.clone()) {
-        Ok(manager) => manager,
-        Err(err) => {
-            return Err(McpPrepareRunError {
-                request,
-                message: err.to_string(),
-            });
-        }
-    };
+    let manager = cx.update(|cx| runtime(cx).read(cx).manager.clone());
     let mut tool_registry = std::mem::take(&mut request.tool_registry);
     let preflight_statuses = setup.preflight_statuses.clone();
     let prepared_result = gpui_tokio::Tokio::spawn(cx, async move {
@@ -733,44 +724,35 @@ pub(crate) async fn prepare_run_request(
             prepared.statuses.extend(preflight_statuses);
             let connected_servers = connected_mcp_server_sources(&prepared.statuses);
             add_mcp_enabled_sources(&mut request, connected_servers);
-            if let Err(err) = cx.update(move |_, cx| {
+            cx.update(move |cx| {
                 runtime(cx).update(cx, |store, cx| {
                     store.last_error = None;
                     store.apply_statuses(prepared.statuses);
                     cx.emit(McpRuntimeStoreEvent::StatusChanged);
                     cx.notify();
                 });
-            }) {
-                event!(Level::ERROR, error = ?err, "update MCP run setup statuses failed");
-            }
+            });
             Ok(McpPreparedRun { request })
         }
         Err(err) => {
             let message = err.to_string();
-            if let Err(update_err) = cx.update({
+            cx.update({
                 let message = message.clone();
-                move |_, cx| {
+                move |cx| {
                     runtime(cx).update(cx, |store, cx| {
                         store.last_error = Some(message);
                         cx.emit(McpRuntimeStoreEvent::StatusChanged);
                         cx.notify();
                     });
                 }
-            }) {
-                event!(Level::ERROR, error = ?update_err, "update MCP run setup error failed");
-            }
+            });
             Err(McpPrepareRunError { request, message })
         }
     }
 }
 
-async fn close_all_sessions(
-    cx: &mut AsyncWindowContext,
-    setup: McpRuntimeSetup,
-) -> Result<(), String> {
-    let manager = cx
-        .update(|_, cx| runtime(cx).read(cx).manager.clone())
-        .map_err(|err| err.to_string())?;
+async fn close_all_sessions(cx: &mut AsyncApp, setup: McpRuntimeSetup) -> Result<(), String> {
+    let manager = cx.update(|cx| runtime(cx).read(cx).manager.clone());
     gpui_tokio::Tokio::spawn(cx, async move {
         let mut manager = manager.lock().await;
         let mut registry = ToolRegistry::default();
@@ -788,27 +770,22 @@ async fn close_all_sessions(
     .map_err(|err| err.to_string())
 }
 
-async fn apply_preflight_statuses(
-    cx: &mut AsyncWindowContext,
-    statuses: Vec<McpServerStatusSnapshot>,
-) {
+async fn apply_preflight_statuses(cx: &mut AsyncApp, statuses: Vec<McpServerStatusSnapshot>) {
     if statuses.is_empty() {
         return;
     }
-    if let Err(err) = cx.update(move |_, cx| {
+    cx.update(move |cx| {
         runtime(cx).update(cx, |store, cx| {
             store.apply_statuses(statuses);
             cx.emit(McpRuntimeStoreEvent::StatusChanged);
             cx.notify();
         });
-    }) {
-        event!(Level::ERROR, error = ?err, "update MCP preflight statuses failed");
-    }
+    });
 }
 
 async fn attach_oauth_credentials(
     setup: McpRuntimeSetup,
-    cx: &mut AsyncWindowContext,
+    cx: &mut AsyncApp,
 ) -> Result<McpRuntimeSetup, String> {
     let mut attached_setup = McpRuntimeSetup {
         configs: Vec::with_capacity(setup.configs.len()),
@@ -841,7 +818,7 @@ fn record_oauth_credentials_attach_error(
 
 async fn attach_oauth_credentials_to_config(
     config: &mut McpServerRuntimeConfig,
-    cx: &mut AsyncWindowContext,
+    cx: &mut AsyncApp,
 ) -> Result<(), String> {
     {
         let jaco_agent::McpServerTransport::StreamableHttp(http) = &mut config.server.transport

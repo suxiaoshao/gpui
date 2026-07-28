@@ -236,9 +236,9 @@ impl ConversationDetailPage {
                         });
                         page.timeline.set_follow_mode(FollowMode::Tail);
                         page.timeline.scroll_to_end();
-                        let start = page.runtime.update(cx, |runtime, cx| {
-                            runtime.start_run(sent.run_request, window, cx)
-                        });
+                        let start = page
+                            .runtime
+                            .update(cx, |runtime, cx| runtime.start_run(sent.run_request, cx));
                         if let Err(error) = start {
                             let title = cx.global::<I18n>().t("conversation-run-failed");
                             push_conversation_notification(

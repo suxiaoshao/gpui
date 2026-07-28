@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use gpui::AsyncWindowContext;
+use gpui::{AsyncApp, AsyncWindowContext};
 use jaco_agent::ProviderSecretValues;
 use jaco_core::{ProviderSecretRef, ProviderSecretRefs};
 
@@ -52,16 +52,14 @@ impl ProviderSecretStore {
     }
 
     pub(crate) async fn read_values(
-        cx: &mut AsyncWindowContext,
+        cx: &mut AsyncApp,
         refs: &ProviderSecretRefs,
     ) -> Result<ProviderSecretValues, String> {
         let mut values = BTreeMap::new();
         for secret_ref in &refs.refs {
             let ref_id = secret_ref.ref_id.clone();
             let key = secret_ref.key.clone();
-            let task = cx
-                .update(move |_, cx| cx.read_credentials(&ref_id))
-                .map_err(|err| err.to_string())?;
+            let task = cx.update(move |cx| cx.read_credentials(&ref_id));
             let Some((_, password)) = task.await.map_err(|err| err.to_string())? else {
                 continue;
             };

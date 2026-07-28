@@ -478,9 +478,9 @@ impl NewConversationPage {
                         page.workspace.update(cx, |workspace, cx| {
                             workspace.open_conversation(conversation_id, cx);
                         });
-                        let start = page.runtime.update(cx, |runtime, cx| {
-                            runtime.start_run(created.run_request, window, cx)
-                        });
+                        let start = page
+                            .runtime
+                            .update(cx, |runtime, cx| runtime.start_run(created.run_request, cx));
                         if let Err(error) = start {
                             let title = cx.global::<I18n>().t("conversation-run-failed");
                             push_project_notification(

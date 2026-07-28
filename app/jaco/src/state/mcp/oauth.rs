@@ -141,12 +141,10 @@ pub(crate) fn delete_credentials_detached(key: &CredentialsKey, cx: &mut App) {
 
 pub(crate) async fn read_credentials(
     key: &CredentialsKey,
-    cx: &mut AsyncWindowContext,
+    cx: &mut AsyncApp,
 ) -> Result<Option<StoredCredentials>, String> {
     let key = key.as_str().to_string();
-    let task = cx
-        .update(move |_, cx| cx.read_credentials(&key))
-        .map_err(|err| err.to_string())?;
+    let task = cx.update(move |cx| cx.read_credentials(&key));
     let Some((_, bytes)) = task.await.map_err(|err| err.to_string())? else {
         return Ok(None);
     };

@@ -594,9 +594,9 @@ impl TemporaryWindow {
                         );
                         page.route = TemporaryWindowRoute::Conversation(conversation_id.clone());
                         let _ = page.conversation_page(conversation_id.clone(), window, cx);
-                        let start = page.runtime.update(cx, |runtime, cx| {
-                            runtime.start_run(created.run_request, window, cx)
-                        });
+                        let start = page
+                            .runtime
+                            .update(cx, |runtime, cx| runtime.start_run(created.run_request, cx));
                         if let Err(error) = start {
                             let title = cx.global::<I18n>().t("conversation-run-failed");
                             push_temporary_notification(
@@ -646,9 +646,9 @@ impl TemporaryWindow {
         );
         self.route = TemporaryWindowRoute::Conversation(conversation_id.clone());
         let _ = self.conversation_page(conversation_id.clone(), window, cx);
-        let start = self.runtime.update(cx, |runtime, cx| {
-            runtime.start_run(created.run_request, window, cx)
-        });
+        let start = self
+            .runtime
+            .update(cx, |runtime, cx| runtime.start_run(created.run_request, cx));
         if let Err(error) = start {
             let title = cx.global::<I18n>().t("conversation-run-failed");
             push_temporary_notification(window, cx, title, error, NotificationType::Error);
