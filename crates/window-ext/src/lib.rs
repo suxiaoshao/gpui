@@ -292,7 +292,6 @@ pub fn preview_file_with_quick_look(path: &Path) -> Result<(), WindowExtError> {
     }
 }
 
-#[cfg(target_os = "macos")]
 impl WindowExt for Window {
     fn native_window_handle(&self) -> Result<NativeWindowHandle, WindowExtError> {
         Ok(NativeWindowHandle {
