@@ -6,6 +6,7 @@ mod tool_blocks;
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
+    rc::Rc,
 };
 
 use gpui::{prelude::FluentBuilder as _, *};
@@ -24,6 +25,7 @@ use jaco_core::{
 };
 
 use crate::{
+    components::chat::form::AgentRunStatusSource,
     components::chat::input::{
         ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
     },
@@ -50,6 +52,17 @@ struct MessageTextState {
     state: Entity<TextViewState>,
     source: String,
     _subscription: Subscription,
+}
+
+struct ConversationAgentRunStatus {
+    runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
+    conversation_id: ConversationId,
+}
+
+impl AgentRunStatusSource for ConversationAgentRunStatus {
+    fn is_running(&self, cx: &App) -> bool {
+        self.runtime.read(cx).is_running(&self.conversation_id)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -99,6 +112,11 @@ impl ConversationDetailPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let conversation_id = conversation.read(cx).id().clone();
+        let run_status = Rc::new(ConversationAgentRunStatus {
+            runtime: runtime.clone(),
+            conversation_id: conversation_id.clone(),
+        });
         let chat_form = cx.new(|cx| {
             let mut chat_form = if focus_composer {
                 ChatInputController::new(window, cx)
@@ -107,6 +125,7 @@ impl ConversationDetailPage {
             };
             chat_form
                 .set_skill_completion_placement(ChatFormSkillCompletionPlacement::AboveForm, cx);
+            chat_form.set_agent_run_status(run_status, cx);
             chat_form
         });
         let timeline = ListState::new(0, ListAlignment::Top, px(2048.)).measure_all();
@@ -146,7 +165,6 @@ impl ConversationDetailPage {
             page.sync_submission_problem(cx);
             cx.notify();
         });
-        let conversation_id = conversation.read(cx).id().clone();
         let mut page = Self {
             conversation_id,
             conversation,
@@ -168,7 +186,6 @@ impl ConversationDetailPage {
         page.sync_message_text_states(cx);
         page.sync_timeline(cx, None);
         page.timeline.scroll_to_end();
-        page.sync_agent_running(cx);
         page.sync_submission_problem(cx);
         page
     }
@@ -184,7 +201,9 @@ impl ConversationDetailPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.runtime.read(cx).is_running(&self.conversation_id) {
+        if self.chat_form.read(cx).submission_pending(cx)
+            || self.runtime.read(cx).is_running(&self.conversation_id)
+        {
             return;
         }
         if !matches!(
@@ -206,40 +225,47 @@ impl ConversationDetailPage {
         let page = cx.entity().downgrade();
         let completion = window.spawn(cx, async move |cx| {
             let result = task.await;
-            let _ = page.update_in(cx, |page, window, cx| match result {
-                Ok(sent) => {
-                    page.chat_form.update(cx, |chat_form, cx| {
-                        chat_form.clear_after_submit(window, cx);
-                    });
-                    page.timeline.set_follow_mode(FollowMode::Tail);
-                    page.timeline.scroll_to_end();
-                    let start = page.runtime.update(cx, |runtime, cx| {
-                        runtime.start_run(sent.run_request, window, cx)
-                    });
-                    if let Err(error) = start {
-                        let title = cx.global::<I18n>().t("conversation-run-failed");
+            let _ = page.update_in(cx, |page, window, cx| {
+                page.chat_form.update(cx, |chat_form, cx| {
+                    chat_form.finish_submission(cx);
+                });
+                match result {
+                    Ok(sent) => {
+                        page.chat_form.update(cx, |chat_form, cx| {
+                            chat_form.clear_after_submit(window, cx);
+                        });
+                        page.timeline.set_follow_mode(FollowMode::Tail);
+                        page.timeline.scroll_to_end();
+                        let start = page.runtime.update(cx, |runtime, cx| {
+                            runtime.start_run(sent.run_request, window, cx)
+                        });
+                        if let Err(error) = start {
+                            let title = cx.global::<I18n>().t("conversation-run-failed");
+                            push_conversation_notification(
+                                window,
+                                cx,
+                                title,
+                                error,
+                                NotificationType::Error,
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        let title = cx.global::<I18n>().t("conversation-send-failed");
                         push_conversation_notification(
                             window,
                             cx,
                             title,
-                            error,
+                            err.to_string(),
                             NotificationType::Error,
                         );
                     }
                 }
-                Err(err) => {
-                    let title = cx.global::<I18n>().t("conversation-send-failed");
-                    push_conversation_notification(
-                        window,
-                        cx,
-                        title,
-                        err.to_string(),
-                        NotificationType::Error,
-                    );
-                }
             });
         });
-        crate::app::tasks::retain_window(window, completion, cx);
+        self.chat_form.update(cx, |chat_form, cx| {
+            chat_form.begin_submission(completion, cx);
+        });
     }
 
     fn handle_runtime_event(
@@ -259,7 +285,9 @@ impl ConversationDetailPage {
             return;
         }
 
-        self.sync_agent_running(cx);
+        self.chat_form.update(cx, |chat_form, cx| {
+            chat_form.refresh_primary_action(cx);
+        });
         cx.notify();
         if matches!(
             event,
@@ -290,7 +318,6 @@ impl ConversationDetailPage {
                 self.refresh_chat_form_context(cx);
                 self.sync_message_text_states(cx);
                 self.sync_timeline(cx, None);
-                self.sync_agent_running(cx);
             }
             ConversationModelEvent::Changed(effects) => {
                 for effect in effects {
@@ -603,13 +630,6 @@ impl ConversationDetailPage {
             .iter()
             .map(|entry| (entry.id.clone(), entry.state.clone()))
             .collect()
-    }
-
-    fn sync_agent_running(&mut self, cx: &mut Context<Self>) {
-        let running = self.runtime.read(cx).is_running(&self.conversation_id);
-        self.chat_form.update(cx, |chat_form, cx| {
-            chat_form.set_agent_running(running, cx);
-        });
     }
 
     fn sync_submission_problem(&mut self, cx: &mut Context<Self>) {

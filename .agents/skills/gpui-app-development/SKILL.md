@@ -42,6 +42,18 @@ Do not load `gpui-store`, `gpui-operation`, or `gpui-form` merely because a
 related concept appears in nearby code. Load them when the task changes or
 deliberately integrates that library's responsibility.
 
+## State modeling
+
+- Keep one authoritative source for each fact. Do not store labels, booleans,
+  status fields, snapshots, or other values that can be derived cheaply and
+  reliably from existing state; compute them where they are consumed.
+- Treat stored derived state as a cache, not another source of truth. Add it
+  only when it has material caching value, and explicitly define its source,
+  invalidation triggers, update ordering, and handling of missed or stale
+  updates before introducing it.
+- Prefer the owned runtime state itself, such as an `Option<Task>` or operation
+  variant, over a parallel field such as `is_loading` or `agent_running`.
+
 ## Workspace routing
 
 - Start from `app/{name}/src/main.rs`, then follow the target app's established

@@ -854,6 +854,8 @@ mod tests {
     fn init_conversation_resources(cx: &mut TestAppContext) {
         cx.update(|cx| {
             crate::state::hotkey::set_test_hotkey_state(cx);
+            crate::state::providers::init(cx);
+            crate::state::projects::init(cx);
             resources::init(cx);
         });
         cx.run_until_parked();

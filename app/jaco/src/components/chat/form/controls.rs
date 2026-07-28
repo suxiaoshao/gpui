@@ -1,4 +1,6 @@
-use gpui::{Entity, SharedString};
+use std::rc::Rc;
+
+use gpui::{App, Entity, SharedString, Task};
 
 use super::project_control::ProjectControlState;
 
@@ -49,11 +51,40 @@ pub(crate) struct AttachmentControlState {
 #[derive(Clone, Default)]
 pub(crate) struct AddAttachmentControl;
 
-#[derive(Clone, Default)]
+pub(crate) trait AgentRunStatusSource {
+    fn is_running(&self, cx: &App) -> bool;
+}
+
+#[derive(Default)]
 pub(crate) struct PrimaryActionControlState {
-    pub(crate) agent_running: bool,
+    submission_task: Option<Task<()>>,
+    agent_run_status: Option<Rc<dyn AgentRunStatusSource>>,
     pub(crate) can_submit: bool,
     pub(crate) disabled_reason: Option<SharedString>,
+}
+
+impl PrimaryActionControlState {
+    pub(crate) fn submission_pending(&self) -> bool {
+        self.submission_task.is_some()
+    }
+
+    pub(crate) fn agent_running(&self, cx: &App) -> bool {
+        self.agent_run_status
+            .as_ref()
+            .is_some_and(|source| source.is_running(cx))
+    }
+
+    pub(crate) fn begin_submission(&mut self, task: Task<()>) {
+        self.submission_task = Some(task);
+    }
+
+    pub(crate) fn finish_submission(&mut self) {
+        self.submission_task.take();
+    }
+
+    pub(crate) fn set_agent_run_status(&mut self, source: Rc<dyn AgentRunStatusSource>) {
+        self.agent_run_status = Some(source);
+    }
 }
 
 #[derive(Clone)]

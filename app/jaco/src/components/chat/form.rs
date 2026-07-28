@@ -40,8 +40,8 @@ const COMPOSER_FOOTER_HORIZONTAL_PADDING: f32 = 8.;
 const COMPOSER_FOOTER_BOTTOM_MARGIN: f32 = 8.;
 
 pub(crate) use controls::{
-    AddAttachmentControl, AttachmentControlState, ChatFormControls, ControlSlot,
-    PrimaryActionControlState, RunSettingsControls,
+    AddAttachmentControl, AgentRunStatusSource, AttachmentControlState, ChatFormControls,
+    ControlSlot, PrimaryActionControlState, RunSettingsControls,
 };
 pub(crate) use project_control::{
     ProjectControlState, ProjectPickerOption, ProjectPickerOptionKind, ProjectPickerValue,
@@ -695,9 +695,11 @@ impl Render for ChatForm {
                             .min_w_0()
                             .when_some(model, |this, model| this.child(model))
                             .when_some(primary_action, |this, action| {
-                                let agent_running = action.read(cx).agent_running;
-                                let can_submit = action.read(cx).can_submit;
-                                let disabled_reason = action.read(cx).disabled_reason.clone();
+                                let action = action.read(cx);
+                                let agent_running = action.agent_running(cx);
+                                let submission_pending = action.submission_pending();
+                                let can_submit = action.can_submit;
+                                let disabled_reason = action.disabled_reason.clone();
                                 this.child(
                                     Button::new(if agent_running {
                                         "chat-form-stop"
@@ -709,7 +711,12 @@ impl Render for ChatForm {
                                     .size(px(28.))
                                     .p(px(0.))
                                     .rounded(px(999.))
-                                    .disabled(!primary_enabled || (!agent_running && !can_submit))
+                                    .disabled(
+                                        !primary_enabled
+                                            || submission_pending
+                                            || (!agent_running && !can_submit),
+                                    )
+                                    .loading(submission_pending)
                                     .when_some(
                                         (!agent_running).then_some(disabled_reason).flatten(),
                                         |button, reason| button.tooltip(reason),

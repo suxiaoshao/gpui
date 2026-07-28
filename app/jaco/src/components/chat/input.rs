@@ -14,8 +14,9 @@ use crate::components::chat::run_settings::reasoning_selection_is_valid;
 use crate::{
     components::{
         chat::form::{
-            AttachmentControlState, ChatForm, ChatFormControls, ChatFormUiEvent, ControlSlot,
-            PrimaryActionControlState, ProjectControlState, RunSettingsControls,
+            AgentRunStatusSource, AttachmentControlState, ChatForm, ChatFormControls,
+            ChatFormUiEvent, ControlSlot, PrimaryActionControlState, ProjectControlState,
+            RunSettingsControls,
         },
         chat::run_settings::resolve_run_settings,
         chat::run_settings::{RunSettingsController, RunSettingsFormStore, RunSettingsInput},
@@ -37,7 +38,7 @@ use gpui_component::{
 };
 use gpui_operation::{Complete, Load, Transition};
 use jaco_core::{ReasoningSelectionSnapshot, ToolApprovalMode};
-use std::path::Path;
+use std::{path::Path, rc::Rc};
 use tracing::{Level, event};
 
 pub(super) const COMPOSER_BUTTON_SIZE: f32 = 28.;
@@ -116,7 +117,6 @@ pub(crate) struct ChatInputController {
     run_settings: Entity<RunSettingsController<ChatInputFormStore>>,
     primary_action_state: Entity<PrimaryActionControlState>,
     next_attachment_id: u64,
-    agent_running: bool,
     submission_problem: Option<SharedString>,
     skill_catalog_scope: skills::SkillCatalogScope,
     skill_catalog: skills::SkillCatalogOperation,
@@ -325,7 +325,6 @@ impl ChatInputController {
             run_settings,
             primary_action_state,
             next_attachment_id: 1,
-            agent_running: false,
             submission_problem: None,
             skill_catalog_scope: skills::SkillCatalogScope::Global,
             skill_catalog,
@@ -404,13 +403,37 @@ impl ChatInputController {
         cx.notify();
     }
 
-    pub(crate) fn set_agent_running(&mut self, running: bool, cx: &mut Context<Self>) {
-        if self.agent_running == running {
-            return;
-        }
-        self.agent_running = running;
-        self.sync_chat_form_projection(cx);
-        cx.notify();
+    pub(crate) fn set_agent_run_status(
+        &mut self,
+        source: Rc<dyn AgentRunStatusSource>,
+        cx: &mut Context<Self>,
+    ) {
+        self.primary_action_state.update(cx, |state, cx| {
+            state.set_agent_run_status(source);
+            cx.notify();
+        });
+    }
+
+    pub(crate) fn begin_submission(&mut self, task: Task<()>, cx: &mut Context<Self>) {
+        self.primary_action_state.update(cx, |state, cx| {
+            state.begin_submission(task);
+            cx.notify();
+        });
+    }
+
+    pub(crate) fn finish_submission(&mut self, cx: &mut Context<Self>) {
+        self.primary_action_state.update(cx, |state, cx| {
+            state.finish_submission();
+            cx.notify();
+        });
+    }
+
+    pub(crate) fn submission_pending(&self, cx: &App) -> bool {
+        self.primary_action_state.read(cx).submission_pending()
+    }
+
+    pub(crate) fn refresh_primary_action(&self, cx: &mut Context<Self>) {
+        self.primary_action_state.update(cx, |_, cx| cx.notify());
     }
 
     pub(crate) fn set_submission_problem(
@@ -436,22 +459,28 @@ impl ChatInputController {
     }
 
     pub(crate) fn sync_chat_form_projection(&mut self, cx: &mut Context<Self>) {
-        let agent_running = self.agent_running;
         let can_submit = self.can_send(cx);
-        let disabled_reason = (!agent_running)
-            .then(|| {
-                self.submission_problem.clone().or_else(|| {
-                    send_resource_problem(cx)
-                        .map(|key| cx.global::<foundation::I18n>().t(key).into())
-                })
-            })
-            .flatten();
+        let disabled_reason = self.submission_problem.clone().or_else(|| {
+            send_resource_problem(cx).map(|key| cx.global::<foundation::I18n>().t(key).into())
+        });
         self.primary_action_state.update(cx, |state, cx| {
-            state.agent_running = agent_running;
             state.can_submit = can_submit;
             state.disabled_reason = disabled_reason;
             cx.notify();
         });
+    }
+
+    fn primary_action_busy(&self, cx: &App) -> bool {
+        let state = self.primary_action_state.read(cx);
+        state.submission_pending() || state.agent_running(cx)
+    }
+
+    fn agent_running(&self, cx: &App) -> bool {
+        self.primary_action_state.read(cx).agent_running(cx)
+    }
+
+    fn submission_is_pending(&self, cx: &App) -> bool {
+        self.primary_action_state.read(cx).submission_pending()
     }
 
     fn save_chat_form_config(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -496,12 +525,11 @@ impl ChatInputController {
             return false;
         };
         let choices = load_model_choices(cx);
-        !self.agent_running
-            && build_chat_input_submit(
-                ChatInputInput::new(composer, attachments, run_settings),
-                &choices,
-            )
-            .is_ok()
+        build_chat_input_submit(
+            ChatInputInput::new(composer, attachments, run_settings),
+            &choices,
+        )
+        .is_ok()
     }
 
     fn submit_snapshot(
@@ -510,7 +538,7 @@ impl ChatInputController {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<ChatInputSubmit> {
-        if self.agent_running || send_resource_problem(cx).is_some() {
+        if self.primary_action_busy(cx) || send_resource_problem(cx).is_some() {
             return None;
         }
         let form_snapshot = snapshot.clone();
@@ -528,8 +556,11 @@ impl ChatInputController {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<ChatInputPrimaryButtonAction> {
-        if self.agent_running {
+        if self.agent_running(cx) {
             return Some(ChatInputPrimaryButtonAction::Stop);
+        }
+        if self.submission_is_pending(cx) {
+            return None;
         }
 
         let snapshot = self.composer.read(cx).snapshot();
@@ -673,7 +704,8 @@ mod tests {
     };
     use crate::{
         components::chat::form::{
-            SKILL_COMPLETION_GAP, SKILL_COMPLETION_MAX_HEIGHT, skill_completion_popup_layout,
+            AgentRunStatusSource, SKILL_COMPLETION_GAP, SKILL_COMPLETION_MAX_HEIGHT,
+            skill_completion_popup_layout,
         },
         database,
         features::skills,
@@ -683,8 +715,8 @@ mod tests {
     };
     use gpui::{
         Anchor, App, AppContext as _, Bounds, Entity, IntoElement, ParentElement as _, Render,
-        Styled as _, Subscription, TestAppContext, VisualTestContext, WindowHandle, div, point, px,
-        size,
+        Styled as _, Subscription, Task, TestAppContext, VisualTestContext, WindowHandle, div,
+        point, px, size,
     };
     use gpui_operation::Transition as _;
     use jaco_core::{
@@ -700,6 +732,16 @@ mod tests {
 
     struct ConfigObservationProbe {
         _subscription: Subscription,
+    }
+
+    struct TestAgentRunStatus {
+        running: Rc<Cell<bool>>,
+    }
+
+    impl AgentRunStatusSource for TestAgentRunStatus {
+        fn is_running(&self, _cx: &App) -> bool {
+            self.running.get()
+        }
     }
 
     #[test]
@@ -1051,10 +1093,16 @@ mod tests {
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let form = window.root(&mut cx).unwrap();
+        let running = Rc::new(Cell::new(true));
 
         cx.update(|_, cx| {
             form.update(cx, |form, cx| {
-                form.set_agent_running(true, cx);
+                form.set_agent_run_status(
+                    Rc::new(TestAgentRunStatus {
+                        running: running.clone(),
+                    }),
+                    cx,
+                );
             });
         });
 
@@ -1064,9 +1112,34 @@ mod tests {
         });
         assert_eq!(action, Some(ChatInputPrimaryButtonAction::Stop));
 
+        running.set(false);
+
+        assert!(submit_snapshot(&form, test_snapshot("hello"), &mut cx).is_some());
+    }
+
+    #[gpui::test]
+    fn pending_submission_task_blocks_repeated_submit(cx: &mut TestAppContext) {
+        let _dir = init_chat_form_test(cx);
+        configure_chat_form_model(cx, "gpt-5");
+        let window = open_chat_form_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let form = window.root(&mut cx).unwrap();
+
         cx.update(|_, cx| {
             form.update(cx, |form, cx| {
-                form.set_agent_running(false, cx);
+                form.begin_submission(Task::ready(()), cx);
+            });
+        });
+
+        assert!(submit_snapshot(&form, test_snapshot("hello"), &mut cx).is_none());
+        let action = cx.update(|window, cx| {
+            form.update(cx, |form, cx| form.primary_button_action(window, cx))
+        });
+        assert_eq!(action, None);
+
+        cx.update(|_, cx| {
+            form.update(cx, |form, cx| {
+                form.finish_submission(cx);
             });
         });
 

@@ -445,6 +445,9 @@ impl NewConversationPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.chat_form.read(cx).submission_pending(cx) {
+            return;
+        }
         let request = conversation::CreateConversationRequest {
             project_id: self.selected_project_id.clone(),
             content_parts: submit.composer.content_parts.clone(),
@@ -462,42 +465,49 @@ impl NewConversationPage {
         let page = cx.entity().downgrade();
         let completion = window.spawn(cx, async move |cx| {
             let result = task.await;
-            let _ = page.update_in(cx, |page, window, cx| match result {
-                Ok(created) => {
-                    let conversation_id = created.conversation_id.clone();
-                    page.chat_form.update(cx, |chat_form, cx| {
-                        chat_form.clear_after_submit(window, cx);
-                    });
-                    page.workspace.update(cx, |workspace, cx| {
-                        workspace.open_conversation(conversation_id, cx);
-                    });
-                    let start = page.runtime.update(cx, |runtime, cx| {
-                        runtime.start_run(created.run_request, window, cx)
-                    });
-                    if let Err(error) = start {
-                        let title = cx.global::<I18n>().t("conversation-run-failed");
+            let _ = page.update_in(cx, |page, window, cx| {
+                page.chat_form.update(cx, |chat_form, cx| {
+                    chat_form.finish_submission(cx);
+                });
+                match result {
+                    Ok(created) => {
+                        let conversation_id = created.conversation_id.clone();
+                        page.chat_form.update(cx, |chat_form, cx| {
+                            chat_form.clear_after_submit(window, cx);
+                        });
+                        page.workspace.update(cx, |workspace, cx| {
+                            workspace.open_conversation(conversation_id, cx);
+                        });
+                        let start = page.runtime.update(cx, |runtime, cx| {
+                            runtime.start_run(created.run_request, window, cx)
+                        });
+                        if let Err(error) = start {
+                            let title = cx.global::<I18n>().t("conversation-run-failed");
+                            push_project_notification(
+                                window,
+                                cx,
+                                title,
+                                error,
+                                NotificationType::Error,
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        let title = cx.global::<I18n>().t("new-conversation-submit-failed");
                         push_project_notification(
                             window,
                             cx,
                             title,
-                            error,
+                            err.to_string(),
                             NotificationType::Error,
                         );
                     }
                 }
-                Err(err) => {
-                    let title = cx.global::<I18n>().t("new-conversation-submit-failed");
-                    push_project_notification(
-                        window,
-                        cx,
-                        title,
-                        err.to_string(),
-                        NotificationType::Error,
-                    );
-                }
             });
         });
-        crate::app::tasks::retain_window(window, completion, cx);
+        self.chat_form.update(cx, |chat_form, cx| {
+            chat_form.begin_submission(completion, cx);
+        });
     }
 
     fn insert_selected_project(

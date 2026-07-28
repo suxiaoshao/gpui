@@ -547,6 +547,9 @@ impl TemporaryWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.new_conversation.read(cx).submission_pending(cx) {
+            return;
+        }
         let request = conversation::CreateConversationRequest {
             project_id: None,
             content_parts: submit.composer.content_parts.clone(),
@@ -565,55 +568,62 @@ impl TemporaryWindow {
         let page = cx.entity().downgrade();
         let completion = window.spawn(cx, async move |cx| {
             let result = task.await;
-            let _ = page.update_in(cx, |page, window, cx| match result {
-                Ok(created) => {
-                    let conversation_id = created.conversation_id.clone();
-                    page.new_conversation.update(cx, |pane, cx| {
-                        pane.clear_after_submit(window, cx);
-                    });
-                    if page.search_operation.is_running() {
-                        page.search_operation.transition(Cancel);
-                    }
-                    page.query.clear();
-                    page.search_input.update(cx, |input, cx| {
-                        if !input.value().is_empty() {
-                            input.set_value("", window, cx);
+            let _ = page.update_in(cx, |page, window, cx| {
+                page.new_conversation.update(cx, |pane, cx| {
+                    pane.finish_submission(cx);
+                });
+                match result {
+                    Ok(created) => {
+                        let conversation_id = created.conversation_id.clone();
+                        page.new_conversation.update(cx, |pane, cx| {
+                            pane.clear_after_submit(window, cx);
+                        });
+                        if page.search_operation.is_running() {
+                            page.search_operation.transition(Cancel);
                         }
-                    });
-                    page.reload_conversations(
-                        ReloadSelection::Conversation(conversation_id.clone()),
-                        window,
-                        cx,
-                    );
-                    page.route = TemporaryWindowRoute::Conversation(conversation_id.clone());
-                    let _ = page.conversation_page(conversation_id.clone(), window, cx);
-                    let start = page.runtime.update(cx, |runtime, cx| {
-                        runtime.start_run(created.run_request, window, cx)
-                    });
-                    if let Err(error) = start {
-                        let title = cx.global::<I18n>().t("conversation-run-failed");
+                        page.query.clear();
+                        page.search_input.update(cx, |input, cx| {
+                            if !input.value().is_empty() {
+                                input.set_value("", window, cx);
+                            }
+                        });
+                        page.reload_conversations(
+                            ReloadSelection::Conversation(conversation_id.clone()),
+                            window,
+                            cx,
+                        );
+                        page.route = TemporaryWindowRoute::Conversation(conversation_id.clone());
+                        let _ = page.conversation_page(conversation_id.clone(), window, cx);
+                        let start = page.runtime.update(cx, |runtime, cx| {
+                            runtime.start_run(created.run_request, window, cx)
+                        });
+                        if let Err(error) = start {
+                            let title = cx.global::<I18n>().t("conversation-run-failed");
+                            push_temporary_notification(
+                                window,
+                                cx,
+                                title,
+                                error,
+                                NotificationType::Error,
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        let title = cx.global::<I18n>().t("temporary-submit-failed");
                         push_temporary_notification(
                             window,
                             cx,
                             title,
-                            error,
+                            err.to_string(),
                             NotificationType::Error,
                         );
                     }
                 }
-                Err(err) => {
-                    let title = cx.global::<I18n>().t("temporary-submit-failed");
-                    push_temporary_notification(
-                        window,
-                        cx,
-                        title,
-                        err.to_string(),
-                        NotificationType::Error,
-                    );
-                }
             });
         });
-        crate::app::tasks::retain_window(window, completion, cx);
+        self.new_conversation.update(cx, |pane, cx| {
+            pane.begin_submission(completion, cx);
+        });
     }
 
     pub(crate) fn open_created_conversation(

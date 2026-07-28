@@ -769,6 +769,7 @@ mod tests {
 
     #[gpui::test]
     fn finish_run_records_uncanceled_error(cx: &mut gpui::TestAppContext) {
+        let _dir = init_runtime_test(cx);
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
 
@@ -794,6 +795,7 @@ mod tests {
 
     #[gpui::test]
     fn finish_run_removes_matching_active_run(cx: &mut gpui::TestAppContext) {
+        let _dir = init_runtime_test(cx);
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
         let agent_run = jaco_db::AgentRunRecord {
@@ -1042,6 +1044,10 @@ mod tests {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
             database::install_for_test(cx, dir.path());
+            crate::features::conversation::resources::ConversationResourcesStore::install_global(
+                cx,
+                crate::features::conversation::resources::ConversationResourcesState::AwaitingDatabase,
+            );
         });
         dir
     }
