@@ -130,13 +130,24 @@ pub(super) fn open_delete_conversation_confirm(
             });
             let completion = window.spawn(cx, async move |cx| {
                 if let Err(err) = task.await {
-                    let _ = cx.update(|window, cx| {
-                        push_sidebar_error(
+                    let _ = cx.update(|window, cx| match err {
+                        jaco_db::DbError::ConversationHasActiveRun { .. } => {
+                            push_sidebar_notification(
+                                window,
+                                cx,
+                                cx.global::<I18n>()
+                                    .t("sidebar-delete-conversation-running-title"),
+                                cx.global::<I18n>()
+                                    .t("sidebar-delete-conversation-running-message"),
+                                NotificationType::Warning,
+                            );
+                        }
+                        error => push_sidebar_error(
                             window,
                             cx,
                             cx.global::<I18n>().t("sidebar-delete-conversation-failed"),
-                            err.to_string(),
-                        );
+                            error.to_string(),
+                        ),
                     });
                 }
             });
@@ -276,11 +287,21 @@ fn push_sidebar_error(
     title: impl Into<SharedString>,
     message: impl Into<SharedString>,
 ) {
+    push_sidebar_notification(window, cx, title, message, NotificationType::Error);
+}
+
+fn push_sidebar_notification(
+    window: &mut Window,
+    cx: &mut App,
+    title: impl Into<SharedString>,
+    message: impl Into<SharedString>,
+    notification_type: NotificationType,
+) {
     window.push_notification(
         Notification::new()
             .title(title.into())
             .message(message.into())
-            .with_type(NotificationType::Error),
+            .with_type(notification_type),
         cx,
     );
 }

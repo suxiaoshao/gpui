@@ -5,7 +5,7 @@ The files in `../components/*.md` are documentation snapshots copied from the
 
 - Upstream repository: https://github.com/longbridge/gpui-component
 - Upstream documentation path: `docs/docs/components/*.md`
-- Snapshot commit: `5b45bcb26b9343d91a123a4d5ed8a654360512e5`
+- Snapshot commit: `57a9903f48160845aabc8b92a1e2f5348c80d439`
 - Upstream license: Apache License, Version 2.0
 - Upstream copyright notice: Copyright 2024 - 2025 Longbridge <https://longbridge.com>
 - License copy: `gpui-component-LICENSE-APACHE`

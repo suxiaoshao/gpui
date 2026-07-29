@@ -194,7 +194,18 @@ fn apply_openai_profile(model_id: &str, snapshot: &mut ModelCapabilitiesSnapshot
         enable_file_input(snapshot);
     }
 
-    if id.starts_with("gpt-5.5") || id.starts_with("gpt-5.4") {
+    if id.starts_with("gpt-5.6") {
+        snapshot.reasoning = Some(reasoning_capability(
+            ReasoningControlSnapshot::Levels {
+                values: values(["none", "low", "medium", "high", "xhigh", "max"]),
+                default_value: Some("medium".to_string()),
+            },
+            source,
+            "medium",
+            ["none", "low", "medium", "high", "xhigh", "max"],
+            true,
+        ));
+    } else if id.starts_with("gpt-5.5") || id.starts_with("gpt-5.4") {
         snapshot.reasoning = Some(reasoning_capability(
             ReasoningControlSnapshot::Levels {
                 values: values(["none", "low", "medium", "high", "xhigh"]),
@@ -552,6 +563,14 @@ mod tests {
         );
         assert!(gpt55.image_input.is_some());
         assert!(gpt55.file_input.is_some());
+
+        let gpt56 = capabilities_for_model("openai", "gpt-5.6-sol-2026-07-29", None);
+        assert_eq!(
+            gpt56.reasoning.unwrap().efforts,
+            values(["none", "low", "medium", "high", "xhigh", "max"])
+        );
+        assert!(gpt56.image_input.is_some());
+        assert!(gpt56.file_input.is_some());
 
         let codex = capabilities_for_model("openai", "gpt-5.2-codex", None);
         assert_eq!(

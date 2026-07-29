@@ -322,10 +322,20 @@ impl HomeWorkspace {
         conversation_id: ConversationId,
         cx: &mut Context<Self>,
     ) -> Task<jaco_db::Result<ConversationSummary>> {
-        if matches!(&self.route, HomeRoute::Conversation(id) if id == &conversation_id) {
-            self.route = HomeRoute::NewConversation;
-        }
-        crate::features::conversation::delete_conversation(conversation_id, cx)
+        let task = crate::features::conversation::delete_conversation(conversation_id.clone(), cx);
+        cx.spawn(async move |workspace, cx| {
+            let result = task.await;
+            if result.is_ok() {
+                let _ = workspace.update(cx, |workspace, cx| {
+                    if matches!(&workspace.route, HomeRoute::Conversation(id) if id == &conversation_id)
+                    {
+                        workspace.route = HomeRoute::NewConversation;
+                        cx.notify();
+                    }
+                });
+            }
+            result
+        })
     }
 
     pub(crate) fn search_conversations(

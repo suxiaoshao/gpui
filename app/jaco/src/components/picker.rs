@@ -428,16 +428,20 @@ pub(crate) fn picker_trigger_with_icon(
         .rounded(px(PICKER_TRIGGER_RADIUS))
         .child(
             h_flex()
+                .flex_none()
                 .items_center()
-                .min_w_0()
                 .gap_1p5()
                 .child(icon)
                 .child(
-                    Label::new(label.into())
-                        .text_sm()
-                        .font_medium()
-                        .whitespace_nowrap()
-                        .truncate(),
+                    div()
+                        .debug_selector(move || format!("picker-trigger-label:{id}"))
+                        .flex_none()
+                        .child(
+                            Label::new(label.into())
+                                .text_sm()
+                                .font_medium()
+                                .whitespace_nowrap(),
+                        ),
                 )
                 .child(
                     Icon::new(if open {
@@ -514,25 +518,27 @@ pub(crate) fn picker_content_popover<F>(
 where
     F: Fn(&bool, &mut Window, &mut App) + 'static,
 {
-    Popover::new(config.id)
-        .anchor(Anchor::BottomLeft)
-        .appearance(false)
-        .open(config.open)
-        .on_open_change(config.on_open_change)
-        .trigger(config.trigger)
-        .child(
-            v_flex()
-                .w(config.width)
-                .occlude()
-                .mb_1p5()
-                .rounded(px(12.))
-                .border_1()
-                .border_color(cx.theme().border)
-                .bg(cx.theme().tokens.popover.background)
-                .shadow_lg()
-                .child(config.content)
-                .when_some(config.footer, |this, footer| this.child(footer)),
-        )
+    div().flex_none().child(
+        Popover::new(config.id)
+            .anchor(Anchor::BottomLeft)
+            .appearance(false)
+            .open(config.open)
+            .on_open_change(config.on_open_change)
+            .trigger(config.trigger)
+            .child(
+                v_flex()
+                    .w(config.width)
+                    .occlude()
+                    .mb_1p5()
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().tokens.popover.background)
+                    .shadow_lg()
+                    .child(config.content)
+                    .when_some(config.footer, |this, footer| this.child(footer)),
+            ),
+    )
 }
 
 #[cfg(test)]

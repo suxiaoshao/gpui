@@ -27,7 +27,7 @@ use jaco_db::{
     AgentRunRecord, FinishAgentRun, FinishedAgentRun, NewConversationEntry, ProviderRecord,
     UpdateAgentRunStatus,
 };
-use rig_core::{
+use rig::{
     agent::{AgentBuilder, MultiTurnStreamItem, StreamingError},
     completion::{CompletionModel, Prompt, PromptError, Usage},
     streaming::{StreamedAssistantContent, StreamingPrompt},
@@ -41,6 +41,7 @@ pub struct AgentRuntime {
     skill_loader: SkillLoader,
     mcp_session_manager: Option<Arc<Mutex<McpSessionManager>>>,
     approval_broker: Option<Arc<dyn ToolApprovalBroker>>,
+    openai_sessions: crate::providers::openai::OpenAiResponsesSessionPool,
 }
 
 impl AgentRuntime {
@@ -50,6 +51,7 @@ impl AgentRuntime {
             skill_loader: SkillLoader::new(),
             mcp_session_manager: None,
             approval_broker: None,
+            openai_sessions: crate::providers::openai::OpenAiResponsesSessionPool::new(),
         }
     }
 
@@ -73,6 +75,24 @@ impl AgentRuntime {
         self
     }
 
+    pub fn with_openai_session_pool(
+        mut self,
+        pool: crate::providers::openai::OpenAiResponsesSessionPool,
+    ) -> Self {
+        self.openai_sessions = pool;
+        self
+    }
+
+    pub(crate) fn openai_session_pool(
+        &self,
+    ) -> crate::providers::openai::OpenAiResponsesSessionPool {
+        self.openai_sessions.clone()
+    }
+
+    pub(crate) fn persistence(&self) -> Arc<dyn AgentPersistence> {
+        self.persistence.clone()
+    }
+
     pub async fn run_with_model<M>(
         &self,
         request: AgentRunRequest,
@@ -87,7 +107,7 @@ impl AgentRuntime {
             + Sync
             + serde::Serialize
             + serde::de::DeserializeOwned
-            + rig_core::completion::GetTokenUsage,
+            + rig::completion::GetTokenUsage,
     {
         self.run_with_model_observed(request, model, None).await
     }
@@ -107,7 +127,7 @@ impl AgentRuntime {
             + Sync
             + serde::Serialize
             + serde::de::DeserializeOwned
-            + rig_core::completion::GetTokenUsage,
+            + rig::completion::GetTokenUsage,
     {
         let agent_run = self.begin_run(&mut request, observer.as_ref()).await?;
         self.run_started_with_model_observed(agent_run, request, model, observer)
@@ -184,7 +204,59 @@ impl AgentRuntime {
             + Sync
             + serde::Serialize
             + serde::de::DeserializeOwned
-            + rig_core::completion::GetTokenUsage,
+            + rig::completion::GetTokenUsage,
+    {
+        self.run_started_with_model_observed_inner(agent_run, request, model, observer, None)
+            .await
+    }
+
+    pub(crate) async fn run_started_with_openai_websocket_observed<M>(
+        &self,
+        agent_run: AgentRunRecord,
+        request: AgentRunRequest,
+        model: M,
+        observer: Option<AgentRuntimeObserver>,
+        attempts: crate::providers::openai::OpenAiAttemptCoordinator,
+    ) -> Result<AgentRunHandle>
+    where
+        M: CompletionModel + 'static,
+        M::Response: serde::Serialize + serde::de::DeserializeOwned,
+        M::StreamingResponse: Clone
+            + Unpin
+            + Send
+            + Sync
+            + serde::Serialize
+            + serde::de::DeserializeOwned
+            + rig::completion::GetTokenUsage,
+    {
+        self.run_started_with_model_observed_inner(
+            agent_run,
+            request,
+            model,
+            observer,
+            Some(attempts),
+        )
+        .await
+    }
+
+    async fn run_started_with_model_observed_inner<M>(
+        &self,
+        agent_run: AgentRunRecord,
+        request: AgentRunRequest,
+        model: M,
+        observer: Option<AgentRuntimeObserver>,
+        openai_attempts: Option<crate::providers::openai::OpenAiAttemptCoordinator>,
+    ) -> Result<AgentRunHandle>
+    where
+        M: CompletionModel + 'static,
+        M::Response: serde::Serialize + serde::de::DeserializeOwned,
+        M::StreamingResponse: Clone
+            + Unpin
+            + Send
+            + Sync
+            + serde::Serialize
+            + serde::de::DeserializeOwned
+            + rig::completion::GetTokenUsage,
     {
         if request.cancellation_token.is_cancelled() {
             let agent_run = self
@@ -252,14 +324,11 @@ impl AgentRuntime {
             }
         };
 
-        let rig_tools = request
+        let tool_bundle = request
             .tool_registry
             .clone()
-            .into_rig_tools(request.guards.tool_timeout);
-        let registered_definitions = request.tool_registry.registered_definitions();
-        let runtime_tools = request
-            .tool_registry
-            .runtime_tools(request.guards.tool_timeout);
+            .into_rig_tool_bundle(request.guards.tool_timeout);
+        let registered_definitions = tool_bundle.definitions().to_vec();
         let context = PersistenceContext::new(
             self.persistence.clone(),
             agent_run.id.clone(),
@@ -269,20 +338,25 @@ impl AgentRuntime {
             request.settings_snapshot.clone(),
             prompt_history.input_item_ids,
             registered_definitions,
-            runtime_tools,
             request.guards.max_tool_calls,
             request.guards.repeated_tool_call_limit,
             request.cancellation_token.clone(),
             observer.clone(),
             self.approval_broker.clone(),
         );
-        let model = PersistingCompletionModel::new(model, context.clone());
+        let model = match openai_attempts {
+            Some(attempts) => PersistingCompletionModel::new_with_openai_attempts(
+                model,
+                context.clone(),
+                attempts,
+            ),
+            None => PersistingCompletionModel::new(model, context.clone()),
+        };
         let hook = context.hook();
 
         let mut builder = AgentBuilder::new(model)
             .name("jaco-agent")
-            .hook(hook)
-            .tools(rig_tools)
+            .add_hook(hook)
             .default_max_turns(request.guards.max_steps as usize);
         if let Some(prompt) = prompt_preamble(request.prompt_snapshot.as_ref()) {
             builder = builder.preamble(&prompt);
@@ -299,7 +373,7 @@ impl AgentRuntime {
         if let Some(additional_params) = additional_params {
             builder = builder.additional_params(additional_params);
         }
-        let agent = builder.build();
+        let agent = tool_bundle.install(builder).build();
 
         let execution = if request.settings_snapshot.model_capabilities.streaming {
             let stream = tokio::select! {
@@ -307,7 +381,7 @@ impl AgentRuntime {
                 _ = request.cancellation_token.cancelled() => None,
                 stream = agent
                     .stream_prompt(prompt_history.prompt)
-                    .with_history(prompt_history.history)
+                    .history(prompt_history.history)
                     .without_memory() => Some(stream),
             };
             let Some(mut stream) = stream else {
@@ -372,7 +446,8 @@ impl AgentRuntime {
                             final_raw_response = Some(response);
                         }
                         StreamedAssistantContent::ToolCall { .. }
-                        | StreamedAssistantContent::ToolCallDelta { .. } => {}
+                        | StreamedAssistantContent::ToolCallDelta { .. }
+                        | StreamedAssistantContent::Unknown(_) => {}
                     },
                     Some(Ok(MultiTurnStreamItem::StreamUserItem(_))) => {}
                     Some(Ok(MultiTurnStreamItem::FinalResponse(response))) => {
@@ -410,11 +485,11 @@ impl AgentRuntime {
                     None => {
                         let final_text = final_response
                             .as_ref()
-                            .map(|response| response.response())
+                            .map(|response| response.output.clone())
                             .filter(|text| !text.is_empty());
                         if request.cancellation_token.is_cancelled() {
                             accumulator
-                                .finish(ConversationEntryStatus::Canceled, final_text)
+                                .finish(ConversationEntryStatus::Canceled, final_text.as_deref())
                                 .await?;
                             let _ = context
                                 .cancel_current_provider_step(run_error(
@@ -427,7 +502,7 @@ impl AgentRuntime {
                             break Ok(AgentStoppedReason::Canceled);
                         } else {
                             accumulator
-                                .finish(ConversationEntryStatus::Completed, final_text)
+                                .finish(ConversationEntryStatus::Completed, final_text.as_deref())
                                 .await?;
                             let usage = final_response
                                 .as_ref()
@@ -460,8 +535,8 @@ impl AgentRuntime {
                 }
                 response = agent
                     .prompt(prompt_history.prompt)
-                    .with_history(prompt_history.history)
-                    .with_tool_concurrency(request.guards.tool_concurrency)
+                    .history(prompt_history.history)
+                    .tool_concurrency(request.guards.tool_concurrency)
                     .without_memory()
                     .extended_details() => Some(response),
             };

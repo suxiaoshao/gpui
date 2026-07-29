@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 jaco-core.workspace = true
 jaco-db.workspace = true
-thiserror = "2.0.18"
+thiserror = "2.0.19"
 
 [dev-dependencies]
 tempfile = "3.27.0"

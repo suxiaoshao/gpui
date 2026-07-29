@@ -6,32 +6,33 @@ edition = "2024"
 [dependencies]
 jaco-core.workspace = true
 jaco-db.workspace = true
-async-trait = "0.1.89"
-base64 = "0.22.1"
+async-trait = "0.1.91"
+async-stream = "0.3.6"
+base64 = { version = "0.23.0", default-features = false, features = ["std"] }
 dirs = "6.0.0"
-futures = "0.3.32"
-globset = "0.4.18"
-grep-matcher = "0.1.8"
+futures = "0.3.33"
+globset = "0.4.19"
+grep-matcher = "0.1.9"
 grep-regex = "0.1.14"
-grep-searcher = "0.1.16"
+grep-searcher = "0.1.17"
 hex = "0.4.3"
 http = "1.4.2"
-ignore = "0.4.26"
-rig-core.workspace = true
+ignore = "0.4.31"
+rig.workspace = true
 rmcp.workspace = true
 reqwest = { version = "0.13.4", features = ["json"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 sha2 = "0.11.0"
 similar = "3.1.1"
-thiserror = "2.0.18"
-time = { version = "0.3.49", features = ["formatting", "parsing", "serde"] }
-tokio = { version = "1.52.3", features = ["process", "sync", "time"] }
-tokio-util = "0.7.18"
+thiserror = "2.0.19"
+time = { version = "0.3.54", features = ["formatting", "parsing", "serde"] }
+tokio = { version = "1.53.1", features = ["process", "sync", "time"] }
+tokio-util = "0.7.19"
 tracing = "0.1.44"
 url = "2.5.8"
 
 [dev-dependencies]
-rig-core = { workspace = true, features = ["test-utils"] }
+rig = { workspace = true, features = ["test-utils"] }
 tempfile = "3.27.0"
-tokio = { version = "1.52.3", features = ["macros", "rt", "sync", "time"] }
+tokio = { version = "1.53.1", features = ["macros", "rt", "sync", "time"] }

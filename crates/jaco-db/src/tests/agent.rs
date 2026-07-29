@@ -1,6 +1,338 @@
 use super::*;
 
 #[test]
+fn soft_delete_conversation_rejects_active_run_and_succeeds_after_terminal_status() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("delete-active-run")).unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.6", "GPT-5.6"))
+        .unwrap();
+    let trigger = repo
+        .append_conversation_entry(message_item(&conversation.id, "run"))
+        .unwrap();
+    let run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
+            trigger_entry_id: trigger.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            input: agent_run_input(&trigger.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+
+    let error = repo.soft_delete_conversation(&conversation.id).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::DbError::ConversationHasActiveRun { conversation_id }
+            if conversation_id == conversation.id
+    ));
+    assert_eq!(
+        repo.get_conversation(&conversation.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        ConversationStatus::Active
+    );
+
+    repo.finish_agent_run(
+        &run.id,
+        FinishAgentRun {
+            status: AgentRunStatus::Canceled,
+            stopped_reason: AgentStoppedReason::Canceled,
+            error: None,
+            final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                conversation_id: conversation.id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(run.id.clone()),
+                provider_step_id: None,
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationEntryPayload::Status(ConversationStatusEntry {
+                    code: ConversationStatusCode::Canceled,
+                    message: None,
+                }),
+            })),
+        },
+    )
+    .unwrap();
+    let deleted = repo.soft_delete_conversation(&conversation.id).unwrap();
+    assert_eq!(deleted.status, ConversationStatus::Deleted);
+    assert!(deleted.deleted_at.is_some());
+}
+
+#[test]
+fn complete_provider_step_commits_usage_and_continuation_atomically() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let project = repo
+        .insert_project(project("complete-provider-step"))
+        .unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.6", "GPT-5.6"))
+        .unwrap();
+    let trigger = repo
+        .append_conversation_entry(message_item(&conversation.id, "run"))
+        .unwrap();
+    let run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
+            trigger_entry_id: trigger.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            input: agent_run_input(&trigger.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    let step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: run.id,
+            seq: 1,
+            status: ProviderStepStatus::Running,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &trigger.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+    let continuation = ProviderContinuationSnapshot::openai_responses(
+        "resp_1".to_string(),
+        "all_turns".to_string(),
+        time::OffsetDateTime::now_utc(),
+    )
+    .unwrap();
+    let completion = crate::CompleteProviderStep {
+        response_snapshot: provider_step_response(),
+        state_snapshot: provider_run_state(&provider.id),
+        continuation: Some(continuation.clone()),
+        usage: usage_snapshot(),
+    };
+
+    let completed = repo
+        .complete_provider_step_with_usage(&step.id, completion.clone())
+        .unwrap();
+    assert_eq!(completed.step.status, ProviderStepStatus::Completed);
+    assert_eq!(completed.step.continuation, Some(continuation));
+    assert_eq!(completed.usage.usage, usage_snapshot());
+    assert_eq!(
+        repo.usage_events_for_provider_step(&step.id).unwrap().len(),
+        1
+    );
+    assert!(
+        repo.insert_usage_event(NewUsageEvent {
+            provider_step_id: step.id.clone(),
+            date_key: "2026-07-29".to_string(),
+            usage: usage_snapshot(),
+        })
+        .is_err()
+    );
+    assert!(
+        repo.complete_provider_step_with_usage(&step.id, completion)
+            .is_err()
+    );
+}
+
+#[test]
+fn complete_provider_step_rolls_back_when_usage_insert_fails() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let project = repo
+        .insert_project(project("provider-step-rollback"))
+        .unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.6", "GPT-5.6"))
+        .unwrap();
+    let trigger = repo
+        .append_conversation_entry(message_item(&conversation.id, "run"))
+        .unwrap();
+    let run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
+            trigger_entry_id: trigger.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            input: agent_run_input(&trigger.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    let step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: run.id,
+            seq: 1,
+            status: ProviderStepStatus::Running,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &trigger.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+    let continuation = ProviderContinuationSnapshot::openai_responses(
+        "resp_rollback".to_string(),
+        "all_turns".to_string(),
+        time::OffsetDateTime::now_utc(),
+    )
+    .unwrap();
+    {
+        let mut conn = store.pool().get().unwrap();
+        conn.batch_execute(
+            "CREATE TRIGGER inject_usage_failure \
+             BEFORE INSERT ON usage_events \
+             BEGIN SELECT RAISE(ABORT, 'inject-usage-failure'); END;",
+        )
+        .unwrap();
+    }
+
+    let result = repo.complete_provider_step_with_usage(
+        &step.id,
+        crate::CompleteProviderStep {
+            response_snapshot: provider_step_response(),
+            state_snapshot: provider_run_state(&provider.id),
+            continuation: Some(continuation),
+            usage: usage_snapshot(),
+        },
+    );
+
+    assert!(result.is_err());
+    let step = repo.get_provider_step(&step.id).unwrap().unwrap();
+    assert_eq!(step.status, ProviderStepStatus::Running);
+    assert!(step.response_snapshot.is_none());
+    assert!(step.state_snapshot.is_none());
+    assert!(step.continuation.is_none());
+    assert!(step.completed_at.is_none());
+    assert!(
+        repo.usage_events_for_provider_step(&step.id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn previous_id_fallback_persists_failed_and_completed_attempts() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let project = repo
+        .insert_project(project("previous-id-fallback"))
+        .unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.6", "GPT-5.6"))
+        .unwrap();
+    let trigger = repo
+        .append_conversation_entry(message_item(&conversation.id, "run"))
+        .unwrap();
+    let run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id,
+            trigger_entry_id: trigger.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            status: AgentRunStatus::Running,
+            input: agent_run_input(&trigger.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    let mut previous_request = provider_step_request(&provider.id, &model.model_id, &trigger.id);
+    previous_request.transport = ProviderTransportSnapshot::WebSocket;
+    previous_request.context_mode = ProviderRequestContextSnapshot::PreviousResponse;
+    previous_request.previous_response_id = Some("resp_expired".to_string());
+    let rejected = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: run.id.clone(),
+            seq: 1,
+            status: ProviderStepStatus::Running,
+            request_snapshot: previous_request,
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+    let rejection = run_error();
+    repo.update_provider_step_status(
+        &rejected.id,
+        UpdateProviderStepStatus {
+            status: ProviderStepStatus::Failed,
+            response_snapshot: None,
+            state_snapshot: None,
+            error: Some(rejection.clone()),
+        },
+    )
+    .unwrap();
+
+    let mut fallback_request = provider_step_request(&provider.id, &model.model_id, &trigger.id);
+    fallback_request.transport = ProviderTransportSnapshot::WebSocket;
+    fallback_request.context_mode = ProviderRequestContextSnapshot::FullHistoryFallback;
+    let fallback = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: run.id.clone(),
+            seq: 2,
+            status: ProviderStepStatus::Running,
+            request_snapshot: fallback_request,
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+    let continuation = ProviderContinuationSnapshot::openai_responses(
+        "resp_1".to_string(),
+        "current_turn".to_string(),
+        time::OffsetDateTime::now_utc(),
+    )
+    .unwrap();
+    repo.complete_provider_step_with_usage(
+        &fallback.id,
+        crate::CompleteProviderStep {
+            response_snapshot: provider_step_response(),
+            state_snapshot: provider_run_state(&provider.id),
+            continuation: Some(continuation),
+            usage: usage_snapshot(),
+        },
+    )
+    .unwrap();
+    let tool = repo
+        .insert_tool_invocation(NewToolInvocation {
+            agent_run_id: run.id.clone(),
+            provider_step_id: Some(fallback.id.clone()),
+            status: ToolInvocationStatus::Succeeded,
+            input: tool_input(),
+            output: Some(tool_output()),
+            error: None,
+        })
+        .unwrap();
+
+    let steps = repo.provider_steps_for_run(&run.id).unwrap();
+    assert_eq!(
+        steps.iter().map(|step| step.seq).collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert_eq!(steps[0].status, ProviderStepStatus::Failed);
+    assert_eq!(steps[0].error, Some(rejection));
+    assert!(
+        repo.usage_events_for_provider_step(&rejected.id)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(steps[1].status, ProviderStepStatus::Completed);
+    assert_eq!(
+        repo.usage_events_for_provider_step(&fallback.id)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(tool.provider_step_id.as_deref(), Some(fallback.id.as_str()));
+}
+
+#[test]
 fn append_items_updates_order_last_seq_and_search_text() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
@@ -109,8 +441,8 @@ fn append_item_rejects_cross_conversation_execution_links() {
             seq: 1,
             status: ProviderStepStatus::Completed,
             request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
-            response_snapshot: None,
-            state_snapshot: None,
+            response_snapshot: Some(provider_step_response()),
+            state_snapshot: Some(provider_run_state(&provider.id)),
             settings_snapshot: run_settings(&provider.id, &model.model_id),
             error: None,
         })
@@ -250,8 +582,8 @@ fn insert_tool_invocation_rejects_provider_step_from_other_run() {
             seq: 1,
             status: ProviderStepStatus::Completed,
             request_snapshot: provider_step_request(&provider.id, &model.model_id, &first_item.id),
-            response_snapshot: None,
-            state_snapshot: None,
+            response_snapshot: Some(provider_step_response()),
+            state_snapshot: Some(provider_run_state(&provider.id)),
             settings_snapshot: run_settings(&provider.id, &model.model_id),
             error: None,
         })
@@ -297,8 +629,8 @@ fn usage_event_derives_dimensions_from_provider_step() {
             seq: 1,
             status: ProviderStepStatus::Completed,
             request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
-            response_snapshot: None,
-            state_snapshot: None,
+            response_snapshot: Some(provider_step_response()),
+            state_snapshot: Some(provider_run_state(&provider.id)),
             settings_snapshot: run_settings(&provider.id, &model.model_id),
             error: None,
         })
@@ -349,8 +681,8 @@ fn provider_step_derives_dimensions_from_request_snapshot() {
             seq: 1,
             status: ProviderStepStatus::Completed,
             request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
-            response_snapshot: None,
-            state_snapshot: None,
+            response_snapshot: Some(provider_step_response()),
+            state_snapshot: Some(provider_run_state(&provider.id)),
             settings_snapshot: run_settings(&provider.id, &model.model_id),
             error: None,
         })
@@ -447,8 +779,8 @@ fn provider_step_validates_input_item_ownership() {
             seq: 1,
             status: ProviderStepStatus::Completed,
             request_snapshot: same_conversation_request,
-            response_snapshot: None,
-            state_snapshot: None,
+            response_snapshot: Some(provider_step_response()),
+            state_snapshot: Some(provider_run_state(&provider.id)),
             settings_snapshot: run_settings(&provider.id, &model.model_id),
             error: None,
         })
@@ -518,8 +850,8 @@ fn tool_invocation_approval_derives_status_and_decision_columns() {
             seq: 1,
             status: ProviderStepStatus::Completed,
             request_snapshot: provider_step_request(&provider.id, &model.model_id, &user_item.id),
-            response_snapshot: None,
-            state_snapshot: None,
+            response_snapshot: Some(provider_step_response()),
+            state_snapshot: Some(provider_run_state(&provider.id)),
             settings_snapshot: run_settings(&provider.id, &model.model_id),
             error: None,
         })

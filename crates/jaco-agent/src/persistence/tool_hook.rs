@@ -1,115 +1,26 @@
 use super::{PersistenceContext, error_tool_output, lock, mutex_clone, mutex_replace, run_error};
 use crate::{
-    AgentRuntimeError, AgentRuntimeEvent, AgentStep, RegisteredToolDefinition, Result,
-    ToolApprovalDecision, ToolApprovalRequest,
-    tools::{RegisteredRuntimeTool, tool_output_to_model_text},
+    AgentRuntimeError, AgentStep, RegisteredToolDefinition, Result, ToolApprovalDecision,
+    ToolApprovalRequest, tools::tool_output_to_model_text,
 };
 use jaco_core::*;
 use jaco_db::{
     NewConversationEntry, NewToolInvocation, ToolInvocationApprovalOutcome, ToolInvocationRecord,
     UpdateToolInvocationStatus,
 };
-use rig_core::{
+use rig::{
     agent::{
-        HookAction, InvalidToolCallContext, InvalidToolCallHookAction, PromptHook,
-        ToolCallHookAction,
+        AgentHook, CompletionCallAction, CompletionCallEvent, CompletionResponseEvent, HookContext,
+        InvalidToolCallAction, InvalidToolCallContext, ObservationAction, StepEventKind,
+        StreamResponseFinish, ToolCall, ToolCallAction, ToolResultAction, ToolResultEvent,
     },
-    completion::{AssistantContent, CompletionModel, CompletionResponse},
+    completion::AssistantContent,
+    message::ToolResultContent as RigToolResultContent,
+    tool::ToolOutput,
 };
-use tokio::time::timeout;
+use std::collections::{BTreeMap, BTreeSet};
 
 impl PersistenceContext {
-    pub(super) async fn execute_tool_invocation(
-        &self,
-        tool: RegisteredRuntimeTool,
-        invocation: ToolInvocationRecord,
-        arguments: serde_json::Value,
-    ) -> Result<String> {
-        let execution = tokio::select! {
-            biased;
-            _ = self.cancellation_token.cancelled() => {
-                return Err(AgentRuntimeError::Canceled);
-            }
-            execution = timeout(tool.timeout, tool.executor.execute(arguments)) => execution,
-        };
-        let (output, status, error) = match execution {
-            Ok(Ok(output)) => {
-                let error = output.is_error.then(|| {
-                    run_error("tool_error", tool_output_to_model_text(&output), true, None)
-                });
-                let status = if output.is_error {
-                    ToolInvocationStatus::Failed
-                } else {
-                    ToolInvocationStatus::Succeeded
-                };
-                (output, status, error)
-            }
-            Ok(Err(error)) => {
-                let payload = run_error("tool_error", error.to_string(), true, None);
-                (
-                    error_tool_output(payload.message.clone()),
-                    ToolInvocationStatus::Failed,
-                    Some(payload),
-                )
-            }
-            Err(_) => {
-                let payload = run_error("tool_timeout", "tool execution timed out", true, None);
-                (
-                    error_tool_output(payload.message.clone()),
-                    ToolInvocationStatus::Failed,
-                    Some(payload),
-                )
-            }
-        };
-        if self.cancellation_token.is_cancelled() {
-            return Err(AgentRuntimeError::Canceled);
-        }
-        let model_text = tool_output_to_model_text(&output);
-        let payload = ConversationEntryPayload::ToolResult(ToolResultEntry {
-            tool_invocation_id: Some(invocation.id.clone()),
-            call_id: invocation.call_id.clone(),
-            content: output.content.clone(),
-            is_error: output.is_error,
-            structured_output: output.structured_output.clone(),
-            raw_output: output.raw_output.clone(),
-        });
-        let commit = self
-            .persistence
-            .append_entries_and_update_tool_invocation(
-                vec![NewConversationEntry {
-                    conversation_id: self.conversation_id.clone(),
-                    status: ConversationEntryStatus::Completed,
-                    agent_run_id: Some(self.agent_run_id.clone()),
-                    provider_step_id: invocation.provider_step_id.clone(),
-                    tool_invocation_id: Some(invocation.id.clone()),
-                    provider_item_id: None,
-                    payload,
-                }],
-                invocation.id.clone(),
-                UpdateToolInvocationStatus {
-                    status,
-                    output: Some(output),
-                    error,
-                },
-                None,
-            )
-            .await?;
-        self.emit_tool_entries_commit(&commit);
-        let (items, _) = commit.value;
-        let item = items.into_iter().next().ok_or_else(|| {
-            AgentRuntimeError::Invariant(format!(
-                "tool invocation {} completion created no entry",
-                invocation.id
-            ))
-        })?;
-        self.add_input_item_id(item.id.clone());
-        self.push_step(AgentStep::ConversationEntry(item.id));
-        self.push_event(AgentRunEvent::ToolInvocationFinished {
-            tool_invocation_id: invocation.id,
-        });
-        Ok(model_text)
-    }
-
     pub(super) async fn append_error_tool_result_and_update_tool_invocation(
         &self,
         invocation: &ToolInvocationRecord,
@@ -169,14 +80,14 @@ impl PersistenceContext {
         status: ToolInvocationStatus,
         code: impl Into<String>,
         message: impl Into<String>,
-    ) -> ToolCallHookAction {
+    ) -> ToolCallAction {
         let error = run_error(code, message, true, None);
         match self
             .append_error_tool_result_and_update_tool_invocation(invocation, status, error)
             .await
         {
-            Ok(model_text) => ToolCallHookAction::skip(model_text),
-            Err(error) => ToolCallHookAction::terminate(error.to_string()),
+            Ok(model_text) => ToolCallAction::skip(model_text),
+            Err(error) => ToolCallAction::stop(error.to_string()),
         }
     }
 
@@ -186,14 +97,14 @@ impl PersistenceContext {
         status: ToolInvocationStatus,
         code: impl Into<String>,
         message: impl Into<String>,
-    ) -> InvalidToolCallHookAction {
+    ) -> InvalidToolCallAction {
         let error = run_error(code, message, true, None);
         match self
             .append_error_tool_result_and_update_tool_invocation(invocation, status, error)
             .await
         {
-            Ok(model_text) => InvalidToolCallHookAction::skip(model_text),
-            Err(_) => InvalidToolCallHookAction::fail(),
+            Ok(model_text) => InvalidToolCallAction::skip(model_text),
+            Err(_) => InvalidToolCallAction::fail(),
         }
     }
 
@@ -537,14 +448,10 @@ impl PersistenceContext {
         Ok(())
     }
 
-    pub(super) fn check_tool_guard(
-        &self,
-        runtime_tool_name: &str,
-        args: &str,
-    ) -> ToolCallHookAction {
+    pub(super) fn check_tool_guard(&self, runtime_tool_name: &str, args: &str) -> ToolCallAction {
         let calls = lock(&self.tool_calls);
         if calls.len() as u32 >= self.max_tool_calls {
-            return ToolCallHookAction::terminate("max tool call guard reached");
+            return ToolCallAction::stop("max tool call guard reached");
         }
         drop(calls);
 
@@ -553,28 +460,28 @@ impl PersistenceContext {
         let count = repeated.entry(key).or_insert(0);
         *count += 1;
         if *count > self.repeated_tool_call_limit {
-            ToolCallHookAction::terminate(format!(
+            ToolCallAction::stop(format!(
                 "repeated tool call guard reached for {runtime_tool_name}"
             ))
         } else {
-            ToolCallHookAction::cont()
+            ToolCallAction::run()
         }
     }
 }
 
 #[derive(Clone)]
-pub(crate) struct PersistingPromptHook {
+pub(crate) struct PersistingAgentHook {
     pub(super) context: PersistenceContext,
 }
 
-impl PersistingPromptHook {
-    async fn await_approval_and_execute_tool(
+impl PersistingAgentHook {
+    async fn await_approval(
         &self,
-        runtime_tool: RegisteredRuntimeTool,
+        hook_context: &HookContext,
+        internal_call_id: &str,
         invocation: ToolInvocationRecord,
-        arguments: serde_json::Value,
         request: ToolApprovalRequest,
-    ) -> ToolCallHookAction {
+    ) -> ToolCallAction {
         match self.context.await_tool_approval(request).await {
             ToolApprovalDecision::Approved { decided_by, reason } => {
                 let invocation = match self
@@ -583,24 +490,21 @@ impl PersistingPromptHook {
                     .await
                 {
                     Ok(invocation) => invocation,
-                    Err(error) => return ToolCallHookAction::terminate(error.to_string()),
+                    Err(error) => return ToolCallAction::stop(error.to_string()),
                 };
-                match self
-                    .context
-                    .execute_tool_invocation(runtime_tool, invocation, arguments)
-                    .await
-                {
-                    Ok(model_text) => ToolCallHookAction::skip(model_text),
-                    Err(error) => ToolCallHookAction::terminate(error.to_string()),
-                }
+                drop(invocation);
+                ToolCallAction::run()
             }
             ToolApprovalDecision::Denied { decided_by, reason } => match self
                 .context
                 .append_denied_tool_approval_result(&invocation, decided_by, reason)
                 .await
             {
-                Ok(model_text) => ToolCallHookAction::skip(model_text),
-                Err(error) => ToolCallHookAction::terminate(error.to_string()),
+                Ok(model_text) => {
+                    mark_result_persisted(hook_context, internal_call_id);
+                    ToolCallAction::skip(model_text)
+                }
+                Err(error) => ToolCallAction::stop(error.to_string()),
             },
             ToolApprovalDecision::Canceled => {
                 if let Err(error) = self
@@ -608,48 +512,25 @@ impl PersistingPromptHook {
                     .append_canceled_tool_approval_result(&invocation)
                     .await
                 {
-                    return ToolCallHookAction::terminate(error.to_string());
+                    return ToolCallAction::stop(error.to_string());
                 }
-                ToolCallHookAction::terminate("runtime canceled")
+                mark_result_persisted(hook_context, internal_call_id);
+                ToolCallAction::stop("runtime canceled")
             }
         }
     }
-}
 
-impl<M> PromptHook<M> for PersistingPromptHook
-where
-    M: CompletionModel,
-{
-    async fn on_completion_call(
+    async fn persist_assistant_content(
         &self,
-        _prompt: &rig_core::completion::Message,
-        _history: &[rig_core::completion::Message],
-    ) -> HookAction {
-        if self.context.cancellation_token.is_cancelled() {
-            HookAction::terminate("runtime canceled")
-        } else {
-            HookAction::cont()
-        }
-    }
-
-    async fn on_completion_response(
-        &self,
-        _prompt: &rig_core::completion::Message,
-        response: &CompletionResponse<M::Response>,
-    ) -> HookAction {
-        if self.context.cancellation_token.is_cancelled() {
-            return HookAction::terminate("runtime canceled");
-        }
-
+        content: impl IntoIterator<Item = AssistantContent>,
+    ) -> Result<()> {
         let provider_step_id = mutex_clone(&self.context.last_provider_step_id);
-        for content in response.choice.iter() {
+        for content in content {
             let payload = match content {
                 AssistantContent::Text(text) if !text.text.is_empty() => {
                     Some(ConversationEntryPayload::Message {
                         role: TranscriptRole::Assistant,
-                        content: vec![ContentPart::Text {
-                            text: text.text.clone(),
-                        }],
+                        content: vec![ContentPart::Text { text: text.text }],
                     })
                 }
                 AssistantContent::Reasoning(reasoning) => {
@@ -662,40 +543,68 @@ where
             };
 
             if let Some(payload) = payload {
-                match self.context.append_item(payload.clone()).await {
-                    Ok(item) => {
-                        if matches!(payload, ConversationEntryPayload::Message { .. }) {
-                            mutex_replace(&self.context.final_entry_id, Some(item.id.clone()));
-                        }
-                        if let Some(provider_step_id) = provider_step_id.as_ref() {
-                            self.context.push_event(AgentRunEvent::ProviderStepEvent {
-                                provider_step_id: provider_step_id.clone(),
-                                event: ProviderStepEvent::OutputItemCompleted {
-                                    provider_item_id: item.provider_item_id.clone(),
-                                    item: payload,
-                                },
-                            });
-                        }
-                    }
-                    Err(error) => return HookAction::terminate(error.to_string()),
+                let item = self.context.append_item(payload.clone()).await?;
+                if matches!(payload, ConversationEntryPayload::Message { .. }) {
+                    mutex_replace(&self.context.final_entry_id, Some(item.id.clone()));
+                }
+                if let Some(provider_step_id) = provider_step_id.as_ref() {
+                    self.context.push_event(AgentRunEvent::ProviderStepEvent {
+                        provider_step_id: provider_step_id.clone(),
+                        event: ProviderStepEvent::OutputItemCompleted {
+                            provider_item_id: item.provider_item_id.clone(),
+                            item: payload,
+                        },
+                    });
                 }
             }
         }
-        HookAction::cont()
+        Ok(())
+    }
+}
+
+impl AgentHook for PersistingAgentHook {
+    async fn on_completion_call(
+        &self,
+        _context: &HookContext,
+        _event: CompletionCallEvent<'_>,
+    ) -> CompletionCallAction {
+        if self.context.cancellation_token.is_cancelled() {
+            CompletionCallAction::stop("runtime canceled")
+        } else {
+            CompletionCallAction::continue_run()
+        }
+    }
+
+    async fn on_completion_response(
+        &self,
+        _context: &HookContext,
+        event: CompletionResponseEvent<'_>,
+    ) -> ObservationAction {
+        if self.context.cancellation_token.is_cancelled() {
+            return ObservationAction::stop("runtime canceled");
+        }
+        match self
+            .persist_assistant_content(event.content.iter().cloned())
+            .await
+        {
+            Ok(()) => ObservationAction::continue_run(),
+            Err(error) => ObservationAction::stop(error.to_string()),
+        }
     }
 
     async fn on_invalid_tool_call(
         &self,
+        _hook_context: &HookContext,
         context: &InvalidToolCallContext,
-    ) -> InvalidToolCallHookAction {
+    ) -> Option<InvalidToolCallAction> {
         if self.context.cancellation_token.is_cancelled() {
-            return InvalidToolCallHookAction::fail();
+            return Some(InvalidToolCallAction::stop("runtime canceled"));
         }
 
         let args = context.args.as_deref().unwrap_or("");
         let guard_action = self.context.check_tool_guard(&context.tool_name, args);
-        if !matches!(guard_action, ToolCallHookAction::Continue) {
-            return InvalidToolCallHookAction::fail();
+        if !matches!(guard_action, ToolCallAction::Run) {
+            return Some(InvalidToolCallAction::fail());
         }
 
         let internal_call_id = context
@@ -734,34 +643,42 @@ where
             .await
         {
             Ok(invocation) => invocation,
-            Err(_) => return InvalidToolCallHookAction::fail(),
+            Err(_) => return Some(InvalidToolCallAction::fail()),
         };
-        self.context
-            .append_recoverable_invalid_tool_error(
-                &invocation,
-                ToolInvocationStatus::Failed,
-                "tool_not_found",
-                format!("No tool named {} exists", context.tool_name),
-            )
-            .await
+        Some(
+            self.context
+                .append_recoverable_invalid_tool_error(
+                    &invocation,
+                    ToolInvocationStatus::Failed,
+                    "tool_not_found",
+                    format!("No tool named {} exists", context.tool_name),
+                )
+                .await,
+        )
     }
 
     async fn on_tool_call(
         &self,
-        tool_name: &str,
-        tool_call_id: Option<String>,
-        internal_call_id: &str,
-        args: &str,
-    ) -> ToolCallHookAction {
+        hook_context: &HookContext,
+        event: ToolCall<'_>,
+    ) -> ToolCallAction {
+        let ToolCall {
+            tool_name,
+            tool_call_id,
+            internal_call_id,
+            args,
+        } = event;
         if self.context.cancellation_token.is_cancelled() {
-            return ToolCallHookAction::terminate("runtime canceled");
+            return ToolCallAction::stop("runtime canceled");
         }
         let guard_action = self.context.check_tool_guard(tool_name, args);
-        if !matches!(guard_action, ToolCallHookAction::Continue) {
+        if !matches!(guard_action, ToolCallAction::Run) {
             return guard_action;
         }
 
-        let call_id = tool_call_id.unwrap_or_else(|| internal_call_id.to_string());
+        let call_id = tool_call_id
+            .map(str::to_string)
+            .unwrap_or_else(|| internal_call_id.to_string());
         let arguments = serde_json::from_str::<serde_json::Value>(args)
             .unwrap_or_else(|_| serde_json::Value::String(args.to_string()));
         let Some(definition) = self.context.tool_definitions.get(tool_name).cloned() else {
@@ -784,7 +701,7 @@ where
                 .await
             {
                 Ok(invocation) => invocation,
-                Err(error) => return ToolCallHookAction::terminate(error.to_string()),
+                Err(error) => return ToolCallAction::stop(error.to_string()),
             };
             return self
                 .context
@@ -822,20 +739,9 @@ where
             .await
         {
             Ok(invocation) => invocation,
-            Err(error) => return ToolCallHookAction::terminate(error.to_string()),
+            Err(error) => return ToolCallAction::stop(error.to_string()),
         };
-
-        let Some(runtime_tool) = self.context.runtime_tools.get(tool_name).cloned() else {
-            return self
-                .context
-                .append_recoverable_tool_error(
-                    &invocation,
-                    ToolInvocationStatus::Failed,
-                    "tool_runtime_unavailable",
-                    format!("Tool {tool_name} has no runtime executor"),
-                )
-                .await;
-        };
+        remember_invocation(hook_context, internal_call_id, invocation.clone());
 
         let builtin_access_requests = if matches!(definition.source, ToolSource::Local) {
             match crate::tools::builtin::registry::access_requests_for_builtin_tool(
@@ -845,7 +751,7 @@ where
             ) {
                 Ok(access_requests) => access_requests,
                 Err(error) => {
-                    return self
+                    let action = self
                         .context
                         .append_recoverable_tool_error(
                             &invocation,
@@ -857,6 +763,8 @@ where
                             ),
                         )
                         .await;
+                    mark_result_persisted(hook_context, internal_call_id);
+                    return action;
                 }
             }
         } else {
@@ -869,7 +777,7 @@ where
                     None,
                 ) {
                     Ok(evaluator) => evaluator,
-                    Err(error) => return ToolCallHookAction::terminate(error.to_string()),
+                    Err(error) => return ToolCallAction::stop(error.to_string()),
                 };
             match evaluator.evaluate(&access_requests) {
                 crate::tools::builtin::approval::ToolPermissionDecision::Allow {
@@ -885,7 +793,7 @@ where
                         )
                         .await
                     {
-                        return ToolCallHookAction::terminate(error.to_string());
+                        return ToolCallAction::stop(error.to_string());
                     }
                 }
                 crate::tools::builtin::approval::ToolPermissionDecision::Ask {
@@ -904,15 +812,10 @@ where
                         .await
                     {
                         Ok(result) => result,
-                        Err(error) => return ToolCallHookAction::terminate(error.to_string()),
+                        Err(error) => return ToolCallAction::stop(error.to_string()),
                     };
                     return self
-                        .await_approval_and_execute_tool(
-                            runtime_tool,
-                            invocation,
-                            arguments,
-                            request,
-                        )
+                        .await_approval(hook_context, internal_call_id, invocation, request)
                         .await;
                 }
                 crate::tools::builtin::approval::ToolPermissionDecision::Deny { reason } => {
@@ -926,8 +829,11 @@ where
                         )
                         .await
                     {
-                        Ok(model_text) => ToolCallHookAction::skip(model_text),
-                        Err(error) => ToolCallHookAction::terminate(error.to_string()),
+                        Ok(model_text) => {
+                            mark_result_persisted(hook_context, internal_call_id);
+                            ToolCallAction::skip(model_text)
+                        }
+                        Err(error) => ToolCallAction::stop(error.to_string()),
                     };
                 }
             }
@@ -946,90 +852,235 @@ where
                 .await
             {
                 Ok(result) => result,
-                Err(error) => return ToolCallHookAction::terminate(error.to_string()),
+                Err(error) => return ToolCallAction::stop(error.to_string()),
             };
             return self
-                .await_approval_and_execute_tool(runtime_tool, invocation, arguments, request)
+                .await_approval(hook_context, internal_call_id, invocation, request)
                 .await;
         }
 
-        match self
-            .context
-            .execute_tool_invocation(runtime_tool, invocation, arguments)
-            .await
-        {
-            Ok(model_text) => ToolCallHookAction::skip(model_text),
-            Err(error) => ToolCallHookAction::terminate(error.to_string()),
-        }
+        drop(invocation);
+        ToolCallAction::run()
     }
 
     async fn on_tool_result(
         &self,
-        _tool_name: &str,
-        _tool_call_id: Option<String>,
-        internal_call_id: &str,
-        _args: &str,
-        result: &str,
-    ) -> HookAction {
-        let Some(tool_invocation_id) = lock(&self.context.tool_calls)
-            .get(internal_call_id)
-            .cloned()
-        else {
-            return HookAction::terminate(format!(
-                "tool result {internal_call_id} has no invocation"
+        hook_context: &HookContext,
+        event: ToolResultEvent<'_>,
+    ) -> ToolResultAction {
+        if take_result_persisted(hook_context, event.internal_call_id) {
+            take_invocation(hook_context, event.internal_call_id);
+            return ToolResultAction::keep();
+        }
+        let Some(invocation) = take_invocation(hook_context, event.internal_call_id) else {
+            return ToolResultAction::stop(format!(
+                "tool result {} has no invocation",
+                event.internal_call_id
             ));
         };
-        let output = ToolInvocationOutput {
-            content: vec![ContentPart::Text {
-                text: result.to_string(),
-            }],
-            structured_output: serde_json::from_str::<serde_json::Value>(result)
-                .ok()
-                .map(|value| StructuredOutput { value }),
-            raw_output: None,
-            is_error: false,
+
+        let mut output = if let Some(output) =
+            event.tool_context.result::<ToolInvocationOutput>().cloned()
+        {
+            output
+        } else if let Some(result) = event.tool_context.result::<rmcp::model::CallToolResult>() {
+            mcp_result_to_jaco_output(result)
+        } else {
+            rig_output_to_jaco_output(event.presentation)
         };
-        let invocation = match self
+        output.is_error =
+            output.is_error || event.raw_result.is_error() || event.raw_result.is_refused();
+        let status = if event.raw_result.is_refused() {
+            ToolInvocationStatus::Denied
+        } else if output.is_error || event.raw_result.is_skipped() {
+            ToolInvocationStatus::Failed
+        } else {
+            ToolInvocationStatus::Succeeded
+        };
+        let error = (status != ToolInvocationStatus::Succeeded).then(|| {
+            let message = event
+                .raw_result
+                .error()
+                .or_else(|| event.raw_result.refusal())
+                .map(|error| error.message().to_string())
+                .unwrap_or_else(|| tool_output_to_model_text(&output));
+            run_error("tool_error", message, true, None)
+        });
+        let entry = NewConversationEntry {
+            conversation_id: self.context.conversation_id.clone(),
+            status: ConversationEntryStatus::Completed,
+            agent_run_id: Some(self.context.agent_run_id.clone()),
+            provider_step_id: invocation.provider_step_id.clone(),
+            tool_invocation_id: Some(invocation.id.clone()),
+            provider_item_id: None,
+            payload: ConversationEntryPayload::ToolResult(ToolResultEntry {
+                tool_invocation_id: Some(invocation.id.clone()),
+                call_id: invocation.call_id.clone(),
+                content: output.content.clone(),
+                is_error: output.is_error,
+                structured_output: output.structured_output.clone(),
+                raw_output: output.raw_output.clone(),
+            }),
+        };
+        let commit = match self
             .context
             .persistence
-            .update_tool_invocation_status(
-                tool_invocation_id.clone(),
+            .append_entries_and_update_tool_invocation(
+                vec![entry],
+                invocation.id.clone(),
                 UpdateToolInvocationStatus {
-                    status: ToolInvocationStatus::Succeeded,
-                    output: Some(output.clone()),
-                    error: None,
+                    status,
+                    output: Some(output),
+                    error,
                 },
+                None,
             )
             .await
         {
-            Ok(invocation) => invocation,
-            Err(error) => return HookAction::terminate(error.to_string()),
+            Ok(commit) => commit,
+            Err(error) => return ToolResultAction::stop(error.to_string()),
         };
+        self.context.emit_tool_entries_commit(&commit);
+        let (entries, invocation) = commit.value;
+        self.context.record_persisted_entries(&entries);
         self.context
-            .emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
-                conversation_id: self.context.conversation_id.clone(),
-                changes: vec![jaco_core::ConversationChange::ToolInvocationChanged {
-                    invocation: Box::new(invocation.clone()),
-                }],
+            .push_event(AgentRunEvent::ToolInvocationFinished {
+                tool_invocation_id: invocation.id,
             });
-        let payload = ConversationEntryPayload::ToolResult(ToolResultEntry {
-            tool_invocation_id: Some(tool_invocation_id.clone()),
-            call_id: invocation.call_id,
-            content: output.content.clone(),
-            is_error: output.is_error,
-            structured_output: output.structured_output.clone(),
-            raw_output: output.raw_output.clone(),
-        });
-        if let Err(error) = self
-            .context
-            .append_tool_item(tool_invocation_id.clone(), payload)
-            .await
-        {
-            return HookAction::terminate(error.to_string());
+        ToolResultAction::keep()
+    }
+
+    async fn on_stream_response_finish(
+        &self,
+        _context: &HookContext,
+        event: StreamResponseFinish<'_>,
+    ) -> ObservationAction {
+        if self.context.cancellation_token.is_cancelled() {
+            return ObservationAction::stop("runtime canceled");
         }
-        self.context
-            .push_event(AgentRunEvent::ToolInvocationFinished { tool_invocation_id });
-        HookAction::cont()
+        // Streaming deltas are persisted incrementally by StreamAccumulator. A
+        // tool-bearing model turn must finish its provider step before Rig starts
+        // the next model call; the final tool-free turn is completed by runtime
+        // with the terminal provider payload.
+        if event
+            .content
+            .iter()
+            .any(|content| matches!(content, AssistantContent::ToolCall(_)))
+            && let Err(error) = self
+                .context
+                .finish_current_streaming_provider_step::<serde_json::Value>(None, event.usage)
+                .await
+        {
+            return ObservationAction::stop(error.to_string());
+        }
+        ObservationAction::continue_run()
+    }
+
+    fn observes(&self, kind: StepEventKind) -> bool {
+        matches!(
+            kind,
+            StepEventKind::CompletionCall
+                | StepEventKind::CompletionResponse
+                | StepEventKind::InvalidToolCall
+                | StepEventKind::ToolCall
+                | StepEventKind::ToolResult
+                | StepEventKind::StreamResponseFinish
+        )
+    }
+}
+
+#[derive(Clone, Default)]
+struct PendingToolInvocations(BTreeMap<String, ToolInvocationRecord>);
+
+#[derive(Clone, Default)]
+struct PersistedToolResults(BTreeSet<String>);
+
+fn remember_invocation(
+    context: &HookContext,
+    internal_call_id: &str,
+    invocation: ToolInvocationRecord,
+) {
+    context
+        .scratchpad()
+        .update::<PendingToolInvocations, _>(|pending| {
+            pending.0.insert(internal_call_id.to_string(), invocation);
+        });
+}
+
+fn take_invocation(context: &HookContext, internal_call_id: &str) -> Option<ToolInvocationRecord> {
+    context
+        .scratchpad()
+        .update::<PendingToolInvocations, _>(|pending| pending.0.remove(internal_call_id))
+}
+
+fn mark_result_persisted(context: &HookContext, internal_call_id: &str) {
+    context
+        .scratchpad()
+        .update::<PersistedToolResults, _>(|persisted| {
+            persisted.0.insert(internal_call_id.to_string());
+        });
+}
+
+fn take_result_persisted(context: &HookContext, internal_call_id: &str) -> bool {
+    context
+        .scratchpad()
+        .update::<PersistedToolResults, _>(|persisted| persisted.0.remove(internal_call_id))
+}
+
+fn rig_output_to_jaco_output(output: &ToolOutput) -> ToolInvocationOutput {
+    let mut content = Vec::new();
+    let mut structured_output = None;
+    for part in output.as_content().iter() {
+        match part {
+            RigToolResultContent::Text(text) => {
+                content.push(ContentPart::Text {
+                    text: text.text.clone(),
+                });
+            }
+            RigToolResultContent::Json { value } => {
+                structured_output = Some(StructuredOutput {
+                    value: value.clone(),
+                });
+            }
+            RigToolResultContent::Image(_) => {}
+        }
+    }
+    ToolInvocationOutput {
+        content,
+        structured_output,
+        raw_output: serde_json::to_value(output.as_content()).ok().map(|value| {
+            ProviderRawPayload {
+                provider_kind: "rig".to_string(),
+                value,
+            }
+        }),
+        is_error: false,
+    }
+}
+
+fn mcp_result_to_jaco_output(result: &rmcp::model::CallToolResult) -> ToolInvocationOutput {
+    let content = result
+        .content
+        .iter()
+        .filter_map(|part| {
+            part.as_text().map(|text| ContentPart::Text {
+                text: text.text.clone(),
+            })
+        })
+        .collect();
+    ToolInvocationOutput {
+        content,
+        structured_output: result
+            .structured_content
+            .clone()
+            .map(|value| StructuredOutput { value }),
+        raw_output: serde_json::to_value(result)
+            .ok()
+            .map(|value| ProviderRawPayload {
+                provider_kind: "mcp".to_string(),
+                value,
+            }),
+        is_error: result.is_error.unwrap_or(false),
     }
 }
 

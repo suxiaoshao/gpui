@@ -13,7 +13,6 @@ use crate::{AgentRuntimeError, Result, ToolDefinition, ToolRegistry, ToolRunPoli
 use async_trait::async_trait;
 use http::{HeaderName, HeaderValue};
 use jaco_core::{McpToolApprovalModeSnapshot, ToolApprovalPolicy, ToolExecutionPolicy, ToolSource};
-use rig_core::tool::rmcp::McpTool;
 use rmcp::{
     ServiceExt,
     handler::client::ClientHandler,

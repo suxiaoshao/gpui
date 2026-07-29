@@ -110,6 +110,7 @@ pub struct ProviderStep {
     pub request_snapshot: ProviderStepRequestSnapshot,
     pub response_snapshot: Option<ProviderStepResponseSnapshot>,
     pub state_snapshot: Option<ProviderRunStateSnapshot>,
+    pub continuation: Option<ProviderContinuationSnapshot>,
     pub settings_snapshot: RunSettingsSnapshot,
     pub error: Option<RunErrorPayload>,
     pub created_at: OffsetDateTime,

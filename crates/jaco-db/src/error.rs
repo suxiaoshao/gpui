@@ -40,6 +40,8 @@ pub enum DbError {
     TimeParse(#[from] Parse),
     #[error("database invariant failed: {0}")]
     Invariant(String),
+    #[error("conversation `{conversation_id}` still has an active agent run")]
+    ConversationHasActiveRun { conversation_id: String },
     #[error(transparent)]
     Validation(#[from] DatabaseValidationError),
 }

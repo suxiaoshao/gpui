@@ -16,6 +16,7 @@ pub use mcp::{
 };
 pub use persistence::AgentPersistence;
 pub use persistence::PersistingCompletionModel;
+pub use providers::openai::OpenAiResponsesSessionPool;
 pub use providers::{
     ProviderModelFetchError, ProviderModelFetchRequest, ProviderSecretValues,
     fetch_provider_models, provider_model_from_rig_model,

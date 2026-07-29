@@ -1,4 +1,4 @@
 interface:
   display_name: "GPUI Form"
-  short_description: "GPUI form draft and validation guidance"
-  default_prompt: "Use $gpui-form to update form draft, validation, or external synchronization guidance."
+  short_description: "Build and integrate typed GPUI forms"
+  default_prompt: "Use $gpui-form to implement or review this typed GPUI form flow."

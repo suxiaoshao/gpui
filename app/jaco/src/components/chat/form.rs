@@ -608,6 +608,10 @@ fn render_attachment_image(attachment: &ComposerAttachment, radius: f32) -> AnyE
     }
 }
 
+fn footer_primary_controls() -> Div {
+    h_flex().items_center().gap(px(5.)).flex_none()
+}
+
 impl Render for ChatForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let form = cx.entity();
@@ -689,10 +693,7 @@ impl Render for ChatForm {
                     )
                     .child(div().flex_1().min_w_0())
                     .child(
-                        h_flex()
-                            .items_center()
-                            .gap(px(5.))
-                            .min_w_0()
+                        footer_primary_controls()
                             .when_some(model, |this, model| this.child(model))
                             .when_some(primary_action, |this, action| {
                                 let action = action.read(cx);
@@ -777,5 +778,72 @@ impl Render for ChatForm {
         } else {
             chat_form
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::footer_primary_controls;
+    use crate::components::picker::{
+        PickerContentPopoverConfig, picker_content_popover, picker_trigger_with_icon,
+    };
+    use gpui::{
+        AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _,
+        TestAppContext, Window, div, px,
+    };
+    use gpui_component::{h_flex, v_flex};
+
+    struct FooterControlsLayout;
+
+    impl Render for FooterControlsLayout {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let picker = |id| {
+                picker_content_popover(
+                    cx,
+                    PickerContentPopoverConfig {
+                        id,
+                        open: false,
+                        trigger: picker_trigger_with_icon(
+                            id,
+                            div().size_4().into_any_element(),
+                            "gpt-5.5",
+                            false,
+                        ),
+                        content: div().into_any_element(),
+                        width: px(200.),
+                        footer: None,
+                        on_open_change: |_, _, _| {},
+                    },
+                )
+            };
+
+            v_flex().child(h_flex().child(picker("natural"))).child(
+                h_flex()
+                    .w(px(180.))
+                    .child(div().w(px(100.)).flex_none())
+                    .child(div().flex_1().min_w_0())
+                    .child(
+                        footer_primary_controls()
+                            .child(picker("footer"))
+                            .child(div().size(px(28.)).flex_none()),
+                    ),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn footer_primary_controls_preserve_model_trigger_intrinsic_width(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, cx) = cx.add_window_view(|_, _| FooterControlsLayout);
+        cx.run_until_parked();
+
+        let natural = cx
+            .debug_bounds("picker-trigger-label:natural")
+            .expect("natural picker trigger label should be rendered");
+        let footer = cx
+            .debug_bounds("picker-trigger-label:footer")
+            .expect("footer picker trigger label should be rendered");
+
+        assert_eq!(footer.size.width, natural.size.width);
     }
 }

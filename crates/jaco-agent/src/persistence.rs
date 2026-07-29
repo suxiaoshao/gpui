@@ -1,6 +1,6 @@
 use crate::{
     AgentRuntimeError, AgentRuntimeEvent, AgentRuntimeObserver, AgentStep,
-    RegisteredToolDefinition, Result, ToolApprovalBroker, tools::RegisteredRuntimeTool,
+    RegisteredToolDefinition, Result, ToolApprovalBroker,
 };
 use jaco_core::*;
 use jaco_db::{
@@ -23,8 +23,8 @@ pub(crate) fn direct_agent_persistence(
     Arc::new(port::DirectAgentPersistence::new(repository))
 }
 
-use self::tool_hook::PersistingPromptHook;
-use rig_core::completion::Usage;
+use self::tool_hook::PersistingAgentHook;
+use rig::completion::Usage;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -141,7 +141,6 @@ pub(crate) struct PersistenceContext {
     events: Arc<Mutex<Vec<AgentRunEvent>>>,
     steps: Arc<Mutex<Vec<AgentStep>>>,
     tool_definitions: Arc<HashMap<String, RegisteredToolDefinition>>,
-    runtime_tools: Arc<HashMap<String, RegisteredRuntimeTool>>,
     tool_calls: Arc<Mutex<HashMap<String, ToolInvocationId>>>,
     repeated_tool_calls: Arc<Mutex<HashMap<String, u32>>>,
     max_tool_calls: u32,
@@ -162,7 +161,6 @@ impl PersistenceContext {
         settings_snapshot: RunSettingsSnapshot,
         input_item_ids: Vec<ConversationEntryId>,
         tool_definitions: Vec<RegisteredToolDefinition>,
-        runtime_tools: Vec<RegisteredRuntimeTool>,
         max_tool_calls: u32,
         repeated_tool_call_limit: u32,
         cancellation_token: CancellationToken,
@@ -187,12 +185,6 @@ impl PersistenceContext {
                     .map(|definition| (definition.runtime_tool_name.clone(), definition))
                     .collect(),
             ),
-            runtime_tools: Arc::new(
-                runtime_tools
-                    .into_iter()
-                    .map(|tool| (tool.definition.runtime_tool_name.clone(), tool))
-                    .collect(),
-            ),
             tool_calls: Arc::new(Mutex::new(HashMap::new())),
             repeated_tool_calls: Arc::new(Mutex::new(HashMap::new())),
             max_tool_calls,
@@ -203,8 +195,8 @@ impl PersistenceContext {
         }
     }
 
-    pub(crate) fn hook(&self) -> PersistingPromptHook {
-        PersistingPromptHook {
+    pub(crate) fn hook(&self) -> PersistingAgentHook {
+        PersistingAgentHook {
             context: self.clone(),
         }
     }
@@ -325,8 +317,8 @@ pub(crate) fn provider_usage(usage: Usage) -> ProviderUsageSnapshot {
     }
 }
 
-fn completion_request_error(error: AgentRuntimeError) -> rig_core::completion::CompletionError {
-    rig_core::completion::CompletionError::RequestError(Box::new(error))
+fn completion_request_error(error: AgentRuntimeError) -> rig::completion::CompletionError {
+    rig::completion::CompletionError::RequestError(Box::new(error))
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

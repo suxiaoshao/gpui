@@ -320,16 +320,29 @@ impl FreshRepository {
 
     pub fn soft_delete_conversation(&self, id: &str) -> Result<ConversationRecord> {
         let mut conn = self.conn()?;
-        let now = now_string()?;
-        diesel::update(conversations::table.find(id))
-            .set((
-                conversations::status.eq(db_label(&ConversationStatus::Deleted)?),
-                conversations::deleted_at.eq(Some(now)),
-                conversations::updated_at.eq(now),
+        conn.immediate_transaction(|conn| {
+            let has_active_run = diesel::select(diesel::dsl::exists(
+                agent_runs::table
+                    .filter(agent_runs::conversation_id.eq(id))
+                    .filter(agent_runs::status.eq_any(["queued", "running"])),
             ))
-            .returning(SqlConversationRow::as_returning())
-            .get_result::<SqlConversationRow>(&mut conn)?
-            .try_into()
+            .get_result::<bool>(conn)?;
+            if has_active_run {
+                return Err(DbError::ConversationHasActiveRun {
+                    conversation_id: id.to_string(),
+                });
+            }
+            let now = now_string()?;
+            diesel::update(conversations::table.find(id))
+                .set((
+                    conversations::status.eq(db_label(&ConversationStatus::Deleted)?),
+                    conversations::deleted_at.eq(Some(now)),
+                    conversations::updated_at.eq(now),
+                ))
+                .returning(SqlConversationRow::as_returning())
+                .get_result::<SqlConversationRow>(conn)?
+                .try_into()
+        })
     }
 
     pub fn search_sidebar_conversations(

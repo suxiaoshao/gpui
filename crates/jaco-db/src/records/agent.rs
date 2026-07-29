@@ -60,6 +60,20 @@ pub struct UpdateProviderStepStatus {
     pub error: Option<RunErrorPayload>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompleteProviderStep {
+    pub response_snapshot: ProviderStepResponseSnapshot,
+    pub state_snapshot: ProviderRunStateSnapshot,
+    pub continuation: Option<ProviderContinuationSnapshot>,
+    pub usage: ProviderUsageSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompletedProviderStep {
+    pub step: ProviderStepRecord,
+    pub usage: UsageEventRecord,
+}
+
 pub type ToolInvocationRecord = ToolInvocation;
 
 #[derive(Debug, Clone, PartialEq)]

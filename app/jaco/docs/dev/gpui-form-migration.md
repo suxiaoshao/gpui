@@ -104,7 +104,11 @@ Zed/GPUI 的完整升级、feature、MSRV、平台与 lockfile验证以 `typed-b
 9. [用户决定] Jaco 同步验证优先使用 Garde。`#[form(required)]` 只负责通用空值；格式、range、跨字段、catalog 与 stable-row规则由 Garde attributes/custom/manual `Validate::validate_into` 实现，不再构造 gpui-form `ValidationIssue`。
 10. [用户决定] FocusHandle只属于具体 native component；同一 field可由多个 control消费。页面根据 `first_error_path()` 和当前可见 control选择 focus目标。
 11. [决定] `ChatInputSubmit` 由一次 `prepare_submit` output与一次 provider catalog snapshot构造；其间不 reload catalog、不读数据库、不改变 selected model。
-12. [决定] `RunSettingsInput` 的无效 reasoning selection不自动改写。model capability变化后保留 typed值并产生 Dynamic/Submit错误；用户明确选择后才更新。
+12. [决定] catalog/options 刷新不得改写 `RunSettingsInput` 的 reasoning selection：native
+    projection 对新 capability 无效时清空显示，typed 值保留并产生 Dynamic/Submit 错误。用户在
+    picker 中明确切换模型属于一次跨字段业务意图：旧 reasoning 对新模型仍有效时保留，无效时改为
+    新模型声明的默认值，新模型不支持 reasoning 时改为 `None`；model 与 reasoning 通过 parent
+    `RunSettingsInput` 一次写入、只推进一个 revision。
 13. [决定] RunSettings 保留当前分组、可搜索的 `PickerListDelegate`/`ListState` 交互，不强制换成 gpui-component 标准 `SelectState`。三个 picker 各有一个应用内 owning bound-control newtype；ChatForm 只接收其 native state entity，因此布局、键盘与鼠标交互不变。
 
 ## 4. 目标架构
@@ -500,11 +504,19 @@ let rebased = form.update(cx, |form, cx| {
 
 **API contract**
 
-- `RunSettingsInput` 保持 typed model；generated `RunSettingsFormStore` 只作 namespace。三个 controls分别绑定 `model_in`、`reasoning_selection_in`、`approval_mode_in` leaf。
+- `RunSettingsInput` 保持 typed model；generated `RunSettingsFormStore` 只作 namespace。
+  reasoning/approval controls 分别绑定 `reasoning_selection_in`、`approval_mode_in` leaf；model
+  picker 的 form subscription 仍从 `model_in` 静默投影，但用户 confirm 由 controller 读取一次当前
+  catalog 与 parent `RunSettingsInput`，按第 3 节决策 12 原子写入 model + reasoning。
 - `FormModelPicker`、`FormReasoningPicker`、`FormApprovalPicker` 的结构固定为 `subscriptions: Vec<Subscription>` 后跟 `state: Entity<...>`；通过 `Deref` 暴露现有 native state API，不保存 reader/writer closure、`FieldChangeSource`、field handle或 form snapshot。
 - `RunSettingsBoundControls` 持有上述三个 wrapper和 `token_budget: Option<FormIntegerInput<u32>>`，并通过 `view_states()` 生成给纯 UI `RunSettingsControls` 使用的 entity clones；clone entity不会复制 subscription owner，页面必须保留 `RunSettingsBoundControls` 生命周期。
 - page/controller持有单独的 `orchestration_subscriptions: Vec<Subscription>`，且该字段声明在 `RunSettingsBoundControls` 之前以先 drop；它只保存 locale/catalog/model/reasoning依赖编排，不保存单控件 binding subscription。
 - `PickerListDelegate::replace_projection(sections, empty_label, selected_value)` 是应用内静默 setter：保留 open与 `last_query`，用新 sections重新执行 query，按 selected value重算 highlight，并 notify；不重建 `ListState`、不发 confirm/cancel或 form event。
+- `picker_content_popover` 的 app-local shell 与 ChatForm 的
+  `footer_primary_controls`（model picker + primary action）都固定 `flex-none`。不可收缩边界必须覆盖
+  footer 的真实直接子项，避免外层 group 先按受限 available width 布局 Popover trigger；Button
+  content row 与 model label wrapper 同样固定 `flex-none`，model label 使用 `whitespace_nowrap`
+  且不使用 `truncate`，始终按完整内容宽度布局。
 - `RunSettingsSubmitSnapshot`/`RunSettingsSubmitError` pure resolver只接收 `&RunSettingsInput`和 `&ProviderCatalogSnapshot`。
 - resolver不默认选择、不修正 form值；错误包含 catalog unavailable/model required/model unavailable/reasoning unsupported/token budget invalid。
 
@@ -527,8 +539,16 @@ let token_budget = parent.project_value(
 
 1. 删除 `RunSettingsReader`、`RunSettingsWriter`、`SelectionOrigin`、source路由和 controller内的业务值缓存；保留 picker渲染需要的 native projection。
 2. 通过 `RunSettingsFormStore::model_in(parent.clone())`、`RunSettingsFormStore::reasoning_selection_in(parent.clone())`、`RunSettingsFormStore::approval_mode_in(parent.clone())` 把现有三个 `ListState<PickerListDelegate<...>>` 分别包进 owning controls，再由 `RunSettingsBoundControls` 组合。
-3. picker confirm只调用对应 leaf attachment的 deferred typed intent；每个 wrapper的 form subscription只从自己的 leaf重新读取值并静默重投影自己的 native state，不读取或更新 peer、capability、token结构、catalog或 validation context。
-4. page/controller另持有唯一的 model与reasoning leaf orchestration subscriptions，所有 peer/capability/token跨字段编排只在这里发生。model event defer到 owner后只读一次当前 catalog snapshot，按 selected model推导 capability并替换 reasoning sections，静默投影原 reasoning typed值，然后 reconcile token结构并用同一 snapshot更新 validation context、Dynamic重验；不写 reasoning默认值。reasoning event defer到 owner后 reconcile token结构；各 leaf自身 native projection仍只由第3步对应 wrapper负责，approval没有跨字段编排。
+3. reasoning/approval picker confirm 只调用对应 leaf attachment 的 deferred typed intent。model
+   picker confirm 已由 `PickerListDelegate` defer 到 list update 之外，再由 controller 读取一次当前
+   catalog 和 parent value：旧 reasoning 合法则保留，不合法则使用新 capability 的声明默认值，
+   然后一次 `set_user_value(RunSettingsInput)` 写入 model + reasoning。每个 wrapper 的 form
+   subscription 仍只从自己的 leaf 重新读取值并静默重投影 native state。
+4. page/controller 另持有 model 与 reasoning orchestration subscriptions。model form event 只负责按
+   最终 parent value 更新 capability、reasoning native projection 和 token 结构；不得再次改写
+   reasoning。reasoning event reconcile token 结构。catalog/options refresh 走独立路径：保留 typed
+   reasoning，无效时只清空 native selected/label，并用同一 snapshot 更新 validation context 后
+   Dynamic 重验。
 5. token reconcile仅在 `project_value` 当前可读且当前 capability仍提供 token-budget control时挂载 `FormIntegerInput<u32>`；非 custom、custom value缺失、capability不再提供 token budget或 path unavailable时立即 drop wrapper。capability的 min/max/step变化时，用当前 typed value和新 `IntegerInputPolicy<u32>` 原地更新 native policy；若 adapter不支持 policy setter则 drop/rebuild wrapper。两条路径都不修改、clamp或 fallback form值，越界只由 Dynamic/Submit report显示，incomplete raw text只由 control issue持有。
 6. catalog subscription由 page/controller持有，事件 defer到 weak owner并调用与 model event相同的 `reconcile(snapshot)`；一次 callback只取得一个 snapshot，更新 sections/capability/token policy后重投影当前 typed leaves，再安装同一 snapshot context并 Dynamic重验。
 7. locale subscription由 page/controller持有，事件 defer到 weak owner；owner用 `replace_projection`
@@ -557,7 +577,9 @@ let token_budget = parent.project_value(
 | --- | --- | --- | --- | --- |
 | 无默认模型 | `run_settings.rs` tests | `missing_or_removed_model_never_falls_back` | empty/changed catalog | value保持 None/old key；明确错误 |
 | capability变化 | 同上 | `reasoning_value_is_not_rewritten_by_catalog_refresh` | capability snapshots | form不变；Dynamic error出现/清除 |
-| 依赖编排 | 同上 | `model_change_reconciles_reasoning_and_token_structure_without_rewriting_values` | model fields + two capabilities | reasoning原值保持；sections更新；budget按 projection mount/drop；一次 snapshot |
+| 显式模型切换 | 同上 | `explicit_model_change_preserves_valid_reasoning_and_resets_invalid_reasoning` | GPT-5.6 `max` + GPT-5.5 levels | `high` 等共有档位保留；`max` 原子重置为 GPT-5.5 默认值；无 reasoning 时清空 |
+| native projection | 同上 | `catalog_projection_clears_an_invalid_native_selection_without_rewriting_it` | GPT-5.5 capability + persisted `max` | native selection 为 `None`；typed fixture 保持 `max` |
+| picker flex layout | `chat/form.rs` tests | `footer_primary_controls_preserve_model_trigger_intrinsic_width` | 同一 `gpt-5.5` trigger 的自然 row 与真实 footer 组合 | 两个 trigger 宽度相同；model + primary-action group 不压缩 trigger |
 | exact integer | 同上 | `token_budget_incomplete_text_blocks_submit_without_changing_value` | u32 control | native text保留；form保持旧 u32；control issue active |
 | shortcut一致快照 | `shortcuts/dialog.rs` tests | `shortcut_save_uses_one_form_and_catalog_snapshot` | catalog mutation harness | output不混用两版 catalog；无 DB fallback |
 | shortcut stale CAS | 同上 | `shortcut_save_rebase_is_revision_guarded` | capture后修改 form的 fake repository | persistence成功但 CAS false；current/baseline/report/revision/control projection均保持新编辑 |

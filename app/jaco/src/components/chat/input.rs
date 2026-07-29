@@ -19,7 +19,7 @@ use crate::{
             ProjectControlState, RunSettingsControls,
         },
         chat::run_settings::resolve_run_settings,
-        chat::run_settings::{RunSettingsController, RunSettingsFormStore, RunSettingsInput},
+        chat::run_settings::{RunSettingsController, RunSettingsInput},
     },
     features::{conversation, skills},
     foundation, state,
@@ -211,11 +211,7 @@ impl ChatInputController {
             )
         });
         let run_settings_field = ChatInputFormStore::run_settings_field(&form);
-        let persisted_model_field = RunSettingsFormStore::model_in(run_settings_field.clone());
-        let persisted_reasoning_field =
-            RunSettingsFormStore::reasoning_selection_in(run_settings_field.clone());
-        let persisted_approval_field =
-            RunSettingsFormStore::approval_mode_in(run_settings_field.clone());
+        let persisted_run_settings_field = run_settings_field.clone();
         let run_settings = cx.new(|cx| RunSettingsController::new(run_settings_field, window, cx));
         let run_settings_states = run_settings.read(cx).control_states();
         let attachments_state = cx.new(|_| AttachmentControlState {
@@ -273,25 +269,11 @@ impl ChatInputController {
         );
         subscriptions.push(chat_form_subscription);
         subscriptions.push(
-            persisted_model_field
+            persisted_run_settings_field
                 .subscribe_in(window, cx, |form, window, cx| {
                     form.save_chat_form_config(window, cx);
                 })
-                .expect("chat model preference field is alive"),
-        );
-        subscriptions.push(
-            persisted_reasoning_field
-                .subscribe_in(window, cx, |form, window, cx| {
-                    form.save_chat_form_config(window, cx);
-                })
-                .expect("chat reasoning preference field is alive"),
-        );
-        subscriptions.push(
-            persisted_approval_field
-                .subscribe_in(window, cx, |form, window, cx| {
-                    form.save_chat_form_config(window, cx);
-                })
-                .expect("chat approval preference field is alive"),
+                .expect("chat run-settings preference field is alive"),
         );
         subscriptions.push(cx.observe(&form, |form, _, cx| {
             form.sync_chat_form_projection(cx);
@@ -484,7 +466,7 @@ impl ChatInputController {
     }
 
     fn save_chat_form_config(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(settings) = self.run_settings.read(cx).value(cx) else {
+        let Ok(settings) = ChatInputFormStore::run_settings_field(&self.form).value(cx) else {
             return;
         };
         let model = settings.model.as_ref().map(|key| ChatFormModelConfig {
@@ -1021,6 +1003,72 @@ mod tests {
     }
 
     #[gpui::test]
+    fn switching_models_resets_an_unsupported_reasoning_level_to_the_new_default(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = init_chat_form_test(cx);
+        let config_path = test_config_path(&dir);
+        let provider_id = cx.update(|cx| provider_id_for_kind(cx, "openai"));
+        cx.update(|cx| {
+            state::config::update_chat_form_config(cx, |config| {
+                config.model = Some(ChatFormModelConfig {
+                    provider_id: provider_id.clone(),
+                    model_id: "gpt-5.6".to_string(),
+                });
+                config.reasoning_selection = Some(ReasoningSelectionSnapshot::Level {
+                    value: "max".to_string(),
+                });
+            })
+            .expect("configure GPT-5.6 reasoning");
+        });
+
+        let window = open_chat_form_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let form = window.root(&mut cx).unwrap();
+        assert_eq!(
+            submit_snapshot(&form, test_snapshot("hello"), &mut cx)
+                .expect("GPT-5.6 max can be submitted")
+                .reasoning_selection,
+            Some(ReasoningSelectionSnapshot::Level {
+                value: "max".to_string(),
+            })
+        );
+
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.run_settings.update(cx, |settings, cx| {
+                    settings.select_model_value(
+                        ProviderModelKey {
+                            provider_id: provider_id.clone(),
+                            model_id: "gpt-5.5".to_string(),
+                        },
+                        window,
+                        cx,
+                    );
+                });
+            });
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            submit_snapshot(&form, test_snapshot("hello"), &mut cx)
+                .expect("GPT-5.5 default reasoning can be submitted")
+                .reasoning_selection,
+            Some(ReasoningSelectionSnapshot::Level {
+                value: "medium".to_string(),
+            })
+        );
+        let config =
+            state::JacoConfig::load_from_path_for_test(&config_path).expect("reload config");
+        assert_eq!(
+            config.chat_form.reasoning_selection,
+            Some(ReasoningSelectionSnapshot::Level {
+                value: "medium".to_string(),
+            })
+        );
+    }
+
+    #[gpui::test]
     fn composer_changes_do_not_publish_config(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         let deliveries = Rc::new(Cell::new(0));
@@ -1206,6 +1254,16 @@ mod tests {
                     vec![
                         provider_model_for_test(&provider.id, "gpt-5"),
                         provider_model_for_test(&provider.id, "gpt-5-mini"),
+                        provider_model_with_capabilities(
+                            &provider.id,
+                            "gpt-5.6",
+                            level_capabilities(&["low", "medium", "high", "max"], "medium"),
+                        ),
+                        provider_model_with_capabilities(
+                            &provider.id,
+                            "gpt-5.5",
+                            level_capabilities(&["low", "medium", "high"], "medium"),
+                        ),
                     ],
                 )
                 .unwrap();
@@ -1430,6 +1488,23 @@ mod tests {
                 default_value: Some(4096),
                 dynamic_supported: false,
                 off_supported: false,
+            }),
+            source: CapabilitySourceSnapshot::Manual {
+                source: "test".to_string(),
+            },
+        });
+        capabilities
+    }
+
+    fn level_capabilities(values: &[&str], default_value: &str) -> ModelCapabilitiesSnapshot {
+        let mut capabilities = conservative_model_capabilities("openai");
+        capabilities.reasoning = Some(ReasoningCapabilitySnapshot {
+            default_effort: default_value.to_string(),
+            efforts: values.iter().map(|value| (*value).to_string()).collect(),
+            summaries: true,
+            control: Some(ReasoningControlSnapshot::Levels {
+                values: values.iter().map(|value| (*value).to_string()).collect(),
+                default_value: Some(default_value.to_string()),
             }),
             source: CapabilitySourceSnapshot::Manual {
                 source: "test".to_string(),

@@ -45,8 +45,14 @@ gpui-tokio = { path = "./crates/gpui-tokio" }
 garde = { version = "0.23.0", default-features = false, features = ["derive", "url", "email", "pattern"] }
 window-ext = { path = "./crates/window-ext" }
 platform-ext = { path = "./crates/platform-ext" }
-rig-core = { version = "0.39.0", features = ["rmcp"] }
-rmcp = { version = "1.8.0", features = [
+rig = { version = "0.41.0", default-features = false, features = [
+  "agent",
+  "reqwest",
+  "rmcp",
+  "rustls",
+  "websocket",
+] }
+rmcp = { version = "2.2.0", features = [
   "auth",
   "client",
   "macros",

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    LocalTool, McpConnector, ProviderSecretValues, RegisteredToolDefinition, ToolApprovalBroker,
-    ToolApprovalDecision, ToolApprovalRequest, ToolDefinition, ToolExecutor, ToolRunPolicy,
+    LocalTool, McpConnector, ProviderSecretValues, ToolApprovalBroker, ToolApprovalDecision,
+    ToolApprovalRequest, ToolDefinition, ToolExecutor, ToolRunPolicy,
 };
 use async_trait::async_trait;
 use jaco_db::{
@@ -11,9 +11,8 @@ use jaco_db::{
     ProviderModelRecord, ProviderRecord, ProviderStepRecord, ToolInvocationRecord,
     UpdateProviderStepStatus, UpdateToolInvocationStatus,
 };
-use rig_core::{
+use rig::{
     OneOrMany,
-    agent::{PromptHook, ToolCallHookAction},
     completion::{
         AssistantContent, CompletionError, CompletionRequest, CompletionResponse,
         Message as RigMessage,
@@ -25,8 +24,9 @@ use rig_core::{
 use rmcp::{
     RoleServer, ServerHandler, ServiceExt,
     model::{
-        CallToolRequestParams, CallToolResult, Content, ErrorData, Implementation, ListToolsResult,
-        PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
+        CallToolRequestParams, CallToolResult, ContentBlock, ErrorData, Implementation,
+        ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo,
+        Tool,
     },
     service::RequestContext,
 };
@@ -1318,90 +1318,6 @@ async fn recoverable_unknown_tool_is_returned_to_model() {
 }
 
 #[tokio::test]
-async fn recoverable_missing_runtime_tool_is_returned_to_model() {
-    let fixture = Fixture::new("recoverable-missing-runtime");
-    let request = fixture.request();
-    let agent_run = fixture
-        .repo
-        .insert_agent_run(new_agent_run_input(&request))
-        .unwrap();
-    let definition = RegisteredToolDefinition {
-        source: ToolSource::Local,
-        namespace: None,
-        tool_name: "orphan_tool".to_string(),
-        runtime_tool_name: "orphan_tool".to_string(),
-        description: "Registered definition without executor".to_string(),
-        parameters: json!({"type": "object"}),
-        policy: ToolRunPolicy {
-            approval_policy: ToolApprovalPolicy::Never,
-            execution_policy: ToolExecutionPolicy::Foreground,
-            timeout_ms: None,
-        },
-    };
-    let context = PersistenceContext::new(
-        crate::persistence::direct_agent_persistence(fixture.repo.clone()),
-        agent_run.id.clone(),
-        fixture.conversation.id.clone(),
-        fixture.provider.id.clone(),
-        fixture.model.model_id.clone(),
-        request.settings_snapshot.clone(),
-        vec![fixture.user_item.id.clone()],
-        vec![definition],
-        Vec::new(),
-        request.guards.max_tool_calls,
-        request.guards.repeated_tool_call_limit,
-        request.cancellation_token.clone(),
-        None,
-        None,
-    );
-    let hook = context.hook();
-
-    let action = PromptHook::<MockCompletionModel>::on_tool_call(
-        &hook,
-        "orphan_tool",
-        Some("call_1".to_string()),
-        "internal_1",
-        "{}",
-    )
-    .await;
-
-    let reason = match action {
-        ToolCallHookAction::Skip { reason } => reason,
-        other => panic!("expected recoverable skip, got {other:?}"),
-    };
-    assert_eq!(reason, "Tool orphan_tool has no runtime executor");
-    let invocations = fixture
-        .repo
-        .tool_invocations_for_run(&agent_run.id)
-        .unwrap();
-    assert_eq!(invocations.len(), 1);
-    assert_eq!(invocations[0].status, ToolInvocationStatus::Failed);
-    assert_eq!(
-        invocations[0].error.as_ref().unwrap().code,
-        "tool_runtime_unavailable"
-    );
-    assert!(invocations[0].output.as_ref().unwrap().is_error);
-    let items = fixture
-        .repo
-        .conversation_entries(&fixture.conversation.id)
-        .unwrap();
-    assert_eq!(
-        items
-            .iter()
-            .filter(|item| matches!(item.payload, ConversationEntryPayload::ToolCall(_)))
-            .count(),
-        1
-    );
-    assert_eq!(
-        items
-            .iter()
-            .filter(|item| matches!(item.payload, ConversationEntryPayload::ToolResult(_)))
-            .count(),
-        1
-    );
-}
-
-#[tokio::test]
 async fn max_turns_is_persisted_as_max_steps_stop() {
     let fixture = Fixture::new("max-steps");
     let runtime = AgentRuntime::from_repository(fixture.repo.clone());
@@ -1441,7 +1357,7 @@ async fn max_turns_is_persisted_as_max_steps_stop() {
         .repo
         .tool_invocations_for_run(&handle.agent_run.id)
         .unwrap();
-    assert_eq!(invocations.len(), 3);
+    assert_eq!(invocations.len(), 1);
     assert!(
         invocations
             .iter()
@@ -2438,6 +2354,9 @@ fn insert_provider_step(
                 model_id: fixture.model.model_id.clone(),
                 input_item_ids: vec![fixture.user_item.id.clone()],
                 snapshot_kind: ProviderStepSnapshotKind::RigCompletionRequest,
+                transport: ProviderTransportSnapshot::ProviderDefault,
+                context_mode: ProviderRequestContextSnapshot::FullHistory,
+                previous_response_id: None,
                 request_body: ProviderRawPayload {
                     provider_kind: "test".to_string(),
                     value: json!({"messages": ["hello"]}),
@@ -3242,7 +3161,7 @@ impl ServerHandler for DynamicMcpServer {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
-        Ok(CallToolResult::success(vec![Content::text(format!(
+        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
             "called {}",
             request.name
         ))]))

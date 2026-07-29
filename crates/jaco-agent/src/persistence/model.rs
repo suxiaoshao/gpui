@@ -1,6 +1,6 @@
 use super::{PersistenceContext, completion_request_error, run_error};
 use crate::AgentRuntimeError;
-use rig_core::{
+use rig::{
     completion::{CompletionModel, CompletionRequest, CompletionResponse},
     streaming::StreamingCompletionResponse,
 };
@@ -13,6 +13,7 @@ where
 {
     inner: M,
     context: Option<PersistenceContext>,
+    openai_attempts: Option<crate::providers::openai::OpenAiAttemptCoordinator>,
 }
 
 impl<M> PersistingCompletionModel<M>
@@ -23,6 +24,19 @@ where
         Self {
             inner,
             context: Some(context),
+            openai_attempts: None,
+        }
+    }
+
+    pub(crate) fn new_with_openai_attempts(
+        inner: M,
+        context: PersistenceContext,
+        attempts: crate::providers::openai::OpenAiAttemptCoordinator,
+    ) -> Self {
+        Self {
+            inner,
+            context: Some(context),
+            openai_attempts: Some(attempts),
         }
     }
 }
@@ -31,13 +45,8 @@ impl<M> CompletionModel for PersistingCompletionModel<M>
 where
     M: CompletionModel,
     M::Response: Serialize + DeserializeOwned,
-    M::StreamingResponse: Clone
-        + Unpin
-        + Send
-        + Sync
-        + Serialize
-        + DeserializeOwned
-        + rig_core::completion::GetTokenUsage,
+    M::StreamingResponse:
+        Clone + Unpin + Send + Sync + Serialize + DeserializeOwned + rig::completion::GetTokenUsage,
 {
     type Response = M::Response;
     type StreamingResponse = M::StreamingResponse;
@@ -47,19 +56,38 @@ where
         Self {
             inner: M::make(client, model),
             context: None,
+            openai_attempts: None,
         }
     }
 
     async fn completion(
         &self,
         request: CompletionRequest,
-    ) -> std::result::Result<
-        CompletionResponse<Self::Response>,
-        rig_core::completion::CompletionError,
-    > {
+    ) -> std::result::Result<CompletionResponse<Self::Response>, rig::completion::CompletionError>
+    {
         let Some(context) = self.context.clone() else {
             return self.inner.completion(request).await;
         };
+        if let Some(attempts) = self.openai_attempts.as_ref() {
+            attempts.bind(context.clone()).await;
+            let response = tokio::select! {
+                biased;
+                _ = context.cancellation_token.cancelled() => {
+                    let payload = run_error("canceled", "runtime canceled", false, None);
+                    context
+                        .cancel_current_provider_step(payload)
+                        .await
+                        .map_err(completion_request_error)?;
+                    return Err(completion_request_error(AgentRuntimeError::Canceled));
+                }
+                response = self.inner.completion(request) => response,
+            };
+            if let Err(error) = &response {
+                let payload = run_error("provider_error", error.to_string(), true, None);
+                let _ = context.fail_current_provider_step(payload).await;
+            }
+            return response;
+        }
         let provider_step = context
             .insert_provider_step(&request)
             .await
@@ -107,11 +135,32 @@ where
         request: CompletionRequest,
     ) -> std::result::Result<
         StreamingCompletionResponse<Self::StreamingResponse>,
-        rig_core::completion::CompletionError,
+        rig::completion::CompletionError,
     > {
         let Some(context) = self.context.clone() else {
             return self.inner.stream(request).await;
         };
+        if let Some(attempts) = self.openai_attempts.as_ref() {
+            attempts.bind(context.clone()).await;
+            return tokio::select! {
+                biased;
+                _ = context.cancellation_token.cancelled() => {
+                    let payload = run_error("canceled", "runtime canceled", false, None);
+                    context
+                        .cancel_current_provider_step(payload)
+                        .await
+                        .map_err(completion_request_error)?;
+                    Err(completion_request_error(AgentRuntimeError::Canceled))
+                }
+                response = self.inner.stream(request) => {
+                    if let Err(error) = &response {
+                        let payload = run_error("provider_error", error.to_string(), true, None);
+                        let _ = context.fail_current_provider_step(payload).await;
+                    }
+                    response
+                },
+            };
+        }
         let provider_step = context
             .insert_provider_step(&request)
             .await
