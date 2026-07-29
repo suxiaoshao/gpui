@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, rc::Rc};
 
 use crate::{
+    components::chat::run_settings::reasoning_selection_is_valid,
     components::hotkey_input::format_hotkey_label,
-    components::run_settings::reasoning_selection_is_valid,
     foundation::{
         I18n,
         assets::{IconName, provider_visual_for_kind, provider_visual_icon},
@@ -12,7 +12,7 @@ use crate::{
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, Sizable, StyledExt,
+    ActiveTheme, Disableable, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -101,6 +101,8 @@ pub(super) struct ShortcutManagementEntry {
     on_reregister: ShortcutActionHandler,
     on_delete: ShortcutActionHandler,
     on_toggle: ShortcutToggleHandler,
+    editing_enabled: bool,
+    mutation_enabled: bool,
 }
 
 impl ShortcutManagementEntry {
@@ -112,7 +114,15 @@ impl ShortcutManagementEntry {
             on_reregister: Rc::new(|_, _, _| {}),
             on_delete: Rc::new(|_, _, _| {}),
             on_toggle: Rc::new(|_, _, _, _| {}),
+            editing_enabled: true,
+            mutation_enabled: true,
         }
+    }
+
+    pub(super) fn availability(mut self, editing_enabled: bool, mutation_enabled: bool) -> Self {
+        self.editing_enabled = editing_enabled;
+        self.mutation_enabled = mutation_enabled;
+        self
     }
 
     pub(super) fn on_view(
@@ -163,6 +173,7 @@ impl RenderOnce for ShortcutManagementEntry {
         let edit_label = i18n.t("button-edit");
         let reregister_label = i18n.t("shortcut-action-reregister");
         let delete_label = i18n.t("button-delete");
+        let read_only_label = i18n.t("resource-picker-read-only");
 
         let row_id = self.row.id.clone();
         let view_id = self.row.id.clone();
@@ -186,6 +197,11 @@ impl RenderOnce for ShortcutManagementEntry {
         let provider_icon = provider_visual_icon(provider_visual_for_kind(
             self.row.provider_kind.as_deref().unwrap_or_default(),
         ));
+        let toggle_tooltip = if self.mutation_enabled {
+            self.row.status_label.to_string()
+        } else {
+            read_only_label.clone()
+        };
 
         h_flex()
             .id(format!("shortcut-settings-row-{}", self.row.id))
@@ -273,6 +289,8 @@ impl RenderOnce for ShortcutManagementEntry {
                         Switch::new(format!("shortcut-settings-enabled-{toggle_id}"))
                             .small()
                             .checked(self.row.enabled)
+                            .disabled(!self.mutation_enabled)
+                            .tooltip(toggle_tooltip)
                             .on_click(move |checked, window, cx| {
                                 cx.stop_propagation();
                                 on_toggle(toggle_id.clone(), *checked, window, cx);
@@ -292,7 +310,12 @@ impl RenderOnce for ShortcutManagementEntry {
                         Button::new(format!("shortcut-settings-edit-{edit_id}"))
                             .icon(IconName::Pencil)
                             .ghost()
-                            .tooltip(edit_label)
+                            .disabled(!self.editing_enabled)
+                            .tooltip(if self.editing_enabled {
+                                edit_label
+                            } else {
+                                read_only_label.clone()
+                            })
                             .on_click(move |_, window, cx| {
                                 cx.stop_propagation();
                                 on_edit(edit_id.clone(), window, cx);
@@ -302,7 +325,12 @@ impl RenderOnce for ShortcutManagementEntry {
                         Button::new(format!("shortcut-settings-reregister-{reregister_id}"))
                             .icon(IconName::RefreshCcw)
                             .ghost()
-                            .tooltip(reregister_label)
+                            .disabled(!self.mutation_enabled)
+                            .tooltip(if self.mutation_enabled {
+                                reregister_label
+                            } else {
+                                read_only_label.clone()
+                            })
                             .on_click(move |_, window, cx| {
                                 cx.stop_propagation();
                                 on_reregister(reregister_id.clone(), window, cx);
@@ -312,7 +340,12 @@ impl RenderOnce for ShortcutManagementEntry {
                         Button::new(format!("shortcut-settings-delete-{delete_id}"))
                             .icon(IconName::Trash)
                             .danger()
-                            .tooltip(delete_label)
+                            .disabled(!self.mutation_enabled)
+                            .tooltip(if self.mutation_enabled {
+                                delete_label
+                            } else {
+                                read_only_label
+                            })
                             .on_click(move |_, window, cx| {
                                 cx.stop_propagation();
                                 on_delete(delete_id.clone(), window, cx);

@@ -20,19 +20,19 @@ impl StreamingOutputAccumulator {
         }
     }
 
-    pub(super) fn append_text(&mut self, delta: &str) -> Result<()> {
-        self.text.append(&self.context, delta)
+    pub(super) async fn append_text(&mut self, delta: &str) -> Result<()> {
+        self.text.append(&self.context, delta).await
     }
 
-    pub(super) fn append_reasoning(&mut self, delta: &str) -> Result<()> {
-        self.reasoning.append(&self.context, delta)
+    pub(super) async fn append_reasoning(&mut self, delta: &str) -> Result<()> {
+        self.reasoning.append(&self.context, delta).await
     }
 
-    pub(super) fn replace_reasoning(&mut self, text: String) -> Result<()> {
-        self.reasoning.replace(&self.context, text)
+    pub(super) async fn replace_reasoning(&mut self, text: String) -> Result<()> {
+        self.reasoning.replace(&self.context, text).await
     }
 
-    pub(super) fn finish(
+    pub(super) async fn finish(
         &mut self,
         status: ConversationEntryStatus,
         final_text: Option<&str>,
@@ -40,8 +40,8 @@ impl StreamingOutputAccumulator {
         if let Some(final_text) = final_text {
             self.text.replace_final_content(final_text.to_string())?;
         }
-        self.text.finish(&self.context, status)?;
-        self.reasoning.finish(&self.context, status)?;
+        self.text.finish(&self.context, status).await?;
+        self.reasoning.finish(&self.context, status).await?;
         Ok(())
     }
 }
@@ -67,25 +67,26 @@ impl StreamingItemAccumulator {
         }
     }
 
-    fn append(&mut self, context: &PersistenceContext, delta: &str) -> Result<()> {
+    async fn append(&mut self, context: &PersistenceContext, delta: &str) -> Result<()> {
         if delta.is_empty() {
             return Ok(());
         }
         self.content.push_str(delta);
         if self.item_id.is_none() {
-            self.start(context)?;
+            self.start(context).await?;
             return Ok(());
         }
 
         self.pending_delta.push_str(delta);
         self.pending_chars += delta.chars().count();
         if self.should_flush() {
-            self.flush(context, ConversationEntryStatus::Running, false)?;
+            self.flush(context, ConversationEntryStatus::Running, false)
+                .await?;
         }
         Ok(())
     }
 
-    fn replace(&mut self, context: &PersistenceContext, content: String) -> Result<()> {
+    async fn replace(&mut self, context: &PersistenceContext, content: String) -> Result<()> {
         self.content = content;
         self.pending_delta.clear();
         self.pending_chars = 0;
@@ -93,9 +94,10 @@ impl StreamingItemAccumulator {
             return Ok(());
         }
         if self.item_id.is_none() {
-            self.start(context)?;
+            self.start(context).await?;
         } else {
-            self.flush(context, ConversationEntryStatus::Running, true)?;
+            self.flush(context, ConversationEntryStatus::Running, true)
+                .await?;
         }
         Ok(())
     }
@@ -112,7 +114,7 @@ impl StreamingItemAccumulator {
         Ok(())
     }
 
-    fn finish(
+    async fn finish(
         &mut self,
         context: &PersistenceContext,
         status: ConversationEntryStatus,
@@ -121,9 +123,9 @@ impl StreamingItemAccumulator {
             if self.content.is_empty() {
                 return Ok(());
             }
-            self.start(context)?;
+            self.start(context).await?;
         }
-        self.flush(context, status, true)?;
+        self.flush(context, status, true).await?;
         if matches!(
             status,
             ConversationEntryStatus::Completed | ConversationEntryStatus::Canceled
@@ -138,9 +140,9 @@ impl StreamingItemAccumulator {
         Ok(())
     }
 
-    fn start(&mut self, context: &PersistenceContext) -> Result<()> {
+    async fn start(&mut self, context: &PersistenceContext) -> Result<()> {
         let payload = self.payload();
-        let item = context.append_running_item(payload.clone())?;
+        let item = context.append_running_item(payload.clone()).await?;
         self.item_id = Some(item.id);
         self.pending_delta.clear();
         self.pending_chars = 0;
@@ -159,7 +161,7 @@ impl StreamingItemAccumulator {
                 .is_some_and(|last_flush_at| last_flush_at.elapsed() >= STREAM_FLUSH_INTERVAL)
     }
 
-    fn flush(
+    async fn flush(
         &mut self,
         context: &PersistenceContext,
         status: ConversationEntryStatus,
@@ -174,7 +176,9 @@ impl StreamingItemAccumulator {
 
         let delta = std::mem::take(&mut self.pending_delta);
         self.pending_chars = 0;
-        context.update_item_payload(item_id, status, self.payload())?;
+        context
+            .update_item_payload(item_id, status, self.payload())
+            .await?;
         if !delta.is_empty() {
             let event = match self.kind {
                 StreamingOutputKind::Text => ProviderStepEvent::TextDelta {

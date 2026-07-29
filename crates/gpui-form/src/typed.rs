@@ -1,17 +1,17 @@
 pub use crate::{
-    array::{FormItemId, ToFormItemId},
     control::{ControlAttachment, FormControl},
-    error::{
+    field::{FormField, FormFieldError},
+    form::{FormEvent, FormRevision, FormStore},
+    schema::array::{FormItemId, ToFormItemId},
+    schema::path::{FieldPath, FieldPathSegment},
+    schema::{FieldSchema, FormFieldId, FormModelSchema, FormSchemaPathError, ValidationTriggers},
+    submit::SubmitError,
+    submit::transform::{IdentityTransform, SubmitTransform, TransformReport},
+    validation::report::{
         ErrorParamValue, ErrorParams, ValidationIssue, ValidationMessage, ValidationReport,
         ValidationSource,
     },
-    field::{FormField, FormFieldError},
-    form::{FormEvent, FormRevision, FormStore},
-    path::{FieldPath, FieldPathSegment},
-    schema::{FieldSchema, FormFieldId, FormModelSchema, FormSchemaPathError, ValidationTriggers},
-    submit::SubmitError,
-    transform::{IdentityTransform, SubmitTransform, TransformReport},
-    trigger::ValidationTrigger,
+    validation::trigger::ValidationTrigger,
     validation::{
         AsyncValidationIssue, FormValidationRuntime, GardePathError, GardePathMapper,
         NoValidationContext, NoopValidationAdapter, RequiredValue, StructuralValidate,
@@ -26,4 +26,4 @@ pub use crate::validation::{
 };
 
 #[cfg(feature = "validify-transform")]
-pub use crate::transform::ValidifyTransform;
+pub use crate::submit::transform::ValidifyTransform;

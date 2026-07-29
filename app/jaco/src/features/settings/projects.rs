@@ -1,10 +1,11 @@
 use crate::{
+    components::resource_status,
     foundation::{I18n, assets::IconName},
     state,
 };
-use gpui::*;
+use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
+    ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
     button::Button,
     h_flex,
     label::Label,
@@ -19,18 +20,38 @@ use tracing::{Level, event};
 use super::{layout::settings_empty_message, push_settings_error};
 
 pub(super) struct ProjectsSettingsPage {
-    projects: StoreSelection<Vec<ProjectRecord>>,
+    resource: state::projects::ProjectStore,
+    projects: StoreSelection<Option<Vec<ProjectRecord>>>,
+    _resource_subscription: Subscription,
 }
 
 impl ProjectsSettingsPage {
+    fn can_mutate(&self, cx: &App) -> bool {
+        crate::app::critical_resources_ready(cx)
+            && self.resource.read(cx, |operation| {
+                matches!(operation, state::projects::ProjectOperation::Ready(_))
+            })
+    }
+
     pub(super) fn new(cx: &mut Context<Self>) -> Self {
+        let resource = state::projects::catalog(cx);
+        let projects = resource.select(cx, state::projects::SelectNormalProjects);
+        let resource_subscription = resource.observe_select(
+            cx,
+            state::projects::SelectProjectStatus,
+            |_page, _status, cx| cx.notify(),
+        );
         Self {
-            projects: state::projects::catalog(cx)
-                .select_cloned(cx, |snapshot| snapshot.projects()),
+            resource,
+            projects,
+            _resource_subscription: resource_subscription,
         }
     }
 
     fn open_add_project_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_mutate(cx) {
+            return;
+        }
         let title = cx.global::<I18n>().t("button-add-project");
         let failed_title = cx.global::<I18n>().t("notify-add-project-failed");
         let path_prompt = cx.prompt_for_paths(PathPromptOptions {
@@ -41,41 +62,40 @@ impl ProjectsSettingsPage {
         });
         let page = cx.entity().downgrade();
 
-        window
-            .spawn(cx, async move |cx| {
-                let selected_path = match path_prompt.await {
-                    Ok(Ok(Some(paths))) => paths.into_iter().next(),
-                    Ok(Ok(None)) => return,
-                    Ok(Err(err)) => {
-                        push_project_notification_async(
-                            cx,
-                            failed_title.clone().into(),
-                            err.to_string(),
-                            NotificationType::Error,
-                        );
-                        return;
-                    }
-                    Err(err) => {
-                        push_project_notification_async(
-                            cx,
-                            failed_title.into(),
-                            err.to_string(),
-                            NotificationType::Error,
-                        );
-                        return;
-                    }
-                };
-                let Some(path) = selected_path else {
+        let prompt_task = window.spawn(cx, async move |cx| {
+            let selected_path = match path_prompt.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) => return,
+                Ok(Err(err)) => {
+                    push_project_notification_async(
+                        cx,
+                        failed_title.clone().into(),
+                        err.to_string(),
+                        NotificationType::Error,
+                    );
                     return;
-                };
-
-                if let Err(err) = page.update_in(cx, |page, window, cx| {
-                    page.insert_selected_project(path, window, cx);
-                }) {
-                    event!(Level::ERROR, error = ?err, "add project after path prompt failed");
                 }
-            })
-            .detach();
+                Err(err) => {
+                    push_project_notification_async(
+                        cx,
+                        failed_title.into(),
+                        err.to_string(),
+                        NotificationType::Error,
+                    );
+                    return;
+                }
+            };
+            let Some(path) = selected_path else {
+                return;
+            };
+
+            if let Err(err) = page.update_in(cx, |page, window, cx| {
+                page.insert_selected_project(path, window, cx);
+            }) {
+                event!(Level::ERROR, error = ?err, "add project after path prompt failed");
+            }
+        });
+        crate::app::tasks::retain_window(window, prompt_task, cx);
     }
 
     fn insert_selected_project(
@@ -84,32 +104,41 @@ impl ProjectsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match state::projects::insert_existing_folder_project(cx, path) {
-            Ok(result) => {
-                let (title, notification_type) = if result.was_existing {
-                    (
-                        cx.global::<I18n>().t("notify-project-already-exists"),
-                        NotificationType::Warning,
-                    )
-                } else {
-                    (
-                        cx.global::<I18n>().t("notify-project-added-success"),
-                        NotificationType::Success,
-                    )
-                };
-                push_project_notification(
-                    window,
-                    cx,
-                    title,
-                    result.project.path,
-                    notification_type,
-                );
-            }
-            Err(err) => {
-                let title = cx.global::<I18n>().t("notify-add-project-failed");
-                push_settings_error(window, cx, title, err);
-            }
+        if !self.can_mutate(cx) {
+            return;
         }
+        let mutation = state::projects::insert_existing_folder_project(cx, path);
+        let page = cx.entity().downgrade();
+        let completion = window.spawn(cx, async move |cx| {
+            let result = mutation.await;
+            let _ = page.update_in(cx, |_page, window, cx| match result {
+                Ok(result) => {
+                    let (title, notification_type) = if result.was_existing {
+                        (
+                            cx.global::<I18n>().t("notify-project-already-exists"),
+                            NotificationType::Warning,
+                        )
+                    } else {
+                        (
+                            cx.global::<I18n>().t("notify-project-added-success"),
+                            NotificationType::Success,
+                        )
+                    };
+                    push_project_notification(
+                        window,
+                        cx,
+                        title,
+                        result.project.path,
+                        notification_type,
+                    );
+                }
+                Err(err) => {
+                    let title = cx.global::<I18n>().t("notify-add-project-failed");
+                    push_settings_error(window, cx, title, err);
+                }
+            });
+        });
+        crate::app::tasks::retain_window(window, completion, cx);
     }
 
     fn render_toolbar(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -121,6 +150,10 @@ impl ProjectsSettingsPage {
                 Button::new("project-settings-add")
                     .icon(IconName::Plus)
                     .label(cx.global::<I18n>().t("button-add-project"))
+                    .disabled(!self.can_mutate(cx))
+                    .when(!self.can_mutate(cx), |button| {
+                        button.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
+                    })
                     .small()
                     .on_click(cx.listener(|page, _, window, cx| {
                         page.open_add_project_prompt(window, cx);
@@ -176,6 +209,9 @@ impl ProjectsSettingsPage {
 
     fn render_project_list(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.projects.read(|projects| {
+            let Some(projects) = projects else {
+                return settings_empty_message("Project data is unavailable");
+            };
             if projects.is_empty() {
                 settings_empty_message(cx.global::<I18n>().t("empty-projects"))
             } else {
@@ -197,9 +233,19 @@ impl ProjectsSettingsPage {
 
 impl Render for ProjectsSettingsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let status = self.resource.read(cx, |operation| {
+            resource_status::refresh_status(
+                "project-resource-refresh",
+                operation.phase(),
+                operation.problem().map(ToString::to_string),
+                state::projects::request_refresh,
+                cx,
+            )
+        });
         v_flex()
             .w_full()
             .gap_3()
+            .children(status)
             .child(self.render_toolbar(window, cx))
             .child(self.render_project_list(window, cx))
     }

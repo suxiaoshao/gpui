@@ -247,11 +247,6 @@ impl JacoLayoutState {
 
 pub(crate) fn init(cx: &mut App) -> JacoResult<()> {
     let state = JacoLayoutState::load_or_create()?;
-    event!(
-        Level::INFO,
-        sidebar_width = state.persisted.sidebar_width,
-        "loaded jaco layout state"
-    );
     let state = cx.new(|_| state);
     cx.set_global(LayoutStateStore(state));
     Ok(())

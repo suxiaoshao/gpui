@@ -1,10 +1,7 @@
-use crate::{
-    foundation::assets::IconName,
-    state::{self, HomeRoute},
-};
+use crate::foundation::assets::IconName;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, Sizable, StyledExt,
+    ActiveTheme, Disableable, Icon, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     kbd::Kbd,
@@ -14,8 +11,10 @@ use gpui_component::{
 use jaco_core::ConversationId;
 use std::rc::Rc;
 
+use super::super::workspace::{
+    HomeRoute, HomeWorkspace, SidebarConversationNode, SidebarProjectNode,
+};
 use super::menu;
-use crate::state::workspace::{SidebarConversationNode, SidebarProjectNode};
 
 type ShortcutActionHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
@@ -43,6 +42,7 @@ pub(super) struct ShortcutSidebarAction {
     label: SharedString,
     icon: IconName,
     keystroke: &'static str,
+    enabled: bool,
     handler: ShortcutActionHandler,
 }
 
@@ -59,8 +59,14 @@ impl ShortcutSidebarAction {
             label: label.into(),
             icon,
             keystroke,
+            enabled: true,
             handler: Rc::new(handler),
         }
+    }
+
+    pub(super) fn disabled(mut self, disabled: bool) -> Self {
+        self.enabled = !disabled;
+        self
     }
 
     pub(super) fn render(self, _cx: &mut App) -> AnyElement {
@@ -77,6 +83,7 @@ impl RenderOnce for ShortcutSidebarActionRow {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let group = format!("sidebar-shortcut-action-group-{}", self.action.id);
         let handler = self.action.handler.clone();
+        let enabled = self.action.enabled;
         let keystroke = Keystroke::parse(self.action.keystroke).ok();
 
         h_flex()
@@ -94,14 +101,18 @@ impl RenderOnce for ShortcutSidebarActionRow {
             .rounded(cx.theme().radius)
             .text_sm()
             .text_color(cx.theme().sidebar_foreground.opacity(0.7))
-            .cursor_pointer()
-            .hover(|this| {
-                this.bg(cx.theme().tokens.sidebar_accent.background.opacity(0.8))
-                    .text_color(cx.theme().sidebar_accent_foreground)
-                    .pr(ACTION_HOVER_PADDING)
+            .when(enabled, |this| {
+                this.cursor_pointer().hover(|this| {
+                    this.bg(cx.theme().tokens.sidebar_accent.background.opacity(0.8))
+                        .text_color(cx.theme().sidebar_accent_foreground)
+                        .pr(ACTION_HOVER_PADDING)
+                })
             })
-            .on_click(move |event, window, cx| {
-                handler(event, window, cx);
+            .when(!enabled, |this| this.opacity(0.5))
+            .when(enabled, |this| {
+                this.on_click(move |event, window, cx| {
+                    handler(event, window, cx);
+                })
             })
             .child(Icon::new(self.action.icon).size_4().flex_none())
             .child(
@@ -124,14 +135,11 @@ impl RenderOnce for ShortcutSidebarActionRow {
 #[derive(IntoElement)]
 pub(super) struct ProjectSidebarRow {
     node: SidebarProjectNode,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    workspace: Entity<HomeWorkspace>,
 }
 
 impl ProjectSidebarRow {
-    pub(super) fn new(
-        node: SidebarProjectNode,
-        workspace: Entity<state::JacoWorkspaceStore>,
-    ) -> Self {
+    pub(super) fn new(node: SidebarProjectNode, workspace: Entity<HomeWorkspace>) -> Self {
         Self { node, workspace }
     }
 }
@@ -143,6 +151,10 @@ impl RenderOnce for ProjectSidebarRow {
         let group = format!("sidebar-project-group-{project_id}");
         let workspace_for_toggle = self.workspace.clone();
         let workspace_for_new = self.workspace.clone();
+        let workspace_for_menu = self.workspace.clone();
+        let project_mutations_ready = self.workspace.read(cx).project_mutations_ready();
+        let conversation_mutations_ready = self.workspace.read(cx).conversation_mutations_ready(cx);
+        let can_create_conversation = project_mutations_ready && conversation_mutations_ready;
         let new_project_id = project_id.clone();
         let more_tooltip = cx
             .global::<crate::foundation::I18n>()
@@ -206,8 +218,16 @@ impl RenderOnce for ProjectSidebarRow {
                             .on_click(|_, _window, cx| cx.stop_propagation())
                             .dropdown_menu({
                                 let project = project.clone();
+                                let workspace = workspace_for_menu.clone();
                                 move |menu, window, cx| {
-                                    menu::project_popup_menu(menu, project.clone(), window, cx)
+                                    menu::project_popup_menu(
+                                        menu,
+                                        project.clone(),
+                                        workspace.clone(),
+                                        project_mutations_ready,
+                                        window,
+                                        cx,
+                                    )
                                 }
                             }),
                     )
@@ -216,6 +236,7 @@ impl RenderOnce for ProjectSidebarRow {
                             .icon(IconName::SquarePen)
                             .ghost()
                             .xsmall()
+                            .disabled(!can_create_conversation)
                             .tooltip(new_tooltip)
                             .on_click(move |_, _window, cx| {
                                 cx.stop_propagation();
@@ -232,14 +253,14 @@ impl RenderOnce for ProjectSidebarRow {
 pub(super) struct ConversationSidebarRow {
     conversation: SidebarConversationNode,
     active: bool,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    workspace: Entity<HomeWorkspace>,
 }
 
 impl ConversationSidebarRow {
     pub(super) fn new(
         conversation: SidebarConversationNode,
         active: bool,
-        workspace: Entity<state::JacoWorkspaceStore>,
+        workspace: Entity<HomeWorkspace>,
     ) -> Self {
         Self {
             conversation,
@@ -255,6 +276,7 @@ impl RenderOnce for ConversationSidebarRow {
         let group = format!("sidebar-conversation-group-{conversation_id}");
         let workspace_for_open = self.workspace.clone();
         let workspace_for_pin = self.workspace.clone();
+        let workspace_for_delete = self.workspace.clone();
         let pin_tooltip = cx
             .global::<crate::foundation::I18n>()
             .t(if self.conversation.pinned {
@@ -269,6 +291,7 @@ impl RenderOnce for ConversationSidebarRow {
         let delete_conversation_id = conversation_id.clone();
         let delete_conversation = self.conversation.clone();
         let is_pinned = self.conversation.pinned;
+        let mutations_ready = self.workspace.read(cx).conversation_mutations_ready(cx);
 
         h_flex()
             .id(format!("sidebar-conversation-row-{conversation_id}"))
@@ -328,17 +351,27 @@ impl RenderOnce for ConversationSidebarRow {
                             })
                             .ghost()
                             .xsmall()
+                            .disabled(!mutations_ready)
                             .tooltip(pin_tooltip)
-                            .on_click(move |_, _window, cx| {
+                            .on_click(move |_, window, cx| {
                                 cx.stop_propagation();
                                 let pinned = !is_pinned;
-                                workspace_for_pin.update(cx, |workspace, cx| {
-                                    let _ = workspace.pin_conversation(
-                                        &pin_conversation_id,
+                                let task = workspace_for_pin.update(cx, |workspace, cx| {
+                                    workspace.pin_conversation(
+                                        pin_conversation_id.clone(),
                                         pinned,
                                         cx,
-                                    );
+                                    )
                                 });
+                                let completion = window.spawn(cx, async move |_| {
+                                    if let Err(error) = task.await {
+                                        tracing::error!(
+                                            error = %error,
+                                            "failed to update conversation pin"
+                                        );
+                                    }
+                                });
+                                crate::app::tasks::retain_window(window, completion, cx);
                             }),
                     )
                     .child(
@@ -348,11 +381,13 @@ impl RenderOnce for ConversationSidebarRow {
                         .icon(IconName::Trash)
                         .ghost()
                         .xsmall()
+                        .disabled(!mutations_ready)
                         .tooltip(delete_tooltip)
                         .on_click(move |_, window, cx| {
                             cx.stop_propagation();
                             menu::open_delete_conversation_confirm(
                                 delete_conversation.clone(),
+                                workspace_for_delete.clone(),
                                 window,
                                 cx,
                             );
@@ -364,7 +399,7 @@ impl RenderOnce for ConversationSidebarRow {
 
 pub(super) fn project_row(
     node: SidebarProjectNode,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    workspace: Entity<HomeWorkspace>,
     _cx: &mut App,
 ) -> AnyElement {
     ProjectSidebarRow::new(node, workspace).into_any_element()
@@ -373,7 +408,7 @@ pub(super) fn project_row(
 pub(super) fn conversation_row(
     conversation: SidebarConversationNode,
     active: bool,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    workspace: Entity<HomeWorkspace>,
     _cx: &mut App,
 ) -> AnyElement {
     ConversationSidebarRow::new(conversation, active, workspace).into_any_element()

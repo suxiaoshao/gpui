@@ -1,6 +1,6 @@
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, StyledExt,
+    ActiveTheme, Disableable, Icon, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -28,6 +28,7 @@ pub(super) struct PromptManagementEntry {
     on_view: PromptAction,
     on_edit: PromptAction,
     on_delete: PromptAction,
+    mutable: bool,
 }
 
 impl PromptManagementEntry {
@@ -37,7 +38,13 @@ impl PromptManagementEntry {
             on_view: Rc::new(|_, _, _| {}),
             on_edit: Rc::new(|_, _, _| {}),
             on_delete: Rc::new(|_, _, _| {}),
+            mutable: true,
         }
+    }
+
+    pub(super) fn mutable(mut self, mutable: bool) -> Self {
+        self.mutable = mutable;
+        self
     }
 
     pub(super) fn on_view(
@@ -70,6 +77,7 @@ impl RenderOnce for PromptManagementEntry {
         let view_label = cx.global::<I18n>().t("button-view");
         let edit_label = cx.global::<I18n>().t("button-edit");
         let delete_label = cx.global::<I18n>().t("button-delete");
+        let read_only_label = cx.global::<I18n>().t("resource-picker-read-only");
 
         let row_id = self.row.id.clone();
         let view_id = self.row.id.clone();
@@ -145,7 +153,12 @@ impl RenderOnce for PromptManagementEntry {
                         Button::new(format!("prompt-settings-edit-{edit_id}"))
                             .icon(IconName::Pencil)
                             .ghost()
-                            .tooltip(edit_label)
+                            .disabled(!self.mutable)
+                            .tooltip(if self.mutable {
+                                edit_label
+                            } else {
+                                read_only_label.clone()
+                            })
                             .on_click(move |_, window, cx| {
                                 cx.stop_propagation();
                                 on_edit(edit_id.clone(), window, cx);
@@ -155,7 +168,12 @@ impl RenderOnce for PromptManagementEntry {
                         Button::new(format!("prompt-settings-delete-{delete_id}"))
                             .icon(IconName::Trash)
                             .danger()
-                            .tooltip(delete_label)
+                            .disabled(!self.mutable)
+                            .tooltip(if self.mutable {
+                                delete_label
+                            } else {
+                                read_only_label
+                            })
                             .on_click(move |_, window, cx| {
                                 cx.stop_propagation();
                                 on_delete(delete_id.clone(), window, cx);

@@ -2,76 +2,100 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-`gpui-store` is a typed state container for GPUI applications. It provides local and shared stores, owned snapshot reads, change detection, read-only selections, and optional backend reconciliation without coupling application state to a particular persistence system.
+`gpui-store` is a small, typed, in-memory state container for GPUI
+applications. A `Store<S>` owns one authoritative value, lets callers read and
+update it through explicit APIs, and publishes changes to components,
+observers, and read-only selections.
 
-## Core ideas
+The crate deliberately does not load files, query databases, or persist
+changes. Application commands or repositories remain responsible for durable
+writes.
 
-- `LocalStore<S, B>` is owned by one component or controller.
-- `SharedStore<S, B>` is an application-wide GPUI entity.
-- Reads return owned snapshots so callers do not retain internal borrows.
-- Writes notify observers only when the value actually changes.
-- `StoreSelection<T>` is a read-only projection from committed store state.
-- `StoreBinding<T>` is reserved for a field that intentionally writes back to the same store.
-- Persistence backends are optional and orthogonal to in-memory state ownership.
+## Quick start
 
-## Local store
+Create one store for the state that must be shared:
 
-```rust,ignore
-use gpui::Context;
-use gpui_store::{LocalStore, StoreState};
+```rust
+use gpui_store::{Store, StoreChange};
 
-#[derive(Clone, Default, PartialEq)]
-struct EditorState {
-    query: String,
+#[derive(Default)]
+struct CounterState {
+    count: u64,
+    label: String,
 }
 
-impl StoreState for EditorState {}
+let counter = Store::new(
+    cx,
+    CounterState {
+        count: 0,
+        label: "Requests".into(),
+    },
+);
+```
 
-struct Editor {
-    state: LocalStore<EditorState>,
-}
+Read through a closure and mutate through the store:
 
-impl Editor {
-    fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
-        self.state.set(cx, |state| &mut state.query, query);
+```rust
+let count = counter.read(cx, |state| state.count);
+
+counter.update(cx, |state| {
+    state.count += 1;
+});
+
+let outcome = counter.update_if(cx, |state| {
+    if state.label == "Completed requests" {
+        return StoreChange::unchanged(());
     }
+
+    state.label = "Completed requests".into();
+    StoreChange::changed(())
+});
+```
+
+`update` always publishes a change and may return a business value from its
+closure. `update_if` returns a `StoreChange<R>`, which carries the business
+result and the caller's notification decision as one atomic outcome. This
+keeps equality policy local and does not require
+`CounterState: Clone + PartialEq`.
+
+Create a read-only selection when a component only needs part of the state:
+
+```rust
+struct CounterPane {
+    counter: Store<CounterState>,
+    count: StoreSelection<u64>,
 }
+
+let count = counter.select(cx, |state: &CounterState| state.count);
 ```
 
-## Shared store
+The selection recomputes after store changes and notifies its owner only when
+the selected output changes. It has no setter and never becomes a second
+source of truth.
 
-```rust,ignore
-use gpui_store::{SharedStore, StoreState};
+## Global state
 
-#[derive(Clone, Default, PartialEq)]
-struct ModelCatalog {
-    models: Vec<ModelSummary>,
-}
+A store can be installed and retrieved as a typed application global:
 
-impl StoreState for ModelCatalog {}
+```rust
+Store::install_global(cx, CounterState::default());
 
-let catalog = SharedStore::new(cx, ModelCatalog::default());
-let models = catalog.read_cloned(cx, |state| &state.models);
+let counter = Store::<CounterState>::global(cx);
 ```
 
-Components may derive rendering options from the snapshot, but refreshing a catalog does not silently rewrite a form-owned selection.
+Cloning a `Store<S>` clones the handle, not `S`; every clone refers to the same
+state.
 
-## Stores and forms
+## Responsibility boundary
 
-`gpui-store` owns committed application state and catalogs. A generated `gpui-form` store owns the current editable typed model, its baseline, validation, and submit runtime. Bound components only project that model and keep interaction-local UI state. Integration is explicit:
+Use:
 
-```text
-committed store snapshot -> form.rebase(committed value)
-catalog snapshot -> component options/projection only
-form.prepare_submit() -> typed output -> store or repository command
-command success -> committed store reconcile
-```
+- `gpui-store` for shared, observable, in-memory application state;
+- `gpui-form` for editable form models, validation, and submit preparation;
+- application services or repositories for persistence and domain commands.
 
-`gpui-store` does not depend on `gpui-form` and provides no implicit store-to-form binding.
+## Documentation
 
-## Further reading
-
-- [Complete design (English)](docs/design.md)
-- [完整设计（中文）](docs/design.zh-CN.md)
-- [API and backend reference](docs/reference.md)
+- [User guide](docs/guide.md)
+- [使用指南（中文）](docs/guide.zh-CN.md)
 - [Documentation index](docs/README.md)

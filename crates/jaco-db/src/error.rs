@@ -3,6 +3,22 @@ use time::{error::Format, error::Parse};
 pub type Result<T> = std::result::Result<T, DbError>;
 
 #[derive(Debug, thiserror::Error)]
+pub enum DatabaseValidationError {
+    #[error("database integrity check failed: {0}")]
+    Integrity(String),
+    #[error("database foreign key validation failed: {0}")]
+    ForeignKey(String),
+    #[error("database schema is not supported: {0}")]
+    Schema(String),
+    #[error("stored database data is invalid: {0}")]
+    StoredData(String),
+    #[error("database cross-row invariant failed: {0}")]
+    Invariant(String),
+    #[error("database validation query failed: {0}")]
+    Query(String),
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum DbError {
     #[error("database path is not valid UTF-8")]
     InvalidDatabasePath,
@@ -24,4 +40,6 @@ pub enum DbError {
     TimeParse(#[from] Parse),
     #[error("database invariant failed: {0}")]
     Invariant(String),
+    #[error(transparent)]
+    Validation(#[from] DatabaseValidationError),
 }

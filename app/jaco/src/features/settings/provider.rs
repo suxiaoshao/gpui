@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    database,
+    components::resource_status,
     foundation::{
         I18n,
         assets::{IconName, provider_visual_icon},
@@ -31,10 +31,7 @@ use jaco_agent::{ProviderModelFetchError, ProviderModelFetchRequest, fetch_provi
 use jaco_core::{
     ProviderId, ProviderSecretRefs, ProviderSettingValue, ProviderSettingsPayload, new_id,
 };
-use jaco_db::{
-    FreshRepository, NewProvider, NewProviderModel, ProviderModelRecord, ProviderRecord,
-    UpdateProvider,
-};
+use jaco_db::{NewProvider, NewProviderModel, ProviderModelRecord, ProviderRecord, UpdateProvider};
 use tracing::{Level, event};
 
 mod capabilities;
@@ -63,7 +60,7 @@ use self::{
     },
     model_fetch::{ModelFetchSupport, fetch_support},
 };
-use state::provider_secrets::{ProviderSecretStore, ProviderSecretWrite};
+use state::providers::secrets::{ProviderSecretStore, ProviderSecretWrite};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ProviderListItem {
@@ -291,6 +288,7 @@ fn editor_is_fetching(editor: &ProviderEditorState) -> bool {
 }
 
 pub(super) struct ProviderSettingsPage {
+    resource: state::providers::ProviderStore,
     provider_list: Entity<ListState<ProviderListDelegate>>,
     model_list: Entity<ListState<ProviderModelListDelegate>>,
     detail_scroll_handle: ScrollHandle,
@@ -330,6 +328,7 @@ struct ProviderModelFetchResult {
 
 impl ProviderSettingsPage {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let resource = state::providers::catalog(cx);
         let providers = Self::load_provider_list(cx).unwrap_or_else(|err| {
             event!(Level::ERROR, error = ?err, "load provider settings failed");
             Vec::new()
@@ -377,27 +376,50 @@ impl ProviderSettingsPage {
             cx.subscribe_in(&provider_list, window, Self::on_provider_list_event);
         let model_list_subscription =
             cx.subscribe_in(&model_list, window, Self::on_model_list_event);
+        let resource_data_subscription = resource.observe_select_in(
+            cx,
+            window,
+            state::providers::SelectProviderRecordsWithModels,
+            |page, _providers, window, cx| {
+                page.reload_from_resource(window, cx);
+            },
+        );
+        let resource_status_subscription = resource.observe_select_in(
+            cx,
+            window,
+            state::providers::SelectProviderStatus,
+            |page, _status, window, cx| {
+                page.sync_model_list(window, cx);
+                cx.notify();
+            },
+        );
         Self {
+            resource,
             provider_list,
             model_list,
             detail_scroll_handle: ScrollHandle::default(),
             selected_key,
             providers,
             editors,
-            _list_subscriptions: vec![provider_list_subscription, model_list_subscription],
+            _list_subscriptions: vec![
+                provider_list_subscription,
+                model_list_subscription,
+                resource_data_subscription,
+                resource_status_subscription,
+            ],
             _load_task: None,
         }
     }
 
     fn load_provider_list(cx: &App) -> jaco_db::Result<Vec<ProviderListItem>> {
-        let records = database::repository(cx).list_providers()?;
+        let records = state::providers::providers_with_models(cx)?;
         Ok(builtin_provider_specs()
             .into_iter()
             .map(|spec| {
                 let provider = records
                     .iter()
-                    .find(|provider| provider.kind == spec.kind.as_str())
-                    .cloned();
+                    .find(|(provider, _)| provider.kind == spec.kind.as_str())
+                    .map(|(provider, _)| provider.clone());
                 ProviderListItem { spec, provider }
             })
             .collect())
@@ -431,11 +453,37 @@ impl ProviderSettingsPage {
         let Some(provider_id) = provider_id else {
             return Ok(Vec::new());
         };
-        database::repository(cx)
-            .list_provider_models(provider_id)?
+        state::providers::providers_with_models(cx)?
+            .into_iter()
+            .find(|(provider, _)| &provider.id == provider_id)
+            .map(|(_, models)| models)
+            .unwrap_or_default()
             .into_iter()
             .map(|model| Ok(model.into()))
             .collect()
+    }
+
+    fn reload_from_resource(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Ok(providers) = Self::load_provider_list(cx) else {
+            cx.notify();
+            return;
+        };
+        for item in &providers {
+            let key = ProviderEditorKey::new(item.spec.kind.clone());
+            if let Some(editor) = self.editors.get_mut(&key) {
+                if let Some(provider_id) = editor.metadata.provider_id.as_ref()
+                    && let Ok(models) = Self::load_models(Some(provider_id), cx)
+                {
+                    editor.models = models;
+                }
+            } else {
+                self.editors
+                    .insert(key, Self::editor_for_item(item, window, cx));
+            }
+        }
+        self.providers = providers;
+        self.sync_list_delegates(window, cx);
+        cx.notify();
     }
 
     fn bind_editor_form(
@@ -524,6 +572,17 @@ impl ProviderSettingsPage {
             .is_some_and(|editor| editor_is_saving(editor, cx))
     }
 
+    fn resource_is_ready(&self, cx: &App) -> bool {
+        crate::app::critical_resources_ready(cx)
+            && self.resource.read(cx, |operation| {
+                matches!(operation, state::providers::ProviderOperation::Ready(_))
+            })
+    }
+
+    fn selected_editor_is_locked(&self, cx: &App) -> bool {
+        !self.resource_is_ready(cx) || self.selected_editor_is_saving(cx)
+    }
+
     fn selected_spec(&self) -> Option<&ProviderSpec> {
         self.spec_for_key(&self.selected_key)
     }
@@ -580,7 +639,7 @@ impl ProviderSettingsPage {
         let ListEvent::Confirm(ix) = event else {
             return;
         };
-        if self.selected_editor_is_saving(cx) {
+        if self.selected_editor_is_locked(cx) {
             return;
         }
         let Some(row) = self
@@ -616,7 +675,7 @@ impl ProviderSettingsPage {
             .selected_editor()
             .map(|editor| model_list_rows(&editor.models))
             .unwrap_or_default();
-        let locked = self.selected_editor_is_saving(cx);
+        let locked = self.selected_editor_is_locked(cx);
         self.model_list.update(cx, |list, cx| {
             list.delegate_mut().set_rows(rows);
             list.delegate_mut().set_disabled(locked);
@@ -650,6 +709,9 @@ impl ProviderSettingsPage {
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.resource_is_ready(cx) {
+            return;
+        }
         let key = self.selected_key.clone();
         if self
             .editors
@@ -711,7 +773,13 @@ impl ProviderSettingsPage {
         let page = cx.entity().downgrade();
         let task_key = key.clone();
         let task = window.spawn(cx, async move |cx| {
-            let result = write_provider_secrets(save, cx).await;
+            let result = match write_provider_secrets(save, cx).await {
+                Ok(save) => match cx.update(|_, cx| persist_provider_save(save, cx)) {
+                    Ok(persistence) => persistence.await.map_err(|error| error.to_string()),
+                    Err(error) => Err(error.to_string()),
+                },
+                Err(error) => Err(error),
+            };
             if let Err(err) = page.update_in(cx, |page, window, cx| {
                 let _ = page.finish_save(task_key, result, window, cx);
             }) {
@@ -730,7 +798,7 @@ impl ProviderSettingsPage {
     fn finish_save(
         &mut self,
         key: ProviderEditorKey,
-        result: Result<ProviderSaveRequest, String>,
+        result: Result<(ProviderSaveRequest, ProviderRecord), String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
@@ -741,11 +809,6 @@ impl ProviderSettingsPage {
         if selected {
             self.sync_model_list(window, cx);
         }
-        let result = result.and_then(|save| {
-            persist_provider_save(&save, cx)
-                .map(|provider| (save, provider))
-                .map_err(|err| err.to_string())
-        });
         match result {
             Ok((save, provider)) => {
                 let seed = seed_from_record(&provider);
@@ -839,6 +902,9 @@ impl ProviderSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.resource_is_ready(cx) {
+            return;
+        }
         let key = self.selected_key.clone();
         let Some(metadata) = self.editors.get(&key).map(|editor| editor.metadata.clone()) else {
             return;
@@ -846,30 +912,45 @@ impl ProviderSettingsPage {
         let Some(provider_id) = metadata.provider_id.clone() else {
             return;
         };
-        match state::providers::set_provider_model_enabled(cx, &provider_id, &model_id, enabled) {
-            Ok(_) => {
-                if let Some(editor) = self.editors.get_mut(&key) {
-                    editor.models = Self::load_models(Some(&provider_id), cx).unwrap_or_default();
+        let mutation = state::providers::set_provider_model_enabled(
+            cx,
+            provider_id.clone(),
+            model_id,
+            enabled,
+        );
+        let page = cx.entity().downgrade();
+        let completion = window.spawn(cx, async move |cx| {
+            let result = mutation.await;
+            let _ = page.update_in(cx, |page, window, cx| match result {
+                Ok(_) => {
+                    if let Some(editor) = page.editors.get_mut(&key) {
+                        editor.models =
+                            Self::load_models(Some(&provider_id), cx).unwrap_or_default();
+                    }
+                    page.sync_model_list(window, cx);
+                    cx.notify();
                 }
-                self.sync_model_list(window, cx);
-                cx.notify();
-            }
-            Err(err) => {
-                window.push_notification(
-                    Notification::new()
-                        .title(
-                            cx.global::<I18n>()
-                                .t("provider-notification-update-model-failed"),
-                        )
-                        .message(err.to_string())
-                        .with_type(NotificationType::Error),
-                    cx,
-                );
-            }
-        }
+                Err(err) => {
+                    window.push_notification(
+                        Notification::new()
+                            .title(
+                                cx.global::<I18n>()
+                                    .t("provider-notification-update-model-failed"),
+                            )
+                            .message(err.to_string())
+                            .with_type(NotificationType::Error),
+                        cx,
+                    );
+                }
+            });
+        });
+        crate::app::tasks::retain_window(window, completion, cx);
     }
 
     fn fetch_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.resource_is_ready(cx) {
+            return;
+        }
         let key = self.selected_key.clone();
         if self
             .editors
@@ -929,11 +1010,24 @@ impl ProviderSettingsPage {
         let Some(provider_id) = editor.metadata.provider_id.clone() else {
             return;
         };
-        let repository = database::repository(cx);
+        let provider = match state::providers::ready_provider(&provider_id, cx) {
+            Ok(provider) => provider,
+            Err(error) => {
+                self.finish_fetch(
+                    key,
+                    Err(ProviderModelFetchError::InvalidConfig {
+                        message: error.to_string(),
+                    }),
+                    window,
+                    cx,
+                );
+                return;
+            }
+        };
         let page = cx.entity().downgrade();
         let task_key = key.clone();
         let task = window.spawn(cx, async move |cx| {
-            let result = fetch_provider_models_for_provider(repository, provider_id, cx).await;
+            let result = fetch_provider_models_for_provider(provider, cx).await;
             if let Err(err) = page.update_in(cx, |page, window, cx| {
                 page.finish_fetch(task_key, result, window, cx);
             }) {
@@ -959,44 +1053,61 @@ impl ProviderSettingsPage {
         match result {
             Ok(result) => {
                 let count = result.models.len();
-                if let Err(err) = state::providers::replace_fetched_provider_models(
+                let mutation = state::providers::replace_fetched_provider_models(
                     cx,
-                    &result.provider_id,
+                    result.provider_id,
                     result.models,
-                ) {
-                    window.push_notification(
-                        Notification::new()
-                            .title(cx.global::<I18n>().t("provider-notification-fetch-failed"))
-                            .message(err.to_string())
-                            .with_type(NotificationType::Error),
-                        cx,
-                    );
-                    cx.notify();
-                    return;
-                }
-                let provider_id = self
-                    .editors
-                    .get(&key)
-                    .and_then(|editor| editor.metadata.provider_id.clone());
-                if let (Some(editor), Some(provider_id)) = (self.editors.get_mut(&key), provider_id)
-                {
-                    editor.models = Self::load_models(Some(&provider_id), cx).unwrap_or_default();
-                }
-                if self.selected_key == key {
-                    self.sync_model_list(window, cx);
-                }
-                let mut args = FluentArgs::new();
-                args.set("count", count);
-                window.push_notification(
-                    Notification::new()
-                        .title(cx.global::<I18n>().t("provider-notification-fetch-success"))
-                        .message(
-                            cx.global::<I18n>()
-                                .t_with_args("provider-fetch-success-message", &args),
-                        )
-                        .with_type(NotificationType::Success),
-                    cx,
                 );
+                let page = cx.entity().downgrade();
+                let completion = window.spawn(cx, async move |cx| {
+                    let result = mutation.await;
+                    let _ = page.update_in(cx, |page, window, cx| match result {
+                        Ok(_) => {
+                            let provider_id = page
+                                .editors
+                                .get(&key)
+                                .and_then(|editor| editor.metadata.provider_id.clone());
+                            if let (Some(editor), Some(provider_id)) =
+                                (page.editors.get_mut(&key), provider_id)
+                            {
+                                editor.models =
+                                    Self::load_models(Some(&provider_id), cx).unwrap_or_default();
+                            }
+                            if page.selected_key == key {
+                                page.sync_model_list(window, cx);
+                            }
+                            let mut args = FluentArgs::new();
+                            args.set("count", count);
+                            window.push_notification(
+                                Notification::new()
+                                    .title(
+                                        cx.global::<I18n>()
+                                            .t("provider-notification-fetch-success"),
+                                    )
+                                    .message(
+                                        cx.global::<I18n>()
+                                            .t_with_args("provider-fetch-success-message", &args),
+                                    )
+                                    .with_type(NotificationType::Success),
+                                cx,
+                            );
+                            cx.notify();
+                        }
+                        Err(err) => {
+                            window.push_notification(
+                                Notification::new()
+                                    .title(
+                                        cx.global::<I18n>().t("provider-notification-fetch-failed"),
+                                    )
+                                    .message(err.to_string())
+                                    .with_type(NotificationType::Error),
+                                cx,
+                            );
+                            cx.notify();
+                        }
+                    });
+                });
+                crate::app::tasks::retain_window(window, completion, cx);
             }
             Err(ProviderModelFetchError::ManualModelsRequired { .. }) => {
                 window.push_notification(
@@ -1103,7 +1214,8 @@ impl ProviderSettingsPage {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let dirty = self.is_dirty(cx);
-        let locked = editor_is_saving(editor, cx);
+        let resource_ready = self.resource_is_ready(cx);
+        let locked = !resource_ready || editor_is_saving(editor, cx);
         let enabled = editor.form.enabled(cx);
         h_flex()
             .flex_none()
@@ -1149,6 +1261,9 @@ impl ProviderSettingsPage {
                 Switch::new("provider-settings-enabled")
                     .checked(enabled)
                     .disabled(locked)
+                    .when(!resource_ready, |control| {
+                        control.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
+                    })
                     .on_click(cx.listener(|page, checked, window, cx| {
                         if let Some(editor) = page.selected_editor_mut() {
                             editor.form.set_enabled(*checked, window, cx);
@@ -1166,7 +1281,8 @@ impl ProviderSettingsPage {
         editor: &ProviderEditorState,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let locked = editor_is_saving(editor, cx);
+        let resource_ready = self.resource_is_ready(cx);
+        let locked = !resource_ready || editor_is_saving(editor, cx);
         v_flex()
             .flex_none()
             .w_full()
@@ -1205,7 +1321,10 @@ impl ProviderSettingsPage {
                             .small()
                             .primary()
                             .loading(editor_is_saving(editor, cx))
-                            .disabled(editor_is_saving(editor, cx))
+                            .disabled(locked)
+                            .when(!resource_ready, |button| {
+                                button.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
+                            })
                             .on_click(cx.listener(|page, _, window, cx| page.save(window, cx))),
                     ),
             )
@@ -1450,7 +1569,8 @@ impl ProviderSettingsPage {
     }
 
     fn render_models(&self, editor: &ProviderEditorState, cx: &mut Context<Self>) -> AnyElement {
-        let locked = editor_is_saving(editor, cx);
+        let resource_ready = self.resource_is_ready(cx);
+        let locked = !resource_ready || editor_is_saving(editor, cx);
         v_flex()
             .flex_none()
             .w_full()
@@ -1480,6 +1600,9 @@ impl ProviderSettingsPage {
                             .small()
                             .loading(editor_is_fetching(editor))
                             .disabled(editor_is_fetching(editor) || locked)
+                            .when(!resource_ready, |button| {
+                                button.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
+                            })
                             .on_click(cx.listener(|page, _, window, cx| {
                                 page.fetch_models(window, cx);
                             })),
@@ -1542,13 +1665,29 @@ fn provider_error_label(message: SharedString, cx: &mut App) -> AnyElement {
 
 impl Render for ProviderSettingsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
+        let status = self.resource.read(cx, |operation| {
+            resource_status::refresh_status(
+                "provider-resource-refresh",
+                operation.phase(),
+                operation.problem().map(ToString::to_string),
+                state::providers::request_refresh,
+                cx,
+            )
+        });
+        v_flex()
             .size_full()
             .min_h_0()
-            .overflow_hidden()
-            .gap_5()
-            .child(self.render_provider_list(cx))
-            .child(self.render_detail(cx))
+            .gap_3()
+            .children(status)
+            .child(
+                h_flex()
+                    .size_full()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .gap_5()
+                    .child(self.render_provider_list(cx))
+                    .child(self.render_detail(cx)),
+            )
     }
 }
 
@@ -1561,13 +1700,13 @@ async fn write_provider_secrets(
 }
 
 fn persist_provider_save(
-    save: &ProviderSaveRequest,
+    save: ProviderSaveRequest,
     cx: &mut App,
-) -> jaco_db::Result<ProviderRecord> {
-    match save.provider_id.as_ref() {
+) -> Task<jaco_db::Result<(ProviderSaveRequest, ProviderRecord)>> {
+    let mutation = match save.provider_id.as_ref() {
         Some(provider_id) => state::providers::update_provider(
             cx,
-            provider_id,
+            provider_id.clone(),
             UpdateProvider {
                 display_name: save.display_name.clone(),
                 enabled: save.enabled,
@@ -1588,22 +1727,14 @@ fn persist_provider_save(
                 secret_refs: save.secret_refs.clone(),
             },
         ),
-    }
+    };
+    cx.spawn(async move |_| mutation.await.map(|provider| (save, provider)))
 }
 
 async fn fetch_provider_models_for_provider(
-    repository: FreshRepository,
-    provider_id: ProviderId,
+    provider: ProviderRecord,
     cx: &mut AsyncWindowContext,
 ) -> Result<ProviderModelFetchResult, ProviderModelFetchError> {
-    let provider = repository
-        .get_provider(&provider_id)
-        .map_err(|err| ProviderModelFetchError::InvalidConfig {
-            message: err.to_string(),
-        })?
-        .ok_or_else(|| ProviderModelFetchError::InvalidConfig {
-            message: format!("provider `{provider_id}` was not found"),
-        })?;
     let secrets = ProviderSecretStore::read_values(cx, &provider.secret_refs)
         .await
         .map_err(|err| ProviderModelFetchError::InvalidConfig { message: err })?;
@@ -1712,7 +1843,7 @@ mod tests {
         ProviderListItem, ProviderSettingsPage, fetch_support, provider_fetch_precondition,
         seed_from_record, seed_from_spec,
     };
-    use crate::database::{self, FreshStoreGlobal};
+    use crate::database;
     use crate::features::settings::provider::catalog::{
         ModelListingStrategy, ProviderKindKey, builtin_provider_specs,
     };
@@ -1728,7 +1859,7 @@ mod tests {
         I18n,
         assets::{IconName, ProviderLogoName},
     };
-    use crate::state::provider_secrets::{ProviderSecretStore, ProviderSecretWrite};
+    use crate::state::providers::secrets::{ProviderSecretStore, ProviderSecretWrite};
     use fluent_bundle::FluentArgs;
     use gpui::{App, AppContext as _, Entity, TestAppContext, VisualTestContext, WindowHandle};
     use gpui_component::IndexPath;
@@ -1795,7 +1926,8 @@ mod tests {
     #[test]
     fn saved_provider_draft_uses_record_enabled_state() {
         let dir = tempdir().unwrap();
-        let store = FreshStore::open_in_dir(dir.path()).unwrap();
+        let store =
+            FreshStore::open_or_create_initial(dir.path().join(jaco_db::DATABASE_FILE)).unwrap();
         let provider = store
             .repository()
             .insert_provider(NewProvider {
@@ -1914,12 +2046,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        assert!(cx.update(|_, cx| {
-            database::repository(cx)
-                .list_providers()
-                .unwrap()
-                .is_empty()
-        }));
+        assert!(cx.update(|_, cx| { test_repository(cx).list_providers().unwrap().is_empty() }));
     }
 
     #[gpui::test]
@@ -2105,7 +2232,8 @@ mod tests {
             .find(|spec| spec.kind.as_str() == "custom_openai_compatible")
             .expect("custom provider spec exists");
         let dir = tempdir().unwrap();
-        let store = FreshStore::open_in_dir(dir.path()).unwrap();
+        let store =
+            FreshStore::open_or_create_initial(dir.path().join(jaco_db::DATABASE_FILE)).unwrap();
         let provider = store
             .repository()
             .insert_provider(NewProvider {
@@ -2286,7 +2414,7 @@ mod tests {
         cx.run_until_parked();
 
         let (openai_db_url, ollama_db_url) = cx.update(|_, cx| {
-            let providers = database::repository(cx).list_providers().unwrap();
+            let providers = test_repository(cx).list_providers().unwrap();
             (
                 provider_setting_value(&providers, "openai", "base_url"),
                 provider_setting_value(&providers, "ollama", "base_url"),
@@ -2349,7 +2477,7 @@ mod tests {
         cx.run_until_parked();
 
         let (openai_db_url, ollama_db_url) = cx.update(|_, cx| {
-            let providers = database::repository(cx).list_providers().unwrap();
+            let providers = test_repository(cx).list_providers().unwrap();
             (
                 provider_setting_value(&providers, "openai", "base_url"),
                 provider_setting_value(&providers, "ollama", "base_url"),
@@ -2367,7 +2495,7 @@ mod tests {
         let _dir = init_provider_page_test(cx);
         let provider_id = cx.update(|cx| {
             let provider_id = provider_id_for_kind(cx, "openai");
-            database::repository(cx)
+            test_repository(cx)
                 .replace_fetched_provider_models(
                     &provider_id,
                     vec![provider_model_for_test(&provider_id, "gpt-5")],
@@ -2408,7 +2536,7 @@ mod tests {
         });
 
         let model_still_enabled = cx.update(|_, cx| {
-            database::repository(cx)
+            test_repository(cx)
                 .list_provider_models(&provider_id)
                 .unwrap()
                 .into_iter()
@@ -2433,6 +2561,8 @@ mod tests {
                 }],
             },
         );
+        cx.update(crate::state::providers::request_refresh);
+        cx.run_until_parked();
         let (window, page) = open_provider_settings_root_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let ollama = provider_editor_key("ollama");
@@ -2641,10 +2771,12 @@ mod tests {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
             gpui_component::init(cx);
-            cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
-            crate::state::providers::init(cx);
+            database::install_for_test(cx, dir.path());
             crate::foundation::i18n::init(cx);
+            crate::state::hotkey::set_test_hotkey_state(cx);
+            crate::state::providers::init(cx);
         });
+        cx.run_until_parked();
         dir
     }
 
@@ -2652,11 +2784,10 @@ mod tests {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
             gpui_component::init(cx);
-            cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
-            crate::state::providers::init(cx);
+            database::install_for_test(cx, dir.path());
             crate::foundation::i18n::init(cx);
 
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             repository
                 .insert_provider(provider_for_test(
                     "openai",
@@ -2679,7 +2810,10 @@ mod tests {
                     ProviderSecretRefs { refs: Vec::new() },
                 ))
                 .unwrap();
+            crate::state::hotkey::set_test_hotkey_state(cx);
+            crate::state::providers::init(cx);
         });
+        cx.run_until_parked();
         dir
     }
 
@@ -2717,7 +2851,7 @@ mod tests {
         secret_refs: ProviderSecretRefs,
     ) {
         cx.update(|cx| {
-            let repository = database::repository(cx);
+            let repository = test_repository(cx);
             let provider = repository
                 .list_providers()
                 .unwrap()
@@ -2739,7 +2873,7 @@ mod tests {
     }
 
     fn provider_secret_ref_keys(cx: &App, kind: &str) -> Vec<String> {
-        database::repository(cx)
+        test_repository(cx)
             .list_providers()
             .unwrap()
             .into_iter()
@@ -2925,8 +3059,12 @@ mod tests {
             .expect("provider setting exists")
     }
 
+    fn test_repository(cx: &App) -> jaco_db::FreshRepository {
+        database::with_ready_repository(cx, |repository| Ok(repository.clone())).unwrap()
+    }
+
     fn provider_id_for_kind(cx: &App, kind: &str) -> ProviderId {
-        database::repository(cx)
+        test_repository(cx)
             .list_providers()
             .unwrap()
             .into_iter()

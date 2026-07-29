@@ -2,8 +2,7 @@ use super::{PersistenceContext, lock, mutex_clone, mutex_replace};
 use crate::{AgentRuntimeEvent, AgentStep, Result};
 use jaco_core::*;
 use jaco_db::{
-    ConversationEntryRecord, NewConversationEntry, ToolInvocationApproval, ToolInvocationRecord,
-    UpdateToolInvocationStatus,
+    ConversationEntryRecord, NewConversationEntry, ToolInvocationRecord, UpdateToolInvocationStatus,
 };
 
 impl PersistenceContext {
@@ -11,94 +10,121 @@ impl PersistenceContext {
         for entry in entries {
             self.add_input_item_id(entry.id.clone());
             self.push_step(AgentStep::ConversationEntry(entry.id.clone()));
-            self.emit_runtime(AgentRuntimeEvent::ConversationEntryAppended {
-                conversation_id: self.conversation_id.clone(),
-                item_id: entry.id.clone(),
-            });
         }
     }
 
-    pub(super) fn append_entries_and_update_tool_invocation_full(
+    pub(super) async fn append_entries_and_update_tool_invocation_full(
         &self,
         entries: Vec<NewConversationEntry>,
         invocation: &ToolInvocationRecord,
         update: UpdateToolInvocationStatus,
         approval: Option<ToolInvocationApproval>,
     ) -> Result<(Vec<ConversationEntryRecord>, ToolInvocationRecord)> {
-        let (entries, invocation) = self
-            .repo
-            .append_conversation_entries_and_update_tool_invocation_full(
+        let commit = self
+            .persistence
+            .append_entries_and_update_tool_invocation(
                 entries,
-                &invocation.id,
+                invocation.id.clone(),
                 update,
                 approval,
-            )?;
+            )
+            .await?;
+        self.emit_conversation_commit_with_changes(
+            &commit,
+            commit
+                .value
+                .0
+                .iter()
+                .cloned()
+                .map(|entry| jaco_core::ConversationChange::EntryAppended {
+                    entry: Box::new(entry),
+                })
+                .chain(std::iter::once(
+                    jaco_core::ConversationChange::ToolInvocationChanged {
+                        invocation: Box::new(commit.value.1.clone()),
+                    },
+                ))
+                .collect(),
+        );
+        let (entries, invocation) = commit.value;
         self.record_persisted_entries(&entries);
-        self.emit_runtime(AgentRuntimeEvent::ToolInvocationChanged {
-            agent_run_id: invocation.agent_run_id.clone(),
-            tool_invocation_id: invocation.id.clone(),
-        });
         Ok((entries, invocation))
     }
 
-    pub(super) fn append_item(
+    pub(super) async fn append_item(
         &self,
         payload: ConversationEntryPayload,
     ) -> Result<ConversationEntryRecord> {
-        let item = self.repo.append_conversation_entry(NewConversationEntry {
-            conversation_id: self.conversation_id.clone(),
-            status: ConversationEntryStatus::Completed,
-            agent_run_id: Some(self.agent_run_id.clone()),
-            provider_step_id: mutex_clone(&self.last_provider_step_id),
-            tool_invocation_id: None,
-            provider_item_id: None,
-            payload,
-        })?;
+        let commit = self
+            .persistence
+            .append_conversation_entry(NewConversationEntry {
+                conversation_id: self.conversation_id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(self.agent_run_id.clone()),
+                provider_step_id: mutex_clone(&self.last_provider_step_id),
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload,
+            })
+            .await?;
+        self.emit_conversation_commit_with_changes(
+            &commit,
+            vec![jaco_core::ConversationChange::EntryAppended {
+                entry: Box::new(commit.value.clone()),
+            }],
+        );
+        let item = commit.value;
         self.add_input_item_id(item.id.clone());
         self.push_step(AgentStep::ConversationEntry(item.id.clone()));
-        self.emit_runtime(AgentRuntimeEvent::ConversationEntryAppended {
-            conversation_id: self.conversation_id.clone(),
-            item_id: item.id.clone(),
-        });
         Ok(item)
     }
 
-    pub(crate) fn append_running_item(
+    pub(crate) async fn append_running_item(
         &self,
         payload: ConversationEntryPayload,
     ) -> Result<ConversationEntryRecord> {
-        let item = self.repo.append_conversation_entry(NewConversationEntry {
-            conversation_id: self.conversation_id.clone(),
-            status: ConversationEntryStatus::Running,
-            agent_run_id: Some(self.agent_run_id.clone()),
-            provider_step_id: mutex_clone(&self.last_provider_step_id),
-            tool_invocation_id: None,
-            provider_item_id: None,
-            payload,
-        })?;
+        let commit = self
+            .persistence
+            .append_conversation_entry(NewConversationEntry {
+                conversation_id: self.conversation_id.clone(),
+                status: ConversationEntryStatus::Running,
+                agent_run_id: Some(self.agent_run_id.clone()),
+                provider_step_id: mutex_clone(&self.last_provider_step_id),
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload,
+            })
+            .await?;
+        self.emit_conversation_commit_with_changes(
+            &commit,
+            vec![jaco_core::ConversationChange::EntryAppended {
+                entry: Box::new(commit.value.clone()),
+            }],
+        );
+        let item = commit.value;
         self.add_input_item_id(item.id.clone());
         self.push_step(AgentStep::ConversationEntry(item.id.clone()));
-        self.emit_runtime(AgentRuntimeEvent::ConversationEntryAppended {
-            conversation_id: self.conversation_id.clone(),
-            item_id: item.id.clone(),
-        });
         Ok(item)
     }
 
-    pub(crate) fn update_item_payload(
+    pub(crate) async fn update_item_payload(
         &self,
         item_id: &str,
         status: ConversationEntryStatus,
         payload: ConversationEntryPayload,
     ) -> Result<ConversationEntryRecord> {
-        let item = self
-            .repo
-            .update_conversation_entry_payload(item_id, status, payload)?;
-        self.emit_runtime(AgentRuntimeEvent::ConversationEntryUpdated {
-            conversation_id: self.conversation_id.clone(),
-            item_id: item.id.clone(),
-        });
-        Ok(item)
+        let commit = self
+            .persistence
+            .update_conversation_entry_payload(item_id.to_string(), status, payload)
+            .await?;
+        self.emit_conversation_commit_with_changes(
+            &commit,
+            vec![jaco_core::ConversationChange::EntryUpdated {
+                entry: Box::new(commit.value.clone()),
+                kind: EntryChangeKind::TextAppended,
+            }],
+        );
+        Ok(commit.value)
     }
 
     pub(crate) fn set_final_entry_id(&self, item_id: Option<ConversationEntryId>) {
@@ -119,26 +145,32 @@ impl PersistenceContext {
         });
     }
 
-    pub(super) fn append_tool_item(
+    pub(super) async fn append_tool_item(
         &self,
         tool_invocation_id: ToolInvocationId,
         payload: ConversationEntryPayload,
     ) -> Result<ConversationEntryRecord> {
-        let item = self.repo.append_conversation_entry(NewConversationEntry {
-            conversation_id: self.conversation_id.clone(),
-            status: ConversationEntryStatus::Completed,
-            agent_run_id: Some(self.agent_run_id.clone()),
-            provider_step_id: mutex_clone(&self.last_provider_step_id),
-            tool_invocation_id: Some(tool_invocation_id),
-            provider_item_id: None,
-            payload,
-        })?;
+        let commit = self
+            .persistence
+            .append_conversation_entry(NewConversationEntry {
+                conversation_id: self.conversation_id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(self.agent_run_id.clone()),
+                provider_step_id: mutex_clone(&self.last_provider_step_id),
+                tool_invocation_id: Some(tool_invocation_id),
+                provider_item_id: None,
+                payload,
+            })
+            .await?;
+        self.emit_conversation_commit_with_changes(
+            &commit,
+            vec![jaco_core::ConversationChange::EntryAppended {
+                entry: Box::new(commit.value.clone()),
+            }],
+        );
+        let item = commit.value;
         self.add_input_item_id(item.id.clone());
         self.push_step(AgentStep::ConversationEntry(item.id.clone()));
-        self.emit_runtime(AgentRuntimeEvent::ConversationEntryAppended {
-            conversation_id: self.conversation_id.clone(),
-            item_id: item.id.clone(),
-        });
         Ok(item)
     }
 
@@ -159,5 +191,56 @@ impl PersistenceContext {
         if let Some(observer) = &self.observer {
             observer.emit(event);
         }
+    }
+
+    pub(super) fn emit_conversation_commit_with_changes<T>(
+        &self,
+        commit: &jaco_db::ConversationCommit<T>,
+        changes: Vec<jaco_core::ConversationChange>,
+    ) {
+        self.emit_runtime(AgentRuntimeEvent::ConversationCommitted {
+            conversation: Box::new(commit.conversation.clone()),
+            changes,
+        });
+    }
+
+    pub(super) fn emit_tool_entries_commit(
+        &self,
+        commit: &jaco_db::ConversationCommit<(Vec<ConversationEntryRecord>, ToolInvocationRecord)>,
+    ) {
+        self.emit_conversation_commit_with_changes(
+            commit,
+            commit
+                .value
+                .0
+                .iter()
+                .cloned()
+                .map(|entry| jaco_core::ConversationChange::EntryAppended {
+                    entry: Box::new(entry),
+                })
+                .chain(std::iter::once(
+                    jaco_core::ConversationChange::ToolInvocationChanged {
+                        invocation: Box::new(commit.value.1.clone()),
+                    },
+                ))
+                .collect(),
+        );
+    }
+
+    pub(super) fn emit_tool_entry_commit(
+        &self,
+        commit: &jaco_db::ConversationCommit<(ConversationEntryRecord, ToolInvocationRecord)>,
+    ) {
+        self.emit_conversation_commit_with_changes(
+            commit,
+            vec![
+                jaco_core::ConversationChange::EntryAppended {
+                    entry: Box::new(commit.value.0.clone()),
+                },
+                jaco_core::ConversationChange::ToolInvocationChanged {
+                    invocation: Box::new(commit.value.1.clone()),
+                },
+            ],
+        );
     }
 }

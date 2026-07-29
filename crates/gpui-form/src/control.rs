@@ -10,10 +10,10 @@ use std::{
 use gpui::{App, Context, Entity, Window};
 
 use crate::{
-    error::{ValidationIssue, ValidationMessage, ValidationSource},
     field::{FormField, FormFieldError},
     form::{FormEvent, FormStore},
-    trigger::ValidationTrigger,
+    validation::report::{ValidationIssue, ValidationMessage, ValidationSource},
+    validation::trigger::ValidationTrigger,
 };
 
 static NEXT_CONTROL_ID: AtomicU64 = AtomicU64::new(1);

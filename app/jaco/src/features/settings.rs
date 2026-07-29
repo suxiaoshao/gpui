@@ -3,7 +3,11 @@ use crate::{
         APP_NAME, menus,
         title_bar_menu::{TitleBarAppMenuBar, title_bar_leading},
     },
-    foundation::{self, I18n, assets::IconName},
+    components::resource::{
+        CriticalResourceAction, CriticalResourceProblem, CriticalResourcesView,
+    },
+    database::{DatabasePhase, DatabaseResource},
+    foundation::{I18n, assets::IconName},
     state,
 };
 use gpui::{prelude::FluentBuilder as _, *};
@@ -57,17 +61,47 @@ pub(crate) fn init(cx: &mut App) {
 pub(crate) struct SettingsView {
     focus_handle: FocusHandle,
     settings_search_input: Entity<InputState>,
-    appearance_settings: Entity<AppearanceSettingsPage>,
-    provider_settings: Entity<ProviderSettingsPage>,
-    projects_settings: Entity<ProjectsSettingsPage>,
-    prompts_settings: Entity<PromptsSettingsPage>,
-    skills_settings: Entity<SkillsSettingsPage>,
-    shortcuts_settings: Entity<ShortcutsSettingsPage>,
-    mcp_settings: Entity<McpSettingsPage>,
+    config_pages: Option<ConfigSettingsPages>,
+    database_pages: Option<DatabaseSettingsPages>,
     app_menu_bar: Entity<TitleBarAppMenuBar>,
     selected_page: SettingsPageKey,
     sidebar_width: Pixels,
+    _theme_binding: state::theme::WindowThemeBinding,
     _subscriptions: Vec<Subscription>,
+}
+
+struct ConfigSettingsPages {
+    appearance: Entity<AppearanceSettingsPage>,
+    skills: Entity<SkillsSettingsPage>,
+    mcp: Entity<McpSettingsPage>,
+}
+
+impl ConfigSettingsPages {
+    fn new(window: &mut Window, cx: &mut Context<SettingsView>) -> Self {
+        Self {
+            appearance: cx.new(|cx| AppearanceSettingsPage::new(window, cx)),
+            skills: cx.new(|cx| SkillsSettingsPage::new(window, cx)),
+            mcp: cx.new(|cx| McpSettingsPage::new(window, cx)),
+        }
+    }
+}
+
+struct DatabaseSettingsPages {
+    provider: Entity<ProviderSettingsPage>,
+    projects: Entity<ProjectsSettingsPage>,
+    prompts: Entity<PromptsSettingsPage>,
+    shortcuts: Entity<ShortcutsSettingsPage>,
+}
+
+impl DatabaseSettingsPages {
+    fn new(window: &mut Window, cx: &mut Context<SettingsView>) -> Self {
+        Self {
+            provider: cx.new(|cx| ProviderSettingsPage::new(window, cx)),
+            projects: cx.new(ProjectsSettingsPage::new),
+            prompts: cx.new(|cx| PromptsSettingsPage::new(window, cx)),
+            shortcuts: cx.new(|cx| ShortcutsSettingsPage::new(window, cx)),
+        }
+    }
 }
 
 impl SettingsView {
@@ -76,22 +110,20 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        state::theme::apply_current_theme(window, cx);
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         let settings_search_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(cx.global::<I18n>().t("field-search-settings"))
         });
-        let appearance_settings = cx.new(|cx| AppearanceSettingsPage::new(window, cx));
-        let provider_settings = cx.new(|cx| ProviderSettingsPage::new(window, cx));
-        let projects_settings = cx.new(ProjectsSettingsPage::new);
-        let prompts_settings = cx.new(|cx| PromptsSettingsPage::new(window, cx));
-        let skills_settings = cx.new(|cx| SkillsSettingsPage::new(window, cx));
-        let shortcuts_settings = cx.new(|cx| ShortcutsSettingsPage::new(window, cx));
-        let mcp_settings = cx.new(|cx| McpSettingsPage::new(window, cx));
+        let config_pages = state::config::store(cx)
+            .read(cx, |operation| operation.data().is_some())
+            .then(|| ConfigSettingsPages::new(window, cx));
         let app_menu_bar = TitleBarAppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
+        let database_store = crate::database::store(cx);
         let config_store = state::config::store(cx);
+        let database_pages =
+            crate::database::is_ready(cx).then(|| DatabaseSettingsPages::new(window, cx));
         let _subscriptions = vec![
             cx.subscribe_in(
                 &settings_search_input,
@@ -110,50 +142,74 @@ impl SettingsView {
                     );
                 });
             }),
-            cx.observe_window_appearance(window, |_settings, window, cx| {
-                state::theme::apply_current_theme(window, cx);
-                cx.refresh_windows();
+            cx.observe_global_in::<I18n>(window, |settings, window, cx| {
+                settings.settings_search_input.update(cx, |input, cx| {
+                    input.set_placeholder(
+                        cx.global::<I18n>().t("field-search-settings"),
+                        window,
+                        cx,
+                    );
+                });
+                cx.notify();
             }),
-            cx.observe_global_in::<state::theme::SystemAccentThemeState>(
-                window,
-                |_state, window, cx| {
-                    state::theme::apply_current_theme(window, cx);
-                    cx.refresh_windows();
-                },
-            ),
             config_store.observe_select_in(
                 cx,
                 window,
-                |config| {
-                    (
-                        config.app_settings.language,
-                        config.app_settings.theme.clone(),
-                    )
-                },
-                |this, _settings, window, cx| {
-                    foundation::init_i18n(cx);
-                    menus::sync_app_menus(cx);
-                    state::theme::apply_current_theme(window, cx);
-                    this.reload_app_menu_bar(cx);
-                    cx.refresh_windows();
+                state::config::SelectConfigGateStatus,
+                |settings, _status, window, cx| {
+                    settings.sync_config_pages(window, cx);
                 },
             ),
+            database_store.observe_in(cx, window, |settings, _resource, window, cx| {
+                settings.sync_database_pages(window, cx);
+            }),
         ];
         Self {
             focus_handle,
             settings_search_input,
-            appearance_settings,
-            provider_settings,
-            projects_settings,
-            prompts_settings,
-            skills_settings,
-            shortcuts_settings,
-            mcp_settings,
+            config_pages,
+            database_pages,
             app_menu_bar,
             selected_page,
             sidebar_width: SETTINGS_SIDEBAR_DEFAULT_WIDTH,
+            _theme_binding: state::theme::WindowThemeBinding::new(window, cx),
             _subscriptions,
         }
+    }
+
+    fn sync_config_pages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let has_data = state::config::store(cx).read(cx, |operation| operation.data().is_some());
+        if has_data && self.config_pages.is_none() {
+            self.config_pages = Some(ConfigSettingsPages::new(window, cx));
+        } else if !has_data {
+            self.config_pages = None;
+            self.database_pages = None;
+        }
+        cx.notify();
+    }
+
+    fn sync_database_pages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.database_pages.is_none() && crate::database::is_ready(cx) {
+            self.database_pages = Some(DatabaseSettingsPages::new(window, cx));
+        }
+        cx.notify();
+    }
+
+    fn database_page(&self, key: SettingsPageKey, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(pages) = &self.database_pages {
+            let page = match key {
+                SettingsPageKey::Provider => pages.provider.clone().into_any_element(),
+                SettingsPageKey::Projects => pages.projects.clone().into_any_element(),
+                SettingsPageKey::Prompts => pages.prompts.clone().into_any_element(),
+                SettingsPageKey::Shortcuts => pages.shortcuts.clone().into_any_element(),
+                _ => unreachable!("only database-backed settings pages use this helper"),
+            };
+            if crate::database::is_ready(cx) {
+                return page;
+            }
+            return settings_database_resource_view(cx).overlay(page, cx);
+        }
+        settings_database_resource_view(cx).into_any_element()
     }
 
     pub(crate) fn reload_app_menu_bar(&mut self, cx: &mut Context<Self>) {
@@ -184,10 +240,58 @@ impl SettingsView {
     fn zoom(&mut self, _: &menus::Zoom, window: &mut Window, _: &mut Context<Self>) {
         window.zoom_window();
     }
+
+    fn render_config_gate(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let title = cx.global::<I18n>().t("settings-title");
+        window.set_window_title(&title);
+        v_flex()
+            .id("settings-config-gate")
+            .track_focus(&self.focus_handle)
+            .size_full()
+            .overflow_hidden()
+            .on_action(cx.listener(|_this, _: &ToggleSettings, window, _cx| {
+                window.remove_window();
+            }))
+            .on_action(cx.listener(Self::minimize))
+            .on_action(cx.listener(Self::zoom))
+            .child(
+                div()
+                    .child(
+                        TitleBar::new()
+                            .child(settings_title_bar_content(self.app_menu_bar.clone(), title)),
+                    )
+                    .flex_initial(),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(settings_config_resource_view(cx)),
+            )
+            .children(Root::render_dialog_layer(window, cx))
+            .children(Root::render_notification_layer(window, cx))
+            .into_any_element()
+    }
 }
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (has_data, exact_ready) = state::config::store(cx).read(cx, |operation| {
+            (
+                operation.data().is_some(),
+                matches!(operation, state::config::ConfigOperation::Ready(_)),
+            )
+        });
+        if !has_data {
+            return self.render_config_gate(window, cx);
+        }
+        if self.config_pages.is_none() {
+            self.config_pages = Some(ConfigSettingsPages::new(window, cx));
+        }
+        let config_pages = self
+            .config_pages
+            .as_ref()
+            .expect("config pages are created when config data exists");
         let settings_title = cx.global::<I18n>().t("settings-title");
         let search_no_results = cx.global::<I18n>().t("settings-search-no-results");
         let dialog_layer = Root::render_dialog_layer(window, cx);
@@ -227,16 +331,14 @@ impl Render for SettingsView {
                 match active_page_key {
                     SettingsPageKey::General => general::render(window, cx),
                     SettingsPageKey::Appearance => {
-                        self.appearance_settings.clone().into_any_element()
+                        config_pages.appearance.clone().into_any_element()
                     }
-                    SettingsPageKey::Provider => self.provider_settings.clone().into_any_element(),
-                    SettingsPageKey::Projects => self.projects_settings.clone().into_any_element(),
-                    SettingsPageKey::Prompts => self.prompts_settings.clone().into_any_element(),
-                    SettingsPageKey::Skills => self.skills_settings.clone().into_any_element(),
-                    SettingsPageKey::Shortcuts => {
-                        self.shortcuts_settings.clone().into_any_element()
-                    }
-                    SettingsPageKey::Mcp => self.mcp_settings.clone().into_any_element(),
+                    SettingsPageKey::Provider
+                    | SettingsPageKey::Projects
+                    | SettingsPageKey::Prompts
+                    | SettingsPageKey::Shortcuts => self.database_page(active_page_key, cx),
+                    SettingsPageKey::Skills => config_pages.skills.clone().into_any_element(),
+                    SettingsPageKey::Mcp => config_pages.mcp.clone().into_any_element(),
                 },
             );
             frame
@@ -256,7 +358,7 @@ impl Render for SettingsView {
         let select_view = cx.entity().downgrade();
         window.set_window_title(&settings_title);
 
-        v_flex()
+        let content = v_flex()
             .id("settings")
             .track_focus(&self.focus_handle)
             .size_full()
@@ -298,12 +400,114 @@ impl Render for SettingsView {
                 ),
             )
             .children(dialog_layer)
-            .children(notification_layer)
+            .children(notification_layer);
+        if !exact_ready {
+            settings_config_resource_view(cx).overlay(content, cx)
+        } else {
+            content.into_any_element()
+        }
     }
 }
 
 pub(crate) fn open_settings_window_from_menu(cx: &mut App) {
     open_settings_window_to(false, None, cx);
+}
+
+fn settings_config_resource_view(cx: &App) -> CriticalResourcesView {
+    let (phase, running, message, actions) = state::config::store(cx).read(cx, |operation| {
+        let problem = operation.problem();
+        let mut actions = vec![CriticalResourceAction::ReloadConfig];
+        if problem.is_some_and(|problem| problem.supports(state::config::ConfigRepair::RetryWrite))
+        {
+            actions.push(CriticalResourceAction::RetryConfigWrite);
+        }
+        if problem.is_some_and(|problem| {
+            problem.supports(state::config::ConfigRepair::BackupAndCreateDefault)
+        }) {
+            actions.push(CriticalResourceAction::BackupAndCreateDefaultConfig);
+        }
+        if problem.is_some_and(|problem| {
+            problem.supports(state::config::ConfigRepair::BackupAndOverwritePending)
+        }) {
+            actions.push(CriticalResourceAction::BackupAndOverwritePendingConfig);
+        }
+        (
+            operation.phase(),
+            operation.is_running(),
+            problem.map(ToString::to_string),
+            actions,
+        )
+    });
+    if matches!(
+        phase,
+        gpui_operation::repair::Phase::Idle | gpui_operation::repair::Phase::Loading
+    ) {
+        return CriticalResourcesView::loading(cx.global::<I18n>().t("critical-config-loading"));
+    }
+    CriticalResourcesView::problem(CriticalResourceProblem {
+        id: "settings-critical-config",
+        title: cx.global::<I18n>().t("critical-config-error-title").into(),
+        message: message
+            .unwrap_or_else(|| cx.global::<I18n>().t("critical-read-only-description"))
+            .into(),
+        running,
+        warning: config_operation_phase_has_data(phase),
+        actions,
+    })
+}
+
+fn settings_database_resource_view(cx: &App) -> CriticalResourcesView {
+    let snapshot = crate::database::store(cx).read(cx, |resource| match resource {
+        DatabaseResource::AwaitingConfig => None,
+        DatabaseResource::Bound { operation, .. } => Some((
+            operation.phase(),
+            operation.is_running(),
+            operation.problem().map(ToString::to_string),
+            operation
+                .problem()
+                .is_some_and(crate::database::DatabaseProblem::can_create_fresh),
+        )),
+    });
+    let Some((phase, running, message, can_create_fresh)) = snapshot else {
+        return CriticalResourcesView::loading(cx.global::<I18n>().t("critical-database-loading"));
+    };
+    if matches!(phase, DatabasePhase::Idle | DatabasePhase::Loading) {
+        return CriticalResourcesView::loading(cx.global::<I18n>().t("critical-database-loading"));
+    }
+    if matches!(phase, DatabasePhase::Ready) {
+        return CriticalResourcesView::loading(cx.global::<I18n>().t("critical-database-loading"));
+    }
+    let mut actions = vec![CriticalResourceAction::RefreshDatabase];
+    if can_create_fresh {
+        actions.push(CriticalResourceAction::BackupAndCreateFreshDatabase);
+    }
+    CriticalResourcesView::problem(CriticalResourceProblem {
+        id: "settings-critical-database",
+        title: cx
+            .global::<I18n>()
+            .t("critical-database-error-title")
+            .into(),
+        message: message
+            .unwrap_or_else(|| cx.global::<I18n>().t("critical-read-only-description"))
+            .into(),
+        running,
+        warning: database_operation_phase_has_data(phase),
+        actions,
+    })
+}
+
+fn config_operation_phase_has_data(phase: gpui_operation::repair::Phase) -> bool {
+    matches!(
+        phase,
+        gpui_operation::repair::Phase::Ready
+            | gpui_operation::repair::Phase::Refreshing
+            | gpui_operation::repair::Phase::Degraded
+            | gpui_operation::repair::Phase::RepairingDegraded
+    )
+}
+
+fn database_operation_phase_has_data(phase: DatabasePhase) -> bool {
+    matches!(phase, DatabasePhase::Ready | DatabasePhase::Refreshing)
 }
 
 pub(crate) fn open_settings_window_to_provider(cx: &mut App) {
@@ -576,10 +780,14 @@ pub(super) fn push_settings_error(
 #[cfg(test)]
 mod tests {
     use super::{
-        SettingsPageKey, SettingsPageSpec, TOGGLE_SETTINGS_KEY, settings_page_matches,
-        settings_page_specs_for_i18n, settings_search_text, settings_titlebar_options,
+        SettingsPageKey, SettingsPageSpec, TOGGLE_SETTINGS_KEY, config_operation_phase_has_data,
+        database_operation_phase_has_data, settings_page_matches, settings_page_specs_for_i18n,
+        settings_search_text, settings_titlebar_options,
     };
-    use crate::foundation::{I18n, assets::IconName};
+    use crate::{
+        database::DatabasePhase,
+        foundation::{I18n, assets::IconName},
+    };
     use gpui::Keystroke;
     use gpui_component::TitleBar;
     use gpui_component::kbd::Kbd;
@@ -735,6 +943,35 @@ mod tests {
     #[test]
     fn settings_key_binding_uses_secondary_modifier() {
         assert_eq!(TOGGLE_SETTINGS_KEY, "secondary-,");
+    }
+
+    #[test]
+    fn settings_only_treats_config_repair_phases_with_data_as_stale() {
+        use gpui_operation::repair::Phase;
+
+        assert!(config_operation_phase_has_data(Phase::Ready));
+        assert!(config_operation_phase_has_data(Phase::Refreshing));
+        assert!(config_operation_phase_has_data(Phase::Degraded));
+        assert!(config_operation_phase_has_data(Phase::RepairingDegraded));
+        assert!(!config_operation_phase_has_data(Phase::Idle));
+        assert!(!config_operation_phase_has_data(Phase::Loading));
+        assert!(!config_operation_phase_has_data(Phase::Unavailable));
+        assert!(!config_operation_phase_has_data(
+            Phase::RepairingUnavailable
+        ));
+    }
+
+    #[test]
+    fn settings_only_treats_database_phases_with_retained_data_as_stale() {
+        assert!(database_operation_phase_has_data(DatabasePhase::Ready));
+        assert!(database_operation_phase_has_data(DatabasePhase::Refreshing));
+        assert!(!database_operation_phase_has_data(DatabasePhase::Idle));
+        assert!(!database_operation_phase_has_data(DatabasePhase::Loading));
+        assert!(!database_operation_phase_has_data(DatabasePhase::Retiring));
+        assert!(!database_operation_phase_has_data(
+            DatabasePhase::Unavailable
+        ));
+        assert!(!database_operation_phase_has_data(DatabasePhase::Repairing));
     }
 
     #[test]

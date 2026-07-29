@@ -1,6 +1,6 @@
 use crate::{
-    app::{about, quit_app, show_or_create_main_window, temporary_window},
-    features::settings,
+    app::{quit_app, show_or_create_main_window, temporary_window},
+    features::{about, settings},
     foundation::I18n,
 };
 use fluent_bundle::FluentArgs;
@@ -113,13 +113,7 @@ pub(crate) const fn should_render_component_menu_bar() -> bool {
 #[cfg(target_os = "macos")]
 pub(crate) fn ensure_localized_window_menu_registered() {
     match platform_ext::app::set_windows_menu_from_main_menu_index(WINDOW_MENU_INDEX) {
-        Ok(()) => {
-            event!(
-                Level::INFO,
-                index = WINDOW_MENU_INDEX,
-                "registered localized jaco window menu with NSApp"
-            );
-        }
+        Ok(()) => {}
         Err(err) => {
             event!(
                 Level::WARN,

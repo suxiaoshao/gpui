@@ -1,18 +1,27 @@
 use crate::{
     AgentRuntimeError, AgentRuntimeEvent, AgentRuntimeObserver, AgentStep,
-    RegisteredToolDefinition, Result, ToolApprovalBroker, tool_registry::RegisteredRuntimeTool,
+    RegisteredToolDefinition, Result, ToolApprovalBroker, tools::RegisteredRuntimeTool,
 };
 use jaco_core::*;
 use jaco_db::{
-    AgentRunFinalEntry, AgentRunRecord, FinishAgentRun, FinishedAgentRun, FreshRepository,
-    NewAgentRun, NewConversationEntry,
+    AgentRunFinalEntry, AgentRunRecord, FinishAgentRun, FinishedAgentRun, NewAgentRun,
+    NewConversationEntry,
 };
 mod conversation_entries;
 mod model;
+mod port;
 mod provider_step;
 mod tool_hook;
 
 pub use model::PersistingCompletionModel;
+pub use port::AgentPersistence;
+
+#[cfg(test)]
+pub(crate) fn direct_agent_persistence(
+    repository: jaco_db::FreshRepository,
+) -> Arc<dyn AgentPersistence> {
+    Arc::new(port::DirectAgentPersistence::new(repository))
+}
 
 use self::tool_hook::PersistingPromptHook;
 use rig_core::completion::Usage;
@@ -120,7 +129,7 @@ pub(crate) fn finish_agent_run_spec(
 
 #[derive(Clone)]
 pub(crate) struct PersistenceContext {
-    repo: FreshRepository,
+    persistence: Arc<dyn AgentPersistence>,
     agent_run_id: AgentRunId,
     conversation_id: ConversationId,
     provider_id: ProviderId,
@@ -145,7 +154,7 @@ pub(crate) struct PersistenceContext {
 impl PersistenceContext {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        repo: FreshRepository,
+        persistence: Arc<dyn AgentPersistence>,
         agent_run_id: AgentRunId,
         conversation_id: ConversationId,
         provider_id: ProviderId,
@@ -161,7 +170,7 @@ impl PersistenceContext {
         approval_broker: Option<Arc<dyn ToolApprovalBroker>>,
     ) -> Self {
         Self {
-            repo,
+            persistence,
             agent_run_id,
             conversation_id,
             provider_id,
@@ -212,24 +221,32 @@ impl PersistenceContext {
         mutex_clone(&self.final_entry_id)
     }
 
-    pub(crate) fn finish_run(&self, outcome: AgentRunOutcome) -> Result<FinishedAgentRun> {
+    pub(crate) async fn finish_run(&self, outcome: AgentRunOutcome) -> Result<FinishedAgentRun> {
         let run = self
-            .repo
-            .get_agent_run(&self.agent_run_id)?
+            .persistence
+            .get_agent_run(self.agent_run_id.clone())
+            .await?
             .ok_or_else(|| {
                 AgentRuntimeError::Invariant(format!("agent run {} disappeared", self.agent_run_id))
             })?;
-        let finished = self.repo.finish_agent_run(
-            &self.agent_run_id,
-            finish_agent_run_spec(&run, outcome.clone()),
-        )?;
-        self.set_final_entry_id(Some(finished.final_entry.id.clone()));
-        if finished.appended_final_entry {
-            self.emit_runtime(AgentRuntimeEvent::ConversationEntryAppended {
-                conversation_id: finished.final_entry.conversation_id.clone(),
-                item_id: finished.final_entry.id.clone(),
+        let commit = self
+            .persistence
+            .finish_agent_run(
+                self.agent_run_id.clone(),
+                finish_agent_run_spec(&run, outcome.clone()),
+            )
+            .await?;
+        let mut changes = vec![jaco_core::ConversationChange::RunStatusChanged {
+            run: Box::new(commit.value.run.clone()),
+        }];
+        if commit.value.appended_final_entry {
+            changes.push(jaco_core::ConversationChange::EntryAppended {
+                entry: Box::new(commit.value.final_entry.clone()),
             });
         }
+        self.emit_conversation_commit_with_changes(&commit, changes);
+        let finished = commit.value;
+        self.set_final_entry_id(Some(finished.final_entry.id.clone()));
         self.push_step(AgentStep::ConversationEntry(
             finished.final_entry.id.clone(),
         ));

@@ -1,3 +1,6 @@
+pub(crate) mod report;
+pub(crate) mod trigger;
+
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -7,12 +10,12 @@ use std::{
 use gpui::{App, Task};
 
 use crate::{
-    array::FormItemId,
     control::{ControlId, ControlLifetime},
-    error::{ValidationIssue, ValidationMessage, ValidationReport, ValidationSource},
-    path::FieldPath,
     schema::FormModelSchema,
-    trigger::ValidationTrigger,
+    schema::array::FormItemId,
+    schema::path::FieldPath,
+    validation::report::{ValidationIssue, ValidationMessage, ValidationReport, ValidationSource},
+    validation::trigger::ValidationTrigger,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -558,23 +561,23 @@ fn encode_garde_message(message: &ValidationMessage) -> String {
             for (key, value) in params {
                 encode_garde_string(&mut payload, key);
                 match value {
-                    crate::error::ErrorParamValue::String(value) => {
+                    crate::validation::report::ErrorParamValue::String(value) => {
                         payload.push(0);
                         encode_garde_string(&mut payload, value);
                     }
-                    crate::error::ErrorParamValue::Integer(value) => {
+                    crate::validation::report::ErrorParamValue::Integer(value) => {
                         payload.push(1);
                         payload.extend_from_slice(&value.to_be_bytes());
                     }
-                    crate::error::ErrorParamValue::Unsigned(value) => {
+                    crate::validation::report::ErrorParamValue::Unsigned(value) => {
                         payload.push(2);
                         payload.extend_from_slice(&value.to_be_bytes());
                     }
-                    crate::error::ErrorParamValue::Float(value) => {
+                    crate::validation::report::ErrorParamValue::Float(value) => {
                         payload.push(3);
                         payload.extend_from_slice(&value.to_bits().to_be_bytes());
                     }
-                    crate::error::ErrorParamValue::Bool(value) => {
+                    crate::validation::report::ErrorParamValue::Bool(value) => {
                         payload.push(4);
                         payload.push(u8::from(*value));
                     }
@@ -669,13 +672,17 @@ fn decode_garde_payload(payload: &[u8]) -> Result<ValidationMessage, &'static st
             for _ in 0..param_count {
                 let key = Cow::Owned(reader.read_string()?);
                 let value = match reader.read_byte()? {
-                    0 => crate::error::ErrorParamValue::String(Cow::Owned(reader.read_string()?)),
-                    1 => crate::error::ErrorParamValue::Integer(reader.read_i64()?),
-                    2 => crate::error::ErrorParamValue::Unsigned(reader.read_u64()?),
-                    3 => crate::error::ErrorParamValue::Float(f64::from_bits(reader.read_u64()?)),
+                    0 => crate::validation::report::ErrorParamValue::String(Cow::Owned(
+                        reader.read_string()?,
+                    )),
+                    1 => crate::validation::report::ErrorParamValue::Integer(reader.read_i64()?),
+                    2 => crate::validation::report::ErrorParamValue::Unsigned(reader.read_u64()?),
+                    3 => crate::validation::report::ErrorParamValue::Float(f64::from_bits(
+                        reader.read_u64()?,
+                    )),
                     4 => match reader.read_byte()? {
-                        0 => crate::error::ErrorParamValue::Bool(false),
-                        1 => crate::error::ErrorParamValue::Bool(true),
+                        0 => crate::validation::report::ErrorParamValue::Bool(false),
+                        1 => crate::validation::report::ErrorParamValue::Bool(true),
                         _ => return Err("Garde message envelope contains an invalid boolean"),
                     },
                     _ => return Err("Garde message envelope contains an unknown parameter type"),

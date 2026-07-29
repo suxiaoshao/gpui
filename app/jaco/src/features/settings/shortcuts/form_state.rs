@@ -1,6 +1,6 @@
 use super::validation::{canonical_hotkey, validate_shortcut_hotkey};
 use crate::{
-    components::run_settings::RunSettingsInput,
+    components::chat::run_settings::RunSettingsInput,
     features::settings::form_validation::{
         JacoGardeMessageProvider, JacoValidationContext, garde_message,
     },

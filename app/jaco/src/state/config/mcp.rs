@@ -7,7 +7,7 @@ use std::{
 
 use gpui::App;
 use jaco_agent::{
-    McpConfigLayer, McpServerConfig, McpServerRuntimeConfig, McpServerTransport, McpStdioTransport,
+    McpServerConfig, McpServerRuntimeConfig, McpServerTransport, McpStdioTransport,
     McpStreamableHttpTransport,
 };
 use jaco_core::{McpToolApprovalModeSnapshot, ToolApprovalPolicy, ToolExecutionPolicy};
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::errors::{JacoError, JacoResult};
 
-use super::{JacoConfig, read, store};
+use super::{read, update_config};
 
 pub(crate) const DEFAULT_MCP_STARTUP_TIMEOUT_MS: u64 = 30_000;
 pub(crate) const DEFAULT_MCP_TOOL_TIMEOUT_MS: u64 = 300_000;
@@ -122,18 +122,6 @@ pub(crate) enum McpToolApprovalMode {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct McpToolOverrideTomlConfig {
     pub(crate) approval_mode: Option<McpToolApprovalMode>,
-}
-
-impl JacoConfig {
-    pub(crate) fn mcp_config_layer(&self) -> JacoResult<McpConfigLayer> {
-        let mut servers = Vec::new();
-        for (server_id, server) in &self.mcp_servers {
-            if server.enabled {
-                servers.push(server.to_agent_config(server_id)?);
-            }
-        }
-        Ok(McpConfigLayer { servers })
-    }
 }
 
 impl McpServerTomlConfig {
@@ -374,33 +362,24 @@ pub(crate) fn upsert_mcp_server(
             "mcp server `{server_id}` already exists"
         )));
     }
-    let config_store = store(cx);
-    config_store.try_update_field(
-        cx,
-        |config| &mut config.mcp_servers,
-        |servers| {
-            if let Some(original_server_id) = original_server_id
-                && original_server_id != server_id
-            {
-                servers.remove(original_server_id);
-            }
-            servers.insert(server_id, server);
-        },
-    )?;
-    Ok(())
+    let original_server_id = original_server_id.map(ToOwned::to_owned);
+    update_config(cx, move |config| {
+        let servers = &mut config.mcp_servers;
+        if let Some(original_server_id) = original_server_id.as_deref()
+            && original_server_id != server_id
+        {
+            servers.remove(original_server_id);
+        }
+        servers.insert(server_id, server);
+    })
 }
 
 pub(crate) fn delete_mcp_server(cx: &mut App, server_id: &str) -> JacoResult<bool> {
-    let config_store = store(cx);
-    let mut removed = false;
-    config_store.try_update_field(
-        cx,
-        |config| &mut config.mcp_servers,
-        |servers| {
-            removed = servers.remove(server_id).is_some();
-        },
-    )?;
-    Ok(removed)
+    let server_id = server_id.to_string();
+    update_config(cx, move |config| {
+        let servers = &mut config.mcp_servers;
+        servers.remove(&server_id).is_some()
+    })
 }
 
 pub(crate) fn set_mcp_server_enabled(
@@ -414,17 +393,13 @@ pub(crate) fn set_mcp_server_enabled(
             "mcp server `{server_id}` was not found"
         )));
     }
-    let config_store = store(cx);
-    config_store.try_update_field(
-        cx,
-        |config| &mut config.mcp_servers,
-        |servers| {
-            if let Some(server) = servers.get_mut(server_id) {
-                server.enabled = enabled;
-            }
-        },
-    )?;
-    Ok(())
+    let server_id = server_id.to_string();
+    update_config(cx, move |config| {
+        let servers = &mut config.mcp_servers;
+        if let Some(server) = servers.get_mut(&server_id) {
+            server.enabled = enabled;
+        }
+    })
 }
 
 fn validate_server_id(server_id: &str) -> JacoResult<()> {

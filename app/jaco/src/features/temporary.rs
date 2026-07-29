@@ -1,22 +1,28 @@
 pub(crate) mod list;
 pub(crate) mod new_conversation;
+pub(crate) mod search;
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use self::search::TemporaryConversationNode;
 use crate::{
     app::{menus, temporary_window},
     components::{
-        chat_input::{COMPOSER_EDITOR_KEY_CONTEXT, ChatInputSubmit},
-        conversation_detail::ConversationDetailPage,
+        chat::detail::ConversationDetailPage,
+        chat::input::{COMPOSER_EDITOR_KEY_CONTEXT, ChatInputSubmit},
+        resource::{CriticalResourceAction, CriticalResourceProblem, CriticalResourcesView},
     },
-    foundation::{self, I18n, assets::IconName},
+    database::DatabaseResource,
+    features::conversation,
+    foundation::{I18n, assets::IconName},
     state,
-    state::temporary::TemporaryConversationNode,
 };
 use gpui::{actions, prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, IndexPath, Root, Sizable, WindowExt as _, h_flex,
+    ActiveTheme, Disableable, Icon, IndexPath, Root, Sizable, WindowExt as _,
+    button::Button,
+    h_flex,
     input::{Enter, Input, InputEvent, InputState, MoveDown, MoveUp},
     label::Label,
     list::{List, ListState},
@@ -24,6 +30,7 @@ use gpui_component::{
     resizable::{h_resizable, resizable_panel},
     v_flex,
 };
+use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition};
 use jaco_core::ConversationId;
 use new_conversation::{TemporaryNewConversationPane, TemporaryNewConversationPaneEvent};
 
@@ -72,25 +79,37 @@ pub(crate) struct TemporaryWindow {
     list: Entity<ListState<TemporaryConversationListDelegate>>,
     query: String,
     route: TemporaryWindowRoute,
-    conversations: Vec<TemporaryConversationNode>,
+    search_operation: search::TemporarySearchOperation,
     selected_index: Option<usize>,
     new_conversation: Entity<TemporaryNewConversationPane>,
     conversation_pages: HashMap<ConversationId, Entity<ConversationDetailPage>>,
-    runtime: Entity<state::conversation_runtime::ConversationRuntimeStore>,
-    last_error: Option<String>,
+    runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
+    _theme_binding: state::theme::WindowThemeBinding,
     _subscriptions: Vec<Subscription>,
 }
 
 impl TemporaryWindow {
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        state::theme::apply_current_theme(window, cx);
+    pub(crate) fn new(
+        runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         let search_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(cx.global::<I18n>().t("temporary-search-placeholder"))
         });
-        let (conversations, last_error) = load_no_project_conversations("", cx);
+        let mut search_operation = search::TemporarySearchOperation::new();
+        search_operation.transition(Load(Task::ready(())));
+        search_operation.transition(Complete(
+            search::empty_snapshot(cx).map_err(search::TemporarySearchProblem::from),
+        ));
+        let conversations = search_operation
+            .data()
+            .map(|snapshot| snapshot.conversations.clone())
+            .unwrap_or_default();
+        let search_error = search_operation.problem().map(ToString::to_string);
         let selected_index = (!conversations.is_empty()).then_some(0);
         let route = selected_index
             .and_then(|index| conversations.get(index))
@@ -99,14 +118,19 @@ impl TemporaryWindow {
         let list = Self::build_list(
             conversations.clone(),
             "",
-            last_error.as_deref(),
+            search_error.as_deref(),
             selected_index,
             window,
             cx,
         );
         let new_conversation = cx.new(|cx| TemporaryNewConversationPane::new(window, cx));
-        let runtime = state::conversation_runtime::runtime(cx);
-        let config_store = state::config::store(cx);
+        let database_store = crate::database::store(cx);
+        let project_catalog = state::projects::catalog(cx);
+        let conversation_catalog =
+            crate::features::conversation::resources::ready_conversations(cx)
+                .expect("temporary window requires a ready conversation session")
+                .read(cx)
+                .catalog();
         let search_subscription =
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
         let new_conversation_subscription = cx.subscribe_in(
@@ -119,21 +143,40 @@ impl TemporaryWindow {
             },
         );
 
-        Self {
+        let project_subscription = project_catalog.observe_in(cx, window, |view, _, window, cx| {
+            view.sync_new_conversation_capability(cx);
+            if view.query.is_empty() {
+                view.reload_conversations(ReloadSelection::FirstMatch, window, cx);
+            }
+        });
+        let conversation_subscription =
+            cx.observe_in(&conversation_catalog, window, |view, _, window, cx| {
+                view.sync_new_conversation_capability(cx);
+                if view.query.is_empty() {
+                    view.reload_conversations(ReloadSelection::FirstMatch, window, cx);
+                }
+            });
+        let runtime_subscription = cx.observe_in(&runtime, window, |view, _, _window, cx| {
+            view.sync_new_conversation_capability(cx);
+        });
+
+        let mut view = Self {
             focus_handle,
             search_input,
             list,
             query: String::new(),
             route,
-            conversations,
+            search_operation,
             selected_index,
             new_conversation,
             conversation_pages: HashMap::new(),
             runtime,
-            last_error,
             _subscriptions: vec![
                 search_subscription,
                 new_conversation_subscription,
+                project_subscription,
+                conversation_subscription,
+                runtime_subscription,
                 cx.observe_window_activation(window, |this, window, cx| {
                     if window.is_window_active() {
                         this.focus_search_input(window, cx);
@@ -141,42 +184,74 @@ impl TemporaryWindow {
                         temporary_window::request_hide_for_window_activation(window, cx);
                     }
                 }),
-                cx.observe_window_appearance(window, |_state, window, cx| {
-                    state::theme::apply_current_theme(window, cx);
+                cx.observe_global_in::<I18n>(window, |this, window, cx| {
+                    this.search_input.update(cx, |input, cx| {
+                        input.set_placeholder(
+                            cx.global::<I18n>().t("temporary-search-placeholder"),
+                            window,
+                            cx,
+                        );
+                    });
                     cx.refresh_windows();
                 }),
-                cx.observe_global_in::<state::theme::SystemAccentThemeState>(
-                    window,
-                    |_state, window, cx| {
-                        state::theme::apply_current_theme(window, cx);
-                        cx.refresh_windows();
-                    },
-                ),
-                config_store.observe_select_in(
-                    cx,
-                    window,
-                    |config| {
-                        (
-                            config.app_settings.language,
-                            config.app_settings.theme.clone(),
-                        )
-                    },
-                    |this, _settings, window, cx| {
-                        foundation::init_i18n(cx);
-                        menus::sync_app_menus(cx);
-                        state::theme::apply_current_theme(window, cx);
-                        this.search_input.update(cx, |input, cx| {
-                            input.set_placeholder(
-                                cx.global::<I18n>().t("temporary-search-placeholder"),
-                                window,
-                                cx,
-                            );
-                        });
-                        cx.refresh_windows();
-                    },
-                ),
+                database_store.observe_in(cx, window, move |_view, _resource, window, cx| {
+                    if !crate::database::is_ready(cx) {
+                        window.remove_window();
+                        crate::app::show_or_create_main_window(cx);
+                    } else {
+                        cx.notify();
+                    }
+                }),
             ],
-        }
+            _theme_binding: state::theme::WindowThemeBinding::new(window, cx),
+        };
+        view.sync_new_conversation_capability(cx);
+        view
+    }
+
+    fn sync_new_conversation_capability(&mut self, cx: &mut Context<Self>) {
+        let project_problem = state::projects::catalog(cx).read(cx, |operation| {
+            (!matches!(operation, state::projects::ProjectOperation::Ready(_))).then(|| {
+                operation
+                    .problem()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| cx.global::<I18n>().t("resource-status-loading"))
+            })
+        });
+        let conversation_problem = crate::features::conversation::resources::ready_conversations(
+            cx,
+        )
+        .and_then(|registry| {
+            let catalog = registry.read(cx).catalog();
+            let operation = catalog.read(cx).operation();
+            (!matches!(
+                operation,
+                conversation::registry::ConversationCatalogOperation::Ready(_)
+            ))
+            .then(|| {
+                operation
+                    .problem()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| cx.global::<I18n>().t("resource-status-loading"))
+            })
+        });
+        let runtime_problem = {
+            let runtime = self.runtime.read(cx);
+            let recovery = runtime.recovery();
+            (!matches!(recovery, gpui_operation::refresh::Operation::Ready(_))).then(|| {
+                recovery
+                    .problem()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| cx.global::<I18n>().t("conversation-runtime-recovering"))
+            })
+        };
+        let problem = project_problem
+            .or(conversation_problem)
+            .or(runtime_problem)
+            .map(Into::into);
+        self.new_conversation.update(cx, |pane, cx| {
+            pane.set_submission_problem(problem, cx);
+        });
     }
 
     pub(crate) fn focus_search_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -233,10 +308,12 @@ impl TemporaryWindow {
     }
 
     fn rebuild_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let conversations = self.conversations().to_vec();
+        let error = self.search_operation.problem().map(ToString::to_string);
         self.list = Self::build_list(
-            self.conversations.clone(),
+            conversations,
             &self.query,
-            self.last_error.as_deref(),
+            error.as_deref(),
             self.selected_index,
             window,
             cx,
@@ -254,6 +331,9 @@ impl TemporaryWindow {
             return;
         }
         self.query = self.current_query(cx);
+        if self.search_operation.is_running() {
+            self.search_operation.transition(Cancel);
+        }
         self.reload_conversations(ReloadSelection::FirstMatch, window, cx);
     }
 
@@ -267,36 +347,79 @@ impl TemporaryWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match state::temporary::load_no_project_conversations(&self.query, cx) {
-            Ok(snapshot) => {
-                self.conversations = snapshot.conversations;
-                self.last_error = None;
-                self.apply_reload_selection(selection);
+        if self.search_operation.is_running() {
+            return;
+        }
+        if self.query.is_empty() {
+            let result = search::empty_snapshot(cx).map_err(search::TemporarySearchProblem::from);
+            self.search_operation.transition(Refresh(Task::ready(())));
+            self.search_operation.transition(Complete(result));
+            self.apply_reload_selection(selection);
+            self.rebuild_list(window, cx);
+            cx.notify();
+            return;
+        }
+        let query = self.query.clone();
+        let search = search::search(query.clone(), cx);
+        let page = cx.entity().downgrade();
+        let task = window.spawn(cx, async move |cx| {
+            let result = search.await;
+            let _ = page.update_in(cx, |page, window, cx| {
+                if page.query != query || !page.search_operation.is_running() {
+                    return;
+                }
+                page.search_operation.transition(Complete(result));
+                if page.search_operation.data().is_some() {
+                    page.apply_reload_selection(selection);
+                } else {
+                    page.selected_index = None;
+                }
+                page.rebuild_list(window, cx);
+                cx.notify();
+            });
+        });
+        match &self.search_operation {
+            search::TemporarySearchOperation::Idle(_) => {
+                self.search_operation.transition(Load(task))
             }
-            Err(err) => {
-                self.last_error = Some(err.to_string());
-                self.selected_index = None;
+            search::TemporarySearchOperation::Ready(_)
+            | search::TemporarySearchOperation::Degraded(_) => {
+                self.search_operation.transition(Refresh(task))
             }
+            search::TemporarySearchOperation::Unavailable(_) => {
+                self.search_operation.transition(Retry(task))
+            }
+            search::TemporarySearchOperation::Loading(_)
+            | search::TemporarySearchOperation::Refreshing(_)
+            | search::TemporarySearchOperation::Retrying(_)
+            | search::TemporarySearchOperation::RefreshingDegraded(_) => {}
         }
         self.rebuild_list(window, cx);
         cx.notify();
     }
 
+    fn conversations(&self) -> &[TemporaryConversationNode] {
+        self.search_operation
+            .data()
+            .map(|snapshot| snapshot.conversations.as_slice())
+            .unwrap_or_default()
+    }
+
     fn apply_reload_selection(&mut self, selection: ReloadSelection) {
         match selection {
             ReloadSelection::FirstMatch => {
-                self.selected_index = (!self.conversations.is_empty()).then_some(0);
+                self.selected_index = (!self.conversations().is_empty()).then_some(0);
             }
             ReloadSelection::Conversation(conversation_id) => {
                 self.selected_index = self
-                    .conversations
+                    .conversations()
                     .iter()
                     .position(|conversation| conversation.id == conversation_id);
             }
         }
 
         if let Some(index) = self.selected_index
-            && let Some(conversation) = self.conversations.get(index)
+            && let Some(conversation) = self.conversations().get(index)
         {
             self.route = TemporaryWindowRoute::Conversation(conversation.id.clone());
         } else if !matches!(self.route, TemporaryWindowRoute::Conversation(_)) {
@@ -310,11 +433,11 @@ impl TemporaryWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if index >= self.conversations.len() {
+        if index >= self.conversations().len() {
             return;
         }
         self.selected_index = Some(index);
-        self.route = TemporaryWindowRoute::Conversation(self.conversations[index].id.clone());
+        self.route = TemporaryWindowRoute::Conversation(self.conversations()[index].id.clone());
         self.sync_list_selection(window, cx);
         cx.notify();
     }
@@ -333,7 +456,7 @@ impl TemporaryWindow {
 
     fn move_selection(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(next) =
-            selection_after_delta(self.selected_index, self.conversations.len(), delta)
+            selection_after_delta(self.selected_index, self.conversations().len(), delta)
         else {
             self.selected_index = None;
             self.sync_list_selection(window, cx);
@@ -424,7 +547,10 @@ impl TemporaryWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let request = state::conversations::CreateConversationRequest {
+        if self.new_conversation.read(cx).submission_pending(cx) {
+            return;
+        }
+        let request = conversation::CreateConversationRequest {
             project_id: None,
             content_parts: submit.composer.content_parts.clone(),
             attachments: submit.attachments.clone(),
@@ -438,52 +564,75 @@ impl TemporaryWindow {
             trigger_kind: jaco_core::AgentRunTriggerKind::User,
         };
 
-        match state::conversations::create_conversation(request, cx) {
-            Ok(created) => {
-                let conversation_id = created.record.conversation.id.clone();
-                self.new_conversation.update(cx, |pane, cx| {
-                    pane.clear_after_submit(window, cx);
+        let task = conversation::create_conversation(request, cx);
+        let page = cx.entity().downgrade();
+        let completion = window.spawn(cx, async move |cx| {
+            let result = task.await;
+            let _ = page.update_in(cx, |page, window, cx| {
+                page.new_conversation.update(cx, |pane, cx| {
+                    pane.finish_submission(cx);
                 });
-                self.query.clear();
-                self.search_input.update(cx, |input, cx| {
-                    if !input.value().is_empty() {
-                        input.set_value("", window, cx);
+                match result {
+                    Ok(created) => {
+                        let conversation_id = created.conversation_id.clone();
+                        page.new_conversation.update(cx, |pane, cx| {
+                            pane.clear_after_submit(window, cx);
+                        });
+                        if page.search_operation.is_running() {
+                            page.search_operation.transition(Cancel);
+                        }
+                        page.query.clear();
+                        page.search_input.update(cx, |input, cx| {
+                            if !input.value().is_empty() {
+                                input.set_value("", window, cx);
+                            }
+                        });
+                        page.reload_conversations(
+                            ReloadSelection::Conversation(conversation_id.clone()),
+                            window,
+                            cx,
+                        );
+                        page.route = TemporaryWindowRoute::Conversation(conversation_id.clone());
+                        let _ = page.conversation_page(conversation_id.clone(), window, cx);
+                        let start = page
+                            .runtime
+                            .update(cx, |runtime, cx| runtime.start_run(created.run_request, cx));
+                        if let Err(error) = start {
+                            let title = cx.global::<I18n>().t("conversation-run-failed");
+                            push_temporary_notification(
+                                window,
+                                cx,
+                                title,
+                                error,
+                                NotificationType::Error,
+                            );
+                        }
                     }
-                });
-                self.reload_conversations(
-                    ReloadSelection::Conversation(conversation_id.clone()),
-                    window,
-                    cx,
-                );
-                self.route = TemporaryWindowRoute::Conversation(conversation_id.clone());
-                let _ = self.conversation_page(conversation_id.clone(), window, cx);
-                state::workspace::workspace(cx).update(cx, |workspace, cx| {
-                    workspace.reload_sidebar(cx);
-                });
-                self.runtime.update(cx, |runtime, cx| {
-                    runtime.start_run(created.run_request, window, cx);
-                });
-            }
-            Err(err) => {
-                let title = cx.global::<I18n>().t("temporary-submit-failed");
-                push_temporary_notification(
-                    window,
-                    cx,
-                    title,
-                    err.to_string(),
-                    NotificationType::Error,
-                );
-            }
-        }
+                    Err(err) => {
+                        let title = cx.global::<I18n>().t("temporary-submit-failed");
+                        push_temporary_notification(
+                            window,
+                            cx,
+                            title,
+                            err.to_string(),
+                            NotificationType::Error,
+                        );
+                    }
+                }
+            });
+        });
+        self.new_conversation.update(cx, |pane, cx| {
+            pane.begin_submission(completion, cx);
+        });
     }
 
     pub(crate) fn open_created_conversation(
         &mut self,
-        created: state::conversations::CreatedConversation,
+        created: conversation::CreatedConversation,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let conversation_id = created.record.conversation.id.clone();
+        let conversation_id = created.conversation_id.clone();
         self.query.clear();
         self.search_input.update(cx, |input, cx| {
             if !input.value().is_empty() {
@@ -497,12 +646,15 @@ impl TemporaryWindow {
         );
         self.route = TemporaryWindowRoute::Conversation(conversation_id.clone());
         let _ = self.conversation_page(conversation_id.clone(), window, cx);
-        state::workspace::workspace(cx).update(cx, |workspace, cx| {
-            workspace.reload_sidebar(cx);
-        });
-        self.runtime.update(cx, |runtime, cx| {
-            runtime.start_run(created.run_request, window, cx)
-        })
+        let start = self
+            .runtime
+            .update(cx, |runtime, cx| runtime.start_run(created.run_request, cx));
+        if let Err(error) = start {
+            let title = cx.global::<I18n>().t("conversation-run-failed");
+            push_temporary_notification(window, cx, title, error, NotificationType::Error);
+            return false;
+        }
+        true
     }
 
     fn conversation_page(
@@ -511,14 +663,22 @@ impl TemporaryWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<ConversationDetailPage> {
+        if let Some(page) = self.conversation_pages.get(&conversation_id) {
+            return page.clone();
+        }
+        let registry = crate::features::conversation::resources::ready_conversations(cx)
+            .expect("conversation page requires ready conversation resources");
+        let conversation = registry.update(cx, |registry, cx| {
+            registry.conversation(conversation_id.clone(), cx)
+        });
+        // Keep search focus while the route is materialized after an
+        // arrow-key selection.
+        let runtime = self.runtime.clone();
+        let page = cx
+            .new(|cx| ConversationDetailPage::new_without_focus(conversation, runtime, window, cx));
         self.conversation_pages
-            .entry(conversation_id.clone())
-            .or_insert_with(|| {
-                // Keep search focus while the route is materialized after an
-                // arrow-key selection.
-                cx.new(|cx| ConversationDetailPage::new_without_focus(conversation_id, window, cx))
-            })
-            .clone()
+            .insert(conversation_id, page.clone());
+        page
     }
 
     fn minimize(&mut self, _: &menus::Minimize, window: &mut Window, _: &mut Context<Self>) {
@@ -541,7 +701,9 @@ impl TemporaryWindow {
     }
 
     fn render_left_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let last_error = self.last_error.clone();
+        let last_error = self.search_operation.problem().map(ToString::to_string);
+        let running = self.search_operation.is_running();
+        let view = cx.entity().downgrade();
 
         v_flex()
             .id("temporary-conversation-list-panel")
@@ -568,9 +730,43 @@ impl TemporaryWindow {
                                 error
                             ))
                             .text_xs(),
+                        )
+                        .child(
+                            Button::new("temporary-reload-conversations")
+                                .label(cx.global::<I18n>().t("resource-status-refresh"))
+                                .loading(running)
+                                .disabled(running)
+                                .on_click(move |_, window, cx| {
+                                    let _ = view.update(cx, |view, cx| {
+                                        view.reload_conversations(
+                                            ReloadSelection::FirstMatch,
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                }),
                         ),
                 )
             })
+            .when(
+                running && self.search_operation.problem().is_none(),
+                |this| {
+                    this.child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .px_3()
+                            .py_2()
+                            .border_b_1()
+                            .border_color(cx.theme().border)
+                            .child(gpui_component::spinner::Spinner::new().small())
+                            .child(
+                                Label::new(cx.global::<I18n>().t("resource-status-loading"))
+                                    .text_xs(),
+                            ),
+                    )
+                },
+            )
             .child(List::new(&self.list).large().flex_1())
     }
 
@@ -600,7 +796,7 @@ impl Render for TemporaryWindow {
         let notification_layer = Root::render_notification_layer(window, cx);
         window.set_window_title(&title);
 
-        v_flex()
+        let content = v_flex()
             .track_focus(&self.focus_handle)
             .key_context(KEY_CONTEXT)
             .size_full()
@@ -648,8 +844,46 @@ impl Render for TemporaryWindow {
             )
             .children(sheet_layer)
             .children(dialog_layer)
-            .children(notification_layer)
+            .children(notification_layer);
+        if crate::database::is_ready(cx) {
+            content.into_any_element()
+        } else {
+            temporary_database_resource_view(cx).overlay(content, cx)
+        }
     }
+}
+
+fn temporary_database_resource_view(cx: &App) -> CriticalResourcesView {
+    let snapshot = crate::database::store(cx).read(cx, |resource| match resource {
+        DatabaseResource::AwaitingConfig => None,
+        DatabaseResource::Bound { operation, .. } => Some((
+            operation.is_running(),
+            operation.problem().map(ToString::to_string),
+            operation
+                .problem()
+                .is_some_and(crate::database::DatabaseProblem::can_create_fresh),
+        )),
+    });
+    let Some((running, message, can_create_fresh)) = snapshot else {
+        return CriticalResourcesView::loading(cx.global::<I18n>().t("critical-database-loading"));
+    };
+    let mut actions = vec![CriticalResourceAction::RefreshDatabase];
+    if can_create_fresh {
+        actions.push(CriticalResourceAction::BackupAndCreateFreshDatabase);
+    }
+    CriticalResourcesView::problem(CriticalResourceProblem {
+        id: "temporary-critical-database",
+        title: cx
+            .global::<I18n>()
+            .t("critical-database-error-title")
+            .into(),
+        message: message
+            .unwrap_or_else(|| cx.global::<I18n>().t("critical-read-only-description"))
+            .into(),
+        running,
+        warning: true,
+        actions,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -669,16 +903,6 @@ fn tab_focus_target(search_focused: bool) -> TemporaryTabTarget {
         TemporaryTabTarget::RouteComposer
     } else {
         TemporaryTabTarget::Search
-    }
-}
-
-fn load_no_project_conversations(
-    query: &str,
-    cx: &App,
-) -> (Vec<TemporaryConversationNode>, Option<String>) {
-    match state::temporary::load_no_project_conversations(query, cx) {
-        Ok(snapshot) => (snapshot.conversations, None),
-        Err(err) => (Vec::new(), Some(err.to_string())),
     }
 }
 

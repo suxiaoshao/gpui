@@ -16,45 +16,59 @@ use jaco_core::ProjectId;
 use jaco_db::ProjectRecord;
 use tracing::{Level, event};
 
+use super::workspace::HomeWorkspace;
 use crate::{
     components::{
-        chat_form::{
+        chat::form::{
             ProjectControlState, ProjectPickerOption, ProjectPickerValue, project_picker_value,
             project_sections,
         },
-        chat_input::{
+        chat::input::{
             ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
         },
+        chat::runtime_status::ConversationRuntimeStatus,
         picker::PickerListDelegate,
     },
+    features::conversation,
     foundation::I18n,
     state,
 };
 
 pub(crate) struct NewConversationPage {
     chat_form: Entity<ChatInputController>,
-    projects: StoreSelection<Vec<ProjectRecord>>,
+    projects: StoreSelection<Option<Vec<ProjectRecord>>>,
     selected_project_id: Option<ProjectId>,
     project: Entity<ProjectControlState>,
+    workspace: Entity<HomeWorkspace>,
+    runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl NewConversationPage {
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        workspace: Entity<HomeWorkspace>,
+        runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let projects =
-            state::projects::catalog(cx).select_cloned(cx, |snapshot| snapshot.projects());
-        let selected_project_id =
-            projects.read(|projects| initial_project_id(projects, default_project_id(cx).as_ref()));
+            state::projects::catalog(cx).select(cx, state::projects::SelectNormalProjects);
+        let selected_project_id = projects.read(|projects| {
+            initial_project_id(
+                projects.as_deref().unwrap_or_default(),
+                default_project_id(cx).as_ref(),
+            )
+        });
         let selected_project = projects.read(|projects| {
             selected_project_id
                 .as_ref()
-                .and_then(|id| project_by_id(projects, id))
+                .and_then(|id| project_by_id(projects.as_deref().unwrap_or_default(), id))
                 .cloned()
         });
         let state = cx.entity().downgrade();
-        let empty_label = cx.global::<I18n>().t("new-conversation-project-empty");
         let none_label = cx.global::<I18n>().t("new-conversation-project-none");
-        let sections = projects.read(|projects| project_sections(projects, none_label));
+        let sections = projects
+            .read(|projects| project_sections(projects.as_deref().unwrap_or_default(), none_label));
         let selected_value = project_picker_value(selected_project_id.as_ref());
         let selected_ix = PickerListDelegate::selected_index_for(&sections, Some(&selected_value));
         let confirm = Rc::new({
@@ -78,7 +92,11 @@ impl NewConversationPage {
                 PickerListDelegate::new(
                     sections,
                     Some(selected_value),
-                    empty_label.clone().into(),
+                    |cx| {
+                        cx.global::<I18n>()
+                            .t("new-conversation-project-empty")
+                            .into()
+                    },
                     confirm,
                     cancel,
                 ),
@@ -86,6 +104,10 @@ impl NewConversationPage {
                 cx,
             )
             .searchable(true);
+            picker.delegate_mut().set_selectable(
+                project_catalog_is_ready(cx),
+                Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
+            );
             picker.set_selected_index(selected_ix, window, cx);
             picker
         });
@@ -100,9 +122,10 @@ impl NewConversationPage {
             chat_form
         });
         let project_catalog = state::projects::catalog(cx);
-        let project_subscription = cx.observe_in(
-            &project_catalog.entity(),
+        let project_subscription = project_catalog.observe_select_in(
+            cx,
             window,
+            state::projects::SelectNormalProjectCatalog,
             |_, _catalog, window, cx| {
                 cx.defer_in(window, move |page, window, cx| {
                     page.reload_projects_from_catalog(window, cx);
@@ -123,6 +146,12 @@ impl NewConversationPage {
                 }
             },
         );
+        let workspace_observation = cx.observe(&workspace, |page, _, cx| {
+            page.sync_submission_problem(cx);
+        });
+        let runtime_observation = cx.observe(&runtime, |page, _, cx| {
+            page.sync_submission_problem(cx);
+        });
 
         if let Some(project) = selected_project {
             chat_form.update(cx, |chat_form, cx| {
@@ -130,13 +159,22 @@ impl NewConversationPage {
             });
         }
 
-        Self {
+        let mut page = Self {
             chat_form,
             projects,
             selected_project_id,
             project,
-            _subscriptions: vec![project_subscription, chat_form_subscription],
-        }
+            workspace,
+            runtime,
+            _subscriptions: vec![
+                project_subscription,
+                chat_form_subscription,
+                workspace_observation,
+                runtime_observation,
+            ],
+        };
+        page.sync_submission_problem(cx);
+        page
     }
 
     pub(crate) fn focus_primary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -150,39 +188,84 @@ impl NewConversationPage {
             .update(cx, |chat_form, cx| chat_form.focus_composer(window, cx));
     }
 
+    fn sync_submission_problem(&mut self, cx: &mut Context<Self>) {
+        let problem = {
+            let workspace = self.workspace.read(cx);
+            let project = workspace.project_status();
+            let conversation = workspace.conversation_status(cx);
+            if !project.is_ready() {
+                Some(
+                    project
+                        .problem
+                        .unwrap_or_else(|| cx.global::<I18n>().t("resource-status-loading")),
+                )
+            } else if !conversation.is_ready() {
+                Some(
+                    conversation
+                        .problem
+                        .unwrap_or_else(|| cx.global::<I18n>().t("resource-status-loading")),
+                )
+            } else {
+                let runtime = self.runtime.read(cx);
+                let recovery = runtime.recovery();
+                (!matches!(recovery, gpui_operation::refresh::Operation::Ready(_))).then(|| {
+                    recovery
+                        .problem()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| cx.global::<I18n>().t("conversation-runtime-recovering"))
+                })
+            }
+        }
+        .map(Into::into);
+        self.chat_form.update(cx, |chat_form, cx| {
+            chat_form.set_submission_problem(problem, cx);
+        });
+    }
+
     pub(crate) fn select_project_id_from_sidebar(
         &mut self,
         project_id: ProjectId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(project) = self
-            .projects
-            .read(|projects| project_by_id(projects, &project_id).cloned())
-        {
-            let save_result = state::config::update_app_settings(cx, |payload| {
-                payload.default_project_id = Some(project.id.clone());
+        if !project_catalog_is_ready(cx) {
+            return;
+        }
+        if let Some(project) = self.projects.read(|projects| {
+            project_by_id(projects.as_deref().unwrap_or_default(), &project_id).cloned()
+        }) {
+            let selected = project.clone();
+            let result = state::config::update_app_settings(cx, {
+                let project_id = project.id.clone();
+                move |payload| {
+                    payload.default_project_id = Some(project_id);
+                }
             });
-            if let Err(err) = save_result {
-                event!(Level::ERROR, error = ?err, "save sidebar selected project failed");
+            match result {
+                Ok(_) => {
+                    self.selected_project_id = Some(selected.id.clone());
+                    self.chat_form.update(cx, |chat_form, cx| {
+                        chat_form.refresh_skill_catalog(Some(Path::new(&selected.path)), cx);
+                    });
+                    self.sync_project_picker(window, cx);
+                    self.project.update(cx, |project, cx| {
+                        project.open = false;
+                        cx.notify();
+                    });
+                }
+                Err(err) => {
+                    event!(Level::ERROR, error = ?err, "save sidebar selected project failed");
+                }
             }
-            self.selected_project_id = Some(project.id.clone());
-            self.chat_form.update(cx, |chat_form, cx| {
-                chat_form.refresh_skill_catalog(Some(Path::new(&project.path)), cx);
-            });
-            self.sync_project_picker(window, cx);
-            self.project.update(cx, |project, cx| {
-                project.open = false;
-                cx.notify();
-            });
         }
         cx.notify();
     }
 
     fn selected_project(&self) -> Option<ProjectRecord> {
         let selected_project_id = self.selected_project_id.as_ref()?;
-        self.projects
-            .read(|projects| project_by_id(projects, selected_project_id).cloned())
+        self.projects.read(|projects| {
+            project_by_id(projects.as_deref().unwrap_or_default(), selected_project_id).cloned()
+        })
     }
 
     fn reload_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -193,7 +276,7 @@ impl NewConversationPage {
     fn reload_projects_from_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let selected_project_id = self.projects.read(|projects| {
             selected_or_initial_project_id(
-                projects,
+                projects.as_deref().unwrap_or_default(),
                 self.selected_project_id.as_ref(),
                 default_project_id(cx).as_ref(),
             )
@@ -230,13 +313,15 @@ impl NewConversationPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !project_catalog_is_ready(cx) {
+            return;
+        }
         match option.value {
             ProjectPickerValue::NoProject => self.select_no_project(window, cx),
             ProjectPickerValue::Project(project_id) => {
-                if let Some(project) = self
-                    .projects
-                    .read(|projects| project_by_id(projects, &project_id).cloned())
-                {
+                if let Some(project) = self.projects.read(|projects| {
+                    project_by_id(projects.as_deref().unwrap_or_default(), &project_id).cloned()
+                }) {
                     self.select_project(project, window, cx);
                 } else {
                     self.sync_project_picker(window, cx);
@@ -246,9 +331,10 @@ impl NewConversationPage {
     }
 
     fn select_no_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match state::config::update_app_settings(cx, |payload| {
+        let result = state::config::update_app_settings(cx, |payload| {
             payload.default_project_id = None;
-        }) {
+        });
+        match result {
             Ok(_) => {
                 self.selected_project_id = None;
                 self.chat_form.update(cx, |chat_form, cx| {
@@ -278,9 +364,11 @@ impl NewConversationPage {
         cx: &mut Context<Self>,
     ) {
         let project_id = project.id.clone();
-        match state::config::update_app_settings(cx, |payload| {
-            payload.default_project_id = Some(project_id.clone());
-        }) {
+        let result = state::config::update_app_settings(cx, {
+            let project_id = project_id.clone();
+            move |payload| payload.default_project_id = Some(project_id)
+        });
+        match result {
             Ok(_) => {
                 self.selected_project_id = Some(project_id);
                 self.chat_form.update(cx, |chat_form, cx| {
@@ -315,41 +403,40 @@ impl NewConversationPage {
         });
         let page = cx.entity().downgrade();
 
-        window
-            .spawn(cx, async move |cx| {
-                let selected_path = match path_prompt.await {
-                    Ok(Ok(Some(paths))) => paths.into_iter().next(),
-                    Ok(Ok(None)) => return,
-                    Ok(Err(err)) => {
-                        push_project_notification_async(
-                            cx,
-                            failed_title.clone().into(),
-                            err.to_string(),
-                            NotificationType::Error,
-                        );
-                        return;
-                    }
-                    Err(err) => {
-                        push_project_notification_async(
-                            cx,
-                            failed_title.into(),
-                            err.to_string(),
-                            NotificationType::Error,
-                        );
-                        return;
-                    }
-                };
-                let Some(path) = selected_path else {
+        let prompt_task = window.spawn(cx, async move |cx| {
+            let selected_path = match path_prompt.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) => return,
+                Ok(Err(err)) => {
+                    push_project_notification_async(
+                        cx,
+                        failed_title.clone().into(),
+                        err.to_string(),
+                        NotificationType::Error,
+                    );
                     return;
-                };
-
-                if let Err(err) = page.update_in(cx, |page, window, cx| {
-                    page.insert_selected_project(path, window, cx);
-                }) {
-                    event!(Level::ERROR, error = ?err, "add project from new conversation failed");
                 }
-            })
-            .detach();
+                Err(err) => {
+                    push_project_notification_async(
+                        cx,
+                        failed_title.into(),
+                        err.to_string(),
+                        NotificationType::Error,
+                    );
+                    return;
+                }
+            };
+            let Some(path) = selected_path else {
+                return;
+            };
+
+            if let Err(err) = page.update_in(cx, |page, window, cx| {
+                page.insert_selected_project(path, window, cx);
+            }) {
+                event!(Level::ERROR, error = ?err, "add project from new conversation failed");
+            }
+        });
+        crate::app::tasks::retain_window(window, prompt_task, cx);
     }
 
     fn submit_new_conversation(
@@ -358,7 +445,10 @@ impl NewConversationPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let request = state::conversations::CreateConversationRequest {
+        if self.chat_form.read(cx).submission_pending(cx) {
+            return;
+        }
+        let request = conversation::CreateConversationRequest {
             project_id: self.selected_project_id.clone(),
             content_parts: submit.composer.content_parts.clone(),
             attachments: submit.attachments.clone(),
@@ -371,31 +461,53 @@ impl NewConversationPage {
             prompt_snapshot: None,
             trigger_kind: jaco_core::AgentRunTriggerKind::User,
         };
-        match state::conversations::create_conversation(request, cx) {
-            Ok(created) => {
-                let conversation_id = created.record.conversation.id.clone();
-                self.chat_form.update(cx, |chat_form, cx| {
-                    chat_form.clear_after_submit(window, cx);
+        let task = conversation::create_conversation(request, cx);
+        let page = cx.entity().downgrade();
+        let completion = window.spawn(cx, async move |cx| {
+            let result = task.await;
+            let _ = page.update_in(cx, |page, window, cx| {
+                page.chat_form.update(cx, |chat_form, cx| {
+                    chat_form.finish_submission(cx);
                 });
-                state::workspace::workspace(cx).update(cx, |workspace, cx| {
-                    workspace.reload_sidebar(cx);
-                    workspace.open_conversation(conversation_id.clone(), cx);
-                });
-                state::conversation_runtime::runtime(cx).update(cx, |runtime, cx| {
-                    runtime.start_run(created.run_request, window, cx);
-                });
-            }
-            Err(err) => {
-                let title = cx.global::<I18n>().t("new-conversation-submit-failed");
-                push_project_notification(
-                    window,
-                    cx,
-                    title,
-                    err.to_string(),
-                    NotificationType::Error,
-                );
-            }
-        }
+                match result {
+                    Ok(created) => {
+                        let conversation_id = created.conversation_id.clone();
+                        page.chat_form.update(cx, |chat_form, cx| {
+                            chat_form.clear_after_submit(window, cx);
+                        });
+                        page.workspace.update(cx, |workspace, cx| {
+                            workspace.open_conversation(conversation_id, cx);
+                        });
+                        let start = page
+                            .runtime
+                            .update(cx, |runtime, cx| runtime.start_run(created.run_request, cx));
+                        if let Err(error) = start {
+                            let title = cx.global::<I18n>().t("conversation-run-failed");
+                            push_project_notification(
+                                window,
+                                cx,
+                                title,
+                                error,
+                                NotificationType::Error,
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        let title = cx.global::<I18n>().t("new-conversation-submit-failed");
+                        push_project_notification(
+                            window,
+                            cx,
+                            title,
+                            err.to_string(),
+                            NotificationType::Error,
+                        );
+                    }
+                }
+            });
+        });
+        self.chat_form.update(cx, |chat_form, cx| {
+            chat_form.begin_submission(completion, cx);
+        });
     }
 
     fn insert_selected_project(
@@ -404,42 +516,48 @@ impl NewConversationPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match state::projects::insert_existing_folder_project(cx, path) {
-            Ok(result) => {
-                let project = result.project.clone();
-                let _ = self.reload_projects(window, cx);
-                self.select_project(project.clone(), window, cx);
-                let (title, notification_type) = if result.was_existing {
-                    (
-                        cx.global::<I18n>().t("notify-project-already-exists"),
-                        NotificationType::Warning,
-                    )
-                } else {
-                    (
-                        cx.global::<I18n>().t("notify-project-added-success"),
-                        NotificationType::Success,
-                    )
-                };
-                push_project_notification(window, cx, title, project.path, notification_type);
-            }
-            Err(err) => {
-                let title = cx.global::<I18n>().t("notify-add-project-failed");
-                push_project_notification(
-                    window,
-                    cx,
-                    title,
-                    err.to_string(),
-                    NotificationType::Error,
-                );
-            }
-        }
+        let mutation = state::projects::insert_existing_folder_project(cx, path);
+        let page = cx.entity().downgrade();
+        let completion = window.spawn(cx, async move |cx| {
+            let result = mutation.await;
+            let _ = page.update_in(cx, |page, window, cx| match result {
+                Ok(result) => {
+                    let project = result.project.clone();
+                    let _ = page.reload_projects(window, cx);
+                    page.select_project(project.clone(), window, cx);
+                    let (title, notification_type) = if result.was_existing {
+                        (
+                            cx.global::<I18n>().t("notify-project-already-exists"),
+                            NotificationType::Warning,
+                        )
+                    } else {
+                        (
+                            cx.global::<I18n>().t("notify-project-added-success"),
+                            NotificationType::Success,
+                        )
+                    };
+                    push_project_notification(window, cx, title, project.path, notification_type);
+                }
+                Err(err) => {
+                    let title = cx.global::<I18n>().t("notify-add-project-failed");
+                    push_project_notification(
+                        window,
+                        cx,
+                        title,
+                        err.to_string(),
+                        NotificationType::Error,
+                    );
+                }
+            });
+        });
+        crate::app::tasks::retain_window(window, completion, cx);
     }
 
     fn sync_project_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let none_label = cx.global::<I18n>().t("new-conversation-project-none");
-        let sections = self
-            .projects
-            .read(|projects| project_sections(projects, none_label.clone()));
+        let sections = self.projects.read(|projects| {
+            project_sections(projects.as_deref().unwrap_or_default(), none_label.clone())
+        });
         let selected_value = project_picker_value(self.selected_project_id.as_ref());
 
         let picker = self.project.read(cx).picker.clone();
@@ -448,12 +566,22 @@ impl NewConversationPage {
             picker
                 .delegate_mut()
                 .set_selected_value(Some(selected_value));
+            picker.delegate_mut().set_selectable(
+                project_catalog_is_ready(cx),
+                Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
+            );
             let selected_ix = picker.delegate().selected_index();
             picker.set_selected_index(selected_ix, window, cx);
         });
 
         cx.notify();
     }
+}
+
+fn project_catalog_is_ready(cx: &App) -> bool {
+    state::projects::catalog(cx).read(cx, |operation| {
+        matches!(operation, state::projects::ProjectOperation::Ready(_))
+    })
 }
 
 impl Render for NewConversationPage {
@@ -482,6 +610,7 @@ impl Render for NewConversationPage {
                             .font_medium()
                             .text_color(cx.theme().foreground),
                     )
+                    .children(ConversationRuntimeStatus::from_runtime(&self.runtime, cx))
                     .child(self.chat_form.clone()),
             )
     }

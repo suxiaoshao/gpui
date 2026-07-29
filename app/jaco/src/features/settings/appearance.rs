@@ -75,20 +75,17 @@ impl AppearanceSettingsPage {
     }
 
     fn update_theme(update: impl FnOnce(&mut AppThemeSettings), window: &mut Window, cx: &mut App) {
-        match state::config::update_app_settings(cx, |payload| update(&mut payload.theme)) {
-            Ok(_) => {
-                cx.refresh_windows();
-            }
-            Err(err) => {
-                let title = cx.global::<I18n>().t("notify-save-settings-failed");
-                push_settings_error(window, cx, title, err);
-            }
+        if let Err(err) =
+            state::config::update_app_settings(cx, move |payload| update(&mut payload.theme))
+        {
+            let title = cx.global::<I18n>().t("notify-save-settings-failed");
+            push_settings_error(window, cx, title, err);
         }
     }
 
     fn set_theme_mode(mode: AppThemeMode, window: &mut Window, cx: &mut App) {
         Self::update_theme(
-            |settings| {
+            move |settings| {
                 settings.mode = mode;
             },
             window,
@@ -98,7 +95,7 @@ impl AppearanceSettingsPage {
 
     fn set_light_theme(theme_id: String, window: &mut Window, cx: &mut App) {
         Self::update_theme(
-            |settings| {
+            move |settings| {
                 set_light_theme_id(settings, theme_id);
             },
             window,
@@ -108,7 +105,7 @@ impl AppearanceSettingsPage {
 
     fn set_dark_theme(theme_id: String, window: &mut Window, cx: &mut App) {
         Self::update_theme(
-            |settings| {
+            move |settings| {
                 set_dark_theme_id(settings, theme_id);
             },
             window,
@@ -119,7 +116,7 @@ impl AppearanceSettingsPage {
     fn add_material_theme(&self, window: &mut Window, cx: &mut App) {
         let color = self.selected_color.to_hex();
         Self::update_theme(
-            |settings| {
+            move |settings| {
                 append_custom_theme_color(&mut settings.custom_theme_colors, color);
             },
             window,
@@ -129,7 +126,7 @@ impl AppearanceSettingsPage {
 
     fn delete_material_theme(theme_id: String, window: &mut Window, cx: &mut App) {
         Self::update_theme(
-            |settings| {
+            move |settings| {
                 delete_custom_theme_color(settings, &theme_id);
             },
             window,

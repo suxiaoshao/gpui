@@ -6,7 +6,7 @@ use crate::{
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, StyledExt, WindowExt as NotificationWindowExt,
+    ActiveTheme, Disableable, Icon, StyledExt, WindowExt as NotificationWindowExt,
     button::{Button, ButtonVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
     form::field as component_form_field,
@@ -51,6 +51,7 @@ pub(super) struct PromptEditDialogState {
     form: Entity<PromptEditFormStore>,
     name_input: FormInput,
     content_input: FormInput,
+    save_task: Option<Task<()>>,
 }
 
 impl PromptEditDialogState {
@@ -108,10 +109,14 @@ impl PromptEditDialogState {
             form,
             name_input,
             content_input,
+            save_task: None,
         }
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.save_task.is_some() {
+            return false;
+        }
         let mode = self.mode;
         let prompt_id = self.prompt_id.clone();
         let validation_context = match prompt_edit_validation_context(prompt_id.clone(), cx) {
@@ -137,7 +142,7 @@ impl PromptEditDialogState {
                 return false;
             }
         };
-        let result = match mode {
+        let mutation = match mode {
             PromptEditMode::Create => {
                 state::prompts::create_prompt(cx, draft.name.clone(), draft.content.clone())
             }
@@ -149,26 +154,39 @@ impl PromptEditDialogState {
                 };
                 state::prompts::update_prompt(
                     cx,
-                    &prompt_id,
+                    prompt_id,
                     draft.name.clone(),
                     draft.content.clone(),
                 )
             }
         };
-        if let Err(error) = result {
-            let title = cx.global::<I18n>().t("notify-save-prompt-failed");
-            push_settings_error(window, cx, title, error.to_string());
-            return false;
-        }
-        self.form
-            .update(cx, |form, cx| form.rebase_if_revision(revision, draft, cx));
-        window.push_notification(
-            Notification::new()
-                .title(cx.global::<I18n>().t("notify-prompt-saved"))
-                .with_type(NotificationType::Success),
-            cx,
-        );
-        true
+        let entity = cx.entity().downgrade();
+        self.save_task = Some(window.spawn(cx, async move |cx| {
+            let result = mutation.await;
+            let _ = entity.update_in(cx, |dialog, window, cx| {
+                dialog.save_task = None;
+                match result {
+                    Ok(_) => {
+                        dialog
+                            .form
+                            .update(cx, |form, cx| form.rebase_if_revision(revision, draft, cx));
+                        window.push_notification(
+                            Notification::new()
+                                .title(cx.global::<I18n>().t("notify-prompt-saved"))
+                                .with_type(NotificationType::Success),
+                            cx,
+                        );
+                        window.close_dialog(cx);
+                    }
+                    Err(error) => {
+                        let title = cx.global::<I18n>().t("notify-save-prompt-failed");
+                        push_settings_error(window, cx, title, error.to_string());
+                        cx.notify();
+                    }
+                }
+            });
+        }));
+        false
     }
 
     fn focus_name(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -218,8 +236,7 @@ fn prompt_edit_validation_context(
     prompt_id: Option<PromptId>,
     cx: &App,
 ) -> jaco_db::Result<PromptEditValidationContext> {
-    let existing_prompts = crate::database::repository(cx)
-        .list_prompts()?
+    let existing_prompts = state::prompts::list_prompts(cx)?
         .into_iter()
         .map(|prompt| (prompt.id, prompt.name))
         .collect();
@@ -244,13 +261,16 @@ pub(super) fn open_prompt_edit_dialog(
     let form_to_focus = form.clone();
     let form_to_return = form.clone();
 
-    window.open_dialog(cx, move |dialog, _window, _cx| {
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let mutable = prompt_resource_is_ready(cx);
         dialog
             .title(title.clone())
             .w(px(620.))
             .on_ok({
                 let form = form.clone();
-                move |_, window, cx| confirm_prompt_edit_dialog(&form, window, cx)
+                move |_, window, cx| {
+                    prompt_resource_is_ready(cx) && confirm_prompt_edit_dialog(&form, window, cx)
+                }
             })
             .child(form.clone())
             .footer(
@@ -264,7 +284,8 @@ pub(super) fn open_prompt_edit_dialog(
                             Button::new("prompt-dialog-save")
                                 .primary()
                                 .icon(IconName::FilePen)
-                                .label(save_label.clone()),
+                                .label(save_label.clone())
+                                .disabled(!mutable),
                         ),
                     ),
             )
@@ -292,6 +313,18 @@ pub(super) fn open_prompt_preview_dialog(prompt: PromptRecord, window: &mut Wind
     let close_label = cx.global::<I18n>().t("button-cancel");
 
     window.open_dialog(cx, move |dialog, _window, cx| {
+        let mutable = prompt_resource_is_ready(cx);
+        let read_only = cx.global::<I18n>().t("resource-picker-read-only");
+        let edit_tooltip = if mutable {
+            edit_label.clone()
+        } else {
+            read_only.clone()
+        };
+        let delete_tooltip = if mutable {
+            delete_label.clone()
+        } else {
+            read_only
+        };
         dialog
             .title(title.clone())
             .w(px(680.))
@@ -303,6 +336,8 @@ pub(super) fn open_prompt_preview_dialog(prompt: PromptRecord, window: &mut Wind
                             Button::new("prompt-dialog-edit")
                                 .icon(IconName::Pencil)
                                 .label(edit_label.clone())
+                                .disabled(!mutable)
+                                .tooltip(edit_tooltip)
                                 .on_click({
                                     let prompt = prompt.clone();
                                     move |_, window, cx| {
@@ -323,6 +358,8 @@ pub(super) fn open_prompt_preview_dialog(prompt: PromptRecord, window: &mut Wind
                                 .danger()
                                 .icon(IconName::Trash)
                                 .label(delete_label.clone())
+                                .disabled(!mutable)
+                                .tooltip(delete_tooltip)
                                 .on_click({
                                     let prompt = prompt.clone();
                                     move |_, window, cx| {
@@ -340,6 +377,13 @@ pub(super) fn open_prompt_preview_dialog(prompt: PromptRecord, window: &mut Wind
     });
 }
 
+fn prompt_resource_is_ready(cx: &App) -> bool {
+    crate::app::critical_resources_ready(cx)
+        && state::prompts::catalog(cx).read(cx, |operation| {
+            matches!(operation, state::prompts::PromptOperation::Ready(_))
+        })
+}
+
 pub(super) fn open_prompt_delete_confirm(prompt: PromptRecord, window: &mut Window, cx: &mut App) {
     let mut args = FluentArgs::new();
     args.set("name", prompt.name.clone());
@@ -355,18 +399,27 @@ pub(super) fn open_prompt_delete_confirm(prompt: PromptRecord, window: &mut Wind
         title,
         message,
         DestructiveAction::Delete,
-        move |window, cx| match state::prompts::delete_prompt(cx, &prompt_id) {
-            Ok(_) => {
-                window.push_notification(
-                    Notification::new()
-                        .title(deleted_title.clone())
-                        .with_type(NotificationType::Success),
-                    cx,
-                );
-            }
-            Err(err) => {
-                push_settings_error(window, cx, delete_failed_title.clone(), err);
-            }
+        move |window, cx| {
+            let mutation = state::prompts::delete_prompt(cx, prompt_id.clone());
+            let deleted_title = deleted_title.clone();
+            let delete_failed_title = delete_failed_title.clone();
+            let completion = window.spawn(cx, async move |cx| {
+                let result = mutation.await;
+                let _ = cx.update(|window, cx| match result {
+                    Ok(_) => {
+                        window.push_notification(
+                            Notification::new()
+                                .title(deleted_title)
+                                .with_type(NotificationType::Success),
+                            cx,
+                        );
+                    }
+                    Err(err) => {
+                        push_settings_error(window, cx, delete_failed_title, err);
+                    }
+                });
+            });
+            crate::app::tasks::retain_window(window, completion, cx);
         },
         window,
         cx,
@@ -467,7 +520,7 @@ mod tests {
     use super::{
         PromptEditDialogState, PromptEditMode, confirm_prompt_edit_dialog, validation_message,
     };
-    use crate::{database::FreshStoreGlobal, foundation, state};
+    use crate::{database, foundation, state};
     use gpui::{AppContext as _, Entity, Render, TestAppContext, VisualTestContext, WindowHandle};
     use gpui_component::input::{InputEvent, InputState};
     use gpui_form::typed::FormStore as _;
@@ -494,8 +547,7 @@ mod tests {
         }));
         cx.update(|_, cx| {
             assert!(
-                crate::database::repository(cx)
-                    .list_prompts()
+                crate::database::with_ready_repository(cx, |repo| repo.list_prompts())
                     .expect("list prompts")
                     .is_empty()
             );
@@ -506,14 +558,16 @@ mod tests {
     fn duplicate_name_confirm_keeps_prompt_dialog_open(cx: &mut TestAppContext) {
         let _dir = init_prompt_dialog_test(cx);
         cx.update(|cx| cx.set_global(foundation::I18n::for_locale_tag("en-US")));
-        cx.update(|cx| {
+        let task = cx.update(|cx| {
             state::prompts::create_prompt(
                 cx,
                 "Existing Prompt".to_string(),
                 "Original content".to_string(),
             )
-            .expect("create existing prompt");
         });
+        cx.foreground_executor()
+            .block_test(task)
+            .expect("create existing prompt");
         let window = open_test_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
 
@@ -578,10 +632,11 @@ mod tests {
             Some(PromptEditFormInputField::Name)
         );
         assert_eq!(
-            cx.update(|_, cx| crate::database::repository(cx)
-                .list_prompts()
-                .expect("list prompts")
-                .len()),
+            cx.update(|_, cx| {
+                crate::database::with_ready_repository(cx, |repo| repo.list_prompts())
+                    .expect("list prompts")
+                    .len()
+            }),
             1
         );
     }
@@ -590,10 +645,12 @@ mod tests {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
             gpui_component::init(cx);
-            cx.set_global(FreshStoreGlobal::open_in_dir(dir.path()).unwrap());
+            database::install_for_test(cx, dir.path());
             foundation::init_i18n(cx);
-            state::prompts::init(cx).expect("init prompt catalog");
+            state::hotkey::set_test_hotkey_state(cx);
+            state::prompts::init(cx);
         });
+        cx.run_until_parked();
         dir
     }
 

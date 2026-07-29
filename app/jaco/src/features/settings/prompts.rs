@@ -1,10 +1,11 @@
 use crate::{
+    components::resource_status,
     foundation::{I18n, assets::IconName},
     state,
 };
-use gpui::*;
+use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Icon, Sizable,
+    ActiveTheme, Disableable, Icon, Sizable,
     button::Button,
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -27,26 +28,40 @@ mod rows;
 
 pub(super) struct PromptsSettingsPage {
     search_input: Entity<InputState>,
-    prompts: StoreSelection<Vec<PromptRecord>>,
+    resource: state::prompts::PromptStore,
+    prompts: StoreSelection<Option<Vec<PromptRecord>>>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl PromptsSettingsPage {
+    fn can_mutate(&self, cx: &App) -> bool {
+        crate::app::critical_resources_ready(cx)
+            && self.resource.read(cx, |operation| {
+                matches!(operation, state::prompts::PromptOperation::Ready(_))
+            })
+    }
+
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(cx.global::<I18n>().t("prompt-search-placeholder"))
         });
         let prompt_catalog = state::prompts::catalog(cx);
-        let prompts =
-            prompt_catalog.select_cloned(cx, state::prompts::PromptCatalogState::prompt_records);
+        let prompts = prompt_catalog.select(cx, state::prompts::SelectPromptRecords);
+        let resource_subscription = prompt_catalog.observe_select_in(
+            cx,
+            window,
+            state::prompts::SelectPromptStatus,
+            |_page, _status, _window, cx| cx.notify(),
+        );
         let search_subscription =
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
 
         Self {
             search_input,
+            resource: prompt_catalog,
             prompts,
-            _subscriptions: vec![search_subscription],
+            _subscriptions: vec![search_subscription, resource_subscription],
         }
     }
 
@@ -69,6 +84,7 @@ impl PromptsSettingsPage {
     fn prompt_by_id(&self, prompt_id: &PromptId) -> Option<PromptRecord> {
         self.prompts.read(|prompts| {
             prompts
+                .as_ref()?
                 .iter()
                 .find(|prompt| &prompt.id == prompt_id)
                 .cloned()
@@ -76,6 +92,9 @@ impl PromptsSettingsPage {
     }
 
     fn open_add_prompt_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_mutate(cx) {
+            return;
+        }
         open_prompt_edit_dialog(PromptEditMode::Create, None, window, cx);
     }
 
@@ -85,6 +104,9 @@ impl PromptsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_mutate(cx) {
+            return;
+        }
         let Some(prompt) = self.prompt_by_id(&prompt_id) else {
             let title = cx.global::<I18n>().t("notify-load-prompts-failed");
             push_settings_error(window, cx, title, prompt_id);
@@ -99,6 +121,9 @@ impl PromptsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_mutate(cx) {
+            return;
+        }
         let Some(prompt) = self.prompt_by_id(&prompt_id) else {
             let title = cx.global::<I18n>().t("notify-load-prompts-failed");
             push_settings_error(window, cx, title, prompt_id);
@@ -136,6 +161,10 @@ impl PromptsSettingsPage {
                 Button::new("prompt-settings-add")
                     .icon(IconName::Plus)
                     .label(cx.global::<I18n>().t("button-add-prompt"))
+                    .disabled(!self.can_mutate(cx))
+                    .when(!self.can_mutate(cx), |button| {
+                        button.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
+                    })
                     .on_click(cx.listener(|page, _, window, cx| {
                         page.open_add_prompt_dialog(window, cx);
                     })),
@@ -149,6 +178,7 @@ impl PromptsSettingsPage {
         let delete_page = view_page.clone();
 
         PromptManagementEntry::new(row)
+            .mutable(self.can_mutate(cx))
             .on_view(move |prompt_id, window, cx| {
                 let _ = view_page.update(cx, |page, cx| {
                     page.open_view_prompt_dialog(prompt_id, window, cx);
@@ -220,6 +250,10 @@ impl PromptsSettingsPage {
                     .icon(IconName::Plus)
                     .label(cx.global::<I18n>().t("button-add-prompt"))
                     .small()
+                    .disabled(!self.can_mutate(cx))
+                    .when(!self.can_mutate(cx), |button| {
+                        button.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
+                    })
                     .on_click(cx.listener(|page, _, window, cx| {
                         page.open_add_prompt_dialog(window, cx);
                     })),
@@ -228,20 +262,30 @@ impl PromptsSettingsPage {
     }
 
     fn render_body(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let prompts = self.prompts.snapshot();
-        if prompts.is_empty() {
-            self.render_empty_prompts(cx)
-        } else {
-            self.render_prompt_rows(prompts.as_slice(), window, cx)
-        }
+        self.prompts.read(|prompts| match prompts {
+            Some(prompts) if !prompts.is_empty() => {
+                self.render_prompt_rows(prompts.as_slice(), window, cx)
+            }
+            _ => self.render_empty_prompts(cx),
+        })
     }
 }
 
 impl Render for PromptsSettingsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let status = self.resource.read(cx, |operation| {
+            resource_status::refresh_status(
+                "prompt-resource-refresh",
+                operation.phase(),
+                operation.problem().map(ToString::to_string),
+                state::prompts::request_refresh,
+                cx,
+            )
+        });
         v_flex()
             .w_full()
             .gap_3()
+            .children(status)
             .child(self.render_toolbar(window, cx))
             .child(self.render_body(window, cx))
     }

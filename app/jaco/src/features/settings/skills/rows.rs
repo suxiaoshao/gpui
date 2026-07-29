@@ -1,6 +1,6 @@
 use crate::{
+    features::skills::GlobalSkillEntry,
     foundation::{I18n, assets::IconName, search::field_matches_query},
-    state::skills::GlobalSkillEntry,
 };
 use gpui::*;
 use gpui_component::{
@@ -24,7 +24,6 @@ type ChainSkillContentScrollHandler = Rc<dyn Fn(Pixels, &mut Window, &mut App) +
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum SkillContentPanelState {
-    Loading,
     Loaded {
         content: SharedString,
         content_sha256: SharedString,
@@ -224,14 +223,6 @@ fn render_content_state(
     cx: &mut App,
 ) -> AnyElement {
     match content {
-        SkillContentPanelState::Loading => h_flex()
-            .w_full()
-            .items_center()
-            .gap_2()
-            .text_color(cx.theme().muted_foreground)
-            .child(Icon::new(IconName::RefreshCcw).with_size(px(16.)))
-            .child(Label::new(cx.global::<I18n>().t("skill-content-loading")).text_sm())
-            .into_any_element(),
         SkillContentPanelState::Failed { message } => h_flex()
             .w_full()
             .items_start()
@@ -356,7 +347,7 @@ mod tests {
     use super::{
         filter_skill_catalog_rows, short_hash, skill_catalog_list_items, skill_catalog_rows,
     };
-    use crate::{foundation::I18n, state::skills::GlobalSkillEntry};
+    use crate::{features::skills::GlobalSkillEntry, foundation::I18n};
     use jaco_core::SkillSourceKind;
     use std::path::PathBuf;
 

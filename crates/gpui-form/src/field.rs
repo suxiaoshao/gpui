@@ -3,12 +3,12 @@ use std::{borrow::Cow, fmt, future::Future, marker::PhantomData, sync::Arc};
 use gpui::{App, Context, EventEmitter, Subscription, WeakEntity, Window};
 
 use crate::{
-    array::{FormItemId, ToFormItemId},
     control::ControlAttachment,
-    error::{ValidationIssue, ValidationSource},
     form::{FormEvent, FormStore},
-    path::FieldPath,
-    trigger::ValidationTrigger,
+    schema::array::{FormItemId, ToFormItemId},
+    schema::path::FieldPath,
+    validation::report::{ValidationIssue, ValidationSource},
+    validation::trigger::ValidationTrigger,
     validation::{AsyncValidationIssue, ValidationScope},
 };
 

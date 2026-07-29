@@ -1,5 +1,6 @@
 use crate::{
     components::delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
+    errors::JacoResult,
     foundation::{I18n, assets::IconName},
     state,
     state::config::{McpServerTomlConfig, McpTransportKind, is_valid_mcp_server_id},
@@ -79,8 +80,8 @@ pub(super) struct McpServerEditDialogState {
     components: McpServerFormComponents,
     content_scroll_handle: ScrollHandle,
     draft_oauth_status_key: String,
-    draft_oauth_credential_key: Option<state::mcp_oauth::CredentialsKey>,
-    draft_oauth_credential_keys: BTreeSet<state::mcp_oauth::CredentialsKey>,
+    draft_oauth_credential_key: Option<state::mcp::oauth::CredentialsKey>,
+    draft_oauth_credential_keys: BTreeSet<state::mcp::oauth::CredentialsKey>,
     sign_out_task: Option<Task<()>>,
     save_task: Option<Task<()>>,
 }
@@ -89,11 +90,12 @@ struct McpOAuthDialogTarget {
     status_key: String,
     server_id: String,
     server: McpServerTomlConfig,
-    credential_key: state::mcp_oauth::CredentialsKey,
+    credential_key: state::mcp::oauth::CredentialsKey,
     is_draft: bool,
     cleanup_credentials: bool,
 }
 
+#[derive(Clone)]
 struct McpServerSaveRequest {
     revision: FormRevision,
     output: McpServerFormInput,
@@ -101,13 +103,13 @@ struct McpServerSaveRequest {
     server_id: String,
     server: McpServerTomlConfig,
     saved_auth: McpOAuthStatusSnapshot,
-    credential_keys_to_delete: Vec<state::mcp_oauth::CredentialsKey>,
+    credential_keys_to_delete: Vec<state::mcp::oauth::CredentialsKey>,
     success_title_key: &'static str,
 }
 
 struct McpOAuthSignOutRequest {
     server_id: String,
-    credential_key: state::mcp_oauth::CredentialsKey,
+    credential_key: state::mcp::oauth::CredentialsKey,
     draft_only: bool,
 }
 
@@ -293,14 +295,25 @@ impl McpServerEditDialogState {
             }
         };
 
-        let saved_server = request.server.clone();
-        let saved_server_id = request.server_id.clone();
-        match state::config::upsert_mcp_server(
+        let result = state::config::upsert_mcp_server(
             cx,
             request.original_server_id.as_deref(),
-            request.server_id,
-            request.server,
-        ) {
+            request.server_id.clone(),
+            request.server.clone(),
+        );
+        self.finish_config_save(request, result, window, cx)
+    }
+
+    fn finish_config_save(
+        &mut self,
+        request: McpServerSaveRequest,
+        result: JacoResult<()>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let saved_server = request.server.clone();
+        let saved_server_id = request.server_id.clone();
+        match result {
             Ok(()) => {
                 self.draft.form.update(cx, |form, cx| {
                     form.rebase_if_revision(request.revision, request.output, cx);
@@ -561,7 +574,7 @@ impl McpServerEditDialogState {
     fn cleanup_draft_oauth_credentials(&mut self, cx: &mut Context<Self>) {
         self.clear_draft_oauth_authorization(cx);
         for credential_key in std::mem::take(&mut self.draft_oauth_credential_keys) {
-            state::mcp_oauth::delete_credentials_detached(&credential_key, cx);
+            state::mcp::oauth::delete_credentials_detached(&credential_key, cx);
         }
     }
 
@@ -1298,11 +1311,11 @@ fn confirm_mcp_server_edit_dialog(
 }
 
 async fn delete_oauth_credentials(
-    credential_keys: &[state::mcp_oauth::CredentialsKey],
+    credential_keys: &[state::mcp::oauth::CredentialsKey],
     cx: &mut gpui::AsyncWindowContext,
 ) -> Result<(), String> {
     for credential_key in credential_keys {
-        state::mcp_oauth::delete_credentials(credential_key, cx).await?;
+        state::mcp::oauth::delete_credentials(credential_key, cx).await?;
     }
     Ok(())
 }
@@ -1319,7 +1332,7 @@ async fn delete_oauth_credentials_for_sign_out(
     request: McpOAuthSignOutRequest,
     cx: &mut gpui::AsyncWindowContext,
 ) -> Result<McpOAuthSignOutRequest, String> {
-    state::mcp_oauth::delete_credentials(&request.credential_key, cx).await?;
+    state::mcp::oauth::delete_credentials(&request.credential_key, cx).await?;
     Ok(request)
 }
 
@@ -1328,9 +1341,9 @@ fn oauth_credential_keys_to_delete(
     original_config: Option<&McpServerTomlConfig>,
     saved_server_id: &str,
     saved_server: &McpServerTomlConfig,
-    draft_credential_keys: &BTreeSet<state::mcp_oauth::CredentialsKey>,
-    promoted_draft_key: Option<state::mcp_oauth::CredentialsKey>,
-) -> Vec<state::mcp_oauth::CredentialsKey> {
+    draft_credential_keys: &BTreeSet<state::mcp::oauth::CredentialsKey>,
+    promoted_draft_key: Option<state::mcp::oauth::CredentialsKey>,
+) -> Vec<state::mcp::oauth::CredentialsKey> {
     let mut keys = BTreeSet::new();
     let original_key = original_server_id
         .zip(original_config)
@@ -1351,8 +1364,8 @@ fn oauth_credential_keys_to_delete(
 fn oauth_credential_key_for_server(
     server_id: &str,
     server: &McpServerTomlConfig,
-) -> Option<state::mcp_oauth::CredentialsKey> {
-    state::mcp_oauth::credentials_key_for_server(server_id, server)
+) -> Option<state::mcp::oauth::CredentialsKey> {
+    state::mcp::oauth::credentials_key_for_server(server_id, server)
         .ok()
         .flatten()
 }
@@ -1395,42 +1408,44 @@ pub(super) fn open_mcp_server_delete_confirm(
             let server_id = server_id.clone();
             let deleted_title = deleted_title.clone();
             let delete_failed_title = delete_failed_title.clone();
-            let page_for_task = page.clone();
-            let task = window.spawn(cx, async move |cx| {
-                let credentials_result =
-                    delete_oauth_credentials(&credential_keys_to_delete, cx).await;
-                if let Err(err) = cx.update(|window, cx| match credentials_result {
-                    Ok(()) => match state::config::delete_mcp_server(cx, &server_id) {
-                        Ok(_) => {
-                            disconnect_server(server_id.clone(), window, cx);
-                            window.push_notification(
-                                Notification::new()
-                                    .title(deleted_title.clone())
-                                    .with_type(NotificationType::Success),
-                                cx,
-                            );
+            let config_result = state::config::delete_mcp_server(cx, &server_id);
+            let Err(error) = config_result else {
+                let page_for_task = page.clone();
+                let task = window.spawn(cx, async move |cx| {
+                    let credentials_result =
+                        delete_oauth_credentials(&credential_keys_to_delete, cx).await;
+                    if let Err(err) = cx.update(|window, cx| {
+                        let (message, notification_type) = match credentials_result {
+                            Ok(()) => (None, NotificationType::Success),
+                            Err(error) => (Some(error.to_string()), NotificationType::Warning),
+                        };
+                        disconnect_server(server_id.clone(), window, cx);
+                        let mut notification = Notification::new()
+                            .title(deleted_title.clone())
+                            .with_type(notification_type);
+                        if let Some(message) = message {
+                            notification = notification.message(message);
                         }
-                        Err(err) => {
-                            push_settings_error(window, cx, delete_failed_title.clone(), err)
-                        }
-                    },
-                    Err(err) => push_settings_error(window, cx, delete_failed_title.clone(), err),
-                }) {
-                    event!(Level::ERROR, error = ?err, "finish mcp server delete failed");
-                }
-                if let Err(err) = page_for_task.update(cx, |page, cx| {
-                    page.delete_task = None;
+                        window.push_notification(notification, cx);
+                    }) {
+                        event!(Level::ERROR, error = ?err, "finish mcp server delete failed");
+                    }
+                    if let Err(err) = page_for_task.update(cx, |page, cx| {
+                        page.delete_task = None;
+                        cx.notify();
+                    }) {
+                        event!(Level::ERROR, error = ?err, "clear mcp server delete task failed");
+                    }
+                });
+                if let Err(err) = page.update(cx, |page, cx| {
+                    page.delete_task = Some(task);
                     cx.notify();
                 }) {
-                    event!(Level::ERROR, error = ?err, "clear mcp server delete task failed");
+                    event!(Level::ERROR, error = ?err, "store mcp server delete task failed");
                 }
-            });
-            if let Err(err) = page.update(cx, |page, cx| {
-                page.delete_task = Some(task);
-                cx.notify();
-            }) {
-                event!(Level::ERROR, error = ?err, "store mcp server delete task failed");
-            }
+                return;
+            };
+            push_settings_error(window, cx, delete_failed_title.clone(), error);
         },
         window,
         cx,
@@ -1518,7 +1533,7 @@ fn can_authorize_draft_oauth(
 }
 
 fn oauth_status_after_save(
-    draft_oauth_credential_key: Option<&state::mcp_oauth::CredentialsKey>,
+    draft_oauth_credential_key: Option<&state::mcp::oauth::CredentialsKey>,
     draft_oauth_status_key: &str,
     original_server_id: Option<&str>,
     original_config: Option<&McpServerTomlConfig>,
@@ -1553,10 +1568,10 @@ fn oauth_status_after_save(
 }
 
 fn promoted_draft_oauth_key(
-    draft_oauth_credential_key: Option<&state::mcp_oauth::CredentialsKey>,
+    draft_oauth_credential_key: Option<&state::mcp::oauth::CredentialsKey>,
     server_id: &str,
     saved_server: &McpServerTomlConfig,
-) -> Option<state::mcp_oauth::CredentialsKey> {
+) -> Option<state::mcp::oauth::CredentialsKey> {
     let saved_key = oauth_credential_key_for_server(server_id, saved_server)?;
     (draft_oauth_credential_key == Some(&saved_key)).then_some(saved_key)
 }
@@ -1938,7 +1953,8 @@ mod tests {
             foundation::init_i18n(cx);
             let config = state::JacoConfig::load_from_path_for_test(&config_path)
                 .expect("create test config");
-            state::config::install_for_test(cx, config).expect("install config store");
+            state::config::install_for_test(cx, config_path.clone(), config)
+                .expect("install config store");
             state::mcp::init(cx).expect("init MCP runtime");
         });
         dir

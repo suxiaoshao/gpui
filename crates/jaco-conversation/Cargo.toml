@@ -1,0 +1,12 @@
+[package]
+name = "jaco-conversation"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+jaco-core.workspace = true
+jaco-db.workspace = true
+thiserror = "2.0.18"
+
+[dev-dependencies]
+tempfile = "3.27.0"

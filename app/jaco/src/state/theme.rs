@@ -1,11 +1,49 @@
-use gpui::{App, Window, WindowAppearance};
+use gpui::{App, AppContext, Entity, Global, Subscription, Window, WindowAppearance};
 use gpui_component::{Theme, ThemeMode as ComponentThemeMode, ThemeRegistry};
+use gpui_store::Select;
 use jaco_core::{AppThemeMode, AppThemeSettings};
 use tracing::{Level, event};
 
 use crate::foundation::assets;
 
+#[derive(Clone, Copy, Default)]
+struct SelectThemeSettings;
+
+impl Select<crate::state::config::ConfigOperation> for SelectThemeSettings {
+    type Output = AppThemeSettings;
+
+    fn select(&self, operation: &crate::state::config::ConfigOperation) -> Self::Output {
+        operation
+            .data()
+            .map(|config| config.app_settings_payload().theme)
+            .unwrap_or_default()
+    }
+}
+
 pub(crate) use app_theme::SystemAccentThemeState;
+
+struct ThemeRuntime {
+    settings: AppThemeSettings,
+    appearance: WindowAppearance,
+    resolved: Option<ResolvedThemeKey>,
+    _subscriptions: Vec<Subscription>,
+}
+
+struct ThemeRuntimeGlobal(Entity<ThemeRuntime>);
+
+impl Global for ThemeRuntimeGlobal {}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ResolvedThemeKey {
+    settings: AppThemeSettings,
+    mode: ComponentThemeMode,
+    system_accent: Option<String>,
+    system_text_highlight: Option<String>,
+}
+
+pub(crate) struct WindowThemeBinding {
+    _appearance_subscription: Subscription,
+}
 
 pub(crate) fn init(cx: &mut App) {
     let registry = ThemeRegistry::global_mut(cx);
@@ -15,18 +53,88 @@ pub(crate) fn init(cx: &mut App) {
         }
     }
     app_theme::init_system_accent_theme(cx);
+    let settings = crate::state::config::store(cx).read(cx, |operation| {
+        operation
+            .data()
+            .map(|config| config.app_settings_payload().theme)
+            .unwrap_or_default()
+    });
+    let runtime = cx.new(|cx| {
+        let config_subscription = crate::state::config::store(cx).observe_select(
+            cx,
+            SelectThemeSettings,
+            |runtime: &mut ThemeRuntime, settings, cx| {
+                runtime.settings = settings.clone();
+                runtime.apply(cx);
+            },
+        );
+        let accent_subscription =
+            cx.observe_global::<SystemAccentThemeState>(|runtime, cx| runtime.apply(cx));
+        ThemeRuntime {
+            settings,
+            appearance: cx.window_appearance(),
+            resolved: None,
+            _subscriptions: vec![config_subscription, accent_subscription],
+        }
+    });
+    runtime.update(cx, |runtime, cx| runtime.apply(cx));
+    cx.set_global(ThemeRuntimeGlobal(runtime));
 }
 
-pub(crate) fn apply_current_theme(window: &mut Window, cx: &mut App) {
-    let settings = crate::state::config::app_settings(cx).theme().clone();
-    let mode = resolved_component_theme_mode(&settings, window.appearance());
-    let theme_id = theme_id_for_component_mode(&settings, mode);
-    let custom_theme_colors = normalized_custom_theme_colors(&settings);
-    let config = {
-        let registry = ThemeRegistry::global(cx);
-        app_theme::resolve_theme_config(registry, mode, &theme_id, &custom_theme_colors)
-    };
-    Theme::global_mut(cx).apply_config(&config);
+impl ThemeRuntime {
+    fn set_window_appearance(&mut self, appearance: WindowAppearance, cx: &mut App) {
+        if self.appearance == appearance {
+            return;
+        }
+        self.appearance = appearance;
+        self.apply(cx);
+    }
+
+    fn apply(&mut self, cx: &mut App) {
+        let mode = resolved_component_theme_mode(&self.settings, self.appearance);
+        let theme_id = theme_id_for_component_mode(&self.settings, mode);
+        let uses_system_accent = app_theme::is_system_accent_material_you_theme_id(&theme_id);
+        let key = ResolvedThemeKey {
+            settings: self.settings.clone(),
+            mode,
+            system_accent: uses_system_accent
+                .then(app_theme::system_accent_color)
+                .flatten(),
+            system_text_highlight: uses_system_accent
+                .then(app_theme::system_text_highlight_color)
+                .flatten(),
+        };
+        if self.resolved.as_ref() == Some(&key) {
+            return;
+        }
+        let custom_theme_colors = normalized_custom_theme_colors(&self.settings);
+        let config = {
+            let registry = ThemeRegistry::global(cx);
+            app_theme::resolve_theme_config(registry, mode, &theme_id, &custom_theme_colors)
+        };
+        Theme::global_mut(cx).apply_config(&config);
+        self.resolved = Some(key);
+        cx.refresh_windows();
+    }
+}
+
+impl WindowThemeBinding {
+    pub(crate) fn new(window: &Window, cx: &mut App) -> Self {
+        let runtime = theme_runtime(cx).downgrade();
+        let appearance_subscription = window.observe_window_appearance(move |window, cx| {
+            let appearance = window.appearance();
+            let _ = runtime.update(cx, |runtime, cx| {
+                runtime.set_window_appearance(appearance, cx);
+            });
+        });
+        Self {
+            _appearance_subscription: appearance_subscription,
+        }
+    }
+}
+
+fn theme_runtime(cx: &App) -> Entity<ThemeRuntime> {
+    cx.global::<ThemeRuntimeGlobal>().0.clone()
 }
 
 pub(crate) fn resolved_component_theme_mode(

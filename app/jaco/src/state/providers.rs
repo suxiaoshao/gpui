@@ -1,27 +1,199 @@
-use crate::database;
-use gpui::{App, Global};
-use gpui_store::{SharedStore, StoreState};
+pub(crate) mod secrets;
+
+use std::fmt;
+
+use gpui::{App, AppContext, Entity, Global, Subscription, Task};
+use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh};
+use gpui_store::{Select, Store};
 use jaco_core::{ModelCapabilitiesSnapshot, ProviderId, ProviderModelId};
-use jaco_db::{NewProvider, NewProviderModel, ProviderModelRecord, ProviderRecord, UpdateProvider};
+use jaco_db::{
+    DbError, NewProvider, NewProviderModel, ProviderModelRecord, ProviderRecord, UpdateProvider,
+};
+use tokio::sync::oneshot;
 
-#[derive(Clone)]
-pub(crate) struct ProviderCatalogGlobal(SharedStore<ProviderCatalogSnapshot>);
+use crate::database;
 
-impl ProviderCatalogGlobal {
-    pub(crate) fn store(&self) -> SharedStore<ProviderCatalogSnapshot> {
-        self.0.clone()
+pub(crate) type ProviderOperation = refresh::Operation<ProviderData, ProviderProblem, Task<()>>;
+pub(crate) type ProviderStore = Store<ProviderOperation>;
+pub(crate) type ProviderWithModels = (ProviderRecord, Vec<ProviderModelRecord>);
+
+struct ProviderDatabaseOwner {
+    mutation_tasks: Vec<Task<()>>,
+    _database_subscription: Subscription,
+}
+
+struct ProviderDatabaseOwnerGlobal(Entity<ProviderDatabaseOwner>);
+
+impl Global for ProviderDatabaseOwnerGlobal {}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectProviderRecordsWithModels;
+
+impl Select<ProviderOperation> for SelectProviderRecordsWithModels {
+    type Output = Option<Vec<ProviderWithModels>>;
+
+    fn select(&self, operation: &ProviderOperation) -> Self::Output {
+        operation.data().map(|data| data.providers.clone())
     }
 }
 
-impl Global for ProviderCatalogGlobal {}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectProviderStatus;
+
+impl Select<ProviderOperation> for SelectProviderStatus {
+    type Output = (gpui_operation::refresh::Phase, Option<String>);
+
+    fn select(&self, operation: &ProviderOperation) -> Self::Output {
+        (
+            operation.phase(),
+            operation.problem().map(ToString::to_string),
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProviderModelCatalogSnapshot {
+    models: Option<Vec<ProviderModelChoice>>,
+    phase: gpui_operation::refresh::Phase,
+    problem: Option<String>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SelectProviderModelCatalog;
+
+impl Select<ProviderOperation> for SelectProviderModelCatalog {
+    type Output = ProviderModelCatalogSnapshot;
+
+    fn select(&self, operation: &ProviderOperation) -> Self::Output {
+        ProviderModelCatalogSnapshot {
+            models: operation.data().map(|data| data.enabled_models.clone()),
+            phase: operation.phase(),
+            problem: operation.problem().map(ToString::to_string),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ProviderProblem(DbError);
+
+impl fmt::Display for ProviderProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for ProviderProblem {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct ProviderCatalogSnapshot {
+pub(crate) struct ProviderData {
     pub(crate) providers: Vec<(ProviderRecord, Vec<ProviderModelRecord>)>,
     pub(crate) enabled_models: Vec<ProviderModelChoice>,
 }
 
-impl StoreState for ProviderCatalogSnapshot {}
+impl ProviderData {
+    pub(crate) fn providers(&self) -> &[(ProviderRecord, Vec<ProviderModelRecord>)] {
+        &self.providers
+    }
+
+    fn new(mut providers: Vec<(ProviderRecord, Vec<ProviderModelRecord>)>) -> Self {
+        sort_providers(&mut providers);
+        let mut data = Self {
+            providers,
+            enabled_models: Vec::new(),
+        };
+        data.rebuild_enabled_models();
+        data
+    }
+
+    fn rebuild_enabled_models(&mut self) {
+        self.enabled_models = self
+            .providers
+            .iter()
+            .filter(|(provider, _)| provider.enabled)
+            .flat_map(|(provider, models)| {
+                models
+                    .iter()
+                    .filter(|model| model.enabled)
+                    .map(move |model| ProviderModelChoice {
+                        provider_id: provider.id.clone(),
+                        provider_kind: provider.kind.clone(),
+                        provider_display_name: provider.display_name.clone(),
+                        model_id: model.model_id.clone(),
+                        model_display_name: model.display_name.clone(),
+                        capabilities: model.capabilities.clone(),
+                    })
+            })
+            .collect();
+    }
+
+    fn upsert_provider(&mut self, provider: ProviderRecord) {
+        match self
+            .providers
+            .iter_mut()
+            .find(|(current, _)| current.id == provider.id)
+        {
+            Some((current, _)) => *current = provider,
+            None => self.providers.push((provider, Vec::new())),
+        }
+        sort_providers(&mut self.providers);
+        self.rebuild_enabled_models();
+    }
+
+    fn replace_models(&mut self, provider_id: &ProviderId, mut models: Vec<ProviderModelRecord>) {
+        sort_models(&mut models);
+        if let Some((_, current)) = self
+            .providers
+            .iter_mut()
+            .find(|(provider, _)| &provider.id == provider_id)
+        {
+            *current = models;
+        }
+        self.rebuild_enabled_models();
+    }
+
+    fn upsert_model(&mut self, model: ProviderModelRecord) {
+        if let Some((_, models)) = self
+            .providers
+            .iter_mut()
+            .find(|(provider, _)| provider.id == model.provider_id)
+        {
+            match models.iter_mut().find(|current| current.id == model.id) {
+                Some(current) => *current = model,
+                None => models.push(model),
+            }
+            sort_models(models);
+        }
+        self.rebuild_enabled_models();
+    }
+}
+
+pub(crate) enum ProviderMessage {
+    UpsertProvider(ProviderRecord),
+    ReplaceModels {
+        provider_id: ProviderId,
+        models: Vec<ProviderModelRecord>,
+    },
+    UpsertModel(Box<ProviderModelRecord>),
+}
+
+impl Transition<ProviderMessage> for &mut ProviderData {
+    type Output = ();
+
+    fn transition(self, message: ProviderMessage) {
+        match message {
+            ProviderMessage::UpsertProvider(provider) => self.upsert_provider(provider),
+            ProviderMessage::ReplaceModels {
+                provider_id,
+                models,
+            } => self.replace_models(&provider_id, models),
+            ProviderMessage::UpsertModel(model) => self.upsert_model(*model),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProviderModelKey {
@@ -54,174 +226,273 @@ impl ProviderModelChoice {
     }
 }
 
-fn refresh_snapshot(store: &SharedStore<ProviderCatalogSnapshot>, cx: &mut App) {
-    let Ok(snapshot) = load_catalog_snapshot(cx) else {
-        return;
-    };
-    store.update(cx, |current| {
-        *current = snapshot;
+fn sort_providers(providers: &mut [(ProviderRecord, Vec<ProviderModelRecord>)]) {
+    for (_, models) in providers.iter_mut() {
+        sort_models(models);
+    }
+    providers.sort_by(|(left, _), (right, _)| {
+        left.display_name
+            .cmp(&right.display_name)
+            .then_with(|| left.kind.cmp(&right.kind))
+            .then_with(|| left.id.cmp(&right.id))
     });
 }
 
-fn update_provider_impl(
-    provider_id: &ProviderId,
-    input: UpdateProvider,
-    cx: &mut App,
-) -> jaco_db::Result<ProviderRecord> {
-    let provider = database::repository(cx).update_provider(provider_id, input)?;
-    refresh_snapshot(&catalog(cx), cx);
-    Ok(provider)
-}
-
-fn insert_provider_with_id_impl(
-    provider_id: ProviderId,
-    input: NewProvider,
-    cx: &mut App,
-) -> jaco_db::Result<ProviderRecord> {
-    let provider = database::repository(cx).insert_provider_with_id(provider_id, input)?;
-    refresh_snapshot(&catalog(cx), cx);
-    Ok(provider)
-}
-
-fn replace_fetched_provider_models_impl(
-    provider_id: &ProviderId,
-    models: Vec<NewProviderModel>,
-    cx: &mut App,
-) -> jaco_db::Result<Vec<ProviderModelRecord>> {
-    let models = database::repository(cx).replace_fetched_provider_models(provider_id, models)?;
-    refresh_snapshot(&catalog(cx), cx);
-    Ok(models)
-}
-
-fn set_provider_model_enabled_impl(
-    provider_id: &ProviderId,
-    model_id: &ProviderModelId,
-    enabled: bool,
-    cx: &mut App,
-) -> jaco_db::Result<ProviderModelRecord> {
-    let model =
-        database::repository(cx).set_provider_model_enabled(provider_id, model_id, enabled)?;
-    refresh_snapshot(&catalog(cx), cx);
-    Ok(model)
+fn sort_models(models: &mut [ProviderModelRecord]) {
+    models.sort_by(|left, right| {
+        left.display_name
+            .cmp(&right.display_name)
+            .then_with(|| left.model_id.cmp(&right.model_id))
+            .then_with(|| left.id.cmp(&right.id))
+    });
 }
 
 pub(crate) fn init(cx: &mut App) {
-    let snapshot = load_catalog_snapshot(cx).unwrap_or_default();
-    let store = SharedStore::new(cx, snapshot);
-    cx.set_global(ProviderCatalogGlobal(store));
+    ProviderStore::install_global(cx, ProviderOperation::new());
+    let owner = cx.new(|cx| {
+        let subscription = database::store(cx).observe_select(
+            cx,
+            database::SelectDatabaseReady,
+            |owner: &mut ProviderDatabaseOwner, ready, cx| owner.sync(*ready, cx),
+        );
+        ProviderDatabaseOwner {
+            mutation_tasks: Vec::new(),
+            _database_subscription: subscription,
+        }
+    });
+    cx.set_global(ProviderDatabaseOwnerGlobal(owner.clone()));
+    let ready = database::is_ready(cx);
+    owner.update(cx, |owner, cx| owner.sync(ready, cx));
 }
 
-pub(crate) fn catalog(cx: &App) -> SharedStore<ProviderCatalogSnapshot> {
-    cx.global::<ProviderCatalogGlobal>().store()
+impl ProviderDatabaseOwner {
+    fn sync(&mut self, ready: bool, cx: &mut App) {
+        if ready {
+            request_refresh(cx);
+        } else {
+            self.mutation_tasks.clear();
+            catalog(cx).update(cx, |operation| operation.transition(Cancel));
+        }
+    }
+
+    fn retain(&mut self, task: Task<()>) {
+        self.mutation_tasks.retain(|task| !task.is_ready());
+        self.mutation_tasks.push(task);
+    }
+}
+
+fn load_task(cx: &mut App) -> Option<Task<()>> {
+    let executor = database::ready_executor(cx).ok()?;
+    Some(cx.spawn(async move |cx| {
+        let result = executor
+            .execute(|repository| {
+                let providers = repository
+                    .list_providers()?
+                    .into_iter()
+                    .map(|provider| {
+                        let models = repository.list_provider_models(&provider.id)?;
+                        Ok((provider, models))
+                    })
+                    .collect::<jaco_db::Result<Vec<_>>>()?;
+                Ok(ProviderData::new(providers))
+            })
+            .await
+            .map_err(ProviderProblem);
+        cx.update(|cx| {
+            catalog(cx).update(cx, |operation| {
+                if operation.is_running() {
+                    operation.transition(Complete(result));
+                }
+            });
+        });
+    }))
+}
+
+pub(crate) fn catalog(cx: &impl gpui::AppContext) -> ProviderStore {
+    ProviderStore::global(cx)
+}
+
+pub(crate) fn request_refresh(cx: &mut App) {
+    if !database::is_ready(cx) {
+        return;
+    }
+    if catalog(cx).read(cx, ProviderOperation::is_running) {
+        return;
+    }
+    let Some(task) = load_task(cx) else {
+        return;
+    };
+    catalog(cx).update(cx, |operation| match operation {
+        ProviderOperation::Idle(_) => operation.transition(Load(task)),
+        ProviderOperation::Ready(_) | ProviderOperation::Degraded(_) => {
+            operation.transition(Refresh(task))
+        }
+        ProviderOperation::Unavailable(_) => operation.transition(Retry(task)),
+        ProviderOperation::Loading(_)
+        | ProviderOperation::Refreshing(_)
+        | ProviderOperation::Retrying(_)
+        | ProviderOperation::RefreshingDegraded(_) => {}
+    });
+}
+
+fn apply(message: ProviderMessage, cx: &mut App) {
+    catalog(cx).update(cx, |operation| {
+        let ProviderOperation::Ready(ready) = operation else {
+            panic!("provider commit requires an exact Ready operation");
+        };
+        ready.transition(message);
+    });
+}
+
+fn ensure_ready(cx: &App) -> jaco_db::Result<()> {
+    catalog(cx).read(cx, |operation| {
+        matches!(operation, ProviderOperation::Ready(_))
+            .then_some(())
+            .ok_or_else(|| DbError::Invariant("provider resource is not ready".to_string()))
+    })
 }
 
 pub(crate) fn update_provider(
     cx: &mut App,
-    provider_id: &ProviderId,
+    provider_id: ProviderId,
     input: UpdateProvider,
-) -> jaco_db::Result<ProviderRecord> {
-    update_provider_impl(provider_id, input, cx)
+) -> Task<jaco_db::Result<ProviderRecord>> {
+    spawn_provider_mutation(
+        cx,
+        move |repo| repo.update_provider(&provider_id, input),
+        |record| ProviderMessage::UpsertProvider(record.clone()),
+    )
 }
 
 pub(crate) fn insert_provider_with_id(
     cx: &mut App,
     provider_id: ProviderId,
     input: NewProvider,
-) -> jaco_db::Result<ProviderRecord> {
-    insert_provider_with_id_impl(provider_id, input, cx)
+) -> Task<jaco_db::Result<ProviderRecord>> {
+    spawn_provider_mutation(
+        cx,
+        move |repo| repo.insert_provider_with_id(provider_id, input),
+        |record| ProviderMessage::UpsertProvider(record.clone()),
+    )
 }
 
 pub(crate) fn replace_fetched_provider_models(
     cx: &mut App,
-    provider_id: &ProviderId,
+    provider_id: ProviderId,
     models: Vec<NewProviderModel>,
-) -> jaco_db::Result<Vec<ProviderModelRecord>> {
-    replace_fetched_provider_models_impl(provider_id, models, cx)
+) -> Task<jaco_db::Result<Vec<ProviderModelRecord>>> {
+    let message_provider_id = provider_id.clone();
+    spawn_provider_mutation(
+        cx,
+        move |repo| repo.replace_fetched_provider_models(&provider_id, models),
+        move |models| ProviderMessage::ReplaceModels {
+            provider_id: message_provider_id.clone(),
+            models: models.clone(),
+        },
+    )
 }
 
 pub(crate) fn set_provider_model_enabled(
     cx: &mut App,
-    provider_id: &ProviderId,
-    model_id: &ProviderModelId,
+    provider_id: ProviderId,
+    model_id: ProviderModelId,
     enabled: bool,
-) -> jaco_db::Result<ProviderModelRecord> {
-    set_provider_model_enabled_impl(provider_id, model_id, enabled, cx)
+) -> Task<jaco_db::Result<ProviderModelRecord>> {
+    spawn_provider_mutation(
+        cx,
+        move |repo| repo.set_provider_model_enabled(&provider_id, &model_id, enabled),
+        |record| ProviderMessage::UpsertModel(Box::new(record.clone())),
+    )
+}
+
+fn spawn_provider_mutation<R>(
+    cx: &mut App,
+    command: impl FnOnce(&jaco_db::FreshRepository) -> jaco_db::Result<R> + Send + 'static,
+    message: impl FnOnce(&R) -> ProviderMessage + Send + 'static,
+) -> Task<jaco_db::Result<R>>
+where
+    R: Send + 'static,
+{
+    if let Err(error) = ensure_ready(cx) {
+        return Task::ready(Err(error));
+    }
+    let executor = match database::ready_executor(cx) {
+        Ok(executor) => executor,
+        Err(error) => return Task::ready(Err(error)),
+    };
+    let (sender, receiver) = oneshot::channel();
+    let driver = cx.spawn(async move |cx| {
+        let result = executor.execute(command).await;
+        if let Ok(value) = &result {
+            let message = message(value);
+            cx.update(|cx| {
+                if database::is_ready(cx) {
+                    apply(message, cx);
+                }
+            });
+        }
+        let _ = sender.send(result);
+    });
+    if cx.has_global::<ProviderDatabaseOwnerGlobal>() {
+        let owner = cx.global::<ProviderDatabaseOwnerGlobal>().0.clone();
+        owner.update(cx, |owner, _| owner.retain(driver));
+    } else {
+        crate::app::tasks::retain_application(driver, cx);
+    }
+    cx.spawn(async move |_| {
+        receiver.await.unwrap_or_else(|_| {
+            Err(DbError::Invariant(
+                "provider mutation driver ended without a result".to_string(),
+            ))
+        })
+    })
 }
 
 pub(crate) fn providers_with_models(
     cx: &App,
 ) -> jaco_db::Result<Vec<(ProviderRecord, Vec<ProviderModelRecord>)>> {
-    if cx.has_global::<ProviderCatalogGlobal>() {
-        return Ok(catalog(cx).read_cloned(cx, |snapshot| &snapshot.providers));
-    }
-    query_providers_with_models(cx)
-}
-
-fn query_providers_with_models(
-    cx: &App,
-) -> jaco_db::Result<Vec<(ProviderRecord, Vec<ProviderModelRecord>)>> {
-    let repository = database::repository(cx);
-    repository
-        .list_providers()?
-        .into_iter()
-        .map(|provider| {
-            let models = repository.list_provider_models(&provider.id)?;
-            Ok((provider, models))
-        })
-        .collect()
+    catalog(cx).read(cx, |operation| {
+        operation
+            .data()
+            .map(|data| data.providers.clone())
+            .ok_or_else(|| DbError::Invariant("provider resource is not ready".to_string()))
+    })
 }
 
 pub(crate) fn enabled_provider_models(cx: &App) -> jaco_db::Result<Vec<ProviderModelChoice>> {
-    if cx.has_global::<ProviderCatalogGlobal>() {
-        return Ok(catalog(cx).read_cloned(cx, |snapshot| &snapshot.enabled_models));
-    }
-    Ok(query_providers_with_models(cx)?
-        .into_iter()
-        .filter(|(provider, _)| provider.enabled)
-        .flat_map(|(provider, models)| {
-            models
-                .into_iter()
-                .filter(|model| model.enabled)
-                .map(move |model| ProviderModelChoice {
-                    provider_id: provider.id.clone(),
-                    provider_kind: provider.kind.clone(),
-                    provider_display_name: provider.display_name.clone(),
-                    model_id: model.model_id,
-                    model_display_name: model.display_name,
-                    capabilities: model.capabilities,
-                })
-        })
-        .collect())
+    catalog(cx).read(cx, |operation| {
+        operation
+            .data()
+            .map(|data| data.enabled_models.clone())
+            .ok_or_else(|| DbError::Invariant("provider resource is not ready".to_string()))
+    })
 }
 
-fn load_catalog_snapshot(cx: &App) -> jaco_db::Result<ProviderCatalogSnapshot> {
-    let providers = query_providers_with_models(cx)?;
-    let enabled_models = providers
-        .iter()
-        .filter(|(provider, _)| provider.enabled)
-        .flat_map(|(provider, models)| {
-            models
-                .iter()
-                .filter(|model| model.enabled)
-                .map(move |model| ProviderModelChoice {
-                    provider_id: provider.id.clone(),
-                    provider_kind: provider.kind.clone(),
-                    provider_display_name: provider.display_name.clone(),
-                    model_id: model.model_id.clone(),
-                    model_display_name: model.display_name.clone(),
-                    capabilities: model.capabilities.clone(),
-                })
-        })
-        .collect();
-    Ok(ProviderCatalogSnapshot {
-        providers,
-        enabled_models,
+pub(crate) fn ready_provider(
+    provider_id: &ProviderId,
+    cx: &impl gpui::AppContext,
+) -> jaco_db::Result<ProviderRecord> {
+    catalog(cx).read(cx, |operation| match operation {
+        ProviderOperation::Ready(ready) => ready
+            .data()
+            .providers
+            .iter()
+            .find(|(provider, _)| &provider.id == provider_id)
+            .map(|(provider, _)| provider.clone())
+            .ok_or_else(|| DbError::Invariant(format!("provider `{provider_id}` was not found"))),
+        _ => Err(DbError::Invariant(
+            "provider resource must be exactly Ready".to_string(),
+        )),
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ProviderModelChoice, ProviderModelKey};
+    use super::{
+        ProviderDatabaseOwnerGlobal, ProviderModelChoice, ProviderModelKey, ProviderOperation,
+        catalog, init,
+    };
+    use crate::database;
     use jaco_core::conservative_model_capabilities;
 
     #[test]
@@ -247,5 +518,26 @@ mod tests {
         let mut choice_without_display_name = choice.clone();
         choice_without_display_name.model_display_name = None;
         assert_eq!(choice_without_display_name.display_label(), "gpt-5");
+    }
+
+    #[gpui::test]
+    fn losing_database_readiness_cancels_the_provider_load(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            database::install_for_test(cx, dir.path());
+            init(cx);
+            assert!(matches!(
+                catalog(cx).read(cx, |operation| operation.phase()),
+                gpui_operation::refresh::Phase::Loading
+            ));
+
+            let owner = cx.global::<ProviderDatabaseOwnerGlobal>().0.clone();
+            owner.update(cx, |owner, cx| owner.sync(false, cx));
+
+            assert!(catalog(cx).read(cx, |operation| matches!(
+                operation,
+                ProviderOperation::Idle(_)
+            )));
+        });
     }
 }

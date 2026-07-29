@@ -6,11 +6,12 @@ mod row;
 use crate::{
     features::settings::{TOGGLE_SETTINGS_KEY, ToggleSettings},
     foundation::{self, assets::IconName},
-    state::{self, workspace::SidebarPinnedEntry},
 };
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Collapsible, Side,
+    ActiveTheme, Collapsible, Disableable, Side, Sizable,
+    button::Button,
+    h_flex,
     label::Label,
     sidebar::{Sidebar, SidebarGroup, SidebarItem},
     v_flex,
@@ -20,24 +21,37 @@ use super::actions::{
     OPEN_CONVERSATION_SEARCH_KEY, OPEN_NEW_CONVERSATION_KEY, OpenConversationSearch,
     OpenNewConversation,
 };
+use super::workspace::{
+    HomeRoute, HomeWorkspace, SidebarConversationNode, SidebarPinnedEntry, SidebarProjectNode,
+    SidebarSnapshot,
+};
 
-pub(crate) struct HomeSidebar;
+pub(crate) struct HomeSidebar {
+    workspace: Entity<HomeWorkspace>,
+}
 
 impl HomeSidebar {
-    pub(crate) fn new(_: &mut Context<Self>) -> Self {
-        Self
+    pub(crate) fn new(workspace: Entity<HomeWorkspace>, _: &mut Context<Self>) -> Self {
+        Self { workspace }
     }
 }
 
 impl Render for HomeSidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings_label = sidebar_settings_label(cx.global::<foundation::I18n>());
-        let workspace = state::workspace::workspace(cx);
+        let workspace = self.workspace.clone();
         let route = workspace.read(cx).route().clone();
         let snapshot = workspace.read(cx).snapshot().clone();
-        let last_error = workspace.read(cx).last_error().map(ToOwned::to_owned);
-
-        let sections = sidebar_sections(snapshot, route, workspace, last_error, cx);
+        let project_status = workspace.read(cx).project_status();
+        let conversation_status = workspace.read(cx).conversation_status(cx);
+        let sections = sidebar_sections(
+            snapshot,
+            route,
+            workspace,
+            project_status,
+            conversation_status,
+            cx,
+        );
 
         Sidebar::<SidebarSection>::new("jaco-main-sidebar")
             .side(Side::Left)
@@ -53,24 +67,24 @@ impl Render for HomeSidebar {
 #[derive(Clone)]
 enum SidebarSection {
     Actions(SidebarActions),
+    Status(ResourceStatusRow),
     Rows(SidebarGroup<SidebarRows>),
-    Message(SidebarMessage),
 }
 
 impl Collapsible for SidebarSection {
     fn collapsed(self, collapsed: bool) -> Self {
         match self {
             Self::Actions(menu) => Self::Actions(menu.collapsed(collapsed)),
+            Self::Status(status) => Self::Status(status),
             Self::Rows(group) => Self::Rows(group.collapsed(collapsed)),
-            Self::Message(message) => Self::Message(message.collapsed(collapsed)),
         }
     }
 
     fn is_collapsed(&self) -> bool {
         match self {
             Self::Actions(menu) => menu.is_collapsed(),
+            Self::Status(_) => false,
             Self::Rows(group) => group.is_collapsed(),
-            Self::Message(message) => message.is_collapsed(),
         }
     }
 }
@@ -84,9 +98,84 @@ impl SidebarItem for SidebarSection {
     ) -> impl IntoElement {
         match self {
             Self::Actions(menu) => menu.render(id, window, cx).into_any_element(),
+            Self::Status(status) => status.render(id, window, cx).into_any_element(),
             Self::Rows(group) => group.render(id, window, cx).into_any_element(),
-            Self::Message(message) => message.render(id, window, cx).into_any_element(),
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ResourceKind {
+    Projects,
+    Conversations,
+}
+
+#[derive(Clone)]
+struct ResourceStatusRow {
+    kind: ResourceKind,
+    status: super::workspace::WorkspaceResourceStatus,
+    workspace: Entity<HomeWorkspace>,
+}
+
+impl Collapsible for ResourceStatusRow {
+    fn collapsed(self, _collapsed: bool) -> Self {
+        self
+    }
+
+    fn is_collapsed(&self) -> bool {
+        false
+    }
+}
+
+impl SidebarItem for ResourceStatusRow {
+    fn render(
+        self,
+        id: impl Into<ElementId>,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> impl IntoElement {
+        let workspace = self.workspace.clone();
+        let running = self.status.running;
+        let subject = cx.global::<foundation::I18n>().t(match self.kind {
+            ResourceKind::Projects => "sidebar-resource-projects",
+            ResourceKind::Conversations => "sidebar-resource-conversations",
+        });
+        let detail = self.status.problem.unwrap_or_else(|| {
+            cx.global::<foundation::I18n>().t(if self.status.has_data {
+                "resource-status-stale"
+            } else {
+                "resource-status-loading"
+            })
+        });
+        h_flex()
+            .id(id)
+            .w_full()
+            .min_w_0()
+            .gap_2()
+            .rounded(cx.theme().radius)
+            .bg(cx.theme().warning.opacity(0.08))
+            .p_2()
+            .child(
+                Label::new(format!("{subject}: {detail}"))
+                    .text_xs()
+                    .text_color(cx.theme().warning)
+                    .flex_1(),
+            )
+            .child(
+                Button::new(match self.kind {
+                    ResourceKind::Projects => "sidebar-refresh-projects",
+                    ResourceKind::Conversations => "sidebar-refresh-conversations",
+                })
+                .label(cx.global::<foundation::I18n>().t("resource-status-refresh"))
+                .xsmall()
+                .disabled(running)
+                .on_click(move |_, _window, cx| {
+                    workspace.update(cx, |workspace, cx| match self.kind {
+                        ResourceKind::Projects => workspace.refresh_projects(cx),
+                        ResourceKind::Conversations => workspace.refresh_conversations(cx),
+                    });
+                }),
+            )
     }
 }
 
@@ -181,23 +270,23 @@ impl SidebarItem for SidebarRows {
 #[derive(Clone)]
 enum SidebarRow {
     Project {
-        node: state::workspace::SidebarProjectNode,
-        route: state::HomeRoute,
-        workspace: Entity<state::JacoWorkspaceStore>,
+        node: SidebarProjectNode,
+        route: HomeRoute,
+        workspace: Entity<HomeWorkspace>,
     },
     Conversation {
-        conversation: state::workspace::SidebarConversationNode,
+        conversation: SidebarConversationNode,
         active: bool,
-        workspace: Entity<state::JacoWorkspaceStore>,
+        workspace: Entity<HomeWorkspace>,
     },
     Empty(SharedString),
 }
 
 impl SidebarRow {
     fn project(
-        node: state::workspace::SidebarProjectNode,
-        route: state::HomeRoute,
-        workspace: Entity<state::JacoWorkspaceStore>,
+        node: SidebarProjectNode,
+        route: HomeRoute,
+        workspace: Entity<HomeWorkspace>,
     ) -> Self {
         Self::Project {
             node,
@@ -207,9 +296,9 @@ impl SidebarRow {
     }
 
     fn conversation(
-        conversation: state::workspace::SidebarConversationNode,
+        conversation: SidebarConversationNode,
         active: bool,
-        workspace: Entity<state::JacoWorkspaceStore>,
+        workspace: Entity<HomeWorkspace>,
     ) -> Self {
         Self::Conversation {
             conversation,
@@ -235,62 +324,33 @@ impl SidebarRow {
     }
 }
 
-#[derive(Clone)]
-struct SidebarMessage {
-    message: SharedString,
-    collapsed: bool,
-}
-
-impl SidebarMessage {
-    fn new(message: impl Into<SharedString>) -> Self {
-        Self {
-            message: message.into(),
-            collapsed: false,
-        }
-    }
-}
-
-impl Collapsible for SidebarMessage {
-    fn collapsed(mut self, collapsed: bool) -> Self {
-        self.collapsed = collapsed;
-        self
-    }
-
-    fn is_collapsed(&self) -> bool {
-        self.collapsed
-    }
-}
-
-impl SidebarItem for SidebarMessage {
-    fn render(
-        self,
-        id: impl Into<ElementId>,
-        _window: &mut Window,
-        cx: &mut App,
-    ) -> impl IntoElement {
-        div().id(id).w_full().when(!self.collapsed, |this| {
-            this.child(
-                Label::new(self.message)
-                    .text_xs()
-                    .text_color(cx.theme().danger)
-                    .px_2()
-                    .py_1(),
-            )
-        })
-    }
-}
-
 fn sidebar_sections(
-    snapshot: state::workspace::SidebarSnapshot,
-    route: state::HomeRoute,
-    workspace: Entity<state::JacoWorkspaceStore>,
-    last_error: Option<String>,
+    snapshot: SidebarSnapshot,
+    route: HomeRoute,
+    workspace: Entity<HomeWorkspace>,
+    project_status: super::workspace::WorkspaceResourceStatus,
+    conversation_status: super::workspace::WorkspaceResourceStatus,
     cx: &mut App,
 ) -> Vec<SidebarSection> {
-    let mut sections = vec![SidebarSection::Actions(top_actions(cx))];
-
-    if let Some(error) = last_error {
-        sections.push(SidebarSection::Message(SidebarMessage::new(error)));
+    let can_create_conversation = project_status.is_ready() && conversation_status.is_ready();
+    let projects_are_ready = project_status.is_ready();
+    let mut sections = vec![SidebarSection::Actions(top_actions(
+        can_create_conversation,
+        cx,
+    ))];
+    if !project_status.is_ready() {
+        sections.push(SidebarSection::Status(ResourceStatusRow {
+            kind: ResourceKind::Projects,
+            status: project_status,
+            workspace: workspace.clone(),
+        }));
+    }
+    if !conversation_status.is_ready() {
+        sections.push(SidebarSection::Status(ResourceStatusRow {
+            kind: ResourceKind::Conversations,
+            status: conversation_status,
+            workspace: workspace.clone(),
+        }));
     }
 
     sections.extend(render_pinned_section(
@@ -303,6 +363,7 @@ fn sidebar_sections(
         snapshot.projects,
         route.clone(),
         workspace.clone(),
+        projects_are_ready,
         cx,
     ));
     sections.extend(render_no_project_section(
@@ -315,7 +376,7 @@ fn sidebar_sections(
     sections
 }
 
-fn top_actions(cx: &mut App) -> SidebarActions {
+fn top_actions(can_create_conversation: bool, cx: &mut App) -> SidebarActions {
     let i18n = cx.global::<foundation::I18n>();
 
     SidebarActions::new(vec![
@@ -327,7 +388,8 @@ fn top_actions(cx: &mut App) -> SidebarActions {
             |_, window, cx| {
                 window.dispatch_action(OpenNewConversation.boxed_clone(), cx);
             },
-        ),
+        )
+        .disabled(!can_create_conversation),
         row::ShortcutSidebarAction::new(
             "sidebar-action-search",
             i18n.t("sidebar-search"),
@@ -354,8 +416,8 @@ fn settings_action(label: impl Into<SharedString>) -> row::ShortcutSidebarAction
 
 fn render_pinned_section(
     pinned: Vec<SidebarPinnedEntry>,
-    route: state::HomeRoute,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    route: HomeRoute,
+    workspace: Entity<HomeWorkspace>,
     cx: &mut App,
 ) -> Vec<SidebarSection> {
     if pinned.is_empty() {
@@ -368,7 +430,7 @@ fn render_pinned_section(
             SidebarRow::conversation(conversation, active, workspace.clone())
         }
         SidebarPinnedEntry::Project(project) => SidebarRow::project(
-            state::workspace::SidebarProjectNode {
+            SidebarProjectNode {
                 project,
                 is_expanded: false,
                 conversations: Vec::new(),
@@ -385,14 +447,18 @@ fn render_pinned_section(
 }
 
 fn render_projects_section(
-    projects: Vec<state::workspace::SidebarProjectNode>,
-    route: state::HomeRoute,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    projects: Vec<SidebarProjectNode>,
+    route: HomeRoute,
+    workspace: Entity<HomeWorkspace>,
+    ready: bool,
     cx: &mut App,
 ) -> Vec<SidebarSection> {
     let mut rows = Vec::new();
 
     if projects.is_empty() {
+        if !ready {
+            return Vec::new();
+        }
         rows.push(SidebarRow::Empty(
             cx.global::<foundation::I18n>()
                 .t("sidebar-empty-projects")
@@ -421,9 +487,9 @@ fn render_projects_section(
 }
 
 fn render_no_project_section(
-    conversations: Vec<state::workspace::SidebarConversationNode>,
-    route: state::HomeRoute,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    conversations: Vec<SidebarConversationNode>,
+    route: HomeRoute,
+    workspace: Entity<HomeWorkspace>,
     cx: &mut App,
 ) -> Vec<SidebarSection> {
     if conversations.is_empty() {
@@ -444,9 +510,9 @@ fn render_no_project_section(
 }
 
 fn project_tree_row(
-    node: state::workspace::SidebarProjectNode,
-    route: state::HomeRoute,
-    workspace: Entity<state::JacoWorkspaceStore>,
+    node: SidebarProjectNode,
+    route: HomeRoute,
+    workspace: Entity<HomeWorkspace>,
     cx: &mut App,
 ) -> AnyElement {
     let project_id = node.project.id.clone();
