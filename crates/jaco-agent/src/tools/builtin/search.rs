@@ -681,7 +681,10 @@ mod tests {
         let negated_output: GrepOutput =
             serde_json::from_value(negated.structured_output.unwrap().value).unwrap();
         assert_eq!(negated_output.matches.len(), 1);
-        assert!(negated_output.matches[0].path.ends_with("nested/keep.log"));
+        assert!(
+            Path::new(&negated_output.matches[0].path)
+                .ends_with(Path::new("nested").join("keep.log"))
+        );
     }
 
     #[tokio::test]
