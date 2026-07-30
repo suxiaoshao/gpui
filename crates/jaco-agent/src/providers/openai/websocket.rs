@@ -12,7 +12,7 @@ use rig::{
     providers::openai::{
         self,
         responses_api::{
-            CompletionResponse as OpenAiCompletionResponse, Output, ResponsesUsage,
+            CompletionResponse as OpenAiCompletionResponse, Output, ResponseStatus, ResponsesUsage,
             streaming::{
                 ItemChunkKind, ResponseChunkKind,
                 StreamingCompletionResponse as OpenAiStreamingResponse,
@@ -473,54 +473,16 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
                             Err(error)?
                         }
                     };
-                    match event {
-                    ResponsesWebSocketEvent::Item(item) => {
-                        for choice in choices_from_item(item) {
-                            yield choice;
+                    let completed_response = match event {
+                        ResponsesWebSocketEvent::Item(item) => {
+                            for choice in choices_from_item(item) {
+                                yield choice;
+                            }
+                            None
                         }
-                    }
-                    ResponsesWebSocketEvent::Response(chunk) => {
-                        match chunk.kind {
+                        ResponsesWebSocketEvent::Response(chunk) => match chunk.kind {
                             ResponseChunkKind::ResponseCompleted => {
-                                let response = chunk.response;
-                                let usage = response.usage.clone().unwrap_or_else(empty_usage);
-                                let mut reasoning_metadata =
-                                    response.reasoning_metadata.clone().unwrap_or_default();
-                                reasoning_metadata.insert(
-                                    "__jaco_response_id".to_string(),
-                                    serde_json::Value::String(response.id.clone()),
-                                );
-                                let final_response = OpenAiStreamingResponse {
-                                    usage,
-                                    reasoning_metadata: Some(reasoning_metadata),
-                                    reasoning_context: response.reasoning_context.clone(),
-                                };
-                                if let Err(error) = binding
-                                    .attempts
-                                    .complete_streaming(&final_response)
-                                    .await
-                                {
-                                    session.clear_previous_response_id();
-                                    binding
-                                        .attempts
-                                        .fail(
-                                            &provider_step_id,
-                                            local_commit_error(
-                                                &error,
-                                                serde_json::to_value(&response).ok(),
-                                            ),
-                                        )
-                                        .await;
-                                    Err(error)?;
-                                }
-                                this.mark_completed(
-                                    provider_step_id,
-                                    response.id,
-                                    prepared.included_documents,
-                                )
-                                .await;
-                                yield RawStreamingChoice::FinalResponse(final_response);
-                                break 'attempt;
+                                Some(chunk.response)
                             }
                             ResponseChunkKind::ResponseFailed
                             | ResponseChunkKind::ResponseIncomplete => {
@@ -535,46 +497,121 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
                                         ),
                                     )
                                     .await;
-                                Err(error)?;
+                                Err::<Option<OpenAiCompletionResponse>, CompletionError>(error)?
                             }
                             ResponseChunkKind::ResponseCreated
-                            | ResponseChunkKind::ResponseInProgress => {}
+                            | ResponseChunkKind::ResponseInProgress => None,
+                        },
+                        ResponsesWebSocketEvent::Error(error)
+                            if prepared.context
+                                == ProviderRequestContextSnapshot::PreviousResponse
+                                && fallback_available
+                                && websocket_previous_response_rejected(&error) =>
+                        {
+                            let rejection = continuation_rejection_error(
+                                error.to_string(),
+                                serde_json::to_value(&error).ok(),
+                            );
+                            binding
+                                .attempts
+                                .fail(&provider_step_id, rejection.clone())
+                                .await;
+                            this.invalidate_source_continuation(rejection).await;
+                            session.clear_previous_response_id();
+                            this.mark_fallback_used().await;
+                            fallback_available = false;
+                            fallback = true;
+                            continue 'attempt;
                         }
-                    }
-                    ResponsesWebSocketEvent::Error(error)
-                        if prepared.context == ProviderRequestContextSnapshot::PreviousResponse
-                            && fallback_available
-                            && websocket_previous_response_rejected(&error) =>
-                    {
-                        let rejection = continuation_rejection_error(
-                            error.to_string(),
-                            serde_json::to_value(&error).ok(),
+                        ResponsesWebSocketEvent::Error(error) => {
+                            binding
+                                .attempts
+                                .fail(
+                                    &provider_step_id,
+                                    provider_attempt_error(
+                                        error.to_string(),
+                                        serde_json::to_value(&error).ok(),
+                                    ),
+                                )
+                                .await;
+                            Err::<Option<OpenAiCompletionResponse>, CompletionError>(
+                                CompletionError::ProviderError(error.to_string()),
+                            )?
+                        }
+                        ResponsesWebSocketEvent::Done(done) => {
+                            let raw = done.response;
+                            let response = match completion_response_from_done(&raw) {
+                                Ok(response) => response,
+                                Err(error) => {
+                                    session.clear_previous_response_id();
+                                    binding
+                                        .attempts
+                                        .fail(
+                                            &provider_step_id,
+                                            provider_attempt_error(
+                                                error.to_string(),
+                                                Some(raw),
+                                            ),
+                                        )
+                                        .await;
+                                    Err::<OpenAiCompletionResponse, CompletionError>(error)?
+                                }
+                            };
+                            if response.status != ResponseStatus::Completed {
+                                let error = provider_terminal_error(&response);
+                                session.clear_previous_response_id();
+                                binding
+                                    .attempts
+                                    .fail(
+                                        &provider_step_id,
+                                        provider_attempt_error(
+                                            error.to_string(),
+                                            serde_json::to_value(&response).ok(),
+                                        ),
+                                    )
+                                    .await;
+                                Err(error)?;
+                            }
+                            Some(response)
+                        }
+                    };
+                    if let Some(response) = completed_response {
+                        let usage = response.usage.clone().unwrap_or_else(empty_usage);
+                        let mut reasoning_metadata =
+                            response.reasoning_metadata.clone().unwrap_or_default();
+                        reasoning_metadata.insert(
+                            "__jaco_response_id".to_string(),
+                            serde_json::Value::String(response.id.clone()),
                         );
-                        binding
-                            .attempts
-                            .fail(&provider_step_id, rejection.clone())
-                            .await;
-                        this.invalidate_source_continuation(rejection).await;
-                        session.clear_previous_response_id();
-                        this.mark_fallback_used().await;
-                        fallback_available = false;
-                        fallback = true;
-                        continue 'attempt;
-                    }
-                    ResponsesWebSocketEvent::Error(error) => {
-                        binding
-                            .attempts
-                            .fail(
-                                &provider_step_id,
-                                provider_attempt_error(
-                                    error.to_string(),
-                                    serde_json::to_value(&error).ok(),
-                                ),
-                            )
-                            .await;
-                        Err(CompletionError::ProviderError(error.to_string()))?;
-                    }
-                    ResponsesWebSocketEvent::Done(_) => {}
+                        let final_response = OpenAiStreamingResponse {
+                            usage,
+                            reasoning_metadata: Some(reasoning_metadata),
+                            reasoning_context: response.reasoning_context.clone(),
+                        };
+                        if let Err(error) =
+                            binding.attempts.complete_streaming(&final_response).await
+                        {
+                            session.clear_previous_response_id();
+                            binding
+                                .attempts
+                                .fail(
+                                    &provider_step_id,
+                                    local_commit_error(
+                                        &error,
+                                        serde_json::to_value(&response).ok(),
+                                    ),
+                                )
+                                .await;
+                            Err(error)?;
+                        }
+                        this.mark_completed(
+                            provider_step_id,
+                            response.id,
+                            prepared.included_documents,
+                        )
+                        .await;
+                        yield RawStreamingChoice::FinalResponse(final_response);
+                        break 'attempt;
                     }
                 }
             }
@@ -716,6 +753,7 @@ fn choices_from_item(
 ) -> Vec<RawStreamingChoice<OpenAiStreamingResponse>> {
     match item.data {
         ItemChunkKind::OutputTextDelta(delta) => vec![RawStreamingChoice::Message(delta.delta)],
+        ItemChunkKind::RefusalDelta(delta) => vec![RawStreamingChoice::Message(delta.delta)],
         ItemChunkKind::ReasoningSummaryTextDelta(delta) => {
             vec![RawStreamingChoice::ReasoningDelta {
                 id: item.item_id,
@@ -746,6 +784,21 @@ fn choices_from_item(
         },
         _ => Vec::new(),
     }
+}
+
+fn completion_response_from_done(
+    response: &serde_json::Value,
+) -> std::result::Result<OpenAiCompletionResponse, CompletionError> {
+    serde_json::from_value(response.clone()).map_err(|error| {
+        let response_id = response
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(|id| format!(" (response_id={id})"))
+            .unwrap_or_default();
+        CompletionError::ProviderError(format!(
+            "OpenAI websocket turn ended with response.done before a complete response body was available{response_id}: {error}"
+        ))
+    })
 }
 
 fn empty_usage() -> ResponsesUsage {
@@ -858,7 +911,9 @@ mod tests {
     use super::*;
     use rig::{
         completion::{Document, Message, ToolDefinition},
-        providers::openai::responses_api::ReasoningEffort,
+        providers::openai::responses_api::{
+            ReasoningEffort, streaming::ItemChunk, websocket::ResponsesWebSocketDoneEvent,
+        },
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -923,6 +978,77 @@ mod tests {
 
         assert!(websocket_previous_response_rejected(&by_code));
         assert!(websocket_previous_response_rejected(&by_param));
+    }
+
+    #[test]
+    fn complete_done_payload_decodes_terminal_response() {
+        let done = serde_json::from_value::<ResponsesWebSocketDoneEvent>(json!({
+            "type": "response.done",
+            "response": {
+                "id": "resp_done",
+                "object": "response",
+                "created_at": 0,
+                "status": "completed",
+                "error": null,
+                "incomplete_details": null,
+                "instructions": null,
+                "max_output_tokens": null,
+                "model": "gpt-5.6",
+                "usage": {
+                    "input_tokens": 3,
+                    "output_tokens": 5,
+                    "total_tokens": 8
+                },
+                "output": [],
+                "tools": []
+            }
+        }))
+        .unwrap();
+
+        let response = completion_response_from_done(&done.response).unwrap();
+
+        assert_eq!(response.id, "resp_done");
+        assert_eq!(response.status, ResponseStatus::Completed);
+        assert_eq!(response.usage.unwrap().total_tokens, 8);
+    }
+
+    #[test]
+    fn incomplete_done_payload_returns_terminal_error() {
+        let done = serde_json::from_value::<ResponsesWebSocketDoneEvent>(json!({
+            "type": "response.done",
+            "response": {
+                "id": "resp_incomplete_done",
+                "status": "completed"
+            }
+        }))
+        .unwrap();
+
+        let error = completion_response_from_done(&done.response).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("response.done"));
+        assert!(message.contains("complete response body"));
+        assert!(message.contains("resp_incomplete_done"));
+    }
+
+    #[test]
+    fn refusal_delta_is_streamed_as_message_text() {
+        let item = serde_json::from_value::<ItemChunk>(json!({
+            "type": "response.refusal.delta",
+            "item_id": "msg_refusal",
+            "output_index": 0,
+            "content_index": 0,
+            "sequence_number": 1,
+            "delta": "I can’t help with that request."
+        }))
+        .unwrap();
+
+        let choices = choices_from_item(item);
+
+        assert!(matches!(
+            choices.as_slice(),
+            [RawStreamingChoice::Message(text)] if text == "I can’t help with that request."
+        ));
     }
 
     #[test]
