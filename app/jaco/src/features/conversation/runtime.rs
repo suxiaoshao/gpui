@@ -6,7 +6,7 @@ use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakE
 use gpui_operation::{Cancel, Complete, Load, Retry, Transition, refresh};
 use jaco_agent::{
     AgentCancellationToken, AgentPersistence, AgentRunHandle, AgentRunRequest, AgentRuntime,
-    AgentRuntimeObserver, ToolApprovalDecision,
+    AgentRuntimeObserver, OpenAiResponsesSessionPool, ToolApprovalDecision,
 };
 use jaco_core::{AgentRunId, ConversationId, ToolInvocationId};
 use jaco_db::ProviderRecord;
@@ -26,6 +26,7 @@ pub(crate) struct ConversationRuntimeStore {
     last_errors: HashMap<ConversationId, String>,
     next_run_key: u64,
     shutting_down: bool,
+    openai_sessions: OpenAiResponsesSessionPool,
     recovery: refresh::Operation<(), ConversationRuntimeProblem, Task<()>>,
 }
 
@@ -79,6 +80,7 @@ impl ConversationRuntimeStore {
             last_errors: HashMap::new(),
             next_run_key: 0,
             shutting_down: false,
+            openai_sessions: OpenAiResponsesSessionPool::new(),
             recovery: refresh::Operation::new(),
         }
     }
@@ -105,6 +107,15 @@ impl ConversationRuntimeStore {
 
     pub(crate) fn is_running(&self, conversation_id: &ConversationId) -> bool {
         self.run_status(conversation_id) != ConversationRunStatus::Idle
+    }
+
+    pub(crate) fn close_conversation_sessions(
+        &mut self,
+        conversation_id: ConversationId,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        let sessions = self.openai_sessions.clone();
+        cx.spawn(async move |_, _| sessions.close_conversation(&conversation_id).await)
     }
 
     pub(crate) fn active_agent_run_id(
@@ -145,10 +156,24 @@ impl ConversationRuntimeStore {
         let run_key = active.key;
         let agent_run_id = active.agent_run_id.clone();
         let persistence = database::ready_agent_persistence(cx).map_err(|error| error.to_string());
+        let openai_sessions = self.openai_sessions.clone();
         let cleanup_conversation_id = conversation_id.clone();
+        let running_task =
+            match std::mem::replace(&mut active.task, ActiveRunTask::Stopping(Task::ready(()))) {
+                ActiveRunTask::Running(task) => task,
+                ActiveRunTask::Stopping(task) => {
+                    active.task = ActiveRunTask::Stopping(task);
+                    return false;
+                }
+            };
         let cleanup = cx.spawn(async move |store, cx| {
+            running_task.await;
+            openai_sessions
+                .close_conversation(&cleanup_conversation_id)
+                .await;
             let result = match persistence {
                 Ok(persistence) => AgentRuntime::new(persistence)
+                    .with_openai_session_pool(openai_sessions.clone())
                     .cancel_non_terminal_runs_for_conversation(&cleanup_conversation_id, None)
                     .await
                     .map(|_| ())
@@ -218,6 +243,7 @@ impl ConversationRuntimeStore {
         let run_conversation_id = conversation_id.clone();
         let cancellation_token = request.cancellation_token.clone();
         let runtime_approval_broker = approval_broker.clone();
+        let openai_sessions = self.openai_sessions.clone();
         let run_task = cx.spawn(async move |store, cx| {
             let result = run_agent_with_saved_provider(
                 persistence,
@@ -225,6 +251,7 @@ impl ConversationRuntimeStore {
                 request,
                 tx.clone(),
                 runtime_approval_broker,
+                openai_sessions,
                 cx,
             )
             .await;
@@ -282,6 +309,7 @@ impl ConversationRuntimeStore {
         }
         cx.notify();
 
+        let openai_sessions = self.openai_sessions.clone();
         cx.spawn(async move |_, _| {
             for (task, event_task) in tasks {
                 match task {
@@ -289,6 +317,7 @@ impl ConversationRuntimeStore {
                 }
                 event_task.await;
             }
+            openai_sessions.close_all().await;
         })
     }
 
@@ -475,6 +504,12 @@ impl ConversationRuntimeStore {
         self.active_runs.remove(&conversation_id);
         super::registry::release_active(&conversation_id, cx);
         if let Err(err) = result {
+            let sessions = self.openai_sessions.clone();
+            let failed_conversation_id = conversation_id.clone();
+            cx.spawn(async move |_, _| {
+                sessions.close_conversation(&failed_conversation_id).await;
+            })
+            .detach();
             self.last_errors.insert(conversation_id.clone(), err);
         }
         cx.emit(ConversationRuntimeEvent::RunFinished { conversation_id });
@@ -585,9 +620,11 @@ pub(crate) fn retry_recovery_if_needed(store: &Entity<ConversationRuntimeStore>,
 
 fn request_recovery(store: Entity<ConversationRuntimeStore>, cx: &mut App) -> JacoResult<()> {
     let persistence = database::ready_agent_persistence(cx)?;
+    let openai_sessions = store.read(cx).openai_sessions.clone();
     let completion_store = store.downgrade();
     let task = cx.spawn(async move |cx| {
         let result = AgentRuntime::new(persistence)
+            .with_openai_session_pool(openai_sessions)
             .recover_interrupted_runs()
             .await
             .map_err(|error| ConversationRuntimeProblem(error.to_string()));
@@ -635,6 +672,7 @@ async fn run_agent_with_saved_provider(
     request: AgentRunRequest,
     tx: Sender<RuntimePublication>,
     approval_broker: Arc<ConversationApprovalBroker>,
+    openai_sessions: OpenAiResponsesSessionPool,
     cx: &mut AsyncApp,
 ) -> Result<AgentRunHandle, String> {
     let observer = AgentRuntimeObserver::new(move |event| {
@@ -642,7 +680,9 @@ async fn run_agent_with_saved_provider(
             event!(Level::ERROR, error = ?err, "send conversation runtime event failed");
         }
     });
-    let runtime = AgentRuntime::new(persistence).with_approval_broker(approval_broker);
+    let runtime = AgentRuntime::new(persistence)
+        .with_openai_session_pool(openai_sessions)
+        .with_approval_broker(approval_broker);
     let mut request = match crate::state::mcp::prepare_run_request(request, cx).await {
         Ok(prepared) => prepared.request,
         Err(err) => {
@@ -657,7 +697,7 @@ async fn run_agent_with_saved_provider(
         }
     };
     let agent_run = runtime
-        .begin_run(&mut request, Some(&observer))
+        .begin_run(&mut request, Some(observer))
         .await
         .map_err(|err| err.to_string())?;
     let secrets = match ProviderSecretStore::read_values(cx, &provider.secret_refs).await {
@@ -665,7 +705,7 @@ async fn run_agent_with_saved_provider(
         Err(err) => {
             return gpui_tokio::Tokio::spawn(cx, async move {
                 runtime
-                    .record_setup_failed_started_run(&agent_run, err, Some(&observer))
+                    .record_setup_failed_started_run(agent_run, err)
                     .await
             })
             .await
@@ -675,13 +715,7 @@ async fn run_agent_with_saved_provider(
     };
     gpui_tokio::Tokio::spawn(cx, async move {
         runtime
-            .run_started_with_saved_provider_observed(
-                agent_run,
-                request,
-                provider,
-                secrets,
-                Some(observer),
-            )
+            .run_started_with_saved_provider(agent_run, request, provider, secrets)
             .await
     })
     .await
@@ -823,8 +857,7 @@ mod tests {
         let (conversation_id, agent_run_id) = cx.update(|cx| {
             let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let agent_run_id = insert_agent_run(&repository, &conversation_id);
             (conversation_id, agent_run_id)
         });
 
@@ -848,8 +881,7 @@ mod tests {
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let agent_run_id = insert_agent_run(&repository, &conversation_id);
             let approval_id = insert_approval_for_run(&repository, &agent_run_id);
             (conversation_id, agent_run_id, approval_id)
         });
@@ -898,8 +930,7 @@ mod tests {
         let (conversation_id, agent_run_id) = cx.update(|cx| {
             let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let agent_run_id = insert_agent_run(&repository, &conversation_id);
             (conversation_id, agent_run_id)
         });
 
@@ -1080,8 +1111,7 @@ mod tests {
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let agent_run_id = insert_agent_run(&repository, &conversation_id);
             let approval_id = insert_approval_for_run(&repository, &agent_run_id);
             (conversation_id, agent_run_id, approval_id)
         });
@@ -1123,8 +1153,7 @@ mod tests {
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let agent_run_id = insert_agent_run(&repository, &conversation_id);
             let approval_id = insert_approval_for_run(&repository, &agent_run_id);
             (conversation_id, agent_run_id, approval_id)
         });
@@ -1172,8 +1201,7 @@ mod tests {
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let agent_run_id = insert_agent_run(&repository, &conversation_id);
             let approval_id = insert_approval_for_run(&repository, &agent_run_id);
             (conversation_id, agent_run_id, approval_id)
         });
@@ -1215,8 +1243,7 @@ mod tests {
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let agent_run_id = insert_agent_run(&repository, &conversation_id);
             let approval_id = insert_approval_for_run(&repository, &agent_run_id);
             (conversation_id, agent_run_id, approval_id)
         });
@@ -1353,7 +1380,6 @@ mod tests {
     fn insert_agent_run(
         repository: &FreshRepository,
         conversation_id: &ConversationId,
-        status: AgentRunStatus,
     ) -> AgentRunId {
         let trigger_entry_id = repository
             .conversation_entries(conversation_id)
@@ -1367,7 +1393,6 @@ mod tests {
                 conversation_id: conversation_id.to_string(),
                 trigger_entry_id: trigger_entry_id.clone(),
                 trigger_kind: AgentRunTriggerKind::User,
-                status,
                 input: AgentRunInput {
                     prompt_snapshot: None,
                     provider_id: "provider".to_string(),

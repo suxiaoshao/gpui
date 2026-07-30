@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    LocalTool, McpConnector, ProviderSecretValues, RegisteredToolDefinition, ToolApprovalBroker,
-    ToolApprovalDecision, ToolApprovalRequest, ToolDefinition, ToolExecutor, ToolRunPolicy,
+    LocalTool, McpConnector, ProviderSecretValues, ToolApprovalBroker, ToolApprovalDecision,
+    ToolApprovalRequest, ToolDefinition, ToolExecutor, ToolRunPolicy,
 };
 use async_trait::async_trait;
 use jaco_db::{
@@ -11,9 +11,8 @@ use jaco_db::{
     ProviderModelRecord, ProviderRecord, ProviderStepRecord, ToolInvocationRecord,
     UpdateProviderStepStatus, UpdateToolInvocationStatus,
 };
-use rig_core::{
+use rig::{
     OneOrMany,
-    agent::{PromptHook, ToolCallHookAction},
     completion::{
         AssistantContent, CompletionError, CompletionRequest, CompletionResponse,
         Message as RigMessage,
@@ -25,8 +24,9 @@ use rig_core::{
 use rmcp::{
     RoleServer, ServerHandler, ServiceExt,
     model::{
-        CallToolRequestParams, CallToolResult, Content, ErrorData, Implementation, ListToolsResult,
-        PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
+        CallToolRequestParams, CallToolResult, ContentBlock, ErrorData, Implementation,
+        ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo,
+        Tool,
     },
     service::RequestContext,
 };
@@ -213,6 +213,101 @@ async fn streaming_text_delta_updates_single_assistant_item() {
             ..
         } if text == "world"
     )));
+}
+
+#[tokio::test]
+async fn streaming_unknown_provider_output_is_persisted_in_provider_step_audit() {
+    let fixture = Fixture::new("streaming-unknown-provider-output");
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
+    let provider_output = json!({
+        "type": "web_search_call",
+        "id": "search_1",
+        "status": "completed"
+    });
+    let model = MockCompletionModel::from_stream_turns([[
+        MockStreamEvent::unknown(provider_output.clone()),
+        MockStreamEvent::text("searched"),
+        MockStreamEvent::final_response_with_total_tokens(7),
+    ]]);
+
+    let handle = runtime
+        .run_with_model(fixture.streaming_request(), model)
+        .await
+        .unwrap();
+
+    let provider_steps = fixture
+        .repo
+        .provider_steps_for_run(&handle.agent_run.id)
+        .unwrap();
+    assert_eq!(provider_steps.len(), 1);
+    let response = provider_steps[0]
+        .response_snapshot
+        .as_ref()
+        .expect("completed provider step response");
+    assert_eq!(
+        response.provider_outputs,
+        vec![ProviderRawPayload {
+            provider_kind: "openai".to_string(),
+            value: provider_output,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn local_streaming_persistence_failure_returns_failed_handle_and_closes_session() {
+    let fixture = Fixture::new("streaming-persistence-failure-session");
+    let pool = crate::providers::openai::OpenAiResponsesSessionPool::new();
+    pool.seed_conversation_for_test(&fixture.conversation.id)
+        .await;
+    let persistence =
+        crate::persistence::direct_agent_persistence_failing_append_conversation_entry(
+            fixture.repo.clone(),
+        );
+    let runtime = AgentRuntime::new(persistence).with_openai_session_pool(pool.clone());
+    let provider_output =
+        json!({"type": "hosted_tool_call", "id": "hosted_local_persistence_failure"});
+    let model = MockCompletionModel::from_stream_turns([[
+        MockStreamEvent::unknown(provider_output.clone()),
+        MockStreamEvent::text("provider output"),
+        MockStreamEvent::final_response_with_total_tokens(0),
+    ]]);
+
+    let handle = runtime
+        .run_with_model(fixture.streaming_request(), model)
+        .await
+        .expect("local streaming persistence failure must return a persisted failed handle");
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Failed);
+    assert_eq!(
+        handle
+            .agent_run
+            .error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("runtime_error")
+    );
+    assert!(
+        !pool
+            .contains_conversation_for_test(&fixture.conversation.id)
+            .await,
+        "a failed run handle must not leave a reusable OpenAI session"
+    );
+    let provider_steps = fixture
+        .repo
+        .provider_steps_for_run(&handle.agent_run.id)
+        .unwrap();
+    assert_eq!(provider_steps.len(), 1);
+    assert_eq!(
+        provider_steps[0]
+            .response_snapshot
+            .as_ref()
+            .expect("failed provider step audit")
+            .provider_outputs,
+        vec![ProviderRawPayload {
+            provider_kind: "openai".to_string(),
+            value: provider_output,
+        }]
+    );
 }
 
 #[tokio::test]
@@ -428,6 +523,24 @@ async fn partial_stream_failure_keeps_partial_entry_and_finishes_with_error() {
         )
     }));
     assert!(items.windows(2).all(|items| items[0].seq < items[1].seq));
+
+    let provider_steps = fixture
+        .repo
+        .provider_steps_for_run(&handle.agent_run.id)
+        .unwrap();
+    assert_eq!(provider_steps.len(), 1);
+    assert_eq!(provider_steps[0].status, ProviderStepStatus::Failed);
+    assert_eq!(
+        provider_steps[0]
+            .response_snapshot
+            .as_ref()
+            .expect("failed provider step audit")
+            .provider_outputs,
+        vec![ProviderRawPayload {
+            provider_kind: "openai".to_string(),
+            value: json!({"type": "hosted_tool_call", "id": "hosted_failure"}),
+        }]
+    );
 }
 
 #[tokio::test]
@@ -754,6 +867,17 @@ async fn streaming_cancellation_marks_running_item_and_provider_step_canceled() 
         .unwrap();
     assert_eq!(provider_steps.len(), 1);
     assert_eq!(provider_steps[0].status, ProviderStepStatus::Canceled);
+    assert_eq!(
+        provider_steps[0]
+            .response_snapshot
+            .as_ref()
+            .expect("canceled provider step audit")
+            .provider_outputs,
+        vec![ProviderRawPayload {
+            provider_kind: "openai".to_string(),
+            value: json!({"type": "hosted_tool_call", "id": "hosted_canceled"}),
+        }]
+    );
 }
 
 #[tokio::test]
@@ -1318,90 +1442,6 @@ async fn recoverable_unknown_tool_is_returned_to_model() {
 }
 
 #[tokio::test]
-async fn recoverable_missing_runtime_tool_is_returned_to_model() {
-    let fixture = Fixture::new("recoverable-missing-runtime");
-    let request = fixture.request();
-    let agent_run = fixture
-        .repo
-        .insert_agent_run(new_agent_run_input(&request))
-        .unwrap();
-    let definition = RegisteredToolDefinition {
-        source: ToolSource::Local,
-        namespace: None,
-        tool_name: "orphan_tool".to_string(),
-        runtime_tool_name: "orphan_tool".to_string(),
-        description: "Registered definition without executor".to_string(),
-        parameters: json!({"type": "object"}),
-        policy: ToolRunPolicy {
-            approval_policy: ToolApprovalPolicy::Never,
-            execution_policy: ToolExecutionPolicy::Foreground,
-            timeout_ms: None,
-        },
-    };
-    let context = PersistenceContext::new(
-        crate::persistence::direct_agent_persistence(fixture.repo.clone()),
-        agent_run.id.clone(),
-        fixture.conversation.id.clone(),
-        fixture.provider.id.clone(),
-        fixture.model.model_id.clone(),
-        request.settings_snapshot.clone(),
-        vec![fixture.user_item.id.clone()],
-        vec![definition],
-        Vec::new(),
-        request.guards.max_tool_calls,
-        request.guards.repeated_tool_call_limit,
-        request.cancellation_token.clone(),
-        None,
-        None,
-    );
-    let hook = context.hook();
-
-    let action = PromptHook::<MockCompletionModel>::on_tool_call(
-        &hook,
-        "orphan_tool",
-        Some("call_1".to_string()),
-        "internal_1",
-        "{}",
-    )
-    .await;
-
-    let reason = match action {
-        ToolCallHookAction::Skip { reason } => reason,
-        other => panic!("expected recoverable skip, got {other:?}"),
-    };
-    assert_eq!(reason, "Tool orphan_tool has no runtime executor");
-    let invocations = fixture
-        .repo
-        .tool_invocations_for_run(&agent_run.id)
-        .unwrap();
-    assert_eq!(invocations.len(), 1);
-    assert_eq!(invocations[0].status, ToolInvocationStatus::Failed);
-    assert_eq!(
-        invocations[0].error.as_ref().unwrap().code,
-        "tool_runtime_unavailable"
-    );
-    assert!(invocations[0].output.as_ref().unwrap().is_error);
-    let items = fixture
-        .repo
-        .conversation_entries(&fixture.conversation.id)
-        .unwrap();
-    assert_eq!(
-        items
-            .iter()
-            .filter(|item| matches!(item.payload, ConversationEntryPayload::ToolCall(_)))
-            .count(),
-        1
-    );
-    assert_eq!(
-        items
-            .iter()
-            .filter(|item| matches!(item.payload, ConversationEntryPayload::ToolResult(_)))
-            .count(),
-        1
-    );
-}
-
-#[tokio::test]
 async fn max_turns_is_persisted_as_max_steps_stop() {
     let fixture = Fixture::new("max-steps");
     let runtime = AgentRuntime::from_repository(fixture.repo.clone());
@@ -1441,7 +1481,7 @@ async fn max_turns_is_persisted_as_max_steps_stop() {
         .repo
         .tool_invocations_for_run(&handle.agent_run.id)
         .unwrap();
-    assert_eq!(invocations.len(), 3);
+    assert_eq!(invocations.len(), 1);
     assert!(
         invocations
             .iter()
@@ -2057,11 +2097,18 @@ async fn setup_failure_marks_agent_run_failed() {
     request.project_root = Some(fixture.dir.path().to_path_buf());
     request.skill_requests = vec![crate::SkillActivationRequest::new("missing-skill")];
 
-    let error = runtime
+    let handle = runtime
         .run_with_model(request, MockCompletionModel::text("unused"))
         .await
-        .unwrap_err();
-    assert!(error.to_string().contains("missing-skill"));
+        .unwrap();
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Failed);
+    assert!(
+        handle
+            .agent_run
+            .error
+            .as_ref()
+            .is_some_and(|error| error.message.contains("missing-skill"))
+    );
 
     assert!(
         fixture
@@ -2147,6 +2194,70 @@ async fn saved_provider_setup_failure_records_failed_run_and_error_item() {
             if payload.code == "setup_error"
                 && payload.message.contains("missing provider secret `api_key`")
     ));
+}
+
+#[tokio::test]
+async fn continuation_lookup_failure_terminalizes_started_run() {
+    let fixture = Fixture::new("continuation-lookup-failure");
+    let persistence = crate::persistence::direct_agent_persistence_failing_continuation_lookup(
+        fixture.repo.clone(),
+    );
+    let runtime = AgentRuntime::new(persistence);
+    let mut request = fixture.request();
+    request.model_id = "gpt-5.6".to_string();
+    request.settings_snapshot.model_id = request.model_id.clone();
+    request
+        .settings_snapshot
+        .model_capabilities
+        .stateful_response_continuation = true;
+    let mut secrets = ProviderSecretValues::default();
+    secrets
+        .values
+        .insert("api_key".to_string(), "test-key".to_string());
+    let published = Arc::new(Mutex::new(Vec::new()));
+    let observer_events = published.clone();
+    let observer = AgentRuntimeObserver::new(move |event| {
+        observer_events.lock().unwrap().push(event);
+    });
+
+    let handle = runtime
+        .run_with_saved_provider_observed(
+            request,
+            fixture.provider.clone(),
+            secrets,
+            Some(observer),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Failed);
+    let error = handle.agent_run.error.as_ref().unwrap();
+    assert_eq!(error.code, "setup_error");
+    assert!(
+        error
+            .message
+            .contains("injected continuation lookup failure")
+    );
+    assert!(
+        fixture
+            .repo
+            .agent_runs_by_status(AgentRunStatus::Running)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(published.lock().unwrap().iter().any(|event| matches!(
+        event,
+        AgentRuntimeEvent::AgentRunStatusChanged {
+            agent_run_id,
+            status: AgentRunStatus::Failed,
+        } if agent_run_id == &handle.agent_run.id
+    )));
+    assert!(
+        fixture
+            .repo
+            .soft_delete_conversation(&fixture.conversation.id)
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -2382,7 +2493,7 @@ fn insert_agent_run_with_status(fixture: &Fixture, status: AgentRunStatus) -> Ag
                 AgentStoppedReason::Failed,
                 ConversationStatusCode::CompletedWithoutOutput,
             ),
-            AgentRunStatus::Queued | AgentRunStatus::Running => unreachable!(),
+            AgentRunStatus::Running => unreachable!(),
         };
         return fixture
             .repo
@@ -2410,16 +2521,7 @@ fn insert_agent_run_with_status(fixture: &Fixture, status: AgentRunStatus) -> Ag
             .value
             .run;
     }
-    fixture
-        .repo
-        .update_agent_run_status(
-            &agent_run.id,
-            UpdateAgentRunStatus {
-                status,
-                error: None,
-            },
-        )
-        .unwrap()
+    agent_run
 }
 
 fn insert_provider_step(
@@ -2438,6 +2540,9 @@ fn insert_provider_step(
                 model_id: fixture.model.model_id.clone(),
                 input_item_ids: vec![fixture.user_item.id.clone()],
                 snapshot_kind: ProviderStepSnapshotKind::RigCompletionRequest,
+                transport: ProviderTransportSnapshot::ProviderDefault,
+                context_mode: ProviderRequestContextSnapshot::FullHistory,
+                previous_response_id: None,
                 request_body: ProviderRawPayload {
                     provider_kind: "test".to_string(),
                     value: json!({"messages": ["hello"]}),
@@ -2695,6 +2800,9 @@ impl CompletionModel for FailAfterTextModel {
     ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
     {
         let stream: StreamingResult<Self::StreamingResponse> = Box::pin(futures::stream::iter([
+            Ok(RawStreamingChoice::Unknown(
+                json!({"type": "hosted_tool_call", "id": "hosted_failure"}),
+            )),
             Ok(RawStreamingChoice::Message("partial".to_string())),
             Err(CompletionError::ProviderError(
                 "forced mid-stream failure".to_string(),
@@ -2994,14 +3102,20 @@ impl CompletionModel for CancelAfterTextStreamModel {
             let cancellation_token = cancellation_token.clone();
             async move {
                 match state {
-                    0 => Some((Ok(RawStreamingChoice::Message("partial".to_string())), 1)),
-                    1 => {
+                    0 => Some((
+                        Ok(RawStreamingChoice::Unknown(
+                            json!({"type": "hosted_tool_call", "id": "hosted_canceled"}),
+                        )),
+                        1,
+                    )),
+                    1 => Some((Ok(RawStreamingChoice::Message("partial".to_string())), 2)),
+                    2 => {
                         cancellation_token.cancel();
                         Some((
                             Err(CompletionError::ProviderError(
                                 "runtime canceled".to_string(),
                             )),
-                            2,
+                            3,
                         ))
                     }
                     _ => None,
@@ -3242,7 +3356,7 @@ impl ServerHandler for DynamicMcpServer {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
-        Ok(CallToolResult::success(vec![Content::text(format!(
+        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
             "called {}",
             request.name
         ))]))

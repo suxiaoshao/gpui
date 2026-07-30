@@ -243,6 +243,9 @@ mod tests {
             model_id: "gpt-5.2".to_string(),
             input_item_ids: vec!["item-1".to_string()],
             snapshot_kind: ProviderStepSnapshotKind::RigCompletionRequest,
+            transport: ProviderTransportSnapshot::ProviderDefault,
+            context_mode: ProviderRequestContextSnapshot::FullHistory,
+            previous_response_id: None,
             request_body: ProviderRawPayload {
                 provider_kind: "openai".to_string(),
                 value: json!({ "messages": [] }),

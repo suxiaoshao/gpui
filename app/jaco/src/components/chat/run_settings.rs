@@ -43,6 +43,7 @@ pub(crate) use policy::{
     custom_token_budget_value, reasoning_selection_is_valid, reasoning_selection_label,
     reasoning_selections, set_existing_custom_token_budget, token_budget_bounds,
 };
+use policy::{projected_reasoning_selection, reasoning_selection_after_model_change};
 
 pub(crate) type ControlOpenHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 
@@ -231,6 +232,8 @@ pub(crate) struct RunSettingsController<Form>
 where
     Form: FormStore,
 {
+    #[cfg(test)]
+    settings_field: FormField<Form, RunSettingsInput>,
     model_field: FormField<Form, Option<ProviderModelKey>>,
     reasoning_field: FormField<Form, Option<ReasoningSelectionSnapshot>>,
     approval_field: FormField<Form, ToolApprovalMode>,
@@ -260,9 +263,6 @@ where
         let model_field = RunSettingsFormStore::model_in(field.clone());
         let reasoning_field = RunSettingsFormStore::reasoning_selection_in(field.clone());
         let approval_field = RunSettingsFormStore::approval_mode_in(field.clone());
-        let model_attachment = model_field
-            .attach_control(cx)
-            .expect("run-settings model field is available");
         let reasoning_attachment = reasoning_field
             .attach_control(cx)
             .expect("run-settings reasoning field is available");
@@ -277,6 +277,12 @@ where
         let capability = selected_model_choice(&choices, selected_model.as_ref())
             .map(|choice| choice.capabilities.clone());
         let selected_reasoning = draft.reasoning_selection.clone();
+        let projected_reasoning = projected_reasoning_selection(
+            capability
+                .as_ref()
+                .and_then(|capability| capability.reasoning.as_ref()),
+            selected_reasoning.clone(),
+        );
         let approval = draft.approval_mode;
         let state = cx.entity().downgrade();
 
@@ -285,14 +291,15 @@ where
             PickerListDelegate::selected_index_for(&model_sections, selected_model.as_ref());
         let model_confirm = Rc::new({
             let state = state.clone();
-            let attachment = model_attachment.clone();
+            let field = field.clone();
             move |option: ModelOption, window: &mut Window, cx: &mut App| {
                 if !model_catalog_is_ready(cx) {
                     return;
                 }
-                let attachment = attachment.clone();
+                if !apply_explicit_model_selection(&field, option.key(), cx) {
+                    return;
+                }
                 let _ = state.update(cx, |controller, cx| {
-                    attachment.defer_set_user_value(Some(option.key()), window, cx);
                     controller.set_model_open(false, window, cx);
                 });
             }
@@ -342,7 +349,7 @@ where
             effort_select::effort_sections(capability.as_ref(), cx.global::<foundation::I18n>());
         let reasoning_selected_ix = PickerListDelegate::selected_index_for(
             &reasoning_sections,
-            selected_reasoning.as_ref(),
+            projected_reasoning.as_ref(),
         );
         let reasoning_confirm = Rc::new({
             let state = state.clone();
@@ -378,7 +385,7 @@ where
             let mut picker = ListState::new(
                 PickerListDelegate::new(
                     reasoning_sections,
-                    selected_reasoning.clone(),
+                    projected_reasoning.clone(),
                     |cx| cx.global::<I18n>().t("chat-form-effort-empty").into(),
                     reasoning_confirm,
                     reasoning_cancel,
@@ -478,7 +485,7 @@ where
         });
         let reasoning_state = cx.new(|_| ReasoningControlState {
             capability,
-            selected: draft.reasoning_selection.clone(),
+            selected: projected_reasoning,
             picker: reasoning_picker,
             token_budget_input,
             open: false,
@@ -546,6 +553,8 @@ where
         );
 
         Self {
+            #[cfg(test)]
+            settings_field: field,
             model_field,
             reasoning_field,
             approval_field,
@@ -690,8 +699,9 @@ where
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let _ = self.model_field.set_user_value(Some(key.clone()), cx);
-        self.sync_model_picker(Some(key), window, cx);
+        if apply_explicit_model_selection(&self.settings_field, key.clone(), cx) {
+            self.sync_model_from_form(Some(key), window, cx);
+        }
     }
 
     #[cfg(test)]
@@ -895,8 +905,14 @@ where
         window: &mut Window,
         cx: &mut App,
     ) {
+        let projected = projected_reasoning_selection(
+            capability
+                .as_ref()
+                .and_then(|capability| capability.reasoning.as_ref()),
+            selected,
+        );
         let picker = self.controls.reasoning.update(cx, |state, cx| {
-            state.selected = selected.clone();
+            state.selected = projected.clone();
             cx.notify();
             state.picker.clone()
         });
@@ -904,7 +920,7 @@ where
             effort_select::effort_sections(capability.as_ref(), cx.global::<foundation::I18n>());
         picker.update(cx, |picker, cx| {
             picker.delegate_mut().set_sections(sections);
-            picker.delegate_mut().set_selected_value(selected);
+            picker.delegate_mut().set_selected_value(projected);
             picker.delegate_mut().set_selectable(
                 config_is_ready(cx),
                 Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
@@ -959,6 +975,31 @@ where
         self.sync_reasoning_picker(capability, reasoning, window, cx);
         self.sync_token_budget_control(window, cx);
     }
+}
+
+fn apply_explicit_model_selection<Form>(
+    field: &FormField<Form, RunSettingsInput>,
+    key: ProviderModelKey,
+    cx: &mut App,
+) -> bool
+where
+    Form: FormStore,
+{
+    let Ok(choices) = load_model_choices(cx) else {
+        return false;
+    };
+    let Some(choice) = selected_model_choice_from_slice(&choices, Some(&key)) else {
+        return false;
+    };
+    let Ok(mut settings) = field.value(cx) else {
+        return false;
+    };
+    settings.reasoning_selection = reasoning_selection_after_model_change(
+        choice.capabilities.reasoning.as_ref(),
+        settings.reasoning_selection.as_ref(),
+    );
+    settings.model = Some(key);
+    field.set_user_value(settings, cx).is_ok()
 }
 
 fn load_model_choices(cx: &App) -> Result<Vec<ProviderModelChoice>, SharedString> {

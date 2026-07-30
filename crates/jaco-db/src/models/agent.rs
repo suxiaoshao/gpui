@@ -40,17 +40,6 @@ pub(crate) struct SqlNewAgentRunRow {
 #[derive(Debug, Clone, AsChangeset)]
 #[diesel(table_name = agent_runs)]
 #[diesel(treat_none_as_null = true)]
-pub(crate) struct SqlAgentRunStatusChanges {
-    pub(crate) status: String,
-    pub(crate) error_json: Option<Value>,
-    pub(crate) started_at: Option<OffsetDateTime>,
-    pub(crate) completed_at: Option<OffsetDateTime>,
-    pub(crate) updated_at: OffsetDateTime,
-}
-
-#[derive(Debug, Clone, AsChangeset)]
-#[diesel(table_name = agent_runs)]
-#[diesel(treat_none_as_null = true)]
 pub(crate) struct SqlAgentRunFinalChanges {
     pub(crate) status: String,
     pub(crate) final_entry_id: String,
@@ -74,6 +63,12 @@ pub(crate) struct SqlProviderStepRow {
     pub(crate) request_snapshot_json: Value,
     pub(crate) response_snapshot_json: Option<Value>,
     pub(crate) state_snapshot_json: Option<Value>,
+    pub(crate) continuation_kind: Option<String>,
+    pub(crate) provider_response_id: Option<String>,
+    pub(crate) reasoning_context: Option<String>,
+    pub(crate) continuation_expires_at: Option<OffsetDateTime>,
+    pub(crate) continuation_invalidated_at: Option<OffsetDateTime>,
+    pub(crate) continuation_error_json: Option<Value>,
     pub(crate) settings_snapshot_json: Value,
     pub(crate) error_json: Option<Value>,
     pub(crate) created_at: OffsetDateTime,
@@ -94,6 +89,12 @@ pub(crate) struct SqlNewProviderStepRow {
     pub(crate) request_snapshot_json: Value,
     pub(crate) response_snapshot_json: Option<Value>,
     pub(crate) state_snapshot_json: Option<Value>,
+    pub(crate) continuation_kind: Option<String>,
+    pub(crate) provider_response_id: Option<String>,
+    pub(crate) reasoning_context: Option<String>,
+    pub(crate) continuation_expires_at: Option<OffsetDateTime>,
+    pub(crate) continuation_invalidated_at: Option<OffsetDateTime>,
+    pub(crate) continuation_error_json: Option<Value>,
     pub(crate) settings_snapshot_json: Value,
     pub(crate) error_json: Option<Value>,
     pub(crate) created_at: OffsetDateTime,
@@ -109,9 +110,28 @@ pub(crate) struct SqlProviderStepStatusChanges {
     pub(crate) status: String,
     pub(crate) response_snapshot_json: Option<Value>,
     pub(crate) state_snapshot_json: Option<Value>,
+    pub(crate) continuation_kind: Option<String>,
+    pub(crate) provider_response_id: Option<String>,
+    pub(crate) reasoning_context: Option<String>,
+    pub(crate) continuation_expires_at: Option<OffsetDateTime>,
+    pub(crate) continuation_invalidated_at: Option<OffsetDateTime>,
+    pub(crate) continuation_error_json: Option<Value>,
     pub(crate) error_json: Option<Value>,
     pub(crate) started_at: Option<OffsetDateTime>,
     pub(crate) completed_at: Option<OffsetDateTime>,
+    pub(crate) updated_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, AsChangeset)]
+#[diesel(table_name = provider_steps)]
+#[diesel(treat_none_as_null = true)]
+pub(crate) struct SqlProviderContinuationChanges {
+    pub(crate) continuation_kind: Option<String>,
+    pub(crate) provider_response_id: Option<String>,
+    pub(crate) reasoning_context: Option<String>,
+    pub(crate) continuation_expires_at: Option<OffsetDateTime>,
+    pub(crate) continuation_invalidated_at: Option<OffsetDateTime>,
+    pub(crate) continuation_error_json: Option<Value>,
     pub(crate) updated_at: OffsetDateTime,
 }
 
@@ -285,6 +305,14 @@ impl TryFrom<SqlProviderStepRow> for ProviderStepRecord {
             request_snapshot: from_json(row.request_snapshot_json)?,
             response_snapshot: from_json_opt(row.response_snapshot_json)?,
             state_snapshot: from_json_opt(row.state_snapshot_json)?,
+            continuation: provider_continuation(
+                row.continuation_kind,
+                row.provider_response_id,
+                row.reasoning_context,
+                row.continuation_expires_at,
+                row.continuation_invalidated_at,
+                row.continuation_error_json,
+            )?,
             settings_snapshot: from_json(row.settings_snapshot_json)?,
             error: from_json_opt(row.error_json)?,
             created_at: row.created_at,
@@ -292,6 +320,40 @@ impl TryFrom<SqlProviderStepRow> for ProviderStepRecord {
             completed_at: row.completed_at,
             updated_at: row.updated_at,
         })
+    }
+}
+
+fn provider_continuation(
+    kind: Option<String>,
+    response_id: Option<String>,
+    reasoning_context: Option<String>,
+    expires_at: Option<OffsetDateTime>,
+    invalidated_at: Option<OffsetDateTime>,
+    invalidation_error: Option<Value>,
+) -> Result<Option<ProviderContinuationSnapshot>> {
+    match (kind, response_id, reasoning_context, expires_at) {
+        (None, None, None, None) => Ok(None),
+        (Some(kind), Some(response_id), Some(reasoning_context), Some(expires_at)) => {
+            let kind = match kind.as_str() {
+                "openai_responses" => ProviderContinuationKind::OpenAiResponses,
+                _ => {
+                    return Err(DbError::Invariant(format!(
+                        "unknown provider continuation kind `{kind}`"
+                    )));
+                }
+            };
+            Ok(Some(ProviderContinuationSnapshot {
+                kind,
+                response_id,
+                reasoning_context,
+                expires_at,
+                invalidated_at,
+                invalidation_error: from_json_opt(invalidation_error)?,
+            }))
+        }
+        _ => Err(DbError::Invariant(
+            "provider continuation columns must be all null or fully populated".to_string(),
+        )),
     }
 }
 

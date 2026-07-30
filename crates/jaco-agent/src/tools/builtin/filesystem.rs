@@ -385,7 +385,8 @@ fn recursive_entries(
     builder
         .hidden(!include_hidden)
         .git_ignore(true)
-        .parents(true);
+        .parents(true)
+        .sort_by_file_path(|left, right| left.cmp(right));
     let mut entries = Vec::new();
     for result in builder.build().skip(1) {
         let entry = result.map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -538,5 +539,69 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[tokio::test]
+    async fn recursive_list_honors_gitignore_and_hidden_entries() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        fs::create_dir(dir.path().join("nested")).unwrap();
+        fs::write(dir.path().join(".gitignore"), "ignored.txt\nnested/*.tmp\n").unwrap();
+        fs::write(dir.path().join("visible.txt"), "visible\n").unwrap();
+        fs::write(dir.path().join("ignored.txt"), "ignored\n").unwrap();
+        fs::write(dir.path().join(".hidden.txt"), "hidden\n").unwrap();
+        fs::write(dir.path().join("nested/ignored.tmp"), "ignored\n").unwrap();
+        let context = BuiltinToolContext {
+            project_root: Some(dir.path().to_path_buf()),
+        };
+
+        let visible = ListDirectoryTool::new(context.clone())
+            .execute(json!({
+                "path": ".",
+                "recursive": true,
+                "includeHidden": false,
+            }))
+            .await
+            .unwrap();
+        let visible_output: ListDirectoryOutput =
+            serde_json::from_value(visible.structured_output.unwrap().value).unwrap();
+        assert!(
+            visible_output
+                .entries
+                .iter()
+                .any(|entry| entry.path.ends_with("visible.txt"))
+        );
+        assert!(
+            visible_output
+                .entries
+                .iter()
+                .all(|entry| !entry.path.ends_with("ignored.txt")
+                    && !entry.path.ends_with("ignored.tmp")
+                    && !entry.path.ends_with(".hidden.txt"))
+        );
+
+        let hidden = ListDirectoryTool::new(context)
+            .execute(json!({
+                "path": ".",
+                "recursive": true,
+                "includeHidden": true,
+            }))
+            .await
+            .unwrap();
+        let hidden_output: ListDirectoryOutput =
+            serde_json::from_value(hidden.structured_output.unwrap().value).unwrap();
+        assert!(
+            hidden_output
+                .entries
+                .iter()
+                .any(|entry| entry.path.ends_with(".hidden.txt"))
+        );
+        assert!(
+            hidden_output
+                .entries
+                .iter()
+                .all(|entry| !entry.path.ends_with("ignored.txt")
+                    && !entry.path.ends_with("ignored.tmp"))
+        );
     }
 }

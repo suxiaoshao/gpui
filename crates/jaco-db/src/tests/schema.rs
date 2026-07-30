@@ -21,7 +21,7 @@ fn fresh_schema_declares_structured_sqlite_types_and_checks() {
 
     let agent_runs_sql = table_sql(&mut conn, "agent_runs");
     assert!(agent_runs_sql.contains(
-        "status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'canceled'))"
+        "status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'canceled'))"
     ));
     assert!(agent_runs_sql.contains("started_at DateTime"));
     assert!(agent_runs_sql.contains("completed_at DateTime"));
@@ -50,6 +50,58 @@ fn fresh_schema_declares_structured_sqlite_types_and_checks() {
 }
 
 #[test]
+fn provider_step_status_constraints_reject_invalid_lifecycle_shapes() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let project = repo
+        .insert_project(project("provider-step-status-checks"))
+        .unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.6", "GPT-5.6"))
+        .unwrap();
+    let trigger = repo
+        .append_conversation_entry(message_item(&conversation.id, "run"))
+        .unwrap();
+    let run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id,
+            trigger_entry_id: trigger.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            input: agent_run_input(&trigger.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    let step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: run.id,
+            seq: 1,
+            status: ProviderStepStatus::Running,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &trigger.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+    let mut conn = store.pool().get().unwrap();
+
+    for invalid_update in [
+        "UPDATE provider_steps SET status = 'queued' WHERE id = ?",
+        "UPDATE provider_steps SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+        "UPDATE provider_steps SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+    ] {
+        assert!(
+            sql_query(invalid_update)
+                .bind::<Text, _>(&step.id)
+                .execute(&mut conn)
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn fresh_schema_rejects_invalid_boolean_and_closed_enum_values() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
@@ -64,7 +116,6 @@ fn fresh_schema_rejects_invalid_boolean_and_closed_enum_values() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, "gpt-5"),
         })

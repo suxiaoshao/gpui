@@ -9,7 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 gpui.workspace = true
-tokio = { version = "1.52.3", features = ["net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.53.1", features = ["net", "rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

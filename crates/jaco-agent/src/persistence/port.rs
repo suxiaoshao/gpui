@@ -1,11 +1,11 @@
 use async_trait::async_trait;
 use jaco_core::*;
 use jaco_db::{
-    AgentRunRecord, ConversationCommit, ConversationEntryRecord, ConversationTimelineRecords,
-    FinishAgentRun, FinishedAgentRun, NewAgentRun, NewConversationEntry, NewProviderStep,
-    NewToolInvocation, NewToolInvocationApproval, NewUsageEvent, ProviderStepRecord,
-    ToolInvocationApprovalOutcome, ToolInvocationRecord, UpdateAgentRunStatus,
-    UpdateProviderStepStatus, UpdateToolInvocationStatus, UsageEventRecord,
+    AgentRunRecord, CompleteProviderStep, CompletedProviderStep, ConversationCommit,
+    ConversationEntryRecord, ConversationTimelineRecords, FinishAgentRun, FinishedAgentRun,
+    NewAgentRun, NewConversationEntry, NewProviderStep, NewToolInvocation,
+    NewToolInvocationApproval, ProviderStepRecord, ToolInvocationApprovalOutcome,
+    ToolInvocationRecord, UpdateProviderStepStatus, UpdateToolInvocationStatus,
 };
 
 #[async_trait]
@@ -46,12 +46,6 @@ pub trait AgentPersistence: Send + Sync {
         status: AgentRunStatus,
     ) -> jaco_db::Result<Vec<AgentRunRecord>>;
 
-    async fn update_agent_run_status(
-        &self,
-        id: AgentRunId,
-        update: UpdateAgentRunStatus,
-    ) -> jaco_db::Result<AgentRunRecord>;
-
     async fn finish_agent_run(
         &self,
         id: AgentRunId,
@@ -70,13 +64,30 @@ pub trait AgentPersistence: Send + Sync {
         agent_run_id: AgentRunId,
     ) -> jaco_db::Result<Vec<ProviderStepRecord>>;
 
+    async fn latest_completed_provider_step_before_trigger(
+        &self,
+        conversation_id: ConversationId,
+        trigger_entry_id: ConversationEntryId,
+    ) -> jaco_db::Result<Option<ProviderStepRecord>>;
+
+    async fn invalidate_provider_continuation(
+        &self,
+        id: ProviderStepId,
+        invalidated_at: time::OffsetDateTime,
+        error: RunErrorPayload,
+    ) -> jaco_db::Result<ProviderStepRecord>;
+
     async fn update_provider_step_status(
         &self,
         id: ProviderStepId,
         update: UpdateProviderStepStatus,
     ) -> jaco_db::Result<ProviderStepRecord>;
 
-    async fn insert_usage_event(&self, input: NewUsageEvent) -> jaco_db::Result<UsageEventRecord>;
+    async fn complete_provider_step_with_usage(
+        &self,
+        id: ProviderStepId,
+        completion: CompleteProviderStep,
+    ) -> jaco_db::Result<CompletedProviderStep>;
 
     async fn insert_tool_invocation(
         &self,
@@ -121,12 +132,36 @@ pub trait AgentPersistence: Send + Sync {
 #[cfg(test)]
 pub(crate) struct DirectAgentPersistence {
     repository: jaco_db::FreshRepository,
+    fail_append_conversation_entry: bool,
+    fail_latest_completed_provider_step: bool,
 }
 
 #[cfg(test)]
 impl DirectAgentPersistence {
     pub(crate) fn new(repository: jaco_db::FreshRepository) -> Self {
-        Self { repository }
+        Self {
+            repository,
+            fail_append_conversation_entry: false,
+            fail_latest_completed_provider_step: false,
+        }
+    }
+
+    pub(crate) fn failing_append_conversation_entry(repository: jaco_db::FreshRepository) -> Self {
+        Self {
+            repository,
+            fail_append_conversation_entry: true,
+            fail_latest_completed_provider_step: false,
+        }
+    }
+
+    pub(crate) fn failing_latest_completed_provider_step(
+        repository: jaco_db::FreshRepository,
+    ) -> Self {
+        Self {
+            repository,
+            fail_append_conversation_entry: false,
+            fail_latest_completed_provider_step: true,
+        }
     }
 }
 
@@ -159,6 +194,11 @@ impl AgentPersistence for DirectAgentPersistence {
         &self,
         input: NewConversationEntry,
     ) -> jaco_db::Result<ConversationCommit<ConversationEntryRecord>> {
+        if self.fail_append_conversation_entry {
+            return Err(jaco_db::DbError::Invariant(
+                "injected append conversation entry failure".to_string(),
+            ));
+        }
         direct!(self, append_conversation_entry(input))
     }
     async fn update_conversation_entry_payload(
@@ -190,13 +230,6 @@ impl AgentPersistence for DirectAgentPersistence {
     ) -> jaco_db::Result<Vec<AgentRunRecord>> {
         direct!(self, agent_runs_by_status(status))
     }
-    async fn update_agent_run_status(
-        &self,
-        id: AgentRunId,
-        update: UpdateAgentRunStatus,
-    ) -> jaco_db::Result<AgentRunRecord> {
-        direct!(self, update_agent_run_status(&id, update))
-    }
     async fn finish_agent_run(
         &self,
         id: AgentRunId,
@@ -219,6 +252,32 @@ impl AgentPersistence for DirectAgentPersistence {
     ) -> jaco_db::Result<Vec<ProviderStepRecord>> {
         direct!(self, provider_steps_for_run(&id))
     }
+    async fn latest_completed_provider_step_before_trigger(
+        &self,
+        conversation_id: ConversationId,
+        trigger_entry_id: ConversationEntryId,
+    ) -> jaco_db::Result<Option<ProviderStepRecord>> {
+        if self.fail_latest_completed_provider_step {
+            return Err(jaco_db::DbError::Invariant(
+                "injected continuation lookup failure".to_string(),
+            ));
+        }
+        direct!(
+            self,
+            latest_completed_provider_step_before_trigger(&conversation_id, &trigger_entry_id)
+        )
+    }
+    async fn invalidate_provider_continuation(
+        &self,
+        id: ProviderStepId,
+        invalidated_at: time::OffsetDateTime,
+        error: RunErrorPayload,
+    ) -> jaco_db::Result<ProviderStepRecord> {
+        direct!(
+            self,
+            invalidate_provider_continuation(&id, invalidated_at, error)
+        )
+    }
     async fn update_provider_step_status(
         &self,
         id: ProviderStepId,
@@ -226,8 +285,12 @@ impl AgentPersistence for DirectAgentPersistence {
     ) -> jaco_db::Result<ProviderStepRecord> {
         direct!(self, update_provider_step_status(&id, update))
     }
-    async fn insert_usage_event(&self, input: NewUsageEvent) -> jaco_db::Result<UsageEventRecord> {
-        direct!(self, insert_usage_event(input))
+    async fn complete_provider_step_with_usage(
+        &self,
+        id: ProviderStepId,
+        completion: CompleteProviderStep,
+    ) -> jaco_db::Result<CompletedProviderStep> {
+        direct!(self, complete_provider_step_with_usage(&id, completion))
     }
     async fn insert_tool_invocation(
         &self,

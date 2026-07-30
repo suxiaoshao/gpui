@@ -127,7 +127,7 @@ CREATE TABLE agent_runs (
     trigger_entry_id TEXT NOT NULL REFERENCES conversation_entries(id)
         ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
     trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('user', 'shortcut', 'retry')),
-    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'canceled')),
+    status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'canceled')),
     input_json JSON NOT NULL,
     final_entry_id TEXT REFERENCES conversation_entries(id)
         ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
@@ -138,7 +138,7 @@ CREATE TABLE agent_runs (
     completed_at DateTime,
     updated_at DateTime NOT NULL,
     CHECK (
-        (status IN ('queued', 'running') AND final_entry_id IS NULL AND stopped_reason IS NULL)
+        (status = 'running' AND final_entry_id IS NULL AND stopped_reason IS NULL)
         OR
         (status IN ('completed', 'failed', 'canceled') AND final_entry_id IS NOT NULL AND stopped_reason IS NOT NULL)
     ),
@@ -159,13 +159,67 @@ CREATE TABLE provider_steps (
     request_snapshot_json JSON NOT NULL,
     response_snapshot_json JSON,
     state_snapshot_json JSON,
+    continuation_kind TEXT CHECK (continuation_kind IN ('openai_responses')),
+    provider_response_id TEXT,
+    reasoning_context TEXT,
+    continuation_expires_at DateTime,
+    continuation_invalidated_at DateTime,
+    continuation_error_json JSON,
     settings_snapshot_json JSON NOT NULL,
     error_json JSON,
     created_at DateTime NOT NULL,
     started_at DateTime,
     completed_at DateTime,
     updated_at DateTime NOT NULL,
-    UNIQUE(agent_run_id, seq)
+    UNIQUE(agent_run_id, seq),
+    CHECK (
+        (status = 'queued'
+            AND started_at IS NULL
+            AND completed_at IS NULL
+            AND response_snapshot_json IS NULL
+            AND state_snapshot_json IS NULL
+            AND error_json IS NULL)
+        OR
+        (status = 'running'
+            AND started_at IS NOT NULL
+            AND completed_at IS NULL
+            AND response_snapshot_json IS NULL
+            AND state_snapshot_json IS NULL
+            AND error_json IS NULL)
+        OR
+        (status = 'completed'
+            AND started_at IS NOT NULL
+            AND completed_at IS NOT NULL
+            AND response_snapshot_json IS NOT NULL
+            AND state_snapshot_json IS NOT NULL
+            AND error_json IS NULL)
+        OR
+        (status IN ('failed', 'canceled')
+            AND started_at IS NOT NULL
+            AND completed_at IS NOT NULL
+            AND error_json IS NOT NULL)
+    ),
+    CHECK (
+        (continuation_kind IS NULL
+            AND provider_response_id IS NULL
+            AND reasoning_context IS NULL
+            AND continuation_expires_at IS NULL
+            AND continuation_invalidated_at IS NULL
+            AND continuation_error_json IS NULL)
+        OR
+        (continuation_kind = 'openai_responses'
+            AND provider_response_id IS NOT NULL
+            AND length(trim(provider_response_id)) > 0
+            AND reasoning_context IS NOT NULL
+            AND length(trim(reasoning_context)) > 0
+            AND continuation_expires_at IS NOT NULL
+            AND status = 'completed')
+    ),
+    CHECK (
+        (continuation_invalidated_at IS NULL AND continuation_error_json IS NULL)
+        OR
+        (continuation_invalidated_at IS NOT NULL AND continuation_error_json IS NOT NULL)
+    )
 );
 
 CREATE TABLE tool_invocations (
@@ -244,8 +298,12 @@ CREATE INDEX idx_conversation_entries_agent_run_seq ON conversation_entries(agen
 CREATE INDEX idx_agent_runs_conversation_id ON agent_runs(conversation_id);
 CREATE INDEX idx_agent_runs_trigger_entry_created ON agent_runs(trigger_entry_id, created_at);
 CREATE INDEX idx_provider_steps_agent_seq ON provider_steps(agent_run_id, seq);
+CREATE UNIQUE INDEX idx_provider_steps_provider_response_id
+ON provider_steps(provider_id, provider_response_id)
+WHERE provider_response_id IS NOT NULL;
 CREATE INDEX idx_tool_invocations_agent_run_id ON tool_invocations(agent_run_id);
 CREATE INDEX idx_usage_events_conversation_date ON usage_events(conversation_id, date_key);
+CREATE UNIQUE INDEX idx_usage_events_provider_step ON usage_events(provider_step_id);
 "#;
 
 #[derive(diesel::QueryableByName)]

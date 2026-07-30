@@ -9,11 +9,11 @@ pub enum AgentRuntimeError {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("Rig completion error: {0}")]
-    RigCompletion(#[from] rig_core::completion::CompletionError),
+    RigCompletion(#[from] rig::completion::CompletionError),
     #[error("Rig prompt error: {0}")]
-    RigPrompt(#[from] Box<rig_core::completion::PromptError>),
+    RigPrompt(#[from] Box<rig::completion::PromptError>),
     #[error("Rig tool server error: {0}")]
-    RigToolServer(#[from] rig_core::tool::server::ToolServerError),
+    RigToolServer(#[from] rig::tool::server::ToolServerError),
     #[error("MCP error: {0}")]
     Mcp(String),
     #[error("runtime canceled")]
@@ -24,8 +24,8 @@ pub enum AgentRuntimeError {
     Invariant(String),
 }
 
-impl From<rig_core::completion::PromptError> for AgentRuntimeError {
-    fn from(value: rig_core::completion::PromptError) -> Self {
+impl From<rig::completion::PromptError> for AgentRuntimeError {
+    fn from(value: rig::completion::PromptError) -> Self {
         Self::RigPrompt(Box::new(value))
     }
 }

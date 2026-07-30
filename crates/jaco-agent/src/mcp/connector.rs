@@ -56,7 +56,6 @@ impl McpConnector {
             .clone()
             .map(|description| description.to_string());
         let parameters = tool.schema_as_json_value();
-        let mcp_tool = McpTool::from_mcp_server(tool, client);
         registry.register_mcp_tool(
             ToolDefinition {
                 source: ToolSource::Mcp {
@@ -72,7 +71,8 @@ impl McpConnector {
                     timeout_ms: options.timeout_ms,
                 },
             },
-            mcp_tool,
+            tool,
+            client,
         )?;
         Ok(())
     }

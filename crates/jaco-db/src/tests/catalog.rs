@@ -70,7 +70,6 @@ fn typed_json_roundtrips_for_repository_records() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
@@ -89,14 +88,14 @@ fn typed_json_roundtrips_for_repository_records() {
             response_snapshot: Some(provider_step_response()),
             state_snapshot: Some(provider_run_state(&provider.id)),
             settings_snapshot: run_settings(&provider.id, &model.model_id),
-            error: Some(run_error()),
+            error: None,
         })
         .unwrap();
     assert_eq!(
         provider_step.request_snapshot.snapshot_kind,
         ProviderStepSnapshotKind::RigCompletionRequest
     );
-    assert_eq!(provider_step.error, Some(run_error()));
+    assert!(provider_step.error.is_none());
 
     let tool = repo
         .insert_tool_invocation(NewToolInvocation {

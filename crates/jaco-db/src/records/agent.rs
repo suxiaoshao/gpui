@@ -7,14 +7,7 @@ pub struct NewAgentRun {
     pub conversation_id: ConversationId,
     pub trigger_entry_id: ConversationEntryId,
     pub trigger_kind: AgentRunTriggerKind,
-    pub status: AgentRunStatus,
     pub input: AgentRunInput,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct UpdateAgentRunStatus {
-    pub status: AgentRunStatus,
-    pub error: Option<RunErrorPayload>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +51,20 @@ pub struct UpdateProviderStepStatus {
     pub response_snapshot: Option<ProviderStepResponseSnapshot>,
     pub state_snapshot: Option<ProviderRunStateSnapshot>,
     pub error: Option<RunErrorPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompleteProviderStep {
+    pub response_snapshot: ProviderStepResponseSnapshot,
+    pub state_snapshot: ProviderRunStateSnapshot,
+    pub continuation: Option<ProviderContinuationSnapshot>,
+    pub usage: ProviderUsageSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompletedProviderStep {
+    pub step: ProviderStepRecord,
+    pub usage: UsageEventRecord,
 }
 
 pub type ToolInvocationRecord = ToolInvocation;

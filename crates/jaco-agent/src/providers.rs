@@ -1,4 +1,5 @@
 mod capabilities;
+pub(crate) mod openai;
 
 use std::collections::BTreeMap;
 
@@ -6,17 +7,16 @@ use self::capabilities::{
     capabilities_for_model, capabilities_from_gemini_model, capabilities_from_ollama_show,
     capabilities_from_openrouter_model,
 };
-use crate::{
-    AgentRunHandle, AgentRunRequest, AgentRuntime, AgentRuntimeError, AgentRuntimeObserver,
-};
+use crate::{AgentRunHandle, AgentRunRequest, AgentRuntime, AgentRuntimeError, PreparingAgentRun};
 use jaco_core::{
     ProviderModelMetadata, ProviderRawPayload, ProviderSettingValue, ProviderSettingsPayload,
 };
-use jaco_db::{AgentRunRecord, NewProviderModel, ProviderRecord};
-use rig_core::{
+use jaco_db::{NewProviderModel, ProviderRecord};
+use rig::{
     client::{CompletionClient, ModelListingClient},
+    completion::CompletionModel,
     model::{Model, ModelList, ModelListingError},
-    providers::{anthropic, deepseek, gemini, mistral, ollama, openai, openrouter},
+    providers::{anthropic, deepseek, gemini, mistral, ollama, openai as rig_openai, openrouter},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -68,7 +68,8 @@ pub async fn fetch_provider_models(
     let models = match provider_kind {
         "openai" => {
             let client = apply_base_url(
-                openai::Client::builder().api_key(required_secret(&request.secrets, "api_key")?),
+                rig_openai::Client::builder()
+                    .api_key(required_secret(&request.secrets, "api_key")?),
                 &request.provider.settings,
             )?
             .build()
@@ -118,11 +119,10 @@ pub async fn fetch_provider_models(
 
 pub(crate) async fn run_saved_provider_model(
     runtime: &AgentRuntime,
-    agent_run: AgentRunRecord,
+    agent_run: PreparingAgentRun,
     request: AgentRunRequest,
     provider: ProviderRecord,
     secrets: ProviderSecretValues,
-    observer: Option<AgentRuntimeObserver>,
 ) -> crate::Result<AgentRunHandle> {
     let model_id = request.model_id.clone();
     macro_rules! run_with_client {
@@ -134,13 +134,12 @@ pub(crate) async fn run_saved_provider_model(
                             agent_run,
                             request,
                             client.completion_model(model_id),
-                            observer,
                         )
                         .await
                 }
                 Err(error) => {
                     runtime
-                        .record_setup_failed_started_run(&agent_run, error, observer.as_ref())
+                        .record_setup_failed_started_run(agent_run, error)
                         .await
                 }
             }
@@ -148,7 +147,41 @@ pub(crate) async fn run_saved_provider_model(
     }
 
     match provider.kind.as_str() {
-        "openai" => run_with_client!(build_openai_client(&provider, &secrets)),
+        "openai" => {
+            let configured_base_url = settings_field_string(&provider.settings, "base_url")
+                .filter(|value| !value.trim().is_empty());
+            if openai::official_gpt_5_6_websocket(
+                &model_id,
+                configured_base_url,
+                request
+                    .settings_snapshot
+                    .model_capabilities
+                    .stateful_response_continuation,
+            ) {
+                let setup = match prepare_openai_websocket_run(
+                    runtime, &request, &provider, &secrets,
+                )
+                .await
+                {
+                    Ok(setup) => setup,
+                    Err(error) => {
+                        return runtime
+                            .record_setup_failed_started_run(agent_run, error)
+                            .await;
+                    }
+                };
+                runtime
+                    .run_started_with_openai_websocket_observed(
+                        agent_run,
+                        request,
+                        openai::OpenAiWebSocketCompletionModel::make(&setup.binding, model_id),
+                        setup.attempts,
+                    )
+                    .await
+            } else {
+                run_with_client!(build_openai_client(&provider, &secrets))
+            }
+        }
         "anthropic" => run_with_client!(build_anthropic_client(&provider, &secrets)),
         "gemini" => run_with_client!(build_gemini_client(&provider, &secrets)),
         "ollama" => run_with_client!(build_ollama_client(&provider, &secrets)),
@@ -158,15 +191,70 @@ pub(crate) async fn run_saved_provider_model(
         provider_kind => {
             runtime
                 .record_setup_failed_started_run(
-                    &agent_run,
+                    agent_run,
                     AgentRuntimeError::Unsupported(format!(
                         "provider `{provider_kind}` cannot run completion models"
                     )),
-                    observer.as_ref(),
                 )
                 .await
         }
     }
+}
+
+struct OpenAiWebSocketRunSetup {
+    binding: openai::OpenAiWebSocketModelClient,
+    attempts: openai::OpenAiAttemptCoordinator,
+}
+
+async fn prepare_openai_websocket_run(
+    runtime: &AgentRuntime,
+    request: &AgentRunRequest,
+    provider: &ProviderRecord,
+    secrets: &ProviderSecretValues,
+) -> crate::Result<OpenAiWebSocketRunSetup> {
+    let api_key = required_secret(secrets, "api_key").map_err(runtime_config_error)?;
+    let client =
+        build_openai_client_with_api_key(provider, api_key).map_err(runtime_config_error)?;
+    let prior = runtime
+        .persistence()
+        .latest_completed_provider_step_before_trigger(
+            request.conversation_id.clone(),
+            request.trigger_entry_id.clone(),
+        )
+        .await?
+        .filter(|step| {
+            step.provider_id == provider.id
+                && step.model_id == request.model_id
+                && step.continuation.as_ref().is_some_and(|continuation| {
+                    continuation.is_available(time::OffsetDateTime::now_utc())
+                })
+        })
+        .and_then(|step| {
+            step.continuation
+                .map(|continuation| (step.id, continuation.response_id))
+        });
+    let reasoning = openai::OpenAiReasoningPolicy::from_run_settings(&request.settings_snapshot)?;
+    let base_url = settings_field_string(&provider.settings, "base_url")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("https://api.openai.com/v1");
+    let attempts = openai::OpenAiAttemptCoordinator::new();
+    let binding = openai::OpenAiWebSocketModelClient {
+        client,
+        pool: runtime.openai_session_pool(),
+        key: openai::OpenAiSessionKey::new(
+            request.conversation_id.clone(),
+            provider.id.clone(),
+            request.model_id.clone(),
+            base_url,
+            api_key,
+        ),
+        reasoning,
+        previous_response_id: prior.as_ref().map(|(_, id)| id.clone()),
+        previous_source_step_id: prior.map(|(step_id, _)| step_id),
+        persistence: runtime.persistence(),
+        attempts: attempts.clone(),
+    };
+    Ok(OpenAiWebSocketRunSetup { binding, attempts })
 }
 
 fn runtime_config_error(err: ProviderModelFetchError) -> AgentRuntimeError {
@@ -176,9 +264,16 @@ fn runtime_config_error(err: ProviderModelFetchError) -> AgentRuntimeError {
 pub fn build_openai_client(
     provider: &ProviderRecord,
     secrets: &ProviderSecretValues,
-) -> std::result::Result<openai::Client, ProviderModelFetchError> {
+) -> std::result::Result<rig_openai::Client, ProviderModelFetchError> {
+    build_openai_client_with_api_key(provider, required_secret(secrets, "api_key")?)
+}
+
+fn build_openai_client_with_api_key(
+    provider: &ProviderRecord,
+    api_key: &str,
+) -> std::result::Result<rig_openai::Client, ProviderModelFetchError> {
     apply_base_url(
-        openai::Client::builder().api_key(required_secret(secrets, "api_key")?),
+        rig_openai::Client::builder().api_key(api_key),
         &provider.settings,
     )?
     .build()
@@ -701,7 +796,7 @@ trait BaseUrlBuilder: Sized {
     fn with_base_url(self, base_url: &str) -> Self;
 }
 
-impl<Ext, Key, H> BaseUrlBuilder for rig_core::client::ClientBuilder<Ext, Key, H>
+impl<Ext, Key, H> BaseUrlBuilder for rig::client::ClientBuilder<Ext, Key, H>
 where
     Ext: Clone,
 {
@@ -737,7 +832,7 @@ mod tests {
         ProviderSettingsPayload,
     };
     use jaco_db::{FreshStore, NewProvider};
-    use rig_core::providers::{gemini, ollama, openrouter};
+    use rig::providers::{gemini, ollama, openrouter};
     use tempfile::tempdir;
 
     #[test]
@@ -918,9 +1013,9 @@ mod tests {
     fn build_openai_client_for_test(
         provider: &ProviderRecord,
         secrets: &ProviderSecretValues,
-    ) -> Result<openai::Client, ProviderModelFetchError> {
+    ) -> Result<rig_openai::Client, ProviderModelFetchError> {
         apply_base_url(
-            openai::Client::builder().api_key(required_secret(secrets, "api_key")?),
+            rig_openai::Client::builder().api_key(required_secret(secrets, "api_key")?),
             &provider.settings,
         )?
         .build()

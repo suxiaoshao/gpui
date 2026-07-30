@@ -2,11 +2,13 @@ use crate::{
     AgentRunFinalEntry, DATABASE_FILE, FinishAgentRun, FreshStore, NewAgentRun, NewAttachment,
     NewConversation, NewConversationEntry, NewProject, NewPrompt, NewProvider, NewProviderModel,
     NewProviderStep, NewShortcut, NewToolInvocation, NewToolInvocationApproval, NewUsageEvent,
-    ToolInvocationApprovalOutcome, UpdateAgentRunStatus, UpdatePrompt, UpdateProvider,
-    UpdateProviderStepStatus, UpdateShortcut, UpdateToolInvocationStatus,
+    ToolInvocationApprovalOutcome, UpdatePrompt, UpdateProvider, UpdateProviderStepStatus,
+    UpdateShortcut, UpdateToolInvocationStatus,
 };
 use diesel::{
-    Connection, RunQueryDsl, SqliteConnection, sql_query,
+    Connection, RunQueryDsl, SqliteConnection,
+    connection::SimpleConnection,
+    sql_query,
     sql_types::{BigInt, Integer, Text},
 };
 use jaco_core::*;
@@ -261,6 +263,9 @@ fn provider_step_request(
         model_id: model_id.to_string(),
         input_item_ids: vec![input_item_id.to_string()],
         snapshot_kind: ProviderStepSnapshotKind::RigCompletionRequest,
+        transport: ProviderTransportSnapshot::ProviderDefault,
+        context_mode: ProviderRequestContextSnapshot::FullHistory,
+        previous_response_id: None,
         request_body: provider_raw(json!({ "messages": [] })),
     }
 }
@@ -270,6 +275,7 @@ fn provider_step_response() -> ProviderStepResponseSnapshot {
         provider_run_id: Some("resp_1".to_string()),
         output_item_ids: vec!["item_1".to_string()],
         response_body: Some(provider_raw(json!({ "id": "resp_1" }))),
+        provider_outputs: Vec::new(),
     }
 }
 
@@ -278,7 +284,6 @@ fn provider_run_state(provider_id: &str) -> ProviderRunStateSnapshot {
         provider_id: provider_id.to_string(),
         provider_run_id: Some("resp_1".to_string()),
         output_item_ids: vec!["item_1".to_string()],
-        continuation: Some(provider_raw(json!({ "previous_response_id": "resp_1" }))),
     }
 }
 

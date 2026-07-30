@@ -71,3 +71,20 @@ fn status_to_string(status: ExitStatus) -> String {
         .map(|code| code.to_string())
         .unwrap_or_else(|| "terminated by signal".to_string())
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_exists_handles_bare_absolute_and_missing_commands() {
+        assert!(command_exists("sh"));
+
+        let current_exe = std::env::current_exe().unwrap();
+        assert!(command_exists(current_exe.to_str().unwrap()));
+
+        assert!(!command_exists(
+            "jaco-xtask-command-that-must-not-exist-5b5657b7"
+        ));
+    }
+}

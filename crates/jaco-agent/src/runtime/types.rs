@@ -2,7 +2,7 @@ use crate::{Result, ToolRegistry};
 use async_trait::async_trait;
 use jaco_core::*;
 use jaco_db::AgentRunRecord;
-use rig_core::completion::CompletionModel;
+use rig::completion::CompletionModel;
 use std::{path::PathBuf, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
@@ -41,7 +41,7 @@ pub struct AgentRunRequest {
     pub runtime_snapshot: AgentRuntimeSnapshot,
     pub tool_registry: ToolRegistry,
     pub skill_requests: Vec<SkillActivationRequest>,
-    pub provider_tools: Vec<rig_core::completion::ProviderToolDefinition>,
+    pub provider_tools: Vec<rig::completion::ProviderToolDefinition>,
     pub project_root: Option<PathBuf>,
     pub guards: RuntimeGuards,
     pub cancellation_token: AgentCancellationToken,

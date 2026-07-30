@@ -8,7 +8,7 @@ use crate::{AgentRuntimeError, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use jaco_core::*;
 use jaco_db::{AttachmentRecord, ConversationEntryRecord};
-use rig_core::{
+use rig::{
     OneOrMany,
     completion::{AssistantContent, Message as RigMessage},
     message::{
@@ -140,8 +140,8 @@ fn conversation_entry_to_rig_message_with_options(
         }
         ConversationEntryPayload::Reasoning { text, summary } if options.include_reasoning => {
             let reasoning = summary.as_ref().map_or_else(
-                || rig_core::message::Reasoning::new(text),
-                |summary| rig_core::message::Reasoning::summaries(vec![summary.clone()]),
+                || rig::message::Reasoning::new(text),
+                |summary| rig::message::Reasoning::summaries(vec![summary.clone()]),
             );
             Some(RigMessage::Assistant {
                 id: item.provider_item_id.clone(),
@@ -530,10 +530,10 @@ mod tests {
             panic!("expected image content");
         };
         assert_eq!(image.media_type.as_ref(), Some(&ImageMediaType::PNG));
-        assert!(matches!(
-            &image.data,
-            message::DocumentSourceKind::Base64(_)
-        ));
+        assert_eq!(
+            image.data,
+            message::DocumentSourceKind::Base64("iVBORw==".to_string())
+        );
     }
 
     #[test]
@@ -591,6 +591,68 @@ mod tests {
         let error = conversation_entry_to_rig_message(&item, &attachment_map).unwrap_err();
 
         assert!(matches!(error, AgentRuntimeError::Unsupported(_)));
+    }
+
+    #[test]
+    fn pdf_attachments_preserve_padded_and_empty_base64_output() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let padded_path = temp_dir.path().join("padded.pdf");
+        let empty_path = temp_dir.path().join("empty.pdf");
+        fs::write(&padded_path, b"%PDF").unwrap();
+        fs::write(&empty_path, []).unwrap();
+        let item = conversation_entry(
+            "item-1",
+            vec![
+                ContentPart::File {
+                    attachment_id: "padded".to_string(),
+                },
+                ContentPart::File {
+                    attachment_id: "empty".to_string(),
+                },
+            ],
+        );
+        let attachments = [
+            attachment_record(
+                "padded",
+                AttachmentKind::File,
+                Some("application/pdf"),
+                Some(padded_path.to_string_lossy().as_ref()),
+            ),
+            attachment_record(
+                "empty",
+                AttachmentKind::File,
+                Some("application/pdf"),
+                Some(empty_path.to_string_lossy().as_ref()),
+            ),
+        ];
+        let attachment_map = attachment_map(&attachments);
+
+        let message = conversation_entry_to_rig_message(&item, &attachment_map)
+            .unwrap()
+            .unwrap();
+        let RigMessage::User { content } = message else {
+            panic!("expected user message");
+        };
+        let parts = content.iter().collect::<Vec<_>>();
+        assert_eq!(parts.len(), 2);
+
+        let UserContent::Document(padded) = parts[0] else {
+            panic!("expected padded PDF document");
+        };
+        assert_eq!(padded.media_type, Some(DocumentMediaType::PDF));
+        assert_eq!(
+            padded.data,
+            message::DocumentSourceKind::Base64("JVBERg==".to_string())
+        );
+
+        let UserContent::Document(empty) = parts[1] else {
+            panic!("expected empty PDF document");
+        };
+        assert_eq!(empty.media_type, Some(DocumentMediaType::PDF));
+        assert_eq!(
+            empty.data,
+            message::DocumentSourceKind::Base64(String::new())
+        );
     }
 
     #[test]

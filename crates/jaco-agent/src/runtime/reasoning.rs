@@ -5,7 +5,10 @@ pub(crate) fn reasoning_additional_params(settings: &RunSettingsSnapshot) -> Opt
     let selection = settings.reasoning_selection.as_ref()?;
     let provider_kind = settings.provider_settings.provider_kind.as_str();
     match provider_kind {
-        "openai" | "custom_openai_compatible" | "azure_openai" => {
+        "openai" => crate::providers::openai::OpenAiReasoningPolicy::from_run_settings(settings)
+            .ok()
+            .and_then(|policy| policy.merge_into_request_params(None).ok()),
+        "custom_openai_compatible" | "azure_openai" => {
             level_selection(selection).map(|effort| json!({ "reasoning": { "effort": effort } }))
         }
         "ollama" => ollama_reasoning(selection),
@@ -209,7 +212,10 @@ mod tests {
 
         assert_eq!(
             reasoning_additional_params(&settings),
-            Some(json!({ "reasoning": { "effort": "high" } }))
+            Some(json!({
+                "reasoning": { "effort": "high" },
+                "store": true
+            }))
         );
     }
 

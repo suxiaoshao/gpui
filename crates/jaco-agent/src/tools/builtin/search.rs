@@ -175,7 +175,8 @@ fn find_path_matches(
     builder
         .hidden(!include_hidden)
         .git_ignore(true)
-        .parents(true);
+        .parents(true)
+        .sort_by_file_path(|left, right| left.cmp(right));
     let mut matches = Vec::new();
     for result in builder.build() {
         let entry = result.map_err(|err| std::io::Error::other(err.to_string()))?;
@@ -247,7 +248,8 @@ fn grep_matches(
     builder
         .hidden(!input.include_hidden)
         .git_ignore(true)
-        .parents(true);
+        .parents(true)
+        .sort_by_file_path(|left, right| left.cmp(right));
     for result in builder.build() {
         if matches.len() >= collection_limit {
             break;
@@ -605,5 +607,148 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("invalid grep pattern"));
+    }
+
+    #[tokio::test]
+    async fn search_honors_gitignore_negation_hidden_and_glob_filters() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        fs::create_dir(dir.path().join("nested")).unwrap();
+        fs::write(
+            dir.path().join(".gitignore"),
+            "ignored.txt\nnested/*.log\n!nested/keep.log\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("visible.rs"), "needle visible\n").unwrap();
+        fs::write(dir.path().join("ignored.txt"), "needle ignored\n").unwrap();
+        fs::write(dir.path().join(".hidden.rs"), "needle hidden\n").unwrap();
+        fs::write(dir.path().join("nested/drop.log"), "needle dropped\n").unwrap();
+        fs::write(dir.path().join("nested/keep.log"), "needle kept\n").unwrap();
+        let context = BuiltinToolContext {
+            project_root: Some(dir.path().to_path_buf()),
+        };
+
+        let found = FindPathTool::new(context.clone())
+            .execute(json!({
+                "query": "ignored.txt",
+                "includeHidden": true,
+            }))
+            .await
+            .unwrap();
+        let found_output: FindPathOutput =
+            serde_json::from_value(found.structured_output.unwrap().value).unwrap();
+        assert!(found_output.matches.is_empty());
+
+        let visible = GrepTool::new(context.clone())
+            .execute(json!({
+                "pattern": "needle",
+                "glob": "*.rs",
+                "includeHidden": false,
+            }))
+            .await
+            .unwrap();
+        let visible_output: GrepOutput =
+            serde_json::from_value(visible.structured_output.unwrap().value).unwrap();
+        assert_eq!(visible_output.matches.len(), 1);
+        assert!(visible_output.matches[0].path.ends_with("visible.rs"));
+
+        let hidden = GrepTool::new(context.clone())
+            .execute(json!({
+                "pattern": "needle",
+                "glob": "*.rs",
+                "includeHidden": true,
+            }))
+            .await
+            .unwrap();
+        let hidden_output: GrepOutput =
+            serde_json::from_value(hidden.structured_output.unwrap().value).unwrap();
+        assert_eq!(hidden_output.matches.len(), 2);
+        assert!(
+            hidden_output
+                .matches
+                .iter()
+                .any(|entry| entry.path.ends_with(".hidden.rs"))
+        );
+
+        let negated = GrepTool::new(context)
+            .execute(json!({
+                "pattern": "needle",
+                "glob": "*.log",
+                "includeHidden": true,
+            }))
+            .await
+            .unwrap();
+        let negated_output: GrepOutput =
+            serde_json::from_value(negated.structured_output.unwrap().value).unwrap();
+        assert_eq!(negated_output.matches.len(), 1);
+        assert!(
+            Path::new(&negated_output.matches[0].path)
+                .ends_with(Path::new("nested").join("keep.log"))
+        );
+    }
+
+    #[tokio::test]
+    async fn grep_preserves_crlf_ranges_lossy_utf8_and_path_order() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("b.rs"), b"zero\r\nalpha alpha\r\n").unwrap();
+        fs::write(dir.path().join("a.rs"), b"alpha\xff\r\n").unwrap();
+        let context = BuiltinToolContext {
+            project_root: Some(dir.path().to_path_buf()),
+        };
+
+        let grep = GrepTool::new(context)
+            .execute(json!({
+                "pattern": "alpha",
+                "glob": "*.rs",
+                "maxResults": 10,
+            }))
+            .await
+            .unwrap();
+        let output: GrepOutput =
+            serde_json::from_value(grep.structured_output.unwrap().value).unwrap();
+
+        assert_eq!(output.matches.len(), 2);
+        assert!(output.matches[0].path.ends_with("a.rs"));
+        assert_eq!(output.matches[0].line, "alpha�");
+        assert_eq!(output.matches[0].ranges[0].start, 0);
+        assert_eq!(output.matches[0].ranges[0].end, 5);
+        assert!(output.matches[1].path.ends_with("b.rs"));
+        assert_eq!(output.matches[1].line_number, 2);
+        assert_eq!(output.matches[1].line, "alpha alpha");
+        assert_eq!(
+            output.matches[1]
+                .ranges
+                .iter()
+                .map(|range| (range.start, range.end))
+                .collect::<Vec<_>>(),
+            vec![(0, 5), (6, 11)]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn find_path_reports_symlinks_without_following_them() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("target")).unwrap();
+        fs::write(dir.path().join("target/inside.txt"), "inside\n").unwrap();
+        symlink(dir.path().join("target"), dir.path().join("target-link")).unwrap();
+        let context = BuiltinToolContext {
+            project_root: Some(dir.path().to_path_buf()),
+        };
+
+        let found = FindPathTool::new(context)
+            .execute(json!({
+                "query": "target-link",
+                "includeHidden": true,
+            }))
+            .await
+            .unwrap();
+        let output: FindPathOutput =
+            serde_json::from_value(found.structured_output.unwrap().value).unwrap();
+
+        assert_eq!(output.matches.len(), 1);
+        assert_eq!(output.matches[0].kind, FileEntryKind::Symlink);
     }
 }

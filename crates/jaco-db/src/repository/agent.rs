@@ -11,14 +11,14 @@ impl FreshRepository {
                 conversation_id: input.conversation_id,
                 trigger_entry_id: input.trigger_entry_id,
                 trigger_kind: db_label(&input.trigger_kind)?,
-                status: db_label(&input.status)?,
+                status: db_label(&AgentRunStatus::Running)?,
                 input_json: to_json(&input.input)?,
                 final_entry_id: None,
                 stopped_reason: None,
                 error_json: None,
                 created_at: now,
-                started_at: next_started_at(None, input.status, now),
-                completed_at: next_agent_run_completed_at(None, input.status, now),
+                started_at: Some(now),
+                completed_at: None,
                 updated_at: now,
             };
             diesel::insert_into(agent_runs::table)
@@ -63,17 +63,6 @@ impl FreshRepository {
             .collect()
     }
 
-    pub fn update_agent_run_status(
-        &self,
-        id: &str,
-        update: UpdateAgentRunStatus,
-    ) -> Result<AgentRunRecord> {
-        let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| {
-            update_active_agent_run_status_with_conn(conn, id, update)
-        })
-    }
-
     pub fn finish_agent_run(
         &self,
         id: &str,
@@ -83,20 +72,6 @@ impl FreshRepository {
         conn.immediate_transaction(|conn| {
             let finished = finish_agent_run_with_conn(conn, id, finish)?;
             conversation_commit_with_conn(conn, finished.run.conversation_id.clone(), finished)
-        })
-    }
-
-    pub fn append_conversation_entry_and_update_agent_run(
-        &self,
-        item: NewConversationEntry,
-        agent_run_id: &str,
-        update: UpdateAgentRunStatus,
-    ) -> Result<(ConversationEntryRecord, AgentRunRecord)> {
-        let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| {
-            let item = append_conversation_entry_with_conn(conn, item)?;
-            let run = update_active_agent_run_status_with_conn(conn, agent_run_id, update)?;
-            Ok((item, run))
         })
     }
 
@@ -119,6 +94,12 @@ impl FreshRepository {
                 request_snapshot_json: to_json(&input.request_snapshot)?,
                 response_snapshot_json: to_json_opt(&input.response_snapshot)?,
                 state_snapshot_json: to_json_opt(&input.state_snapshot)?,
+                continuation_kind: None,
+                provider_response_id: None,
+                reasoning_context: None,
+                continuation_expires_at: None,
+                continuation_invalidated_at: None,
+                continuation_error_json: None,
                 settings_snapshot_json: to_json(&input.settings_snapshot)?,
                 error_json: to_json_opt(&input.error)?,
                 created_at: now,
@@ -153,6 +134,96 @@ impl FreshRepository {
             .collect()
     }
 
+    pub fn latest_completed_provider_step_before_trigger(
+        &self,
+        conversation_id: &str,
+        trigger_entry_id: &str,
+    ) -> Result<Option<ProviderStepRecord>> {
+        let mut conn = self.conn()?;
+        let trigger = conversation_entry_row(&mut conn, trigger_entry_id)?.ok_or_else(|| {
+            DbError::Invariant(format!(
+                "conversation entry `{trigger_entry_id}` does not exist"
+            ))
+        })?;
+        ensure_equal(
+            "provider continuation trigger conversation",
+            &trigger.conversation_id,
+            conversation_id,
+        )?;
+        let runs = agent_runs::table
+            .filter(agent_runs::conversation_id.eq(conversation_id))
+            .select(SqlAgentRunRow::as_select())
+            .load::<SqlAgentRunRow>(&mut conn)?;
+        let mut candidates = Vec::new();
+        for run in runs {
+            let Some(run_trigger) = conversation_entry_row(&mut conn, &run.trigger_entry_id)?
+            else {
+                continue;
+            };
+            if run_trigger.seq >= trigger.seq {
+                continue;
+            }
+            let steps = provider_steps::table
+                .filter(provider_steps::agent_run_id.eq(&run.id))
+                .filter(provider_steps::status.eq("completed"))
+                .select(SqlProviderStepRow::as_select())
+                .load::<SqlProviderStepRow>(&mut conn)?;
+            candidates.extend(
+                steps
+                    .into_iter()
+                    .map(|step| (run_trigger.seq, step.seq, step)),
+            );
+        }
+        candidates.sort_by_key(|candidate| std::cmp::Reverse((candidate.0, candidate.1)));
+        candidates
+            .into_iter()
+            .next()
+            .map(|(_, _, step)| step.try_into())
+            .transpose()
+    }
+
+    pub fn invalidate_provider_continuation(
+        &self,
+        id: &str,
+        invalidated_at: OffsetDateTime,
+        error: RunErrorPayload,
+    ) -> Result<ProviderStepRecord> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            let existing = load_provider_step_row(conn, id)?;
+            let mut record: ProviderStepRecord = existing.clone().try_into()?;
+            let continuation = record.continuation.as_mut().ok_or_else(|| {
+                DbError::Invariant(format!(
+                    "provider step `{id}` has no continuation to invalidate"
+                ))
+            })?;
+            continuation
+                .invalidate(invalidated_at, error)
+                .map_err(|error| DbError::Invariant(error.to_string()))?;
+            let (
+                continuation_kind,
+                provider_response_id,
+                reasoning_context,
+                continuation_expires_at,
+                continuation_invalidated_at,
+                continuation_error_json,
+            ) = provider_continuation_columns(Some(continuation))?;
+            diesel::update(provider_steps::table.find(id))
+                .set(SqlProviderContinuationChanges {
+                    continuation_kind,
+                    provider_response_id,
+                    reasoning_context,
+                    continuation_expires_at,
+                    continuation_invalidated_at,
+                    continuation_error_json,
+                    updated_at: now_string()?,
+                })
+                .returning(SqlProviderStepRow::as_returning())
+                .get_result::<SqlProviderStepRow>(conn)?
+                .try_into()
+        })
+    }
+
     pub fn next_provider_step_seq(&self, agent_run_id: &str) -> Result<i32> {
         let mut conn = self.conn()?;
         let max_seq = provider_steps::table
@@ -169,6 +240,76 @@ impl FreshRepository {
     ) -> Result<ProviderStepRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| update_provider_step_status_with_conn(conn, id, update))
+    }
+
+    pub fn complete_provider_step_with_usage(
+        &self,
+        id: &str,
+        completion: CompleteProviderStep,
+    ) -> Result<CompletedProviderStep> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            let existing = load_provider_step_row(conn, id)?;
+            let status: ProviderStepStatus = db_label_parse(existing.status.clone())?;
+            if status != ProviderStepStatus::Running {
+                return Err(DbError::Invariant(format!(
+                    "provider step `{id}` must be running before completion"
+                )));
+            }
+            ensure_equal(
+                "provider step state provider",
+                &completion.state_snapshot.provider_id,
+                &existing.provider_id,
+            )?;
+            if let Some(continuation) = completion.continuation.as_ref()
+                && (completion.response_snapshot.provider_run_id.as_deref()
+                    != Some(continuation.response_id.as_str())
+                    || completion.state_snapshot.provider_run_id.as_deref()
+                        != Some(continuation.response_id.as_str()))
+            {
+                return Err(DbError::Invariant(
+                    "provider continuation response ID does not match response/state snapshots"
+                        .to_string(),
+                ));
+            }
+            let now = now_string()?;
+            let (
+                continuation_kind,
+                provider_response_id,
+                reasoning_context,
+                continuation_expires_at,
+                continuation_invalidated_at,
+                continuation_error_json,
+            ) = provider_continuation_columns(completion.continuation.as_ref())?;
+            let changes = SqlProviderStepStatusChanges {
+                status: db_label(&ProviderStepStatus::Completed)?,
+                response_snapshot_json: Some(to_json(&completion.response_snapshot)?),
+                state_snapshot_json: Some(to_json(&completion.state_snapshot)?),
+                continuation_kind,
+                provider_response_id,
+                reasoning_context,
+                continuation_expires_at,
+                continuation_invalidated_at,
+                continuation_error_json,
+                error_json: None,
+                started_at: existing.started_at.or(Some(now)),
+                completed_at: Some(now),
+                updated_at: now,
+            };
+            let step = diesel::update(provider_steps::table.find(id))
+                .set(&changes)
+                .returning(SqlProviderStepRow::as_returning())
+                .get_result::<SqlProviderStepRow>(conn)?
+                .try_into()?;
+            let usage = insert_usage_event_with_conn(
+                conn,
+                &existing,
+                completion.usage,
+                now.date().to_string(),
+                now,
+            )?;
+            Ok(CompletedProviderStep { step, usage })
+        })
     }
 
     pub fn append_conversation_entry_and_update_provider_step(
@@ -480,29 +621,15 @@ impl FreshRepository {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
             let provider_step = load_provider_step_row(conn, &input.provider_step_id)?;
-            let agent_run = load_agent_run_row(conn, &provider_step.agent_run_id)?;
+            let status: ProviderStepStatus = db_label_parse(provider_step.status.clone())?;
+            if status != ProviderStepStatus::Completed {
+                return Err(DbError::Invariant(format!(
+                    "usage can only be inserted for completed provider step `{}`",
+                    input.provider_step_id
+                )));
+            }
             let now = now_string()?;
-            let row = SqlNewUsageEventRow {
-                id: new_id(),
-                provider_step_id: provider_step.id,
-                conversation_id: agent_run.conversation_id,
-                provider_id: provider_step.provider_id,
-                model_id: provider_step.model_id,
-                date_key: input.date_key,
-                input_tokens: u64_to_i64(input.usage.input_tokens)?,
-                output_tokens: u64_to_i64(input.usage.output_tokens)?,
-                cached_input_tokens: u64_to_i64(input.usage.cached_input_tokens)?,
-                cache_write_input_tokens: u64_to_i64(input.usage.cache_write_input_tokens)?,
-                reasoning_tokens: u64_to_i64(input.usage.reasoning_tokens)?,
-                total_tokens: u64_to_i64(input.usage.total_tokens)?,
-                usage_json: to_json(&input.usage)?,
-                created_at: now,
-            };
-            diesel::insert_into(usage_events::table)
-                .values(&row)
-                .returning(SqlUsageEventRow::as_returning())
-                .get_result::<SqlUsageEventRow>(conn)?
-                .try_into()
+            insert_usage_event_with_conn(conn, &provider_step, input.usage, input.date_key, now)
         })
     }
 
@@ -520,4 +647,63 @@ impl FreshRepository {
             .map(TryInto::try_into)
             .collect()
     }
+}
+
+type ProviderContinuationColumns = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<OffsetDateTime>,
+    Option<OffsetDateTime>,
+    Option<serde_json::Value>,
+);
+
+fn provider_continuation_columns(
+    continuation: Option<&ProviderContinuationSnapshot>,
+) -> Result<ProviderContinuationColumns> {
+    let Some(continuation) = continuation else {
+        return Ok((None, None, None, None, None, None));
+    };
+    let kind = match continuation.kind {
+        ProviderContinuationKind::OpenAiResponses => "openai_responses",
+    };
+    Ok((
+        Some(kind.to_string()),
+        Some(continuation.response_id.clone()),
+        Some(continuation.reasoning_context.clone()),
+        Some(continuation.expires_at),
+        continuation.invalidated_at,
+        to_json_opt(&continuation.invalidation_error)?,
+    ))
+}
+
+fn insert_usage_event_with_conn(
+    conn: &mut SqliteConnection,
+    provider_step: &SqlProviderStepRow,
+    usage: ProviderUsageSnapshot,
+    date_key: String,
+    now: OffsetDateTime,
+) -> Result<UsageEventRecord> {
+    let agent_run = load_agent_run_row(conn, &provider_step.agent_run_id)?;
+    let row = SqlNewUsageEventRow {
+        id: new_id(),
+        provider_step_id: provider_step.id.clone(),
+        conversation_id: agent_run.conversation_id,
+        provider_id: provider_step.provider_id.clone(),
+        model_id: provider_step.model_id.clone(),
+        date_key,
+        input_tokens: u64_to_i64(usage.input_tokens)?,
+        output_tokens: u64_to_i64(usage.output_tokens)?,
+        cached_input_tokens: u64_to_i64(usage.cached_input_tokens)?,
+        cache_write_input_tokens: u64_to_i64(usage.cache_write_input_tokens)?,
+        reasoning_tokens: u64_to_i64(usage.reasoning_tokens)?,
+        total_tokens: u64_to_i64(usage.total_tokens)?,
+        usage_json: to_json(&usage)?,
+        created_at: now,
+    };
+    diesel::insert_into(usage_events::table)
+        .values(&row)
+        .returning(SqlUsageEventRow::as_returning())
+        .get_result::<SqlUsageEventRow>(conn)?
+        .try_into()
 }

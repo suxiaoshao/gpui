@@ -1,7 +1,9 @@
 use crate::{
     AgentRuntimeError, AgentRuntimeEvent, AgentRuntimeObserver, AgentStep,
-    RegisteredToolDefinition, Result, ToolApprovalBroker, tools::RegisteredRuntimeTool,
+    RegisteredToolDefinition, Result, ToolApprovalBroker,
+    runtime::lifecycle::{FinalizingAgentRun, FinishCommitFailed, FinishCommitted},
 };
+use gpui_operation::Transition;
 use jaco_core::*;
 use jaco_db::{
     AgentRunFinalEntry, AgentRunRecord, FinishAgentRun, FinishedAgentRun, NewAgentRun,
@@ -23,8 +25,22 @@ pub(crate) fn direct_agent_persistence(
     Arc::new(port::DirectAgentPersistence::new(repository))
 }
 
-use self::tool_hook::PersistingPromptHook;
-use rig_core::completion::Usage;
+#[cfg(test)]
+pub(crate) fn direct_agent_persistence_failing_append_conversation_entry(
+    repository: jaco_db::FreshRepository,
+) -> Arc<dyn AgentPersistence> {
+    Arc::new(port::DirectAgentPersistence::failing_append_conversation_entry(repository))
+}
+
+#[cfg(test)]
+pub(crate) fn direct_agent_persistence_failing_continuation_lookup(
+    repository: jaco_db::FreshRepository,
+) -> Arc<dyn AgentPersistence> {
+    Arc::new(port::DirectAgentPersistence::failing_latest_completed_provider_step(repository))
+}
+
+use self::tool_hook::PersistingAgentHook;
+use rig::completion::Usage;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -101,7 +117,7 @@ pub(crate) fn finish_agent_run_spec(
             AgentRunStatus::Completed => ConversationEntryStatus::Completed,
             AgentRunStatus::Canceled => ConversationEntryStatus::Canceled,
             AgentRunStatus::Failed => ConversationEntryStatus::Failed,
-            AgentRunStatus::Queued | AgentRunStatus::Running => {
+            AgentRunStatus::Running => {
                 unreachable!("finish_agent_run_spec requires a terminal status")
             }
         };
@@ -137,11 +153,11 @@ pub(crate) struct PersistenceContext {
     settings_snapshot: RunSettingsSnapshot,
     input_item_ids: Arc<Mutex<Vec<ConversationEntryId>>>,
     last_provider_step_id: Arc<Mutex<Option<ProviderStepId>>>,
+    provider_outputs: Arc<Mutex<HashMap<ProviderStepId, Vec<ProviderRawPayload>>>>,
     final_entry_id: Arc<Mutex<Option<ConversationEntryId>>>,
     events: Arc<Mutex<Vec<AgentRunEvent>>>,
     steps: Arc<Mutex<Vec<AgentStep>>>,
     tool_definitions: Arc<HashMap<String, RegisteredToolDefinition>>,
-    runtime_tools: Arc<HashMap<String, RegisteredRuntimeTool>>,
     tool_calls: Arc<Mutex<HashMap<String, ToolInvocationId>>>,
     repeated_tool_calls: Arc<Mutex<HashMap<String, u32>>>,
     max_tool_calls: u32,
@@ -162,7 +178,6 @@ impl PersistenceContext {
         settings_snapshot: RunSettingsSnapshot,
         input_item_ids: Vec<ConversationEntryId>,
         tool_definitions: Vec<RegisteredToolDefinition>,
-        runtime_tools: Vec<RegisteredRuntimeTool>,
         max_tool_calls: u32,
         repeated_tool_call_limit: u32,
         cancellation_token: CancellationToken,
@@ -178,6 +193,7 @@ impl PersistenceContext {
             settings_snapshot,
             input_item_ids: Arc::new(Mutex::new(input_item_ids)),
             last_provider_step_id: Arc::new(Mutex::new(None)),
+            provider_outputs: Arc::new(Mutex::new(HashMap::new())),
             final_entry_id: Arc::new(Mutex::new(None)),
             events: Arc::new(Mutex::new(Vec::new())),
             steps: Arc::new(Mutex::new(Vec::new())),
@@ -185,12 +201,6 @@ impl PersistenceContext {
                 tool_definitions
                     .into_iter()
                     .map(|definition| (definition.runtime_tool_name.clone(), definition))
-                    .collect(),
-            ),
-            runtime_tools: Arc::new(
-                runtime_tools
-                    .into_iter()
-                    .map(|tool| (tool.definition.runtime_tool_name.clone(), tool))
                     .collect(),
             ),
             tool_calls: Arc::new(Mutex::new(HashMap::new())),
@@ -203,8 +213,8 @@ impl PersistenceContext {
         }
     }
 
-    pub(crate) fn hook(&self) -> PersistingPromptHook {
-        PersistingPromptHook {
+    pub(crate) fn hook(&self) -> PersistingAgentHook {
+        PersistingAgentHook {
             context: self.clone(),
         }
     }
@@ -221,21 +231,36 @@ impl PersistenceContext {
         mutex_clone(&self.final_entry_id)
     }
 
-    pub(crate) async fn finish_run(&self, outcome: AgentRunOutcome) -> Result<FinishedAgentRun> {
-        let run = self
-            .persistence
-            .get_agent_run(self.agent_run_id.clone())
-            .await?
-            .ok_or_else(|| {
-                AgentRuntimeError::Invariant(format!("agent run {} disappeared", self.agent_run_id))
-            })?;
-        let commit = self
+    pub(crate) async fn finish_run(
+        &self,
+        finalizing: FinalizingAgentRun,
+    ) -> Result<FinishedAgentRun> {
+        if finalizing.record().id != self.agent_run_id {
+            let error = AgentRuntimeError::Invariant(format!(
+                "finalizing agent run {} does not match persistence context {}",
+                finalizing.record().id,
+                self.agent_run_id
+            ));
+            return Err(finalizing
+                .transition(FinishCommitFailed(error))
+                .into_error());
+        }
+        let outcome = finalizing.outcome().clone();
+        let commit = match self
             .persistence
             .finish_agent_run(
                 self.agent_run_id.clone(),
-                finish_agent_run_spec(&run, outcome.clone()),
+                finish_agent_run_spec(finalizing.record(), outcome.clone()),
             )
-            .await?;
+            .await
+        {
+            Ok(commit) => commit,
+            Err(error) => {
+                return Err(finalizing
+                    .transition(FinishCommitFailed(AgentRuntimeError::from(error)))
+                    .into_error());
+            }
+        };
         let mut changes = vec![jaco_core::ConversationChange::RunStatusChanged {
             run: Box::new(commit.value.run.clone()),
         }];
@@ -245,22 +270,32 @@ impl PersistenceContext {
             });
         }
         self.emit_conversation_commit_with_changes(&commit, changes);
-        let finished = commit.value;
+        let finished = finalizing
+            .transition(FinishCommitted(commit.value))
+            .into_finished();
         self.set_final_entry_id(Some(finished.final_entry.id.clone()));
         self.push_step(AgentStep::ConversationEntry(
             finished.final_entry.id.clone(),
         ));
-        match outcome {
-            AgentRunOutcome::Completed { .. } | AgentRunOutcome::MaxSteps { .. } => {
+        match finished.run.status {
+            AgentRunStatus::Completed => {
                 let output = finished.run.output.clone().ok_or_else(|| {
                     AgentRuntimeError::Invariant("finished run has no output".to_string())
                 })?;
                 self.push_event(AgentRunEvent::Completed { output });
             }
-            AgentRunOutcome::Failed { error } => {
+            AgentRunStatus::Failed => {
+                let error = finished.run.error.clone().ok_or_else(|| {
+                    AgentRuntimeError::Invariant("failed run has no error".to_string())
+                })?;
                 self.push_event(AgentRunEvent::Failed { error });
             }
-            AgentRunOutcome::Canceled { .. } => self.push_event(AgentRunEvent::Canceled),
+            AgentRunStatus::Canceled => self.push_event(AgentRunEvent::Canceled),
+            AgentRunStatus::Running => {
+                return Err(AgentRuntimeError::Invariant(
+                    "finished run remains active".to_string(),
+                ));
+            }
         }
         self.emit_runtime(AgentRuntimeEvent::AgentRunStatusChanged {
             agent_run_id: finished.run.id.clone(),
@@ -275,7 +310,6 @@ pub(crate) fn new_agent_run_input(request: &crate::AgentRunRequest) -> NewAgentR
         conversation_id: request.conversation_id.clone(),
         trigger_entry_id: request.trigger_entry_id.clone(),
         trigger_kind: request.trigger_kind,
-        status: AgentRunStatus::Queued,
         input: AgentRunInput {
             prompt_snapshot: request.prompt_snapshot.clone(),
             provider_id: request.provider_id.clone(),
@@ -325,8 +359,8 @@ pub(crate) fn provider_usage(usage: Usage) -> ProviderUsageSnapshot {
     }
 }
 
-fn completion_request_error(error: AgentRuntimeError) -> rig_core::completion::CompletionError {
-    rig_core::completion::CompletionError::RequestError(Box::new(error))
+fn completion_request_error(error: AgentRuntimeError) -> rig::completion::CompletionError {
+    rig::completion::CompletionError::RequestError(Box::new(error))
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

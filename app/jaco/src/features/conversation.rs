@@ -375,10 +375,20 @@ pub(crate) fn delete_conversation(
     cx: &mut App,
 ) -> Task<jaco_db::Result<ConversationSummary>> {
     let removed_id = conversation_id.clone();
+    let session_conversation_id = conversation_id.clone();
     spawn_conversation_mutation(
         cx,
         move |repository| repository.soft_delete_conversation(&conversation_id),
-        move |_conversation, cx| registry::publish_removed(removed_id, cx),
+        move |_conversation, cx| {
+            registry::publish_removed(removed_id, cx);
+            if let Some(runtime) = resources::ready_runtime(cx) {
+                runtime
+                    .update(cx, |runtime, cx| {
+                        runtime.close_conversation_sessions(session_conversation_id, cx)
+                    })
+                    .detach();
+            }
+        },
     )
 }
 

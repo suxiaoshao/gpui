@@ -35,7 +35,6 @@ pub(crate) fn reasoning_selections(
     legacy_level_selections(reasoning)
 }
 
-#[cfg(test)]
 pub(crate) fn computed_default_reasoning_selection(
     reasoning: Option<&ReasoningCapabilitySnapshot>,
 ) -> Option<ReasoningSelectionSnapshot> {
@@ -45,6 +44,24 @@ pub(crate) fn computed_default_reasoning_selection(
     }
 
     legacy_default_selection(reasoning)
+}
+
+pub(crate) fn reasoning_selection_after_model_change(
+    reasoning: Option<&ReasoningCapabilitySnapshot>,
+    current: Option<&ReasoningSelectionSnapshot>,
+) -> Option<ReasoningSelectionSnapshot> {
+    match current {
+        Some(current) if reasoning_selection_is_valid(reasoning, current) => Some(current.clone()),
+        Some(_) => computed_default_reasoning_selection(reasoning),
+        None => None,
+    }
+}
+
+pub(crate) fn projected_reasoning_selection(
+    reasoning: Option<&ReasoningCapabilitySnapshot>,
+    selected: Option<ReasoningSelectionSnapshot>,
+) -> Option<ReasoningSelectionSnapshot> {
+    selected.filter(|selection| reasoning_selection_is_valid(reasoning, selection))
 }
 
 pub(crate) fn reasoning_selection_is_valid(
@@ -284,7 +301,6 @@ fn token_budget_selection_is_valid(
     }
 }
 
-#[cfg(test)]
 fn default_selection_for_control(
     control: &ReasoningControlSnapshot,
 ) -> Option<ReasoningSelectionSnapshot> {
@@ -321,7 +337,6 @@ fn default_selection_for_control(
     }
 }
 
-#[cfg(test)]
 fn default_composite_selection(
     controls: &[ReasoningControlSnapshot],
 ) -> Option<ReasoningSelectionSnapshot> {
@@ -345,7 +360,6 @@ fn default_composite_selection(
         .or_else(|| controls.iter().find_map(default_selection_for_control))
 }
 
-#[cfg(test)]
 fn default_level_selection(
     values: &[String],
     default_value: Option<&str>,
@@ -384,7 +398,6 @@ fn legacy_level_selections(
     selections
 }
 
-#[cfg(test)]
 fn legacy_default_selection(
     reasoning: &ReasoningCapabilitySnapshot,
 ) -> Option<ReasoningSelectionSnapshot> {
@@ -402,7 +415,6 @@ fn legacy_default_selection(
         .or_else(|| options.first().cloned())
 }
 
-#[cfg(test)]
 fn default_token_budget_selection(
     min: Option<u32>,
     max: Option<u32>,
@@ -496,7 +508,8 @@ fn reasoning_value_label(value: &str, i18n: &foundation::I18n) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        computed_default_reasoning_selection, reasoning_selection_is_valid, reasoning_selections,
+        computed_default_reasoning_selection, projected_reasoning_selection,
+        reasoning_selection_after_model_change, reasoning_selection_is_valid, reasoning_selections,
     };
     use jaco_core::{
         CapabilitySourceSnapshot, ReasoningCapabilitySnapshot, ReasoningControlSnapshot,
@@ -615,6 +628,55 @@ mod tests {
             computed_default_reasoning_selection(Some(&new)),
             Some(ReasoningSelectionSnapshot::Boolean { enabled: false })
         );
+    }
+
+    #[test]
+    fn explicit_model_change_preserves_valid_reasoning_and_resets_invalid_reasoning() {
+        let gpt_5_6 = reasoning(ReasoningControlSnapshot::Levels {
+            values: vec![
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+                "max".to_string(),
+            ],
+            default_value: Some("medium".to_string()),
+        });
+        let gpt_5_5 = reasoning(ReasoningControlSnapshot::Levels {
+            values: vec!["low".to_string(), "medium".to_string(), "high".to_string()],
+            default_value: Some("medium".to_string()),
+        });
+
+        assert_eq!(
+            reasoning_selection_after_model_change(Some(&gpt_5_5), Some(&level("high"))),
+            Some(level("high"))
+        );
+        assert_eq!(
+            reasoning_selection_after_model_change(Some(&gpt_5_5), Some(&level("max"))),
+            Some(level("medium"))
+        );
+        assert_eq!(
+            reasoning_selection_after_model_change(Some(&gpt_5_6), None),
+            None
+        );
+        assert_eq!(
+            reasoning_selection_after_model_change(None, Some(&level("max"))),
+            None
+        );
+    }
+
+    #[test]
+    fn catalog_projection_clears_an_invalid_native_selection_without_rewriting_it() {
+        let gpt_5_5 = reasoning(ReasoningControlSnapshot::Levels {
+            values: vec!["low".to_string(), "medium".to_string(), "high".to_string()],
+            default_value: Some("medium".to_string()),
+        });
+        let persisted = level("max");
+
+        assert_eq!(
+            projected_reasoning_selection(Some(&gpt_5_5), Some(persisted.clone())),
+            None
+        );
+        assert_eq!(persisted, level("max"));
     }
 
     #[test]

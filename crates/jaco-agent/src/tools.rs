@@ -4,14 +4,15 @@ pub(crate) mod builtin;
 use crate::{AgentRuntimeError, Result};
 use async_trait::async_trait;
 use jaco_core::*;
-use rig_core::{
-    completion::ToolDefinition as RigToolDefinition,
-    tool::{ToolDyn, ToolError},
-    wasm_compat::WasmBoxedFuture,
+use rig::{
+    OneOrMany,
+    agent::{AgentBuilder, WithBuilderTools},
+    completion::CompletionModel,
+    message::ToolResultContent,
+    tool::{DynamicTool, ToolExecutionError, ToolOutput},
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
-use tokio::time::timeout;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -65,17 +66,52 @@ pub trait LocalTool: ToolExecutor {
 }
 
 #[derive(Clone)]
-struct ToolEntry {
-    definition: ToolDefinition,
-    runtime_tool_name: String,
-    executor: Arc<dyn ToolExecutor>,
+enum ToolEntryRuntime {
+    Local(Arc<dyn ToolExecutor>),
+    Rmcp {
+        tool: Box<rmcp::model::Tool>,
+        server: rmcp::service::ServerSink,
+    },
 }
 
 #[derive(Clone)]
-pub(crate) struct RegisteredRuntimeTool {
-    pub definition: RegisteredToolDefinition,
-    pub executor: Arc<dyn ToolExecutor>,
-    pub timeout: std::time::Duration,
+struct ToolEntry {
+    definition: ToolDefinition,
+    runtime_tool_name: String,
+    runtime: ToolEntryRuntime,
+}
+
+pub(crate) struct RmcpToolRegistration {
+    tool: rmcp::model::Tool,
+    server: rmcp::service::ServerSink,
+    timeout: std::time::Duration,
+}
+
+pub(crate) struct RigToolBundle {
+    dynamic_tools: Vec<DynamicTool>,
+    rmcp_tools: Vec<RmcpToolRegistration>,
+    definitions: Vec<RegisteredToolDefinition>,
+}
+
+impl RigToolBundle {
+    pub(crate) fn definitions(&self) -> &[RegisteredToolDefinition] {
+        &self.definitions
+    }
+
+    pub(crate) fn install<M>(self, builder: AgentBuilder<M>) -> AgentBuilder<M, WithBuilderTools>
+    where
+        M: CompletionModel,
+    {
+        let mut builder = builder.dynamic_tools(self.dynamic_tools);
+        for registration in self.rmcp_tools {
+            builder = builder.rmcp_tools_with_timeout(
+                vec![registration.tool],
+                registration.server,
+                registration.timeout,
+            );
+        }
+        builder
+    }
 }
 
 #[derive(Clone, Default)]
@@ -97,11 +133,23 @@ impl ToolRegistry {
         self.register_tool_definition(definition, Arc::new(tool))
     }
 
-    pub fn register_mcp_tool<T>(&mut self, definition: ToolDefinition, tool: T) -> Result<()>
-    where
-        T: ToolDyn + 'static,
-    {
-        self.register_tool_definition(definition, Arc::new(RigToolExecutor::new(tool)))
+    pub fn register_mcp_tool(
+        &mut self,
+        definition: ToolDefinition,
+        tool: rmcp::model::Tool,
+        server: rmcp::service::ServerSink,
+    ) -> Result<()> {
+        ensure_tool_name(&definition.name)?;
+        self.finalized = false;
+        self.entries.push(ToolEntry {
+            runtime_tool_name: definition.name.clone(),
+            definition,
+            runtime: ToolEntryRuntime::Rmcp {
+                tool: Box::new(tool),
+                server,
+            },
+        });
+        Ok(())
     }
 
     pub fn register_tool_definition(
@@ -114,7 +162,7 @@ impl ToolRegistry {
         self.entries.push(ToolEntry {
             runtime_tool_name: definition.name.clone(),
             definition,
-            executor,
+            runtime: ToolEntryRuntime::Local(executor),
         });
         Ok(())
     }
@@ -169,41 +217,6 @@ impl ToolRegistry {
             .collect()
     }
 
-    pub(crate) fn runtime_tools(
-        &self,
-        default_timeout: std::time::Duration,
-    ) -> Vec<RegisteredRuntimeTool> {
-        let mut registry = self.clone();
-        if !registry.finalized {
-            registry.finalize_names();
-        }
-        registry
-            .entries
-            .into_iter()
-            .map(|entry| {
-                let timeout = entry
-                    .definition
-                    .policy
-                    .timeout_ms
-                    .map(std::time::Duration::from_millis)
-                    .unwrap_or(default_timeout);
-                RegisteredRuntimeTool {
-                    definition: RegisteredToolDefinition {
-                        source: entry.definition.source,
-                        namespace: entry.definition.namespace,
-                        tool_name: entry.definition.name,
-                        runtime_tool_name: entry.runtime_tool_name,
-                        description: entry.definition.description,
-                        parameters: entry.definition.parameters,
-                        policy: entry.definition.policy,
-                    },
-                    executor: entry.executor,
-                    timeout,
-                }
-            })
-            .collect()
-    }
-
     pub fn lookup(&self, runtime_tool_name: &str) -> Option<RegisteredToolDefinition> {
         self.entries
             .iter()
@@ -219,97 +232,76 @@ impl ToolRegistry {
             })
     }
 
-    pub fn into_rig_tools(mut self, default_timeout: std::time::Duration) -> Vec<Box<dyn ToolDyn>> {
+    pub(crate) fn into_rig_tool_bundle(
+        mut self,
+        default_timeout: std::time::Duration,
+    ) -> RigToolBundle {
         if !self.finalized {
             self.finalize_names();
         }
-        self.entries
-            .into_iter()
-            .map(|entry| {
-                Box::new(RegisteredRigTool {
-                    runtime_tool_name: entry.runtime_tool_name,
-                    description: entry.definition.description,
-                    parameters: entry.definition.parameters,
-                    executor: entry.executor,
-                    timeout: entry
-                        .definition
-                        .policy
-                        .timeout_ms
-                        .map(std::time::Duration::from_millis)
-                        .unwrap_or(default_timeout),
-                }) as Box<dyn ToolDyn>
-            })
-            .collect()
-    }
-}
+        let mut dynamic_tools = Vec::new();
+        let mut rmcp_tools = Vec::new();
+        let mut definitions = Vec::new();
 
-struct RigToolExecutor {
-    tool: Arc<dyn ToolDyn>,
-}
+        for entry in self.entries {
+            let timeout = entry
+                .definition
+                .policy
+                .timeout_ms
+                .map(std::time::Duration::from_millis)
+                .unwrap_or(default_timeout);
+            let registered_definition = RegisteredToolDefinition {
+                source: entry.definition.source,
+                namespace: entry.definition.namespace,
+                tool_name: entry.definition.name,
+                runtime_tool_name: entry.runtime_tool_name.clone(),
+                description: entry.definition.description.clone(),
+                parameters: entry.definition.parameters.clone(),
+                policy: entry.definition.policy,
+            };
+            definitions.push(registered_definition);
 
-impl RigToolExecutor {
-    fn new(tool: impl ToolDyn + 'static) -> Self {
-        Self {
-            tool: Arc::new(tool),
-        }
-    }
-}
-
-#[async_trait]
-impl ToolExecutor for RigToolExecutor {
-    async fn execute(&self, arguments: serde_json::Value) -> Result<ToolInvocationOutput> {
-        let args = serde_json::to_string(&arguments)?;
-        let output = self
-            .tool
-            .call(args)
-            .await
-            .map_err(|err| AgentRuntimeError::Mcp(err.to_string()))?;
-        Ok(ToolInvocationOutput {
-            content: vec![ContentPart::Text {
-                text: output.clone(),
-            }],
-            structured_output: serde_json::from_str::<serde_json::Value>(&output)
-                .ok()
-                .map(|value| StructuredOutput { value }),
-            raw_output: None,
-            is_error: false,
-        })
-    }
-}
-
-struct RegisteredRigTool {
-    runtime_tool_name: String,
-    description: String,
-    parameters: serde_json::Value,
-    executor: Arc<dyn ToolExecutor>,
-    timeout: std::time::Duration,
-}
-
-impl ToolDyn for RegisteredRigTool {
-    fn name(&self) -> String {
-        self.runtime_tool_name.clone()
-    }
-
-    fn definition(&self, _prompt: String) -> WasmBoxedFuture<'_, RigToolDefinition> {
-        Box::pin(async move {
-            RigToolDefinition {
-                name: self.runtime_tool_name.clone(),
-                description: self.description.clone(),
-                parameters: self.parameters.clone(),
+            match entry.runtime {
+                ToolEntryRuntime::Local(executor) => {
+                    dynamic_tools.push(DynamicTool::new(
+                        entry.runtime_tool_name,
+                        entry.definition.description,
+                        entry.definition.parameters,
+                        move |context, arguments| {
+                            let executor = executor.clone();
+                            Box::pin(async move {
+                                let output =
+                                    tokio::time::timeout(timeout, executor.execute(arguments))
+                                        .await
+                                        .map_err(|_| {
+                                            ToolExecutionError::timeout("tool execution timed out")
+                                        })?
+                                        .map_err(|error| {
+                                            ToolExecutionError::other(error.to_string())
+                                                .with_source(error)
+                                        })?;
+                                context.insert_result(output.clone());
+                                jaco_output_to_rig_tool_output(&output)
+                            })
+                        },
+                    ));
+                }
+                ToolEntryRuntime::Rmcp { mut tool, server } => {
+                    tool.name = entry.runtime_tool_name.into();
+                    rmcp_tools.push(RmcpToolRegistration {
+                        tool: *tool,
+                        server,
+                        timeout,
+                    });
+                }
             }
-        })
-    }
+        }
 
-    fn call(&self, args: String) -> WasmBoxedFuture<'_, std::result::Result<String, ToolError>> {
-        Box::pin(async move {
-            let arguments =
-                serde_json::from_str::<serde_json::Value>(&args).map_err(ToolError::JsonError)?;
-            let output = timeout(self.timeout, self.executor.execute(arguments))
-                .await
-                .map_err(|_| tool_call_error("tool execution timed out"))?
-                .map_err(|err| tool_call_error(err.to_string()))?;
-            Ok(tool_output_to_model_text(&output))
-        })
+        RigToolBundle {
+            dynamic_tools,
+            rmcp_tools,
+            definitions,
+        }
     }
 }
 
@@ -359,12 +351,23 @@ pub(crate) fn tool_output_to_model_text(output: &ToolInvocationOutput) -> String
         .join("\n")
 }
 
-fn tool_call_error(message: impl Into<String>) -> ToolError {
-    #[derive(Debug, thiserror::Error)]
-    #[error("{0}")]
-    struct RuntimeToolError(String);
-
-    ToolError::ToolCallError(Box::new(RuntimeToolError(message.into())))
+pub(crate) fn jaco_output_to_rig_tool_output(
+    output: &ToolInvocationOutput,
+) -> std::result::Result<ToolOutput, ToolExecutionError> {
+    let mut content = output
+        .content
+        .iter()
+        .filter_map(|part| part.search_text().map(ToolResultContent::text))
+        .collect::<Vec<_>>();
+    if let Some(structured) = output.structured_output.as_ref() {
+        content.push(ToolResultContent::json(structured.value.clone()));
+    }
+    if content.is_empty() {
+        return Ok(ToolOutput::text(""));
+    }
+    let content = OneOrMany::many(content)
+        .map_err(|error| ToolExecutionError::other(error.to_string()).with_source(error))?;
+    Ok(ToolOutput::content(content))
 }
 
 #[cfg(test)]
