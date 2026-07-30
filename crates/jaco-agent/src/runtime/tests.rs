@@ -216,6 +216,44 @@ async fn streaming_text_delta_updates_single_assistant_item() {
 }
 
 #[tokio::test]
+async fn streaming_unknown_provider_output_is_persisted_in_provider_step_audit() {
+    let fixture = Fixture::new("streaming-unknown-provider-output");
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
+    let provider_output = json!({
+        "type": "web_search_call",
+        "id": "search_1",
+        "status": "completed"
+    });
+    let model = MockCompletionModel::from_stream_turns([[
+        MockStreamEvent::unknown(provider_output.clone()),
+        MockStreamEvent::text("searched"),
+        MockStreamEvent::final_response_with_total_tokens(7),
+    ]]);
+
+    let handle = runtime
+        .run_with_model(fixture.streaming_request(), model)
+        .await
+        .unwrap();
+
+    let provider_steps = fixture
+        .repo
+        .provider_steps_for_run(&handle.agent_run.id)
+        .unwrap();
+    assert_eq!(provider_steps.len(), 1);
+    let response = provider_steps[0]
+        .response_snapshot
+        .as_ref()
+        .expect("completed provider step response");
+    assert_eq!(
+        response.provider_outputs,
+        vec![ProviderRawPayload {
+            provider_kind: "openai".to_string(),
+            value: provider_output,
+        }]
+    );
+}
+
+#[tokio::test]
 async fn local_streaming_persistence_failure_returns_failed_handle_and_closes_session() {
     let fixture = Fixture::new("streaming-persistence-failure-session");
     let pool = crate::providers::openai::OpenAiResponsesSessionPool::new();
@@ -226,7 +264,10 @@ async fn local_streaming_persistence_failure_returns_failed_handle_and_closes_se
             fixture.repo.clone(),
         );
     let runtime = AgentRuntime::new(persistence).with_openai_session_pool(pool.clone());
+    let provider_output =
+        json!({"type": "hosted_tool_call", "id": "hosted_local_persistence_failure"});
     let model = MockCompletionModel::from_stream_turns([[
+        MockStreamEvent::unknown(provider_output.clone()),
         MockStreamEvent::text("provider output"),
         MockStreamEvent::final_response_with_total_tokens(0),
     ]]);
@@ -250,6 +291,22 @@ async fn local_streaming_persistence_failure_returns_failed_handle_and_closes_se
             .contains_conversation_for_test(&fixture.conversation.id)
             .await,
         "a failed run handle must not leave a reusable OpenAI session"
+    );
+    let provider_steps = fixture
+        .repo
+        .provider_steps_for_run(&handle.agent_run.id)
+        .unwrap();
+    assert_eq!(provider_steps.len(), 1);
+    assert_eq!(
+        provider_steps[0]
+            .response_snapshot
+            .as_ref()
+            .expect("failed provider step audit")
+            .provider_outputs,
+        vec![ProviderRawPayload {
+            provider_kind: "openai".to_string(),
+            value: provider_output,
+        }]
     );
 }
 
@@ -466,6 +523,24 @@ async fn partial_stream_failure_keeps_partial_entry_and_finishes_with_error() {
         )
     }));
     assert!(items.windows(2).all(|items| items[0].seq < items[1].seq));
+
+    let provider_steps = fixture
+        .repo
+        .provider_steps_for_run(&handle.agent_run.id)
+        .unwrap();
+    assert_eq!(provider_steps.len(), 1);
+    assert_eq!(provider_steps[0].status, ProviderStepStatus::Failed);
+    assert_eq!(
+        provider_steps[0]
+            .response_snapshot
+            .as_ref()
+            .expect("failed provider step audit")
+            .provider_outputs,
+        vec![ProviderRawPayload {
+            provider_kind: "openai".to_string(),
+            value: json!({"type": "hosted_tool_call", "id": "hosted_failure"}),
+        }]
+    );
 }
 
 #[tokio::test]
@@ -792,6 +867,17 @@ async fn streaming_cancellation_marks_running_item_and_provider_step_canceled() 
         .unwrap();
     assert_eq!(provider_steps.len(), 1);
     assert_eq!(provider_steps[0].status, ProviderStepStatus::Canceled);
+    assert_eq!(
+        provider_steps[0]
+            .response_snapshot
+            .as_ref()
+            .expect("canceled provider step audit")
+            .provider_outputs,
+        vec![ProviderRawPayload {
+            provider_kind: "openai".to_string(),
+            value: json!({"type": "hosted_tool_call", "id": "hosted_canceled"}),
+        }]
+    );
 }
 
 #[tokio::test]
@@ -2714,6 +2800,9 @@ impl CompletionModel for FailAfterTextModel {
     ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
     {
         let stream: StreamingResult<Self::StreamingResponse> = Box::pin(futures::stream::iter([
+            Ok(RawStreamingChoice::Unknown(
+                json!({"type": "hosted_tool_call", "id": "hosted_failure"}),
+            )),
             Ok(RawStreamingChoice::Message("partial".to_string())),
             Err(CompletionError::ProviderError(
                 "forced mid-stream failure".to_string(),
@@ -3013,14 +3102,20 @@ impl CompletionModel for CancelAfterTextStreamModel {
             let cancellation_token = cancellation_token.clone();
             async move {
                 match state {
-                    0 => Some((Ok(RawStreamingChoice::Message("partial".to_string())), 1)),
-                    1 => {
+                    0 => Some((
+                        Ok(RawStreamingChoice::Unknown(
+                            json!({"type": "hosted_tool_call", "id": "hosted_canceled"}),
+                        )),
+                        1,
+                    )),
+                    1 => Some((Ok(RawStreamingChoice::Message("partial".to_string())), 2)),
+                    2 => {
                         cancellation_token.cancel();
                         Some((
                             Err(CompletionError::ProviderError(
                                 "runtime canceled".to_string(),
                             )),
-                            2,
+                            3,
                         ))
                     }
                     _ => None,

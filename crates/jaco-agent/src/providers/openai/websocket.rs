@@ -647,7 +647,27 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
                         }
                     };
                     if let Some(response) = completed_response {
-                        let usage = response.usage.clone().unwrap_or_else(empty_usage);
+                        let usage = match terminal_usage(&response) {
+                            Ok(usage) => usage,
+                            Err(error) => {
+                                guard
+                                    .session
+                                    .as_mut()
+                                    .ok_or_else(session_unavailable)?
+                                    .clear_previous_response_id();
+                                binding
+                                    .attempts
+                                    .fail(
+                                        &provider_step_id,
+                                        provider_attempt_error(
+                                            error.to_string(),
+                                            serde_json::to_value(&response).ok(),
+                                        ),
+                                    )
+                                    .await;
+                                Err::<ResponsesUsage, CompletionError>(error)?
+                            }
+                        };
                         let mut reasoning_metadata =
                             response.reasoning_metadata.clone().unwrap_or_default();
                         reasoning_metadata.insert(
@@ -963,14 +983,15 @@ fn completion_response_from_done(
     })
 }
 
-fn empty_usage() -> ResponsesUsage {
-    ResponsesUsage {
-        input_tokens: 0,
-        input_tokens_details: None,
-        output_tokens: 0,
-        output_tokens_details: None,
-        total_tokens: 0,
-    }
+fn terminal_usage(
+    response: &OpenAiCompletionResponse,
+) -> std::result::Result<ResponsesUsage, CompletionError> {
+    response.usage.clone().ok_or_else(|| {
+        CompletionError::ProviderError(format!(
+            "OpenAI websocket response {} omitted terminal usage",
+            response.id
+        ))
+    })
 }
 
 fn provider_terminal_error(response: &OpenAiCompletionResponse) -> CompletionError {
@@ -1191,6 +1212,64 @@ mod tests {
         assert!(message.contains("response.done"));
         assert!(message.contains("complete response body"));
         assert!(message.contains("resp_incomplete_done"));
+    }
+
+    #[test]
+    fn completed_response_without_usage_returns_terminal_error() {
+        let chunk = serde_json::from_value::<
+            rig::providers::openai::responses_api::streaming::ResponseChunk,
+        >(json!({
+            "type": "response.completed",
+            "sequence_number": 1,
+            "response": {
+                "id": "resp_completed_without_usage",
+                "object": "response",
+                "created_at": 0,
+                "status": "completed",
+                "error": null,
+                "incomplete_details": null,
+                "instructions": null,
+                "max_output_tokens": null,
+                "model": "gpt-5.6",
+                "output": [],
+                "tools": []
+            }
+        }))
+        .unwrap();
+
+        let error = terminal_usage(&chunk.response).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("resp_completed_without_usage"));
+        assert!(message.contains("omitted terminal usage"));
+    }
+
+    #[test]
+    fn complete_done_response_without_usage_returns_terminal_error() {
+        let done = serde_json::from_value::<ResponsesWebSocketDoneEvent>(json!({
+            "type": "response.done",
+            "response": {
+                "id": "resp_done_without_usage",
+                "object": "response",
+                "created_at": 0,
+                "status": "completed",
+                "error": null,
+                "incomplete_details": null,
+                "instructions": null,
+                "max_output_tokens": null,
+                "model": "gpt-5.6",
+                "output": [],
+                "tools": []
+            }
+        }))
+        .unwrap();
+        let response = completion_response_from_done(&done.response).unwrap();
+
+        let error = terminal_usage(&response).unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("resp_done_without_usage"));
+        assert!(message.contains("omitted terminal usage"));
     }
 
     #[test]

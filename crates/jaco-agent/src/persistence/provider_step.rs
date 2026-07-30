@@ -1,5 +1,5 @@
 use super::{PersistenceContext, mutex_clone, mutex_replace, provider_usage};
-use crate::{AgentRuntimeEvent, AgentStep, Result};
+use crate::{AgentRuntimeError, AgentRuntimeEvent, AgentStep, Result};
 use jaco_core::*;
 use jaco_db::{
     CompleteProviderStep, NewProviderStep, ProviderStepRecord, UpdateProviderStepStatus,
@@ -122,6 +122,7 @@ impl PersistenceContext {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        let provider_outputs = self.take_provider_outputs(provider_step_id);
         let response_snapshot = ProviderStepResponseSnapshot {
             provider_run_id: response.message_id.clone(),
             output_item_ids: output_item_ids.clone(),
@@ -129,7 +130,7 @@ impl PersistenceContext {
                 provider_kind: "rig".to_string(),
                 value: serde_json::to_value(&response.raw_response)?,
             }),
-            provider_outputs: Vec::new(),
+            provider_outputs: provider_outputs.clone(),
         };
         let state_snapshot = ProviderRunStateSnapshot {
             provider_id: self.provider_id.clone(),
@@ -137,7 +138,7 @@ impl PersistenceContext {
             output_item_ids,
         };
         let usage = provider_usage(response.usage);
-        let completed = self
+        let completed = match self
             .persistence
             .complete_provider_step_with_usage(
                 provider_step_id.to_string(),
@@ -148,7 +149,15 @@ impl PersistenceContext {
                     usage: usage.clone(),
                 },
             )
-            .await?;
+            .await
+        {
+            Ok(completed) => completed,
+            Err(error) => {
+                self.restore_provider_outputs(provider_step_id, provider_outputs);
+                return Err(error.into());
+            }
+        };
+        self.clear_current_provider_step(provider_step_id);
         let step = completed.step;
         self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
             conversation_id: self.conversation_id.clone(),
@@ -218,6 +227,7 @@ impl PersistenceContext {
         let provider_run_id = openai_continuation
             .as_ref()
             .map(|continuation| continuation.response_id.clone());
+        let provider_outputs = self.take_provider_outputs(provider_step_id);
         let response_snapshot = ProviderStepResponseSnapshot {
             provider_run_id: provider_run_id.clone(),
             output_item_ids: Vec::new(),
@@ -225,7 +235,7 @@ impl PersistenceContext {
                 provider_kind: "rig".to_string(),
                 value,
             }),
-            provider_outputs: Vec::new(),
+            provider_outputs: provider_outputs.clone(),
         };
         let state_snapshot = ProviderRunStateSnapshot {
             provider_id: self.provider_id.clone(),
@@ -233,7 +243,7 @@ impl PersistenceContext {
             output_item_ids: Vec::new(),
         };
         let usage = provider_usage(usage);
-        let completed = self
+        let completed = match self
             .persistence
             .complete_provider_step_with_usage(
                 provider_step_id.to_string(),
@@ -244,7 +254,15 @@ impl PersistenceContext {
                     usage: usage.clone(),
                 },
             )
-            .await?;
+            .await
+        {
+            Ok(completed) => completed,
+            Err(error) => {
+                self.restore_provider_outputs(provider_step_id, provider_outputs);
+                return Err(error.into());
+            }
+        };
+        self.clear_current_provider_step(provider_step_id);
         let step = completed.step;
         self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
             conversation_id: self.conversation_id.clone(),
@@ -271,16 +289,7 @@ impl PersistenceContext {
         error: RunErrorPayload,
     ) -> Result<()> {
         let step = self
-            .persistence
-            .update_provider_step_status(
-                provider_step_id.to_string(),
-                UpdateProviderStepStatus {
-                    status: ProviderStepStatus::Failed,
-                    response_snapshot: None,
-                    state_snapshot: None,
-                    error: Some(error.clone()),
-                },
-            )
+            .terminalize_provider_step(provider_step_id, ProviderStepStatus::Failed, &error)
             .await?;
         if step.status != ProviderStepStatus::Failed {
             return Ok(());
@@ -304,16 +313,7 @@ impl PersistenceContext {
         error: RunErrorPayload,
     ) -> Result<()> {
         let step = self
-            .persistence
-            .update_provider_step_status(
-                provider_step_id.to_string(),
-                UpdateProviderStepStatus {
-                    status: ProviderStepStatus::Canceled,
-                    response_snapshot: None,
-                    state_snapshot: None,
-                    error: Some(error.clone()),
-                },
-            )
+            .terminalize_provider_step(provider_step_id, ProviderStepStatus::Canceled, &error)
             .await?;
         if step.status != ProviderStepStatus::Canceled {
             return Ok(());
@@ -330,6 +330,112 @@ impl PersistenceContext {
         });
         Ok(())
     }
+
+    async fn terminalize_provider_step(
+        &self,
+        provider_step_id: &str,
+        status: ProviderStepStatus,
+        error: &RunErrorPayload,
+    ) -> Result<ProviderStepRecord> {
+        let provider_outputs = self.take_provider_outputs(provider_step_id);
+        let response_snapshot = failure_response_snapshot(error, provider_outputs);
+        let step = match self
+            .persistence
+            .update_provider_step_status(
+                provider_step_id.to_string(),
+                UpdateProviderStepStatus {
+                    status,
+                    response_snapshot: response_snapshot.clone(),
+                    state_snapshot: None,
+                    error: Some(error.clone()),
+                },
+            )
+            .await
+        {
+            Ok(step) => step,
+            Err(persistence_error) => {
+                self.restore_provider_outputs(
+                    provider_step_id,
+                    response_snapshot
+                        .map(|snapshot| snapshot.provider_outputs)
+                        .unwrap_or_default(),
+                );
+                return Err(persistence_error.into());
+            }
+        };
+        self.clear_current_provider_step(provider_step_id);
+        Ok(step)
+    }
+
+    pub(crate) fn record_provider_output(&self, output: serde_json::Value) -> Result<()> {
+        let provider_step_id = mutex_clone(&self.last_provider_step_id).ok_or_else(|| {
+            AgentRuntimeError::Invariant(
+                "streaming provider output has no active provider step".to_string(),
+            )
+        })?;
+        let payload = ProviderRawPayload {
+            provider_kind: self
+                .settings_snapshot
+                .provider_settings
+                .provider_kind
+                .clone(),
+            value: output,
+        };
+        super::lock(&self.provider_outputs)
+            .entry(provider_step_id)
+            .or_default()
+            .push(payload);
+        Ok(())
+    }
+
+    fn take_provider_outputs(&self, provider_step_id: &str) -> Vec<ProviderRawPayload> {
+        super::lock(&self.provider_outputs)
+            .remove(provider_step_id)
+            .unwrap_or_default()
+    }
+
+    fn restore_provider_outputs(
+        &self,
+        provider_step_id: &str,
+        mut provider_outputs: Vec<ProviderRawPayload>,
+    ) {
+        if provider_outputs.is_empty() {
+            return;
+        }
+        let mut outputs_by_step = super::lock(&self.provider_outputs);
+        if let Some(mut later_outputs) = outputs_by_step.remove(provider_step_id) {
+            provider_outputs.append(&mut later_outputs);
+        }
+        outputs_by_step.insert(provider_step_id.to_string(), provider_outputs);
+    }
+
+    fn clear_current_provider_step(&self, provider_step_id: &str) {
+        let mut current = super::lock(&self.last_provider_step_id);
+        if current.as_deref() == Some(provider_step_id) {
+            *current = None;
+        }
+    }
+}
+
+fn failure_response_snapshot(
+    error: &RunErrorPayload,
+    provider_outputs: Vec<ProviderRawPayload>,
+) -> Option<ProviderStepResponseSnapshot> {
+    if error.raw.is_none() && provider_outputs.is_empty() {
+        return None;
+    }
+    let provider_run_id = error
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.value.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
+    Some(ProviderStepResponseSnapshot {
+        provider_run_id,
+        output_item_ids: Vec::new(),
+        response_body: error.raw.clone(),
+        provider_outputs,
+    })
 }
 
 fn openai_streaming_continuation(

@@ -412,9 +412,11 @@ impl AgentRuntime {
                                         StreamedAssistantContent::Final(response) => {
                                             final_raw_response = Some(response);
                                         }
+                                        StreamedAssistantContent::Unknown(output) => {
+                                            context.record_provider_output(output)?;
+                                        }
                                         StreamedAssistantContent::ToolCall { .. }
-                                        | StreamedAssistantContent::ToolCallDelta { .. }
-                                        | StreamedAssistantContent::Unknown(_) => {}
+                                        | StreamedAssistantContent::ToolCallDelta { .. } => {}
                                     }
                                 }
                                 Some(Ok(MultiTurnStreamItem::StreamUserItem(_))) => {}
@@ -588,6 +590,7 @@ impl AgentRuntime {
             Ok(outcome) => outcome,
             Err(error) => {
                 let payload = run_error("runtime_error", error.to_string(), true, None);
+                let _ = context.fail_current_provider_step(payload.clone()).await;
                 let _ = self
                     .fail_active_provider_steps(&agent_run.record().id, payload.clone())
                     .await;
