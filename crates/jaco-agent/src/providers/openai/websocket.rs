@@ -9,12 +9,14 @@ use rig::{
     completion::{
         CompletionError, CompletionModel, CompletionRequest, CompletionResponse, GetTokenUsage,
     },
+    message::ReasoningContent,
     providers::openai::{
         self,
         responses_api::{
-            CompletionResponse as OpenAiCompletionResponse, Output, ResponseStatus, ResponsesUsage,
+            CompletionResponse as OpenAiCompletionResponse, Output, ReasoningSummary,
+            ResponseStatus, ResponsesUsage,
             streaming::{
-                ItemChunkKind, ResponseChunkKind,
+                ItemChunk, ItemChunkKind, ResponseChunkKind,
                 StreamingCompletionResponse as OpenAiStreamingResponse,
             },
             websocket::{ResponsesWebSocketEvent, ResponsesWebSocketSession},
@@ -91,18 +93,7 @@ impl OpenAiResponsesSessionPool {
     ) -> std::result::Result<OwnedMutexGuard<OpenAiSessionSlot>, CompletionError> {
         self.prune_aged(Instant::now()).await;
         self.close_other_conversation_keys(key).await;
-        let slot = {
-            let mut slots = self.slots.lock().await;
-            slots
-                .entry(key.clone())
-                .or_insert_with(|| {
-                    Arc::new(Mutex::new(OpenAiSessionSlot {
-                        session: None,
-                        opened_at: None,
-                    }))
-                })
-                .clone()
-        };
+        let slot = self.slot_for_key(key).await;
         let mut guard = slot.lock_owned().await;
         if guard.session.is_none() {
             guard.session = Some(
@@ -115,6 +106,42 @@ impl OpenAiResponsesSessionPool {
             guard.opened_at = Some(Instant::now());
         }
         Ok(guard)
+    }
+
+    async fn slot_for_key(&self, key: &OpenAiSessionKey) -> Arc<Mutex<OpenAiSessionSlot>> {
+        let mut slots = self.slots.lock().await;
+        slots
+            .entry(key.clone())
+            .or_insert_with(|| {
+                Arc::new(Mutex::new(OpenAiSessionSlot {
+                    session: None,
+                    opened_at: None,
+                }))
+            })
+            .clone()
+    }
+
+    async fn evict_unusable_session(
+        &self,
+        key: &OpenAiSessionKey,
+        guard: &mut OwnedMutexGuard<OpenAiSessionSlot>,
+    ) {
+        let current_slot = OwnedMutexGuard::mutex(guard).clone();
+        let session = guard.session.take();
+        guard.opened_at = None;
+
+        let mut slots = self.slots.lock().await;
+        if slots
+            .get(key)
+            .is_some_and(|slot| Arc::ptr_eq(slot, &current_slot))
+        {
+            slots.remove(key);
+        }
+        drop(slots);
+
+        if let Some(mut session) = session {
+            let _ = session.close().await;
+        }
     }
 
     async fn close_other_conversation_keys(&self, keep: &OpenAiSessionKey) {
@@ -427,22 +454,29 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
         let this = self.clone();
         let stream = try_stream! {
             let mut guard = binding.pool.acquire(&binding.key, &binding.client, &model).await?;
-            let session = guard.session.as_mut().ok_or_else(|| {
-                CompletionError::ProviderError("OpenAI websocket session is unavailable".to_string())
-            })?;
             let original_request = request.clone();
             let mut fallback = false;
             let mut fallback_available = !this.state.lock().await.full_history_fallback_used;
             'attempt: loop {
+                let session_previous_response_id = guard
+                    .session
+                    .as_ref()
+                    .ok_or_else(session_unavailable)?
+                    .previous_response_id()
+                    .map(str::to_owned);
                 let prepared = this
                     .prepare_request(
                         original_request.clone(),
-                        session.previous_response_id(),
+                        session_previous_response_id.as_deref(),
                         fallback,
                     )
                     .await?;
                 if prepared.context != ProviderRequestContextSnapshot::PreviousResponse {
-                    session.clear_previous_response_id();
+                    guard
+                        .session
+                        .as_mut()
+                        .ok_or_else(session_unavailable)?
+                        .clear_previous_response_id();
                 }
                 let provider_step_id = binding
                     .attempts
@@ -452,15 +486,32 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
                         prepared.previous_response_id.clone(),
                     )
                     .await?;
-                if let Err(error) = session.send(prepared.request).await {
+                let mut item_decoder = OpenAiWebSocketItemDecoder::default();
+                if let Err(error) = guard
+                    .session
+                    .as_mut()
+                    .ok_or_else(session_unavailable)?
+                    .send(prepared.request)
+                    .await
+                {
                     binding
                         .attempts
                         .fail(&provider_step_id, provider_attempt_error(error.to_string(), None))
                         .await;
+                    binding
+                        .pool
+                        .evict_unusable_session(&binding.key, &mut guard)
+                        .await;
                     Err(error)?;
                 }
                 loop {
-                    let event = match session.next_event().await {
+                    let event = match guard
+                        .session
+                        .as_mut()
+                        .ok_or_else(session_unavailable)?
+                        .next_event()
+                        .await
+                    {
                         Ok(event) => event,
                         Err(error) => {
                             binding
@@ -470,12 +521,16 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
                                     provider_attempt_error(error.to_string(), None),
                                 )
                                 .await;
+                            binding
+                                .pool
+                                .evict_unusable_session(&binding.key, &mut guard)
+                                .await;
                             Err(error)?
                         }
                     };
                     let completed_response = match event {
                         ResponsesWebSocketEvent::Item(item) => {
-                            for choice in choices_from_item(item) {
+                            for choice in item_decoder.decode(item) {
                                 yield choice;
                             }
                             None
@@ -517,7 +572,11 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
                                 .fail(&provider_step_id, rejection.clone())
                                 .await;
                             this.invalidate_source_continuation(rejection).await;
-                            session.clear_previous_response_id();
+                            guard
+                                .session
+                                .as_mut()
+                                .ok_or_else(session_unavailable)?
+                                .clear_previous_response_id();
                             this.mark_fallback_used().await;
                             fallback_available = false;
                             fallback = true;
@@ -543,7 +602,11 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
                             let response = match completion_response_from_done(&raw) {
                                 Ok(response) => response,
                                 Err(error) => {
-                                    session.clear_previous_response_id();
+                                    guard
+                                        .session
+                                        .as_mut()
+                                        .ok_or_else(session_unavailable)?
+                                        .clear_previous_response_id();
                                     binding
                                         .attempts
                                         .fail(
@@ -559,7 +622,11 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
                             };
                             if response.status != ResponseStatus::Completed {
                                 let error = provider_terminal_error(&response);
-                                session.clear_previous_response_id();
+                                guard
+                                    .session
+                                    .as_mut()
+                                    .ok_or_else(session_unavailable)?
+                                    .clear_previous_response_id();
                                 binding
                                     .attempts
                                     .fail(
@@ -591,7 +658,11 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
                         if let Err(error) =
                             binding.attempts.complete_streaming(&final_response).await
                         {
-                            session.clear_previous_response_id();
+                            guard
+                                .session
+                                .as_mut()
+                                .ok_or_else(session_unavailable)?
+                                .clear_previous_response_id();
                             binding
                                 .attempts
                                 .fail(
@@ -618,6 +689,10 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
         };
         Ok(StreamingCompletionResponse::stream(Box::pin(stream)))
     }
+}
+
+fn session_unavailable() -> CompletionError {
+    CompletionError::ProviderError("OpenAI websocket session is unavailable".to_string())
 }
 
 struct PreparedOpenAiRequest {
@@ -748,42 +823,125 @@ fn incremental_history(
     OneOrMany::many(selected).map_err(|error| CompletionError::RequestError(Box::new(error)))
 }
 
-fn choices_from_item(
-    item: rig::providers::openai::responses_api::streaming::ItemChunk,
-) -> Vec<RawStreamingChoice<OpenAiStreamingResponse>> {
-    match item.data {
-        ItemChunkKind::OutputTextDelta(delta) => vec![RawStreamingChoice::Message(delta.delta)],
-        ItemChunkKind::RefusalDelta(delta) => vec![RawStreamingChoice::Message(delta.delta)],
-        ItemChunkKind::ReasoningSummaryTextDelta(delta) => {
-            vec![RawStreamingChoice::ReasoningDelta {
-                id: item.item_id,
-                reasoning: delta.delta,
-            }]
+#[derive(Default)]
+struct OpenAiWebSocketItemDecoder {
+    tool_call_internal_ids: HashMap<String, String>,
+}
+
+impl OpenAiWebSocketItemDecoder {
+    fn decode(&mut self, item: ItemChunk) -> Vec<RawStreamingChoice<OpenAiStreamingResponse>> {
+        let item_id = item.item_id;
+        match item.data {
+            ItemChunkKind::OutputItemAdded(added) => match added.item {
+                Output::FunctionCall(call) => {
+                    let internal_call_id = self.tool_call_internal_id(&call.id);
+                    vec![RawStreamingChoice::ToolCallDelta {
+                        id: call.id,
+                        internal_call_id,
+                        content: ToolCallDeltaContent::Name(call.name),
+                    }]
+                }
+                _ => Vec::new(),
+            },
+            ItemChunkKind::OutputTextDelta(delta) => {
+                vec![RawStreamingChoice::Message(delta.delta)]
+            }
+            ItemChunkKind::RefusalDelta(delta) => {
+                vec![RawStreamingChoice::Message(delta.delta)]
+            }
+            ItemChunkKind::ReasoningSummaryTextDelta(delta) => {
+                vec![RawStreamingChoice::ReasoningDelta {
+                    id: item_id,
+                    reasoning: delta.delta,
+                }]
+            }
+            ItemChunkKind::ReasoningTextDelta(delta) => {
+                vec![RawStreamingChoice::ReasoningDelta {
+                    id: item_id,
+                    reasoning: delta.delta,
+                }]
+            }
+            ItemChunkKind::FunctionCallArgsDelta(delta) => {
+                let Some(item_id) = item_id else {
+                    return Vec::new();
+                };
+                let internal_call_id = self.tool_call_internal_id(&item_id);
+                vec![RawStreamingChoice::ToolCallDelta {
+                    id: item_id,
+                    internal_call_id,
+                    content: ToolCallDeltaContent::Delta(delta.delta),
+                }]
+            }
+            ItemChunkKind::OutputItemDone(done) => self.decode_completed_output(done.item),
+            _ => Vec::new(),
         }
-        ItemChunkKind::ReasoningTextDelta(delta) => {
-            vec![RawStreamingChoice::ReasoningDelta {
-                id: item.item_id,
-                reasoning: delta.delta,
-            }]
-        }
-        ItemChunkKind::FunctionCallArgsDelta(delta) => {
-            vec![RawStreamingChoice::ToolCallDelta {
-                id: item.item_id.clone().unwrap_or_default(),
-                internal_call_id: item.item_id.unwrap_or_default(),
-                content: ToolCallDeltaContent::Delta(delta.delta),
-            }]
-        }
-        ItemChunkKind::OutputItemDone(done) => match done.item {
-            Output::FunctionCall(call) => vec![RawStreamingChoice::ToolCall(
-                RawStreamingToolCall::new(call.id, call.name, call.arguments)
-                    .with_call_id(call.call_id),
-            )],
+    }
+
+    fn decode_completed_output(
+        &mut self,
+        output: Output,
+    ) -> Vec<RawStreamingChoice<OpenAiStreamingResponse>> {
+        match output {
+            Output::FunctionCall(call) => {
+                let internal_call_id = self.tool_call_internal_id(&call.id);
+                vec![RawStreamingChoice::ToolCall(
+                    RawStreamingToolCall::new(call.id, call.name, call.arguments)
+                        .with_internal_call_id(internal_call_id)
+                        .with_call_id(call.call_id),
+                )]
+            }
             Output::Message(message) => vec![RawStreamingChoice::MessageId(message.id)],
             Output::Unknown(value) => vec![RawStreamingChoice::Unknown(value)],
-            Output::Reasoning { .. } => Vec::new(),
-        },
-        _ => Vec::new(),
+            Output::Reasoning {
+                id,
+                summary,
+                content,
+                encrypted_content,
+                ..
+            } => reasoning_choices_from_done_item(
+                &id,
+                &summary,
+                &content,
+                encrypted_content.as_deref(),
+            ),
+        }
     }
+
+    fn tool_call_internal_id(&mut self, item_id: &str) -> String {
+        self.tool_call_internal_ids
+            .entry(item_id.to_string())
+            .or_insert_with(rig::id::generate)
+            .clone()
+    }
+}
+
+fn reasoning_choices_from_done_item(
+    id: &str,
+    summary: &[ReasoningSummary],
+    content: &[String],
+    encrypted_content: Option<&str>,
+) -> Vec<RawStreamingChoice<OpenAiStreamingResponse>> {
+    let mut choices = summary
+        .iter()
+        .map(|summary| RawStreamingChoice::Reasoning {
+            id: Some(id.to_string()),
+            content: ReasoningContent::Summary(summary.text()),
+        })
+        .collect::<Vec<_>>();
+    choices.extend(content.iter().map(|text| RawStreamingChoice::Reasoning {
+        id: Some(id.to_string()),
+        content: ReasoningContent::Text {
+            text: text.clone(),
+            signature: None,
+        },
+    }));
+    if let Some(encrypted_content) = encrypted_content.filter(|content| !content.is_empty()) {
+        choices.push(RawStreamingChoice::Reasoning {
+            id: Some(id.to_string()),
+            content: ReasoningContent::Encrypted(encrypted_content.to_string()),
+        });
+    }
+    choices
 }
 
 fn completion_response_from_done(
@@ -1043,12 +1201,180 @@ mod tests {
         }))
         .unwrap();
 
-        let choices = choices_from_item(item);
+        let choices = OpenAiWebSocketItemDecoder::default().decode(item);
 
         assert!(matches!(
             choices.as_slice(),
             [RawStreamingChoice::Message(text)] if text == "I can’t help with that request."
         ));
+    }
+
+    #[test]
+    fn function_call_sequence_uses_one_internal_id_and_emits_name_first() {
+        let added = serde_json::from_value::<ItemChunk>(json!({
+            "type": "response.output_item.added",
+            "item_id": "fc_weather",
+            "output_index": 0,
+            "sequence_number": 1,
+            "item": {
+                "type": "function_call",
+                "id": "fc_weather",
+                "arguments": "{}",
+                "call_id": "call_weather",
+                "name": "get_weather",
+                "status": "in_progress"
+            }
+        }))
+        .unwrap();
+        let arguments = serde_json::from_value::<ItemChunk>(json!({
+            "type": "response.function_call_arguments.delta",
+            "item_id": "fc_weather",
+            "output_index": 0,
+            "content_index": 0,
+            "sequence_number": 2,
+            "delta": "{\"city\":\"Paris\"}"
+        }))
+        .unwrap();
+        let done = serde_json::from_value::<ItemChunk>(json!({
+            "type": "response.output_item.done",
+            "item_id": "fc_weather",
+            "output_index": 0,
+            "sequence_number": 3,
+            "item": {
+                "type": "function_call",
+                "id": "fc_weather",
+                "arguments": "{\"city\":\"Paris\"}",
+                "call_id": "call_weather",
+                "name": "get_weather",
+                "status": "completed"
+            }
+        }))
+        .unwrap();
+
+        let mut decoder = OpenAiWebSocketItemDecoder::default();
+        let name = decoder.decode(added);
+        let arguments = decoder.decode(arguments);
+        let completed = decoder.decode(done);
+
+        let name_internal_id = match name.as_slice() {
+            [
+                RawStreamingChoice::ToolCallDelta {
+                    id,
+                    internal_call_id,
+                    content: ToolCallDeltaContent::Name(name),
+                },
+            ] => {
+                assert_eq!(id, "fc_weather");
+                assert_eq!(name, "get_weather");
+                internal_call_id.clone()
+            }
+            choices => panic!("expected tool name delta, got {choices:?}"),
+        };
+        let arguments_internal_id = match arguments.as_slice() {
+            [
+                RawStreamingChoice::ToolCallDelta {
+                    id,
+                    internal_call_id,
+                    content: ToolCallDeltaContent::Delta(arguments),
+                },
+            ] => {
+                assert_eq!(id, "fc_weather");
+                assert_eq!(arguments, "{\"city\":\"Paris\"}");
+                internal_call_id.clone()
+            }
+            choices => panic!("expected tool arguments delta, got {choices:?}"),
+        };
+        let completed_call = match completed.as_slice() {
+            [RawStreamingChoice::ToolCall(call)] => call,
+            choices => panic!("expected completed tool call, got {choices:?}"),
+        };
+
+        assert_eq!(name_internal_id, arguments_internal_id);
+        assert_eq!(completed_call.internal_call_id, name_internal_id);
+        assert_eq!(completed_call.id, "fc_weather");
+        assert_eq!(completed_call.call_id.as_deref(), Some("call_weather"));
+        assert_eq!(completed_call.name, "get_weather");
+        assert_eq!(completed_call.arguments, json!({"city": "Paris"}));
+    }
+
+    #[test]
+    fn completed_reasoning_item_preserves_canonical_blocks() {
+        let item = serde_json::from_value::<ItemChunk>(json!({
+            "type": "response.output_item.done",
+            "item_id": "rs_canonical",
+            "output_index": 0,
+            "sequence_number": 1,
+            "item": {
+                "type": "reasoning",
+                "id": "rs_canonical",
+                "summary": [
+                    {
+                        "type": "summary_text",
+                        "text": "Checked the available evidence."
+                    }
+                ],
+                "content": [
+                    {
+                        "type": "reasoning_text",
+                        "text": "Canonical final reasoning."
+                    }
+                ],
+                "encrypted_content": "encrypted-reasoning",
+                "status": "completed"
+            }
+        }))
+        .unwrap();
+
+        let choices = OpenAiWebSocketItemDecoder::default().decode(item);
+
+        assert!(matches!(
+            choices.first(),
+            Some(RawStreamingChoice::Reasoning {
+                id: Some(id),
+                content: ReasoningContent::Summary(summary),
+            }) if id == "rs_canonical" && summary == "Checked the available evidence."
+        ));
+        assert!(matches!(
+            choices.get(1),
+            Some(RawStreamingChoice::Reasoning {
+                id: Some(id),
+                content: ReasoningContent::Text {
+                    text,
+                    signature: None,
+                },
+            }) if id == "rs_canonical" && text == "Canonical final reasoning."
+        ));
+        assert!(matches!(
+            choices.get(2),
+            Some(RawStreamingChoice::Reasoning {
+                id: Some(id),
+                content: ReasoningContent::Encrypted(content),
+            }) if id == "rs_canonical" && content == "encrypted-reasoning"
+        ));
+        assert_eq!(choices.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn evicting_unusable_session_replaces_the_pooled_slot() {
+        let pool = OpenAiResponsesSessionPool::new();
+        let key = OpenAiSessionKey::new(
+            "conversation".to_string(),
+            "provider".to_string(),
+            "model".to_string(),
+            "https://api.openai.com/v1",
+            "test-key",
+        );
+        let first_slot = pool.slot_for_key(&key).await;
+        let mut guard = first_slot.clone().lock_owned().await;
+        guard.opened_at = Some(Instant::now());
+
+        pool.evict_unusable_session(&key, &mut guard).await;
+
+        assert!(guard.session.is_none());
+        assert!(guard.opened_at.is_none());
+        drop(guard);
+        let replacement_slot = pool.slot_for_key(&key).await;
+        assert!(!Arc::ptr_eq(&first_slot, &replacement_slot));
     }
 
     #[test]
