@@ -1,57 +1,49 @@
 ---
 name: implementation-plan-design
-description: Design, review, or rewrite implementation-ready development plans grounded in the current repository and upstream APIs. Use for complex features, dependency or framework upgrades, architecture changes, database work, UI work, issue plans, and durable docs that another engineer or weaker coding model must execute without making unresolved product or architecture decisions.
+description: Research, design, review, rewrite, and maintain implementation-ready development plans grounded in the current GPUI workspace and authoritative upstream APIs. Use for non-trivial features, fixes, refactors, dependency or framework upgrades, GPUI application work, cross-crate/provider/MCP contracts, error behavior, database changes, generated or synchronized artifacts, packaging, and coordinated work that needs a durable executable specification.
 ---
 
 # Implementation Plan Design
 
-Produce an implementation specification, not a generic roadmap. Finish repository and upstream research before persisting decisions.
+Produce a durable implementation specification before production changes. Make it executable without rediscovering the repository, inventing contracts, or choosing unresolved product or architecture decisions.
 
 ## Workflow
 
-1. Read repository instructions, existing plan docs, relevant skills, source modules, manifests, schema, tests, and current Git state.
-2. Trace the current implementation end to end: entrypoint, state owner, data acquisition, transformation, persistence, UI projection, errors, cancellation, and tests.
-3. Research every changing direct dependency and high-risk transitive dependency. Read release notes, changelog, migration guide, compare range, relevant PRs, public API source, features, and MSRV. Use [dependency-evidence.md](references/dependency-evidence.md).
-4. Compare new upstream capabilities with local custom code. Decide what to reuse, replace, delete, adapt, or retain using [upstream-reuse-audit.md](references/upstream-reuse-audit.md).
-5. Resolve product and architecture decisions before writing the plan. If a material choice cannot be discovered from code or authoritative sources, stop and ask the user in the conversation. Do not persist the question, candidate options, or an assumed answer. Resume after the user decides and persist only the decision.
-6. Specify modules, types, traits, methods, ownership, concurrency, errors, and lifecycle with [api-contracts.md](references/api-contracts.md).
-7. Specify every applicable product and system surface with [system-surfaces.md](references/system-surfaces.md). Explicitly record `None` when a surface does not change.
-8. Write the durable plan as ordered work packages using [plan-template.md](references/plan-template.md).
-9. Re-read the plan as an implementer. Remove research tasks that should already have been completed, ambiguous verbs, speculative APIs presented as facts, duplicated sources of truth, and decisions deferred to implementation.
+1. Read repository instructions, nearest owner README files, manifests, entrypoints, relevant source and tests, schema/migrations, generators, existing plans, and current Git status.
+2. Require a durable plan for a non-trivial change to behavior, ownership, public APIs, persistence, security, dependencies, generated artifacts, packaging, or several coordinated files. Keep a truly local behavior-preserving correction lightweight.
+3. Create the durable plan set with [documentation-layout.md](references/documentation-layout.md): one root hub at `docs/dev/<plan-id>/README.md` and one same-ID owner plan under every affected app/crate. Keep the root and owner indexes synchronized.
+4. Trace the current implementation end to end, then classify every canonical surface with [system-surfaces.md](references/system-surfaces.md).
+5. Load every conditional reference whose trigger applies. Read it completely and keep its facts in its sole plan section rather than redefining them elsewhere.
+6. Research current and upstream facts before persisting target design. Verify exact source paths, APIs, components, traits, methods, versions, features, configuration, schema behavior, and generation/synchronization entrypoints.
+7. Surface material product and architecture choices before continuing. Ask the user in the conversation when alternatives affect behavior, public API, schema, ownership, security, compatibility, dependency policy, or long-term maintenance. Do not persist unresolved questions, recommendations, or assumed answers.
+8. Instantiate the root-hub and owner-plan structures in [plan-template.md](references/plan-template.md). Name exact files, symbols, stable IDs, work packages, tests, validation evidence, deletions, and completion conditions.
+9. Re-read the plan as an implementer. Remove vague verbs, duplicate facts, speculative APIs, broad research tasks, and decisions deferred to implementation.
+10. If implementation is authorized, begin only after the root hub is `Ready`. Keep the plan set synchronized with material discoveries and record actual commits/PRs, diffs, validation, deviations, owner-document updates, unverified boundaries, and final `Done` evidence.
 
-## Non-negotiable Output
+## Conditional References
 
-Determine and persist:
+Read selected references completely before using them.
 
-- exact files and module structure, including added, modified, moved, and deleted files;
-- existing components to use and any custom component required;
-- concrete structs, enums, fields, trait implementations, associated types, method signatures, visibility, derives, and invariants;
-- control flow and data flow, including success, empty, error, cancellation, retry, partial-output, and shutdown paths;
-- local, entity, shared, and global state ownership and mutation paths;
-- database tables, columns, indexes, constraints, queries, transactions, rebuild or migration policy, and schema tests;
-- data acquisition APIs, source of truth, caching, freshness, pagination, authentication, and offline behavior;
-- icons by exact enum/asset name and ownership location;
-- i18n keys, locale files, interpolation variables, and fallback behavior;
-- dependencies and features to add, remove, or change, with exact versions or release gates;
-- upstream release evidence, breaking changes, affected call sites, migration action, and local code that becomes unnecessary;
-- test files, proposed test names, fixtures/mocks, assertions, validation commands, and completion evidence.
+| Trigger | Reference | Sole responsibility |
+| --- | --- | --- |
+| Creating, moving, splitting, completing, blocking, or superseding a durable plan | [documentation-layout.md](references/documentation-layout.md) | Artifact ownership, root-hub/owner-plan topology, plan IDs, indexes, lifecycle, ADR boundary |
+| Assessing plan scope | [system-surfaces.md](references/system-surfaces.md) | Canonical `S-xx` applicability taxonomy only |
+| Designing owner-local implementation | [implementation-contracts.md](references/implementation-contracts.md) | Files/modules, Rust types/traits/methods, persistence owner, lifecycle, lineage, icons/i18n, security/diagnostics |
+| Designing a GPUI app or shared app-support runtime/UI | [gpui-application-contracts.md](references/gpui-application-contracts.md) | Entity/Store/Global, identity, components, actions/events/focus/window, tasks, Operation, Form, GPUI tests |
+| Changing a cross-crate, app/agent, Rig/provider, MCP, platform, database-service, or external API boundary | [integration-contracts.md](references/integration-contracts.md) | Boundary authority, exact contract, producer/consumer, compatibility, rollout |
+| Adding or changing failures, recovery, error UI/i18n, or diagnostic propagation | [error-contracts.md](references/error-contracts.md) | Typed error identity and end-to-end producer-to-UI/recovery/logging behavior |
+| Changing dependencies, Git sources, submodules, toolchains, generators, manifests, or lockfiles | [dependency-changes.md](references/dependency-changes.md) | Baseline, release evidence, compatibility, migration, coupled artifacts, stop conditions |
+| Evaluating whether upstream can replace local code or copied content | [upstream-reuse-audit.md](references/upstream-reuse-audit.md) | Reuse/adapt/retain/defer and deletion-first decisions |
+| Writing, reviewing, handing off, or completing a plan | [plan-template.md](references/plan-template.md) | Representation rules, stable IDs, root-hub/owner-plan skeletons, work packages, validation, completion evidence |
 
-Do not omit a surface because no change is expected. Write an explicit no-change decision and its evidence.
+## Rules
 
-## Evidence Rules
+- Prefer cohesive, testable ownership and dependency direction over the fewest changed files.
+- Keep each fact in one canonical artifact and representation. Reference stable IDs elsewhere instead of copying definitions or progress.
+- Use annotated trees for hierarchy, language-tagged declarations for exact contracts, labeled per-ID blocks for heterogeneous ownership/lifecycle/runtime facts, pseudocode for behavioral rules, numbered steps for simple flow, Mermaid only for non-trivial topology/sequence/state, tables for homogeneous mappings, and prose for rationale or security.
+- Separate `Current fact`, `Upstream fact`, `Decision`, `User decision`, `Release-gated`, and implementation evidence.
+- Verify proposed upstream/local names and behavior before marking `Ready`. Do not leave broad upstream research to the implementer.
+- Change handwritten sources first, use verified repository generation/synchronization entrypoints, and inspect derived additions, changes, and deletions.
+- Create issues, branches, commits, pushes, or pull requests only when explicitly authorized.
 
-- Distinguish `Current fact`, `Upstream fact`, `Decision`, `Release-gated`, and `User decision`.
-- Cite local files and upstream release/tag/PR/commit or official documentation next to the decision they support.
-- For an unreleased target, fully document the known current-to-latest migration now, then add a separate release-gated delta. Do not defer already-known breaking changes.
-- Do not use method names, trait bounds, fields, components, or dependency features that have not been verified in source or official API documentation.
-- Do not require the implementer to repeat broad upstream research. Leave only a narrow release-gate verification when the final artifact does not yet exist.
-
-## Ambiguity Gate
-
-Stop and ask the user when alternatives materially change product behavior, public API, schema, ownership, security, dependency choice, compatibility policy, or long-term maintenance. Present the evidence, the concrete alternatives, and a recommendation in the conversation.
-
-Do not stop for choices that are directly determined by repository conventions, authoritative APIs, or an already recorded user decision.
-
-## Completion Gate
-
-A plan is ready only when an implementer can execute each work package without choosing architecture, inventing API contracts, rediscovering dependency migrations, or guessing acceptance criteria. If a weaker model could reasonably produce two incompatible implementations, the plan is incomplete.
+A plan is `Ready` only when an implementer can execute every work package without choosing architecture, selecting an unspecified GPUI/runtime primitive, inventing a contract, rediscovering a dependency migration, or guessing acceptance criteria.
