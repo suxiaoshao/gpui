@@ -141,6 +141,22 @@ impl OpenAiResponsesSessionPool {
             .clone()
     }
 
+    #[cfg(test)]
+    pub(crate) async fn seed_conversation_for_test(&self, conversation_id: &ConversationId) {
+        self.conversation_slot(conversation_id).await;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn contains_conversation_for_test(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> bool {
+        self.conversations
+            .lock()
+            .await
+            .contains_key(conversation_id)
+    }
+
     async fn evict_unusable_session(
         &self,
         key: &OpenAiSessionKey,

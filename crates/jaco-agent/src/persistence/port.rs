@@ -132,6 +132,7 @@ pub trait AgentPersistence: Send + Sync {
 #[cfg(test)]
 pub(crate) struct DirectAgentPersistence {
     repository: jaco_db::FreshRepository,
+    fail_append_conversation_entry: bool,
     fail_latest_completed_provider_step: bool,
 }
 
@@ -140,6 +141,15 @@ impl DirectAgentPersistence {
     pub(crate) fn new(repository: jaco_db::FreshRepository) -> Self {
         Self {
             repository,
+            fail_append_conversation_entry: false,
+            fail_latest_completed_provider_step: false,
+        }
+    }
+
+    pub(crate) fn failing_append_conversation_entry(repository: jaco_db::FreshRepository) -> Self {
+        Self {
+            repository,
+            fail_append_conversation_entry: true,
             fail_latest_completed_provider_step: false,
         }
     }
@@ -149,6 +159,7 @@ impl DirectAgentPersistence {
     ) -> Self {
         Self {
             repository,
+            fail_append_conversation_entry: false,
             fail_latest_completed_provider_step: true,
         }
     }
@@ -183,6 +194,11 @@ impl AgentPersistence for DirectAgentPersistence {
         &self,
         input: NewConversationEntry,
     ) -> jaco_db::Result<ConversationCommit<ConversationEntryRecord>> {
+        if self.fail_append_conversation_entry {
+            return Err(jaco_db::DbError::Invariant(
+                "injected append conversation entry failure".to_string(),
+            ));
+        }
         direct!(self, append_conversation_entry(input))
     }
     async fn update_conversation_entry_payload(

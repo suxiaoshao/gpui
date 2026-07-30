@@ -26,6 +26,13 @@ pub(crate) fn direct_agent_persistence(
 }
 
 #[cfg(test)]
+pub(crate) fn direct_agent_persistence_failing_append_conversation_entry(
+    repository: jaco_db::FreshRepository,
+) -> Arc<dyn AgentPersistence> {
+    Arc::new(port::DirectAgentPersistence::failing_append_conversation_entry(repository))
+}
+
+#[cfg(test)]
 pub(crate) fn direct_agent_persistence_failing_continuation_lookup(
     repository: jaco_db::FreshRepository,
 ) -> Arc<dyn AgentPersistence> {

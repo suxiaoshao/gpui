@@ -868,17 +868,30 @@ impl AgentRuntime {
         finalizing: lifecycle::FinalizingAgentRun,
         context: &PersistenceContext,
     ) -> Result<AgentRunHandle> {
-        let finished = context.finish_run(finalizing).await?;
-        let output = finished.run.output.clone().ok_or_else(|| {
-            AgentRuntimeError::Invariant("executed run finalization has no output".to_string())
-        })?;
-        Ok(AgentRunHandle {
-            agent_run: finished.run,
-            output: Some(output),
-            status: AgentRunHandleStatus::Finished,
-            events: context.events(),
-            steps: context.steps(),
-        })
+        let conversation_id = finalizing.record().conversation_id.clone();
+        let result = async {
+            let finished = context.finish_run(finalizing).await?;
+            let output = finished.run.output.clone().ok_or_else(|| {
+                AgentRuntimeError::Invariant("executed run finalization has no output".to_string())
+            })?;
+            Ok(AgentRunHandle {
+                agent_run: finished.run,
+                output: Some(output),
+                status: AgentRunHandleStatus::Finished,
+                events: context.events(),
+                steps: context.steps(),
+            })
+        }
+        .await;
+        let session_is_reusable = result
+            .as_ref()
+            .is_ok_and(|handle| handle.agent_run.status == AgentRunStatus::Completed);
+        if !session_is_reusable {
+            self.openai_sessions
+                .close_conversation(&conversation_id)
+                .await;
+        }
+        result
     }
 }
 

@@ -216,6 +216,44 @@ async fn streaming_text_delta_updates_single_assistant_item() {
 }
 
 #[tokio::test]
+async fn local_streaming_persistence_failure_returns_failed_handle_and_closes_session() {
+    let fixture = Fixture::new("streaming-persistence-failure-session");
+    let pool = crate::providers::openai::OpenAiResponsesSessionPool::new();
+    pool.seed_conversation_for_test(&fixture.conversation.id)
+        .await;
+    let persistence =
+        crate::persistence::direct_agent_persistence_failing_append_conversation_entry(
+            fixture.repo.clone(),
+        );
+    let runtime = AgentRuntime::new(persistence).with_openai_session_pool(pool.clone());
+    let model = MockCompletionModel::from_stream_turns([[
+        MockStreamEvent::text("provider output"),
+        MockStreamEvent::final_response_with_total_tokens(0),
+    ]]);
+
+    let handle = runtime
+        .run_with_model(fixture.streaming_request(), model)
+        .await
+        .expect("local streaming persistence failure must return a persisted failed handle");
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Failed);
+    assert_eq!(
+        handle
+            .agent_run
+            .error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("runtime_error")
+    );
+    assert!(
+        !pool
+            .contains_conversation_for_test(&fixture.conversation.id)
+            .await,
+        "a failed run handle must not leave a reusable OpenAI session"
+    );
+}
+
+#[tokio::test]
 async fn streaming_provider_open_error_stays_before_later_user_entry_after_reload() {
     let fixture = Fixture::new("streaming-provider-open-error");
     let runtime = AgentRuntime::from_repository(fixture.repo.clone());
