@@ -127,7 +127,7 @@ CREATE TABLE agent_runs (
     trigger_entry_id TEXT NOT NULL REFERENCES conversation_entries(id)
         ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
     trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('user', 'shortcut', 'retry')),
-    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'canceled')),
+    status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'canceled')),
     input_json JSON NOT NULL,
     final_entry_id TEXT REFERENCES conversation_entries(id)
         ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
@@ -138,7 +138,7 @@ CREATE TABLE agent_runs (
     completed_at DateTime,
     updated_at DateTime NOT NULL,
     CHECK (
-        (status IN ('queued', 'running') AND final_entry_id IS NULL AND stopped_reason IS NULL)
+        (status = 'running' AND final_entry_id IS NULL AND stopped_reason IS NULL)
         OR
         (status IN ('completed', 'failed', 'canceled') AND final_entry_id IS NOT NULL AND stopped_reason IS NOT NULL)
     ),

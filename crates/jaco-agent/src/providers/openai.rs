@@ -98,6 +98,7 @@ impl OpenAiReasoningPolicy {
 fn reasoning_effort(value: &str) -> Option<ReasoningEffort> {
     match value {
         "none" => Some(ReasoningEffort::None),
+        "minimal" => Some(ReasoningEffort::Minimal),
         "low" => Some(ReasoningEffort::Low),
         "medium" => Some(ReasoningEffort::Medium),
         "high" => Some(ReasoningEffort::High),
@@ -190,7 +191,16 @@ mod tests {
     }
 
     #[test]
-    fn typed_policy_rejects_minimal_for_gpt_5_6() {
-        assert!(OpenAiReasoningPolicy::from_run_settings(&settings("minimal")).is_err());
+    fn typed_policy_preserves_minimal_for_older_gpt_5_models() {
+        let mut settings = settings("minimal");
+        settings.model_id = "gpt-5".to_string();
+
+        let value = OpenAiReasoningPolicy::from_run_settings(&settings)
+            .unwrap()
+            .merge_into_request_params(None)
+            .unwrap();
+
+        assert_eq!(value["reasoning"]["effort"], "minimal");
+        assert_eq!(value["store"], true);
     }
 }

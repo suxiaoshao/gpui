@@ -40,17 +40,6 @@ pub(crate) struct SqlNewAgentRunRow {
 #[derive(Debug, Clone, AsChangeset)]
 #[diesel(table_name = agent_runs)]
 #[diesel(treat_none_as_null = true)]
-pub(crate) struct SqlAgentRunStatusChanges {
-    pub(crate) status: String,
-    pub(crate) error_json: Option<Value>,
-    pub(crate) started_at: Option<OffsetDateTime>,
-    pub(crate) completed_at: Option<OffsetDateTime>,
-    pub(crate) updated_at: OffsetDateTime,
-}
-
-#[derive(Debug, Clone, AsChangeset)]
-#[diesel(table_name = agent_runs)]
-#[diesel(treat_none_as_null = true)]
 pub(crate) struct SqlAgentRunFinalChanges {
     pub(crate) status: String,
     pub(crate) final_entry_id: String,

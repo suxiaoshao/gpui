@@ -697,7 +697,7 @@ async fn run_agent_with_saved_provider(
         }
     };
     let agent_run = runtime
-        .begin_run(&mut request, Some(&observer))
+        .begin_run(&mut request, Some(observer))
         .await
         .map_err(|err| err.to_string())?;
     let secrets = match ProviderSecretStore::read_values(cx, &provider.secret_refs).await {
@@ -705,7 +705,7 @@ async fn run_agent_with_saved_provider(
         Err(err) => {
             return gpui_tokio::Tokio::spawn(cx, async move {
                 runtime
-                    .record_setup_failed_started_run(&agent_run, err, Some(&observer))
+                    .record_setup_failed_started_run(agent_run, err)
                     .await
             })
             .await
@@ -715,13 +715,7 @@ async fn run_agent_with_saved_provider(
     };
     gpui_tokio::Tokio::spawn(cx, async move {
         runtime
-            .run_started_with_saved_provider_observed(
-                agent_run,
-                request,
-                provider,
-                secrets,
-                Some(observer),
-            )
+            .run_started_with_saved_provider(agent_run, request, provider, secrets)
             .await
     })
     .await
@@ -863,8 +857,7 @@ mod tests {
         let (conversation_id, agent_run_id) = cx.update(|cx| {
             let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let agent_run_id = insert_agent_run(&repository, &conversation_id);
             (conversation_id, agent_run_id)
         });
 
@@ -888,8 +881,7 @@ mod tests {
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let agent_run_id = insert_agent_run(&repository, &conversation_id);
             let approval_id = insert_approval_for_run(&repository, &agent_run_id);
             (conversation_id, agent_run_id, approval_id)
         });
@@ -938,8 +930,7 @@ mod tests {
         let (conversation_id, agent_run_id) = cx.update(|cx| {
             let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let agent_run_id = insert_agent_run(&repository, &conversation_id);
             (conversation_id, agent_run_id)
         });
 
@@ -1120,8 +1111,7 @@ mod tests {
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let agent_run_id = insert_agent_run(&repository, &conversation_id);
             let approval_id = insert_approval_for_run(&repository, &agent_run_id);
             (conversation_id, agent_run_id, approval_id)
         });
@@ -1163,8 +1153,7 @@ mod tests {
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let agent_run_id = insert_agent_run(&repository, &conversation_id);
             let approval_id = insert_approval_for_run(&repository, &agent_run_id);
             (conversation_id, agent_run_id, approval_id)
         });
@@ -1212,8 +1201,7 @@ mod tests {
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let agent_run_id = insert_agent_run(&repository, &conversation_id);
             let approval_id = insert_approval_for_run(&repository, &agent_run_id);
             (conversation_id, agent_run_id, approval_id)
         });
@@ -1255,8 +1243,7 @@ mod tests {
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = test_repository(cx);
             let conversation_id = insert_conversation_with_user_item(&repository);
-            let agent_run_id =
-                insert_agent_run(&repository, &conversation_id, AgentRunStatus::Running);
+            let agent_run_id = insert_agent_run(&repository, &conversation_id);
             let approval_id = insert_approval_for_run(&repository, &agent_run_id);
             (conversation_id, agent_run_id, approval_id)
         });
@@ -1393,7 +1380,6 @@ mod tests {
     fn insert_agent_run(
         repository: &FreshRepository,
         conversation_id: &ConversationId,
-        status: AgentRunStatus,
     ) -> AgentRunId {
         let trigger_entry_id = repository
             .conversation_entries(conversation_id)
@@ -1407,7 +1393,6 @@ mod tests {
                 conversation_id: conversation_id.to_string(),
                 trigger_entry_id: trigger_entry_id.clone(),
                 trigger_kind: AgentRunTriggerKind::User,
-                status,
                 input: AgentRunInput {
                     prompt_snapshot: None,
                     provider_id: "provider".to_string(),

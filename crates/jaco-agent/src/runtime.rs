@@ -1,13 +1,21 @@
 mod finalization;
 mod history;
+pub(crate) mod lifecycle;
 mod reasoning;
 mod streaming;
 #[cfg(test)]
 mod tests;
 pub(crate) mod types;
 
+pub use lifecycle::PreparingAgentRun;
+
 use self::{
     history::{PromptHistoryOptions, build_prompt_history_with_options},
+    lifecycle::{
+        BeginExecution, CancelPersistedActive, ExecutionFinished, FinishCommitFailed,
+        FinishCommitted, InterruptPersistedActive, PersistedActiveAgentRun, PreparationCanceled,
+        SetupFailed,
+    },
     reasoning::{merge_additional_params, reasoning_additional_params},
     streaming::StreamingOutputAccumulator,
 };
@@ -22,11 +30,9 @@ use crate::{
     providers::run_saved_provider_model,
 };
 use futures::StreamExt;
+use gpui_operation::Transition;
 use jaco_core::*;
-use jaco_db::{
-    AgentRunRecord, FinishAgentRun, FinishedAgentRun, NewConversationEntry, ProviderRecord,
-    UpdateAgentRunStatus,
-};
+use jaco_db::{AgentRunRecord, FinishedAgentRun, NewConversationEntry, ProviderRecord};
 use rig::{
     agent::{AgentBuilder, MultiTurnStreamItem, StreamingError},
     completion::{CompletionModel, Prompt, PromptError, Usage},
@@ -129,16 +135,16 @@ impl AgentRuntime {
             + serde::de::DeserializeOwned
             + rig::completion::GetTokenUsage,
     {
-        let agent_run = self.begin_run(&mut request, observer.as_ref()).await?;
-        self.run_started_with_model_observed(agent_run, request, model, observer)
+        let agent_run = self.begin_run(&mut request, observer).await?;
+        self.run_started_with_model_observed(agent_run, request, model)
             .await
     }
 
     pub async fn begin_run(
         &self,
         request: &mut AgentRunRequest,
-        observer: Option<&AgentRuntimeObserver>,
-    ) -> Result<AgentRunRecord> {
+        observer: Option<AgentRuntimeObserver>,
+    ) -> Result<PreparingAgentRun> {
         if request.cancellation_token.is_cancelled() {
             return Err(AgentRuntimeError::Canceled);
         }
@@ -148,36 +154,26 @@ impl AgentRuntime {
             request.project_root.as_deref(),
         )?;
         request.tool_registry.finalize_names();
-        let mut agent_run = self
+        let agent_run = self
             .persistence
             .insert_agent_run(new_agent_run_input(request))
             .await?;
         emit_runtime(
-            observer,
+            observer.as_ref(),
             AgentRuntimeEvent::AgentRunStarted {
                 agent_run_id: agent_run.id.clone(),
                 conversation_id: agent_run.conversation_id.clone(),
             },
         );
-        agent_run = self
-            .persistence
-            .update_agent_run_status(
-                agent_run.id.clone(),
-                UpdateAgentRunStatus {
-                    status: AgentRunStatus::Running,
-                    error: None,
-                },
-            )
-            .await?;
         emit_runtime(
-            observer,
+            observer.as_ref(),
             AgentRuntimeEvent::AgentRunStatusChanged {
                 agent_run_id: agent_run.id.clone(),
                 status: AgentRunStatus::Running,
             },
         );
         emit_runtime(
-            observer,
+            observer.as_ref(),
             AgentRuntimeEvent::ConversationTimelineChanged {
                 conversation_id: agent_run.conversation_id.clone(),
                 changes: vec![jaco_core::ConversationChange::RunStatusChanged {
@@ -185,15 +181,14 @@ impl AgentRuntime {
                 }],
             },
         );
-        Ok(agent_run)
+        PreparingAgentRun::new(agent_run, observer)
     }
 
     pub(crate) async fn run_started_with_model_observed<M>(
         &self,
-        agent_run: AgentRunRecord,
+        agent_run: PreparingAgentRun,
         request: AgentRunRequest,
         model: M,
-        observer: Option<AgentRuntimeObserver>,
     ) -> Result<AgentRunHandle>
     where
         M: CompletionModel + 'static,
@@ -206,16 +201,15 @@ impl AgentRuntime {
             + serde::de::DeserializeOwned
             + rig::completion::GetTokenUsage,
     {
-        self.run_started_with_model_observed_inner(agent_run, request, model, observer, None)
+        self.run_started_with_model_observed_inner(agent_run, request, model, None)
             .await
     }
 
     pub(crate) async fn run_started_with_openai_websocket_observed<M>(
         &self,
-        agent_run: AgentRunRecord,
+        agent_run: PreparingAgentRun,
         request: AgentRunRequest,
         model: M,
-        observer: Option<AgentRuntimeObserver>,
         attempts: crate::providers::openai::OpenAiAttemptCoordinator,
     ) -> Result<AgentRunHandle>
     where
@@ -229,22 +223,15 @@ impl AgentRuntime {
             + serde::de::DeserializeOwned
             + rig::completion::GetTokenUsage,
     {
-        self.run_started_with_model_observed_inner(
-            agent_run,
-            request,
-            model,
-            observer,
-            Some(attempts),
-        )
-        .await
+        self.run_started_with_model_observed_inner(agent_run, request, model, Some(attempts))
+            .await
     }
 
     async fn run_started_with_model_observed_inner<M>(
         &self,
-        agent_run: AgentRunRecord,
+        agent_run: PreparingAgentRun,
         request: AgentRunRequest,
         model: M,
-        observer: Option<AgentRuntimeObserver>,
         openai_attempts: Option<crate::providers::openai::OpenAiAttemptCoordinator>,
     ) -> Result<AgentRunHandle>
     where
@@ -259,23 +246,13 @@ impl AgentRuntime {
             + rig::completion::GetTokenUsage,
     {
         if request.cancellation_token.is_cancelled() {
-            let agent_run = self
-                .cancel_run(&agent_run.id, observer.as_ref())
-                .await?
-                .ok_or_else(|| AgentRuntimeError::Invariant("agent run disappeared".to_string()))?;
-            return Ok(AgentRunHandle {
-                agent_run,
-                output: None,
-                status: AgentRunHandleStatus::Finished,
-                events: vec![AgentRunEvent::Canceled],
-                steps: Vec::new(),
-            });
+            return self
+                .finish_preparation(agent_run.transition(PreparationCanceled))
+                .await;
         }
 
-        if let Err(error) = self.activate_skills(&request, &agent_run.id).await {
-            return Err(self
-                .mark_setup_failed(&agent_run.id, error, observer.as_ref())
-                .await?);
+        if let Err(error) = self.activate_skills(&request, &agent_run.record().id).await {
+            return self.record_setup_failed_started_run(agent_run, error).await;
         }
 
         let timeline = match self
@@ -285,32 +262,27 @@ impl AgentRuntime {
         {
             Ok(Some(timeline)) => timeline,
             Ok(None) => {
-                return Err(self
-                    .mark_setup_failed(
-                        &agent_run.id,
+                return self
+                    .record_setup_failed_started_run(
+                        agent_run,
                         AgentRuntimeError::Invariant(format!(
                             "conversation {} is missing",
                             request.conversation_id
                         )),
-                        observer.as_ref(),
                     )
-                    .await?);
+                    .await;
             }
             Err(error) => {
-                return Err(self
-                    .mark_setup_failed(
-                        &agent_run.id,
-                        AgentRuntimeError::from(error),
-                        observer.as_ref(),
-                    )
-                    .await?);
+                return self
+                    .record_setup_failed_started_run(agent_run, AgentRuntimeError::from(error))
+                    .await;
             }
         };
         let prompt_history = match build_prompt_history_with_options(
             &timeline.items,
             &timeline.attachments,
             &request.trigger_entry_id,
-            &agent_run.id,
+            &agent_run.record().id,
             PromptHistoryOptions {
                 include_reasoning: true,
                 preserve_tool_protocol: true,
@@ -318,9 +290,7 @@ impl AgentRuntime {
         ) {
             Ok(prompt_history) => prompt_history,
             Err(error) => {
-                return Err(self
-                    .mark_setup_failed(&agent_run.id, error, observer.as_ref())
-                    .await?);
+                return self.record_setup_failed_started_run(agent_run, error).await;
             }
         };
 
@@ -331,7 +301,7 @@ impl AgentRuntime {
         let registered_definitions = tool_bundle.definitions().to_vec();
         let context = PersistenceContext::new(
             self.persistence.clone(),
-            agent_run.id.clone(),
+            agent_run.record().id.clone(),
             request.conversation_id.clone(),
             request.provider_id.clone(),
             request.model_id.clone(),
@@ -341,7 +311,7 @@ impl AgentRuntime {
             request.guards.max_tool_calls,
             request.guards.repeated_tool_call_limit,
             request.cancellation_token.clone(),
-            observer.clone(),
+            agent_run.observer().cloned(),
             self.approval_broker.clone(),
         );
         let model = match openai_attempts {
@@ -374,49 +344,20 @@ impl AgentRuntime {
             builder = builder.additional_params(additional_params);
         }
         let agent = tool_bundle.install(builder).build();
+        let agent_run = agent_run.transition(BeginExecution);
 
-        let execution = if request.settings_snapshot.model_capabilities.streaming {
-            let stream = tokio::select! {
-                biased;
-                _ = request.cancellation_token.cancelled() => None,
-                stream = agent
-                    .stream_prompt(prompt_history.prompt)
-                    .history(prompt_history.history)
-                    .without_memory() => Some(stream),
-            };
-            let Some(mut stream) = stream else {
-                let _ = context
-                    .cancel_current_provider_step(run_error(
-                        "canceled",
-                        "runtime canceled",
-                        false,
-                        None,
-                    ))
-                    .await;
-                return Ok(AgentRunHandle {
-                    agent_run: self
-                        .cancel_run(&agent_run.id, observer.as_ref())
-                        .await?
-                        .ok_or_else(|| {
-                            AgentRuntimeError::Invariant("agent run disappeared".to_string())
-                        })?,
-                    output: None,
-                    status: AgentRunHandleStatus::Finished,
-                    events: vec![AgentRunEvent::Canceled],
-                    steps: context.steps(),
-                });
-            };
-            let mut accumulator = StreamingOutputAccumulator::new(context.clone());
-            let mut final_response = None;
-            let mut final_raw_response = None;
-
-            loop {
-                let next = tokio::select! {
+        let outcome: Result<AgentRunOutcome> = async {
+            let execution = if request.settings_snapshot.model_capabilities.streaming {
+                let stream = tokio::select! {
                     biased;
-                    _ = request.cancellation_token.cancelled() => {
-                        accumulator
-                            .finish(ConversationEntryStatus::Canceled, None)
-                            .await?;
+                    _ = request.cancellation_token.cancelled() => None,
+                    stream = agent
+                        .stream_prompt(prompt_history.prompt)
+                        .history(prompt_history.history)
+                        .without_memory() => Some(stream),
+                };
+                match stream {
+                    None => {
                         let _ = context
                             .cancel_current_provider_step(run_error(
                                 "canceled",
@@ -425,251 +366,244 @@ impl AgentRuntime {
                                 None,
                             ))
                             .await;
-                        break Ok(AgentStoppedReason::Canceled);
+                        Ok(AgentStoppedReason::Canceled)
                     }
-                    next = stream.next() => next,
-                };
-                match next {
-                    Some(Ok(MultiTurnStreamItem::StreamAssistantItem(item))) => match item {
-                        StreamedAssistantContent::Text(text) => {
-                            accumulator.append_text(&text.text).await?;
-                        }
-                        StreamedAssistantContent::Reasoning(reasoning) => {
-                            accumulator
-                                .replace_reasoning(reasoning.display_text())
-                                .await?;
-                        }
-                        StreamedAssistantContent::ReasoningDelta { reasoning, .. } => {
-                            accumulator.append_reasoning(&reasoning).await?;
-                        }
-                        StreamedAssistantContent::Final(response) => {
-                            final_raw_response = Some(response);
-                        }
-                        StreamedAssistantContent::ToolCall { .. }
-                        | StreamedAssistantContent::ToolCallDelta { .. }
-                        | StreamedAssistantContent::Unknown(_) => {}
-                    },
-                    Some(Ok(MultiTurnStreamItem::StreamUserItem(_))) => {}
-                    Some(Ok(MultiTurnStreamItem::FinalResponse(response))) => {
-                        final_response = Some(response);
-                    }
-                    Some(Ok(_)) => {}
-                    Some(Err(error)) => {
-                        if request.cancellation_token.is_cancelled() {
-                            accumulator
-                                .finish(ConversationEntryStatus::Canceled, None)
-                                .await?;
-                            let _ = context
-                                .cancel_current_provider_step(run_error(
-                                    "canceled",
-                                    "runtime canceled",
-                                    false,
-                                    None,
-                                ))
-                                .await;
-                        } else {
-                            accumulator
-                                .finish(ConversationEntryStatus::Failed, None)
-                                .await?;
-                            let _ = context
-                                .fail_current_provider_step(run_error(
-                                    "prompt_error",
-                                    error.to_string(),
-                                    true,
-                                    None,
-                                ))
-                                .await;
-                        }
-                        break Err(PromptExecutionError::streaming(error));
-                    }
-                    None => {
-                        let final_text = final_response
-                            .as_ref()
-                            .map(|response| response.output.clone())
-                            .filter(|text| !text.is_empty());
-                        if request.cancellation_token.is_cancelled() {
-                            accumulator
-                                .finish(ConversationEntryStatus::Canceled, final_text.as_deref())
-                                .await?;
-                            let _ = context
-                                .cancel_current_provider_step(run_error(
-                                    "canceled",
-                                    "runtime canceled",
-                                    false,
-                                    None,
-                                ))
-                                .await;
-                            break Ok(AgentStoppedReason::Canceled);
-                        } else {
-                            accumulator
-                                .finish(ConversationEntryStatus::Completed, final_text.as_deref())
-                                .await?;
-                            let usage = final_response
-                                .as_ref()
-                                .map(|response| response.usage())
-                                .unwrap_or_else(Usage::new);
-                            context
-                                .finish_current_streaming_provider_step(
-                                    final_raw_response.as_ref(),
-                                    usage,
-                                )
-                                .await?;
-                            break Ok(AgentStoppedReason::Completed);
-                        }
-                    }
-                }
-            }
-        } else {
-            let response = tokio::select! {
-                biased;
-                _ = request.cancellation_token.cancelled() => {
-                    let _ = context
-                        .cancel_current_provider_step(run_error(
-                            "canceled",
-                            "runtime canceled",
-                            false,
-                            None,
-                        ))
-                        .await;
-                    None
-                }
-                response = agent
-                    .prompt(prompt_history.prompt)
-                    .history(prompt_history.history)
-                    .tool_concurrency(request.guards.tool_concurrency)
-                    .without_memory()
-                    .extended_details() => Some(response),
-            };
-            match response {
-                None => Ok(AgentStoppedReason::Canceled),
-                Some(Ok(_response)) => Ok(AgentStoppedReason::Completed),
-                Some(Err(error)) => Err(PromptExecutionError::prompt(error)),
-            }
-        };
+                    Some(mut stream) => {
+                        let mut accumulator = StreamingOutputAccumulator::new(context.clone());
+                        let mut final_response = None;
+                        let mut final_raw_response = None;
 
-        match execution {
-            Ok(stopped_reason) => {
-                let final_status = if stopped_reason == AgentStoppedReason::Canceled
-                    || request.cancellation_token.is_cancelled()
-                {
-                    AgentRunStatus::Canceled
-                } else {
-                    AgentRunStatus::Completed
+                        loop {
+                            let next = tokio::select! {
+                                biased;
+                                _ = request.cancellation_token.cancelled() => {
+                                    accumulator
+                                        .finish(ConversationEntryStatus::Canceled, None)
+                                        .await?;
+                                    let _ = context
+                                        .cancel_current_provider_step(run_error(
+                                            "canceled",
+                                            "runtime canceled",
+                                            false,
+                                            None,
+                                        ))
+                                        .await;
+                                    break Ok(AgentStoppedReason::Canceled);
+                                }
+                                next = stream.next() => next,
+                            };
+                            match next {
+                                Some(Ok(MultiTurnStreamItem::StreamAssistantItem(item))) => {
+                                    match item {
+                                        StreamedAssistantContent::Text(text) => {
+                                            accumulator.append_text(&text.text).await?;
+                                        }
+                                        StreamedAssistantContent::Reasoning(reasoning) => {
+                                            accumulator
+                                                .replace_reasoning(reasoning.display_text())
+                                                .await?;
+                                        }
+                                        StreamedAssistantContent::ReasoningDelta {
+                                            reasoning,
+                                            ..
+                                        } => {
+                                            accumulator.append_reasoning(&reasoning).await?;
+                                        }
+                                        StreamedAssistantContent::Final(response) => {
+                                            final_raw_response = Some(response);
+                                        }
+                                        StreamedAssistantContent::ToolCall { .. }
+                                        | StreamedAssistantContent::ToolCallDelta { .. }
+                                        | StreamedAssistantContent::Unknown(_) => {}
+                                    }
+                                }
+                                Some(Ok(MultiTurnStreamItem::StreamUserItem(_))) => {}
+                                Some(Ok(MultiTurnStreamItem::FinalResponse(response))) => {
+                                    final_response = Some(response);
+                                }
+                                Some(Ok(_)) => {}
+                                Some(Err(error)) => {
+                                    if request.cancellation_token.is_cancelled() {
+                                        accumulator
+                                            .finish(ConversationEntryStatus::Canceled, None)
+                                            .await?;
+                                        let _ = context
+                                            .cancel_current_provider_step(run_error(
+                                                "canceled",
+                                                "runtime canceled",
+                                                false,
+                                                None,
+                                            ))
+                                            .await;
+                                    } else {
+                                        accumulator
+                                            .finish(ConversationEntryStatus::Failed, None)
+                                            .await?;
+                                        let _ = context
+                                            .fail_current_provider_step(run_error(
+                                                "prompt_error",
+                                                error.to_string(),
+                                                true,
+                                                None,
+                                            ))
+                                            .await;
+                                    }
+                                    break Err(PromptExecutionError::streaming(error));
+                                }
+                                None => {
+                                    let final_text = final_response
+                                        .as_ref()
+                                        .map(|response| response.output.clone())
+                                        .filter(|text| !text.is_empty());
+                                    if request.cancellation_token.is_cancelled() {
+                                        accumulator
+                                            .finish(
+                                                ConversationEntryStatus::Canceled,
+                                                final_text.as_deref(),
+                                            )
+                                            .await?;
+                                        let _ = context
+                                            .cancel_current_provider_step(run_error(
+                                                "canceled",
+                                                "runtime canceled",
+                                                false,
+                                                None,
+                                            ))
+                                            .await;
+                                        break Ok(AgentStoppedReason::Canceled);
+                                    }
+                                    accumulator
+                                        .finish(
+                                            ConversationEntryStatus::Completed,
+                                            final_text.as_deref(),
+                                        )
+                                        .await?;
+                                    let usage = final_response
+                                        .as_ref()
+                                        .map(|response| response.usage())
+                                        .unwrap_or_else(Usage::new);
+                                    context
+                                        .finish_current_streaming_provider_step(
+                                            final_raw_response.as_ref(),
+                                            usage,
+                                        )
+                                        .await?;
+                                    break Ok(AgentStoppedReason::Completed);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                let response = tokio::select! {
+                    biased;
+                    _ = request.cancellation_token.cancelled() => {
+                        let _ = context
+                            .cancel_current_provider_step(run_error(
+                                "canceled",
+                                "runtime canceled",
+                                false,
+                                None,
+                            ))
+                            .await;
+                        None
+                    }
+                    response = agent
+                        .prompt(prompt_history.prompt)
+                        .history(prompt_history.history)
+                        .tool_concurrency(request.guards.tool_concurrency)
+                        .without_memory()
+                        .extended_details() => Some(response),
                 };
-                let final_stopped_reason = if final_status == AgentRunStatus::Canceled {
-                    AgentStoppedReason::Canceled
-                } else {
-                    stopped_reason
-                };
-                if final_status == AgentRunStatus::Canceled {
+                match response {
+                    None => Ok(AgentStoppedReason::Canceled),
+                    Some(Ok(_response)) => Ok(AgentStoppedReason::Completed),
+                    Some(Err(error)) => Err(PromptExecutionError::prompt(error)),
+                }
+            };
+
+            match execution {
+                Ok(stopped_reason) => {
+                    let canceled = stopped_reason == AgentStoppedReason::Canceled
+                        || request.cancellation_token.is_cancelled();
+                    if canceled {
+                        self.finalize_active_tool_invocations(
+                            &agent_run.record().id,
+                            &request.conversation_id,
+                            ToolInvocationStatus::Canceled,
+                            run_error("canceled", "runtime canceled", false, None),
+                        )
+                        .await?;
+                    }
+                    let final_entry_id = if canceled {
+                        context.final_entry_id().or(self
+                            .latest_assistant_entry_id_for_run(agent_run.record())
+                            .await?)
+                    } else {
+                        context.final_entry_id()
+                    };
+                    if canceled {
+                        Ok(AgentRunOutcome::Canceled { final_entry_id })
+                    } else if stopped_reason == AgentStoppedReason::MaxSteps {
+                        Ok(AgentRunOutcome::MaxSteps { final_entry_id })
+                    } else {
+                        Ok(AgentRunOutcome::Completed { final_entry_id })
+                    }
+                }
+                Err(error) if error.max_steps => Ok(AgentRunOutcome::MaxSteps {
+                    final_entry_id: context.final_entry_id(),
+                }),
+                Err(error) => {
+                    let canceled = request.cancellation_token.is_cancelled();
+                    let payload = if canceled {
+                        run_error("canceled", "runtime canceled", false, None)
+                    } else {
+                        run_error("prompt_error", error.message, true, None)
+                    };
                     self.finalize_active_tool_invocations(
-                        &agent_run.id,
+                        &agent_run.record().id,
                         &request.conversation_id,
-                        ToolInvocationStatus::Canceled,
-                        run_error("canceled", "runtime canceled", false, None),
+                        if canceled {
+                            ToolInvocationStatus::Canceled
+                        } else {
+                            ToolInvocationStatus::Failed
+                        },
+                        payload.clone(),
                     )
                     .await?;
-                }
-                let final_entry_id = if final_status == AgentRunStatus::Canceled {
-                    context
-                        .final_entry_id()
-                        .or(self.latest_assistant_entry_id_for_run(&agent_run).await?)
-                } else {
-                    context.final_entry_id()
-                };
-                let outcome = match final_status {
-                    AgentRunStatus::Canceled => AgentRunOutcome::Canceled { final_entry_id },
-                    AgentRunStatus::Completed
-                        if final_stopped_reason == AgentStoppedReason::MaxSteps =>
-                    {
-                        AgentRunOutcome::MaxSteps { final_entry_id }
-                    }
-                    AgentRunStatus::Completed => AgentRunOutcome::Completed { final_entry_id },
-                    AgentRunStatus::Queued | AgentRunStatus::Running | AgentRunStatus::Failed => {
-                        return Err(AgentRuntimeError::Invariant(
-                            "invalid successful run final status".to_string(),
-                        ));
-                    }
-                };
-                let finished = context.finish_run(outcome).await?;
-                let output = finished.run.output.clone().ok_or_else(|| {
-                    AgentRuntimeError::Invariant("finished run has no output".to_string())
-                })?;
-                Ok(AgentRunHandle {
-                    agent_run: finished.run,
-                    output: Some(output),
-                    status: AgentRunHandleStatus::Finished,
-                    events: context.events(),
-                    steps: context.steps(),
-                })
-            }
-            Err(error) => {
-                if error.max_steps {
-                    let finished = context
-                        .finish_run(AgentRunOutcome::MaxSteps {
-                            final_entry_id: context.final_entry_id(),
-                        })
-                        .await?;
-                    let output = finished.run.output.clone().ok_or_else(|| {
-                        AgentRuntimeError::Invariant("max steps run has no output".to_string())
-                    })?;
-                    return Ok(AgentRunHandle {
-                        agent_run: finished.run,
-                        output: Some(output),
-                        status: AgentRunHandleStatus::Finished,
-                        events: context.events(),
-                        steps: context.steps(),
-                    });
-                }
-
-                let payload = if request.cancellation_token.is_cancelled() {
-                    run_error("canceled", "runtime canceled", false, None)
-                } else {
-                    run_error("prompt_error", error.message, true, None)
-                };
-                let final_status = if request.cancellation_token.is_cancelled() {
-                    AgentRunStatus::Canceled
-                } else {
-                    AgentRunStatus::Failed
-                };
-                self.finalize_active_tool_invocations(
-                    &agent_run.id,
-                    &request.conversation_id,
-                    if final_status == AgentRunStatus::Canceled {
-                        ToolInvocationStatus::Canceled
+                    if canceled {
+                        let final_entry_id = context.final_entry_id().or(self
+                            .latest_assistant_entry_id_for_run(agent_run.record())
+                            .await?);
+                        Ok(AgentRunOutcome::Canceled { final_entry_id })
                     } else {
-                        ToolInvocationStatus::Failed
-                    },
-                    payload.clone(),
-                )
-                .await?;
-                let final_entry_id = if final_status == AgentRunStatus::Canceled {
-                    context
-                        .final_entry_id()
-                        .or(self.latest_assistant_entry_id_for_run(&agent_run).await?)
-                } else {
-                    None
-                };
-                let outcome = if final_status == AgentRunStatus::Canceled {
-                    AgentRunOutcome::Canceled { final_entry_id }
-                } else {
-                    AgentRunOutcome::Failed {
-                        error: payload.clone(),
+                        Ok(AgentRunOutcome::Failed { error: payload })
                     }
-                };
-                let finished = context.finish_run(outcome).await?;
-                let output = Some(finished.run.output.clone().ok_or_else(|| {
-                    AgentRuntimeError::Invariant("finished run has no output".to_string())
-                })?);
-                Ok(AgentRunHandle {
-                    agent_run: finished.run,
-                    output,
-                    status: AgentRunHandleStatus::Finished,
-                    events: context.events(),
-                    steps: context.steps(),
-                })
+                }
             }
         }
+        .await;
+
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let payload = run_error("runtime_error", error.to_string(), true, None);
+                let _ = self
+                    .fail_active_provider_steps(&agent_run.record().id, payload.clone())
+                    .await;
+                let _ = self
+                    .finalize_active_tool_invocations(
+                        &agent_run.record().id,
+                        &request.conversation_id,
+                        ToolInvocationStatus::Failed,
+                        payload.clone(),
+                    )
+                    .await;
+                AgentRunOutcome::Failed { error: payload }
+            }
+        };
+        self.finish_execution(agent_run.transition(ExecutionFinished(outcome)), &context)
+            .await
     }
 
     pub async fn run_with_saved_provider_observed(
@@ -680,22 +614,19 @@ impl AgentRuntime {
         observer: Option<AgentRuntimeObserver>,
     ) -> Result<AgentRunHandle> {
         let mut request = request;
-        let agent_run = self.begin_run(&mut request, observer.as_ref()).await?;
-        self.run_started_with_saved_provider_observed(
-            agent_run, request, provider, secrets, observer,
-        )
-        .await
+        let agent_run = self.begin_run(&mut request, observer).await?;
+        self.run_started_with_saved_provider(agent_run, request, provider, secrets)
+            .await
     }
 
-    pub async fn run_started_with_saved_provider_observed(
+    pub async fn run_started_with_saved_provider(
         &self,
-        agent_run: AgentRunRecord,
+        agent_run: PreparingAgentRun,
         request: AgentRunRequest,
         provider: ProviderRecord,
         secrets: ProviderSecretValues,
-        observer: Option<AgentRuntimeObserver>,
     ) -> Result<AgentRunHandle> {
-        run_saved_provider_model(self, agent_run, request, provider, secrets, observer).await
+        run_saved_provider_model(self, agent_run, request, provider, secrets).await
     }
 
     pub async fn record_setup_failed_run(
@@ -704,40 +635,17 @@ impl AgentRuntime {
         error: impl ToString,
         observer: Option<&AgentRuntimeObserver>,
     ) -> Result<AgentRunHandle> {
-        let agent_run = self.begin_run(&mut request, observer).await?;
-        self.record_setup_failed_started_run(&agent_run, error, observer)
-            .await
+        let agent_run = self.begin_run(&mut request, observer.cloned()).await?;
+        self.record_setup_failed_started_run(agent_run, error).await
     }
 
     pub async fn record_setup_failed_started_run(
         &self,
-        agent_run: &AgentRunRecord,
+        agent_run: PreparingAgentRun,
         error: impl ToString,
-        observer: Option<&AgentRuntimeObserver>,
     ) -> Result<AgentRunHandle> {
-        let payload = run_error("setup_error", error.to_string(), true, None);
-        let finished = self
-            .finish_agent_run_with_observer(
-                &agent_run.id,
-                finish_agent_run_spec(
-                    agent_run,
-                    AgentRunOutcome::Failed {
-                        error: payload.clone(),
-                    },
-                ),
-                observer,
-            )
-            .await?;
-        let output = finished.run.output.clone().ok_or_else(|| {
-            AgentRuntimeError::Invariant("setup failure has no output".to_string())
-        })?;
-        Ok(AgentRunHandle {
-            agent_run: finished.run,
-            output: Some(output),
-            status: AgentRunHandleStatus::Finished,
-            events: vec![AgentRunEvent::Failed { error: payload }],
-            steps: vec![AgentStep::ConversationEntry(finished.final_entry.id)],
-        })
+        self.finish_preparation(agent_run.transition(SetupFailed(error.to_string())))
+            .await
     }
 
     pub async fn cancel_non_terminal_runs_for_conversation(
@@ -777,66 +685,72 @@ impl AgentRuntime {
             return Ok(Some(run));
         }
 
-        let error = run_error("canceled", "runtime canceled", false, None);
-        self.finalize_active_provider_steps(&run.id, ProviderStepStatus::Canceled, error.clone())
-            .await?;
-        self.finalize_active_tool_invocations(
-            &run.id,
-            &run.conversation_id,
-            ToolInvocationStatus::Canceled,
-            error,
-        )
-        .await?;
-        let _ = self
-            .finish_agent_run_with_observer(
-                &run.id,
-                finish_agent_run_spec(
-                    &run,
-                    AgentRunOutcome::Canceled {
-                        final_entry_id: self.latest_assistant_entry_id_for_run(&run).await?,
-                    },
-                ),
-                observer,
+        let active = PersistedActiveAgentRun::new(run, observer.cloned())?;
+        let cleanup = async {
+            let error = run_error("canceled", "runtime canceled", false, None);
+            self.finalize_active_provider_steps(
+                &active.record().id,
+                ProviderStepStatus::Canceled,
+                error.clone(),
             )
             .await?;
-        let run = self
-            .persistence
-            .get_agent_run(run.id.clone())
-            .await?
-            .ok_or_else(|| {
-                AgentRuntimeError::Invariant("canceled agent run disappeared".to_string())
-            })?;
-        Ok(Some(run))
+            self.finalize_active_tool_invocations(
+                &active.record().id,
+                &active.record().conversation_id,
+                ToolInvocationStatus::Canceled,
+                error,
+            )
+            .await?;
+            self.latest_assistant_entry_id_for_run(active.record())
+                .await
+        }
+        .await;
+        let finalizing = match cleanup {
+            Ok(final_entry_id) => active.transition(CancelPersistedActive { final_entry_id }),
+            Err(error) => active.transition(InterruptPersistedActive {
+                error: run_error("runtime_error", error.to_string(), true, None),
+            }),
+        };
+        let finished = self.finish_agent_run_with_observer(finalizing).await?;
+        Ok(Some(finished.run))
     }
 
     pub async fn recover_interrupted_runs(&self) -> Result<Vec<AgentRunRecord>> {
         let mut recovered = Vec::new();
-        for status in [AgentRunStatus::Queued, AgentRunStatus::Running] {
-            for run in self.persistence.agent_runs_by_status(status).await? {
-                let error = run_error(
-                    "interrupted",
-                    "agent run was interrupted before reaching a terminal state",
-                    true,
-                    None,
-                );
-                self.fail_active_provider_steps(&run.id, error.clone())
+        for run in self
+            .persistence
+            .agent_runs_by_status(AgentRunStatus::Running)
+            .await?
+        {
+            let interrupted = run_error(
+                "interrupted",
+                "agent run was interrupted before reaching a terminal state",
+                true,
+                None,
+            );
+            let active = PersistedActiveAgentRun::new(run, None)?;
+            let cleanup = async {
+                self.fail_active_provider_steps(&active.record().id, interrupted.clone())
                     .await?;
                 self.finalize_active_tool_invocations(
-                    &run.id,
-                    &run.conversation_id,
+                    &active.record().id,
+                    &active.record().conversation_id,
                     ToolInvocationStatus::Failed,
-                    error.clone(),
+                    interrupted.clone(),
+                )
+                .await
+            }
+            .await;
+            let error = match cleanup {
+                Ok(()) => interrupted,
+                Err(error) => run_error("recovery_error", error.to_string(), true, None),
+            };
+            let finished = self
+                .finish_agent_run_with_observer(
+                    active.transition(InterruptPersistedActive { error }),
                 )
                 .await?;
-                let finished = self
-                    .finish_agent_run_with_observer(
-                        &run.id,
-                        finish_agent_run_spec(&run, AgentRunOutcome::Failed { error }),
-                        None,
-                    )
-                    .await?;
-                recovered.push(finished.run);
-            }
+            recovered.push(finished.run);
         }
         Ok(recovered)
     }
@@ -870,16 +784,24 @@ impl AgentRuntime {
 impl AgentRuntime {
     pub(super) async fn finish_agent_run_with_observer(
         &self,
-        agent_run_id: &str,
-        finish: FinishAgentRun,
-        observer: Option<&AgentRuntimeObserver>,
+        finalizing: lifecycle::FinalizingAgentRun,
     ) -> Result<FinishedAgentRun> {
-        let commit = self
+        let finish = finish_agent_run_spec(finalizing.record(), finalizing.outcome().clone());
+        let observer = finalizing.observer().cloned();
+        let commit = match self
             .persistence
-            .finish_agent_run(agent_run_id.to_string(), finish)
-            .await?;
+            .finish_agent_run(finalizing.record().id.clone(), finish)
+            .await
+        {
+            Ok(commit) => commit,
+            Err(error) => {
+                return Err(finalizing
+                    .transition(FinishCommitFailed(AgentRuntimeError::from(error)))
+                    .into_error());
+            }
+        };
         emit_runtime(
-            observer,
+            observer.as_ref(),
             AgentRuntimeEvent::ConversationCommitted {
                 conversation: Box::new(commit.conversation.clone()),
                 changes: {
@@ -895,15 +817,68 @@ impl AgentRuntime {
                 },
             },
         );
-        let finished = commit.value;
+        let finished = finalizing
+            .transition(FinishCommitted(commit.value))
+            .into_finished();
         emit_runtime(
-            observer,
+            observer.as_ref(),
             AgentRuntimeEvent::AgentRunStatusChanged {
                 agent_run_id: finished.run.id.clone(),
                 status: finished.run.status,
             },
         );
         Ok(finished)
+    }
+
+    async fn finish_preparation(
+        &self,
+        finalizing: lifecycle::FinalizingAgentRun,
+    ) -> Result<AgentRunHandle> {
+        let finished = self.finish_agent_run_with_observer(finalizing).await?;
+        let output = finished.run.output.clone().ok_or_else(|| {
+            AgentRuntimeError::Invariant("prepared run finalization has no output".to_string())
+        })?;
+        let event = match finished.run.status {
+            AgentRunStatus::Completed => AgentRunEvent::Completed {
+                output: output.clone(),
+            },
+            AgentRunStatus::Failed => AgentRunEvent::Failed {
+                error: finished.run.error.clone().ok_or_else(|| {
+                    AgentRuntimeError::Invariant("failed prepared run has no error".to_string())
+                })?,
+            },
+            AgentRunStatus::Canceled => AgentRunEvent::Canceled,
+            AgentRunStatus::Running => {
+                return Err(AgentRuntimeError::Invariant(
+                    "prepared run finalization remains active".to_string(),
+                ));
+            }
+        };
+        Ok(AgentRunHandle {
+            agent_run: finished.run,
+            output: Some(output),
+            status: AgentRunHandleStatus::Finished,
+            events: vec![event],
+            steps: vec![AgentStep::ConversationEntry(finished.final_entry.id)],
+        })
+    }
+
+    async fn finish_execution(
+        &self,
+        finalizing: lifecycle::FinalizingAgentRun,
+        context: &PersistenceContext,
+    ) -> Result<AgentRunHandle> {
+        let finished = context.finish_run(finalizing).await?;
+        let output = finished.run.output.clone().ok_or_else(|| {
+            AgentRuntimeError::Invariant("executed run finalization has no output".to_string())
+        })?;
+        Ok(AgentRunHandle {
+            agent_run: finished.run,
+            output: Some(output),
+            status: AgentRunHandleStatus::Finished,
+            events: context.events(),
+            steps: context.steps(),
+        })
     }
 }
 

@@ -7070,6 +7070,7 @@ dependencies = [
  "dirs 6.0.0",
  "futures",
  "globset",
+ "gpui-operation",
  "grep-matcher",
  "grep-regex",
  "grep-searcher",

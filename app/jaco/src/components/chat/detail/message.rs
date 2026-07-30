@@ -554,7 +554,7 @@ fn agent_terminal_status_label(status: AgentRunStatus, run: &AgentRun, i18n: &I1
         AgentRunStatus::Completed => "conversation-agent-processed",
         AgentRunStatus::Failed => "conversation-agent-failed",
         AgentRunStatus::Canceled => "conversation-agent-canceled",
-        AgentRunStatus::Queued | AgentRunStatus::Running => "conversation-agent-processing",
+        AgentRunStatus::Running => "conversation-agent-processing",
     };
     duration_arg_label(i18n, key, format::run_duration_label(run))
 }

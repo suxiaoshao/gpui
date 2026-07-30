@@ -7,14 +7,7 @@ pub struct NewAgentRun {
     pub conversation_id: ConversationId,
     pub trigger_entry_id: ConversationEntryId,
     pub trigger_kind: AgentRunTriggerKind,
-    pub status: AgentRunStatus,
     pub input: AgentRunInput,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct UpdateAgentRunStatus {
-    pub status: AgentRunStatus,
-    pub error: Option<RunErrorPayload>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

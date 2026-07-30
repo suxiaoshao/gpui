@@ -5,8 +5,7 @@ use jaco_db::{
     ConversationEntryRecord, ConversationTimelineRecords, FinishAgentRun, FinishedAgentRun,
     NewAgentRun, NewConversationEntry, NewProviderStep, NewToolInvocation,
     NewToolInvocationApproval, ProviderStepRecord, ToolInvocationApprovalOutcome,
-    ToolInvocationRecord, UpdateAgentRunStatus, UpdateProviderStepStatus,
-    UpdateToolInvocationStatus,
+    ToolInvocationRecord, UpdateProviderStepStatus, UpdateToolInvocationStatus,
 };
 
 #[async_trait]
@@ -46,12 +45,6 @@ pub trait AgentPersistence: Send + Sync {
         &self,
         status: AgentRunStatus,
     ) -> jaco_db::Result<Vec<AgentRunRecord>>;
-
-    async fn update_agent_run_status(
-        &self,
-        id: AgentRunId,
-        update: UpdateAgentRunStatus,
-    ) -> jaco_db::Result<AgentRunRecord>;
 
     async fn finish_agent_run(
         &self,
@@ -139,12 +132,25 @@ pub trait AgentPersistence: Send + Sync {
 #[cfg(test)]
 pub(crate) struct DirectAgentPersistence {
     repository: jaco_db::FreshRepository,
+    fail_latest_completed_provider_step: bool,
 }
 
 #[cfg(test)]
 impl DirectAgentPersistence {
     pub(crate) fn new(repository: jaco_db::FreshRepository) -> Self {
-        Self { repository }
+        Self {
+            repository,
+            fail_latest_completed_provider_step: false,
+        }
+    }
+
+    pub(crate) fn failing_latest_completed_provider_step(
+        repository: jaco_db::FreshRepository,
+    ) -> Self {
+        Self {
+            repository,
+            fail_latest_completed_provider_step: true,
+        }
     }
 }
 
@@ -208,13 +214,6 @@ impl AgentPersistence for DirectAgentPersistence {
     ) -> jaco_db::Result<Vec<AgentRunRecord>> {
         direct!(self, agent_runs_by_status(status))
     }
-    async fn update_agent_run_status(
-        &self,
-        id: AgentRunId,
-        update: UpdateAgentRunStatus,
-    ) -> jaco_db::Result<AgentRunRecord> {
-        direct!(self, update_agent_run_status(&id, update))
-    }
     async fn finish_agent_run(
         &self,
         id: AgentRunId,
@@ -242,6 +241,11 @@ impl AgentPersistence for DirectAgentPersistence {
         conversation_id: ConversationId,
         trigger_entry_id: ConversationEntryId,
     ) -> jaco_db::Result<Option<ProviderStepRecord>> {
+        if self.fail_latest_completed_provider_step {
+            return Err(jaco_db::DbError::Invariant(
+                "injected continuation lookup failure".to_string(),
+            ));
+        }
         direct!(
             self,
             latest_completed_provider_step_before_trigger(&conversation_id, &trigger_entry_id)

@@ -18,8 +18,8 @@ use jaco_db::{
     ConversationEntryRecord, ConversationTimelineRecords, FinishAgentRun, FinishedAgentRun,
     FreshRepository, FreshStore, NewAgentRun, NewConversationEntry, NewProviderStep,
     NewToolInvocation, NewToolInvocationApproval, ProviderStepRecord,
-    ToolInvocationApprovalOutcome, ToolInvocationRecord, UpdateAgentRunStatus,
-    UpdateProviderStepStatus, UpdateToolInvocationStatus,
+    ToolInvocationApprovalOutcome, ToolInvocationRecord, UpdateProviderStepStatus,
+    UpdateToolInvocationStatus,
 };
 
 use crate::{
@@ -286,14 +286,6 @@ impl AgentPersistence for SessionAgentPersistence {
         status: AgentRunStatus,
     ) -> jaco_db::Result<Vec<AgentRunRecord>> {
         repository_call!(self, agent_runs_by_status(status))
-    }
-
-    async fn update_agent_run_status(
-        &self,
-        id: AgentRunId,
-        update: UpdateAgentRunStatus,
-    ) -> jaco_db::Result<AgentRunRecord> {
-        repository_call!(self, update_agent_run_status(&id, update))
     }
 
     async fn finish_agent_run(

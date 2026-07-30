@@ -21,7 +21,7 @@ fn fresh_schema_declares_structured_sqlite_types_and_checks() {
 
     let agent_runs_sql = table_sql(&mut conn, "agent_runs");
     assert!(agent_runs_sql.contains(
-        "status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'canceled'))"
+        "status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'canceled'))"
     ));
     assert!(agent_runs_sql.contains("started_at DateTime"));
     assert!(agent_runs_sql.contains("completed_at DateTime"));
@@ -70,7 +70,6 @@ fn provider_step_status_constraints_reject_invalid_lifecycle_shapes() {
             conversation_id: conversation.id,
             trigger_entry_id: trigger.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             input: agent_run_input(&trigger.id, &provider.id, &model.model_id),
         })
         .unwrap();
@@ -117,7 +116,6 @@ fn fresh_schema_rejects_invalid_boolean_and_closed_enum_values() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, "gpt-5"),
         })

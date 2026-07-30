@@ -22,7 +22,7 @@ pub use providers::{
     fetch_provider_models, provider_model_from_rig_model,
 };
 pub use runtime::{
-    AgentRuntime,
+    AgentRuntime, PreparingAgentRun,
     types::{
         AgentCancellationToken, AgentRunHandle, AgentRunHandleStatus, AgentRunRequest,
         AgentRuntimeEvent, AgentRuntimeObserver, AgentStep, CompletionModelFactory, RuntimeGuards,

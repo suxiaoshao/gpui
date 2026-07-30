@@ -19,7 +19,6 @@ fn soft_delete_conversation_rejects_active_run_and_succeeds_after_terminal_statu
             conversation_id: conversation.id.clone(),
             trigger_entry_id: trigger.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             input: agent_run_input(&trigger.id, &provider.id, &model.model_id),
         })
         .unwrap();
@@ -85,7 +84,6 @@ fn complete_provider_step_commits_usage_and_continuation_atomically() {
             conversation_id: conversation.id.clone(),
             trigger_entry_id: trigger.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             input: agent_run_input(&trigger.id, &provider.id, &model.model_id),
         })
         .unwrap();
@@ -159,7 +157,6 @@ fn complete_provider_step_rolls_back_when_usage_insert_fails() {
             conversation_id: conversation.id.clone(),
             trigger_entry_id: trigger.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             input: agent_run_input(&trigger.id, &provider.id, &model.model_id),
         })
         .unwrap();
@@ -236,7 +233,6 @@ fn previous_id_fallback_persists_failed_and_completed_attempts() {
             conversation_id: conversation.id,
             trigger_entry_id: trigger.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             input: agent_run_input(&trigger.id, &provider.id, &model.model_id),
         })
         .unwrap();
@@ -430,7 +426,6 @@ fn append_item_rejects_cross_conversation_execution_links() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation_a.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
@@ -480,7 +475,6 @@ fn append_item_rejects_cross_conversation_execution_links() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation_a.id.clone(),
             trigger_kind: AgentRunTriggerKind::Retry,
-            status: AgentRunStatus::Running,
             trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
@@ -516,7 +510,6 @@ fn insert_agent_run_validates_trigger_entry_and_rejects_invalid_user_entry() {
     let valid = repo.insert_agent_run(NewAgentRun {
         conversation_id: conversation.id.clone(),
         trigger_kind: AgentRunTriggerKind::User,
-        status: AgentRunStatus::Running,
         trigger_entry_id: user_item.id.clone(),
         input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
     });
@@ -525,7 +518,6 @@ fn insert_agent_run_validates_trigger_entry_and_rejects_invalid_user_entry() {
     let missing_item = repo.insert_agent_run(NewAgentRun {
         conversation_id: conversation.id.clone(),
         trigger_kind: AgentRunTriggerKind::User,
-        status: AgentRunStatus::Running,
         trigger_entry_id: "missing-item".to_string(),
         input: agent_run_input("missing-item", &provider.id, &model.model_id),
     });
@@ -534,7 +526,6 @@ fn insert_agent_run_validates_trigger_entry_and_rejects_invalid_user_entry() {
     let non_user_item = repo.insert_agent_run(NewAgentRun {
         conversation_id: conversation.id.clone(),
         trigger_kind: AgentRunTriggerKind::User,
-        status: AgentRunStatus::Running,
         trigger_entry_id: assistant_item.id.clone(),
         input: agent_run_input(&assistant_item.id, &provider.id, &model.model_id),
     });
@@ -562,7 +553,6 @@ fn insert_tool_invocation_rejects_provider_step_from_other_run() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             trigger_entry_id: first_item.id.clone(),
             input: agent_run_input(&first_item.id, &provider.id, &model.model_id),
         })
@@ -571,7 +561,6 @@ fn insert_tool_invocation_rejects_provider_step_from_other_run() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::Retry,
-            status: AgentRunStatus::Running,
             trigger_entry_id: second_item.id.clone(),
             input: agent_run_input(&second_item.id, &provider.id, &model.model_id),
         })
@@ -618,7 +607,6 @@ fn usage_event_derives_dimensions_from_provider_step() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
@@ -669,7 +657,6 @@ fn provider_step_derives_dimensions_from_request_snapshot() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
@@ -762,7 +749,6 @@ fn provider_step_validates_input_item_ownership() {
         .insert_agent_run(NewAgentRun {
             conversation_id: primary_conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
@@ -839,7 +825,6 @@ fn tool_invocation_approval_derives_status_and_decision_columns() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
@@ -943,24 +928,14 @@ fn execution_status_updates_and_tool_invocation_approval_roundtrip() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Queued,
             trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
         .unwrap();
 
-    let running = repo
-        .update_agent_run_status(
-            &agent_run.id,
-            UpdateAgentRunStatus {
-                status: AgentRunStatus::Running,
-                error: None,
-            },
-        )
-        .unwrap();
-    assert_eq!(running.status, AgentRunStatus::Running);
-    assert!(running.started_at.is_some());
-    assert!(running.completed_at.is_none());
+    assert_eq!(agent_run.status, AgentRunStatus::Running);
+    assert!(agent_run.started_at.is_some());
+    assert!(agent_run.completed_at.is_none());
 
     let provider_step = repo
         .insert_provider_step(NewProviderStep {
@@ -1111,7 +1086,6 @@ fn agent_run_finalization_persists_terminal_entry_and_is_idempotent() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
@@ -1189,7 +1163,6 @@ fn agent_run_finalization_persists_terminal_entry_and_is_idempotent() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             trigger_entry_id: mismatched_input.id.clone(),
             input: agent_run_input(&mismatched_input.id, &provider.id, &model.model_id),
         })
@@ -1225,7 +1198,6 @@ fn agent_run_finalization_persists_terminal_entry_and_is_idempotent() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             trigger_entry_id: completed_input.id.clone(),
             input: agent_run_input(&completed_input.id, &provider.id, &model.model_id),
         })
@@ -1301,7 +1273,6 @@ fn approval_entries_are_atomic_and_duplicate_decisions_do_not_append() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })
@@ -1427,7 +1398,6 @@ fn active_execution_inserts_stamp_start_times() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })

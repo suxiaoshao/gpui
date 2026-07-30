@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 jaco-core.workspace = true
 jaco-db.workspace = true
+gpui-operation.workspace = true
 async-trait = "0.1.91"
 async-stream = "0.3.6"
 base64 = { version = "0.23.0", default-features = false, features = ["std"] }

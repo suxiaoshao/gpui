@@ -70,14 +70,15 @@ impl OpenAiSessionKey {
     }
 }
 
-struct OpenAiSessionSlot {
+struct OpenAiConversationSession {
+    key: Option<OpenAiSessionKey>,
     session: Option<ResponsesWebSocketSession>,
     opened_at: Option<Instant>,
 }
 
 #[derive(Clone, Default)]
 pub struct OpenAiResponsesSessionPool {
-    slots: Arc<Mutex<HashMap<OpenAiSessionKey, Arc<Mutex<OpenAiSessionSlot>>>>>,
+    conversations: Arc<Mutex<HashMap<ConversationId, Arc<Mutex<OpenAiConversationSession>>>>>,
 }
 
 impl OpenAiResponsesSessionPool {
@@ -90,11 +91,15 @@ impl OpenAiResponsesSessionPool {
         key: &OpenAiSessionKey,
         client: &openai::Client,
         model: &str,
-    ) -> std::result::Result<OwnedMutexGuard<OpenAiSessionSlot>, CompletionError> {
-        self.prune_aged(Instant::now()).await;
-        self.close_other_conversation_keys(key).await;
-        let slot = self.slot_for_key(key).await;
-        let mut guard = slot.lock_owned().await;
+    ) -> std::result::Result<OwnedMutexGuard<OpenAiConversationSession>, CompletionError> {
+        let mut guard = self.lock_conversation(&key.conversation_id).await;
+        let replace_current = guard.key.as_ref().is_some_and(|current| current != key)
+            || guard
+                .opened_at
+                .is_some_and(|opened_at| opened_at.elapsed() >= MAX_SESSION_AGE);
+        if replace_current {
+            Self::close_session(&mut guard).await;
+        }
         if guard.session.is_none() {
             guard.session = Some(
                 client
@@ -103,17 +108,32 @@ impl OpenAiResponsesSessionPool {
                     .connect()
                     .await?,
             );
+            guard.key = Some(key.clone());
             guard.opened_at = Some(Instant::now());
         }
         Ok(guard)
     }
 
-    async fn slot_for_key(&self, key: &OpenAiSessionKey) -> Arc<Mutex<OpenAiSessionSlot>> {
-        let mut slots = self.slots.lock().await;
-        slots
-            .entry(key.clone())
+    async fn lock_conversation(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> OwnedMutexGuard<OpenAiConversationSession> {
+        self.conversation_slot(conversation_id)
+            .await
+            .lock_owned()
+            .await
+    }
+
+    async fn conversation_slot(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Arc<Mutex<OpenAiConversationSession>> {
+        let mut conversations = self.conversations.lock().await;
+        conversations
+            .entry(conversation_id.clone())
             .or_insert_with(|| {
-                Arc::new(Mutex::new(OpenAiSessionSlot {
+                Arc::new(Mutex::new(OpenAiConversationSession {
+                    key: None,
                     session: None,
                     opened_at: None,
                 }))
@@ -124,89 +144,57 @@ impl OpenAiResponsesSessionPool {
     async fn evict_unusable_session(
         &self,
         key: &OpenAiSessionKey,
-        guard: &mut OwnedMutexGuard<OpenAiSessionSlot>,
+        guard: &mut OwnedMutexGuard<OpenAiConversationSession>,
     ) {
         let current_slot = OwnedMutexGuard::mutex(guard).clone();
         let session = guard.session.take();
+        guard.key = None;
         guard.opened_at = None;
 
-        let mut slots = self.slots.lock().await;
-        if slots
-            .get(key)
+        let mut conversations = self.conversations.lock().await;
+        if conversations
+            .get(&key.conversation_id)
             .is_some_and(|slot| Arc::ptr_eq(slot, &current_slot))
         {
-            slots.remove(key);
+            conversations.remove(&key.conversation_id);
         }
-        drop(slots);
+        drop(conversations);
 
         if let Some(mut session) = session {
             let _ = session.close().await;
         }
     }
 
-    async fn close_other_conversation_keys(&self, keep: &OpenAiSessionKey) {
-        let keys = {
-            let slots = self.slots.lock().await;
-            slots
-                .keys()
-                .filter(|key| key.conversation_id == keep.conversation_id && *key != keep)
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-        for key in keys {
-            self.close_key(&key).await;
-        }
-    }
-
-    async fn prune_aged(&self, now: Instant) {
-        let slots = {
-            let slots = self.slots.lock().await;
-            slots
-                .iter()
-                .map(|(key, slot)| (key.clone(), slot.clone()))
-                .collect::<Vec<_>>()
-        };
-        for (key, slot) in slots {
-            let aged = slot
-                .lock()
-                .await
-                .opened_at
-                .is_some_and(|opened_at| now.duration_since(opened_at) >= MAX_SESSION_AGE);
-            if aged {
-                self.close_key(&key).await;
-            }
-        }
-    }
-
-    async fn close_key(&self, key: &OpenAiSessionKey) {
-        let slot = self.slots.lock().await.remove(key);
-        let Some(slot) = slot else {
-            return;
-        };
-        let session = slot.lock().await.session.take();
+    async fn close_session(slot: &mut OpenAiConversationSession) {
+        let session = slot.session.take();
+        slot.key = None;
+        slot.opened_at = None;
         if let Some(mut session) = session {
             let _ = session.close().await;
         }
     }
 
     pub async fn close_conversation(&self, conversation_id: &ConversationId) {
-        let keys = {
-            let slots = self.slots.lock().await;
-            slots
-                .keys()
-                .filter(|key| &key.conversation_id == conversation_id)
-                .cloned()
-                .collect::<Vec<_>>()
+        let slot = {
+            let mut conversations = self.conversations.lock().await;
+            conversations.remove(conversation_id)
         };
-        for key in keys {
-            self.close_key(&key).await;
+        if let Some(slot) = slot {
+            let mut slot = slot.lock().await;
+            Self::close_session(&mut slot).await;
         }
     }
 
     pub async fn close_all(&self) {
-        let keys = self.slots.lock().await.keys().cloned().collect::<Vec<_>>();
-        for key in keys {
-            self.close_key(&key).await;
+        let slots = {
+            let mut conversations = self.conversations.lock().await;
+            std::mem::take(&mut *conversations)
+                .into_values()
+                .collect::<Vec<_>>()
+        };
+        for slot in slots {
+            let mut slot = slot.lock().await;
+            Self::close_session(&mut slot).await;
         }
     }
 }
@@ -1364,17 +1352,36 @@ mod tests {
             "https://api.openai.com/v1",
             "test-key",
         );
-        let first_slot = pool.slot_for_key(&key).await;
+        let first_slot = pool.conversation_slot(&key.conversation_id).await;
         let mut guard = first_slot.clone().lock_owned().await;
+        guard.key = Some(key.clone());
         guard.opened_at = Some(Instant::now());
 
         pool.evict_unusable_session(&key, &mut guard).await;
 
+        assert!(guard.key.is_none());
         assert!(guard.session.is_none());
         assert!(guard.opened_at.is_none());
         drop(guard);
-        let replacement_slot = pool.slot_for_key(&key).await;
+        let replacement_slot = pool.conversation_slot(&key.conversation_id).await;
         assert!(!Arc::ptr_eq(&first_slot, &replacement_slot));
+    }
+
+    #[tokio::test]
+    async fn busy_conversation_does_not_block_another_conversation() {
+        let pool = OpenAiResponsesSessionPool::new();
+        let first_conversation = "conversation-a".to_string();
+        let second_conversation = "conversation-b".to_string();
+        let _first_guard = pool.lock_conversation(&first_conversation).await;
+
+        let second_guard = tokio::time::timeout(
+            Duration::from_millis(100),
+            pool.lock_conversation(&second_conversation),
+        )
+        .await
+        .expect("an active conversation must not block another conversation");
+
+        assert!(second_guard.session.is_none());
     }
 
     #[test]

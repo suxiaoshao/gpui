@@ -324,7 +324,7 @@ impl FreshRepository {
             let has_active_run = diesel::select(diesel::dsl::exists(
                 agent_runs::table
                     .filter(agent_runs::conversation_id.eq(id))
-                    .filter(agent_runs::status.eq_any(["queued", "running"])),
+                    .filter(agent_runs::status.eq("running")),
             ))
             .get_result::<bool>(conn)?;
             if has_active_run {

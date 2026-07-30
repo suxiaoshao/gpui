@@ -1,8 +1,5 @@
 use super::AgentRuntime;
-use crate::{
-    AgentRuntimeError, AgentRuntimeObserver, Result,
-    persistence::{AgentRunOutcome, finish_agent_run_spec, run_error},
-};
+use crate::{AgentRuntimeError, Result};
 use jaco_core::*;
 use jaco_db::{
     AgentRunRecord, NewConversationEntry, ToolInvocationRecord, UpdateProviderStepStatus,
@@ -183,34 +180,6 @@ impl AgentRuntime {
                     )
             })
             .map(|item| item.id))
-    }
-
-    pub(super) async fn mark_setup_failed(
-        &self,
-        agent_run_id: &str,
-        error: AgentRuntimeError,
-        observer: Option<&AgentRuntimeObserver>,
-    ) -> Result<AgentRuntimeError> {
-        let error_payload = run_error("setup_error", error.to_string(), true, None);
-        let run = self
-            .persistence
-            .get_agent_run(agent_run_id.to_string())
-            .await?
-            .ok_or_else(|| {
-                AgentRuntimeError::Invariant(format!("agent run {agent_run_id} disappeared"))
-            })?;
-        self.finish_agent_run_with_observer(
-            agent_run_id,
-            finish_agent_run_spec(
-                &run,
-                AgentRunOutcome::Failed {
-                    error: error_payload,
-                },
-            ),
-            observer,
-        )
-        .await?;
-        Ok(error)
     }
 }
 

@@ -11,14 +11,14 @@ impl FreshRepository {
                 conversation_id: input.conversation_id,
                 trigger_entry_id: input.trigger_entry_id,
                 trigger_kind: db_label(&input.trigger_kind)?,
-                status: db_label(&input.status)?,
+                status: db_label(&AgentRunStatus::Running)?,
                 input_json: to_json(&input.input)?,
                 final_entry_id: None,
                 stopped_reason: None,
                 error_json: None,
                 created_at: now,
-                started_at: next_started_at(None, input.status, now),
-                completed_at: next_agent_run_completed_at(None, input.status, now),
+                started_at: Some(now),
+                completed_at: None,
                 updated_at: now,
             };
             diesel::insert_into(agent_runs::table)
@@ -63,17 +63,6 @@ impl FreshRepository {
             .collect()
     }
 
-    pub fn update_agent_run_status(
-        &self,
-        id: &str,
-        update: UpdateAgentRunStatus,
-    ) -> Result<AgentRunRecord> {
-        let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| {
-            update_active_agent_run_status_with_conn(conn, id, update)
-        })
-    }
-
     pub fn finish_agent_run(
         &self,
         id: &str,
@@ -83,20 +72,6 @@ impl FreshRepository {
         conn.immediate_transaction(|conn| {
             let finished = finish_agent_run_with_conn(conn, id, finish)?;
             conversation_commit_with_conn(conn, finished.run.conversation_id.clone(), finished)
-        })
-    }
-
-    pub fn append_conversation_entry_and_update_agent_run(
-        &self,
-        item: NewConversationEntry,
-        agent_run_id: &str,
-        update: UpdateAgentRunStatus,
-    ) -> Result<(ConversationEntryRecord, AgentRunRecord)> {
-        let mut conn = self.conn()?;
-        conn.immediate_transaction(|conn| {
-            let item = append_conversation_entry_with_conn(conn, item)?;
-            let run = update_active_agent_run_status_with_conn(conn, agent_run_id, update)?;
-            Ok((item, run))
         })
     }
 

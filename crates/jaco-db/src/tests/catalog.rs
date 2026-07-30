@@ -70,7 +70,6 @@ fn typed_json_roundtrips_for_repository_records() {
         .insert_agent_run(NewAgentRun {
             conversation_id: conversation.id.clone(),
             trigger_kind: AgentRunTriggerKind::User,
-            status: AgentRunStatus::Running,
             trigger_entry_id: user_item.id.clone(),
             input: agent_run_input(&user_item.id, &provider.id, &model.model_id),
         })

@@ -390,34 +390,6 @@ fn contains_query(value: &str, query: &str) -> bool {
     value.to_lowercase().contains(query)
 }
 
-fn update_active_agent_run_status_with_conn(
-    conn: &mut SqliteConnection,
-    id: &str,
-    update: UpdateAgentRunStatus,
-) -> Result<AgentRunRecord> {
-    let existing = load_agent_run_row(conn, id)?;
-    let existing_status: AgentRunStatus = db_label_parse(existing.status.clone())?;
-    if is_terminal_agent_run_status(existing_status) || is_terminal_agent_run_status(update.status)
-    {
-        return Err(DbError::Invariant(
-            "active agent run status updates cannot use terminal state".to_string(),
-        ));
-    }
-    let now = now_string()?;
-    let changes = SqlAgentRunStatusChanges {
-        status: db_label(&update.status)?,
-        error_json: to_json_opt(&update.error)?,
-        started_at: next_started_at(existing.started_at, update.status, now),
-        completed_at: existing.completed_at,
-        updated_at: now,
-    };
-    diesel::update(agent_runs::table.find(id))
-        .set(&changes)
-        .returning(SqlAgentRunRow::as_returning())
-        .get_result::<SqlAgentRunRow>(conn)?
-        .try_into()
-}
-
 fn finish_agent_run_with_conn(
     conn: &mut SqliteConnection,
     id: &str,
@@ -461,7 +433,7 @@ fn finish_agent_run_with_conn(
         }
         AgentRunStatus::Failed => AgentStoppedReason::Failed,
         AgentRunStatus::Canceled => AgentStoppedReason::Canceled,
-        AgentRunStatus::Queued | AgentRunStatus::Running => unreachable!(),
+        AgentRunStatus::Running => unreachable!(),
     };
     if (finish.status == AgentRunStatus::Failed) != finish.error.is_some() {
         return Err(DbError::Invariant(
@@ -871,7 +843,7 @@ trait ExecutionStatusTiming {
 
 impl ExecutionStatusTiming for AgentRunStatus {
     fn starts_clock(self) -> bool {
-        !matches!(self, AgentRunStatus::Queued)
+        true
     }
 }
 
@@ -896,14 +868,6 @@ where
     T: ExecutionStatusTiming,
 {
     existing.or_else(|| status.starts_clock().then_some(now))
-}
-
-fn next_agent_run_completed_at(
-    existing: Option<OffsetDateTime>,
-    status: AgentRunStatus,
-    now: OffsetDateTime,
-) -> Option<OffsetDateTime> {
-    existing.or_else(|| is_terminal_agent_run_status(status).then_some(now))
 }
 
 fn next_provider_step_completed_at(

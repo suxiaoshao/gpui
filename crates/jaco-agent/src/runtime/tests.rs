@@ -1973,11 +1973,18 @@ async fn setup_failure_marks_agent_run_failed() {
     request.project_root = Some(fixture.dir.path().to_path_buf());
     request.skill_requests = vec![crate::SkillActivationRequest::new("missing-skill")];
 
-    let error = runtime
+    let handle = runtime
         .run_with_model(request, MockCompletionModel::text("unused"))
         .await
-        .unwrap_err();
-    assert!(error.to_string().contains("missing-skill"));
+        .unwrap();
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Failed);
+    assert!(
+        handle
+            .agent_run
+            .error
+            .as_ref()
+            .is_some_and(|error| error.message.contains("missing-skill"))
+    );
 
     assert!(
         fixture
@@ -2063,6 +2070,70 @@ async fn saved_provider_setup_failure_records_failed_run_and_error_item() {
             if payload.code == "setup_error"
                 && payload.message.contains("missing provider secret `api_key`")
     ));
+}
+
+#[tokio::test]
+async fn continuation_lookup_failure_terminalizes_started_run() {
+    let fixture = Fixture::new("continuation-lookup-failure");
+    let persistence = crate::persistence::direct_agent_persistence_failing_continuation_lookup(
+        fixture.repo.clone(),
+    );
+    let runtime = AgentRuntime::new(persistence);
+    let mut request = fixture.request();
+    request.model_id = "gpt-5.6".to_string();
+    request.settings_snapshot.model_id = request.model_id.clone();
+    request
+        .settings_snapshot
+        .model_capabilities
+        .stateful_response_continuation = true;
+    let mut secrets = ProviderSecretValues::default();
+    secrets
+        .values
+        .insert("api_key".to_string(), "test-key".to_string());
+    let published = Arc::new(Mutex::new(Vec::new()));
+    let observer_events = published.clone();
+    let observer = AgentRuntimeObserver::new(move |event| {
+        observer_events.lock().unwrap().push(event);
+    });
+
+    let handle = runtime
+        .run_with_saved_provider_observed(
+            request,
+            fixture.provider.clone(),
+            secrets,
+            Some(observer),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Failed);
+    let error = handle.agent_run.error.as_ref().unwrap();
+    assert_eq!(error.code, "setup_error");
+    assert!(
+        error
+            .message
+            .contains("injected continuation lookup failure")
+    );
+    assert!(
+        fixture
+            .repo
+            .agent_runs_by_status(AgentRunStatus::Running)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(published.lock().unwrap().iter().any(|event| matches!(
+        event,
+        AgentRuntimeEvent::AgentRunStatusChanged {
+            agent_run_id,
+            status: AgentRunStatus::Failed,
+        } if agent_run_id == &handle.agent_run.id
+    )));
+    assert!(
+        fixture
+            .repo
+            .soft_delete_conversation(&fixture.conversation.id)
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -2298,7 +2369,7 @@ fn insert_agent_run_with_status(fixture: &Fixture, status: AgentRunStatus) -> Ag
                 AgentStoppedReason::Failed,
                 ConversationStatusCode::CompletedWithoutOutput,
             ),
-            AgentRunStatus::Queued | AgentRunStatus::Running => unreachable!(),
+            AgentRunStatus::Running => unreachable!(),
         };
         return fixture
             .repo
@@ -2326,16 +2397,7 @@ fn insert_agent_run_with_status(fixture: &Fixture, status: AgentRunStatus) -> Ag
             .value
             .run;
     }
-    fixture
-        .repo
-        .update_agent_run_status(
-            &agent_run.id,
-            UpdateAgentRunStatus {
-                status,
-                error: None,
-            },
-        )
-        .unwrap()
+    agent_run
 }
 
 fn insert_provider_step(
