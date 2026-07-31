@@ -1,5 +1,6 @@
 use crate::components::chat::input::{
-    ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
+    ChatFormSkillCompletionPlacement, ChatInput, ChatInputController, ChatInputEvent,
+    ChatInputSubmit,
 };
 use crate::components::chat::runtime_status::ConversationRuntimeStatus;
 use gpui::*;
@@ -23,10 +24,7 @@ impl TemporaryNewConversationPane {
         let chat_form = cx.new(|cx| {
             // The temporary window owns keyboard focus through its search input;
             // route changes must not focus the composer as a side effect.
-            let mut chat_form = ChatInputController::new_without_focus(window, cx);
-            chat_form
-                .set_skill_completion_placement(ChatFormSkillCompletionPlacement::BelowForm, cx);
-            chat_form
+            ChatInputController::new_without_focus(window, cx)
         });
         chat_form.update(cx, |chat_form, cx| {
             chat_form.refresh_skill_catalog(None, cx);
@@ -110,7 +108,10 @@ impl Render for TemporaryNewConversationPane {
                             |runtime| ConversationRuntimeStatus::from_runtime(&runtime, cx),
                         ),
                     )
-                    .child(self.chat_form.clone()),
+                    .child(ChatInput::new(
+                        &self.chat_form,
+                        ChatFormSkillCompletionPlacement::BelowForm,
+                    )),
             )
     }
 }

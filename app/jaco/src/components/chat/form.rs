@@ -20,7 +20,7 @@ use crate::{
     components::{
         chat::input::{ChatFormSkillCompletionPlacement, ComposerEditor, attachments},
         chat::run_settings,
-        picker::{PickerPopoverConfig, picker_popover},
+        picker::{PickerPopover, PickerPopoverConfig},
     },
     features::conversation::attachments::{
         ComposerAttachment, ComposerAttachmentKind, ComposerAttachmentSource,
@@ -59,24 +59,25 @@ pub(crate) enum ChatFormUiEvent {
     PrimaryActionRequested,
 }
 
-impl EventEmitter<ChatFormUiEvent> for ChatForm {}
+impl EventEmitter<ChatFormUiEvent> for ChatFormState {}
 
-/// Pure visual shell shared by conversation input and shortcut editing.
-/// Business state and form stores live in the caller/controller that supplies
-/// `ChatFormControls`.
-pub(crate) struct ChatForm {
-    controls: ChatFormControls,
+/// Stable interaction and lifecycle state for [`ChatForm`].
+///
+/// Render-time controls and placement are supplied by the parent whenever it
+/// rebuilds `ChatForm`; this entity only retains measured geometry and the
+/// subscriptions that keep the view responsive to nested control entities.
+pub(crate) struct ChatFormState {
     bounds: Option<Bounds<Pixels>>,
-    skill_completion_placement: ChatFormSkillCompletionPlacement,
     _subscriptions: Vec<Subscription>,
 }
 
-impl ChatForm {
-    pub(crate) fn new(
-        controls: ChatFormControls,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+impl ChatFormState {
+    /// Creates the backing state for one stable graph of nested control
+    /// entities. Owners may change slot availability and other render-time
+    /// properties while reusing this state, but replacing a nested entity
+    /// handle requires a new `ChatFormState` so its subscriptions are rebuilt
+    /// outside rendering.
+    pub(crate) fn new(controls: &ChatFormControls, cx: &mut Context<Self>) -> Self {
         if let ControlSlot::Disabled(composer) = &controls.composer {
             composer.update(cx, |composer, cx| composer.set_disabled(true, cx));
         }
@@ -106,37 +107,60 @@ impl ChatForm {
             subscriptions.push(cx.observe(project, |_, _, cx| cx.notify()));
         }
         Self {
-            controls,
             bounds: None,
-            skill_completion_placement: ChatFormSkillCompletionPlacement::BelowForm,
             _subscriptions: subscriptions,
         }
     }
+}
 
-    pub(crate) fn controls(&self) -> &ChatFormControls {
-        &self.controls
+/// Pure visual shell shared by conversation input and shortcut editing.
+/// Business state and form stores live in the caller/controller that supplies
+/// `ChatFormControls`.
+#[derive(IntoElement)]
+pub(crate) struct ChatForm {
+    state: Entity<ChatFormState>,
+    controls: ChatFormControls,
+    skill_completion_placement: ChatFormSkillCompletionPlacement,
+    primary_action_can_submit: bool,
+    primary_action_disabled_reason: Option<SharedString>,
+}
+
+impl ChatForm {
+    /// Rebuilds the visual shell for the control entities used to construct
+    /// `state`. See [`ChatFormState::new`] for the handle-stability contract.
+    pub(crate) fn new(state: &Entity<ChatFormState>, controls: ChatFormControls) -> Self {
+        Self {
+            state: state.clone(),
+            controls,
+            skill_completion_placement: ChatFormSkillCompletionPlacement::BelowForm,
+            primary_action_can_submit: false,
+            primary_action_disabled_reason: None,
+        }
     }
 
-    pub(crate) fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let ControlSlot::Enabled(composer) = &self.controls.composer else {
-            return false;
-        };
-        composer.update(cx, |composer, cx| composer.focus(window, cx));
-        true
-    }
-
-    pub(crate) fn set_skill_completion_placement(
-        &mut self,
+    pub(crate) fn skill_completion_placement(
+        mut self,
         placement: ChatFormSkillCompletionPlacement,
-    ) {
+    ) -> Self {
         self.skill_completion_placement = placement;
+        self
+    }
+
+    pub(crate) fn primary_action_projection(
+        mut self,
+        can_submit: bool,
+        disabled_reason: Option<SharedString>,
+    ) -> Self {
+        self.primary_action_can_submit = can_submit;
+        self.primary_action_disabled_reason = disabled_reason;
+        self
     }
 
     fn composer(&self) -> Option<&Entity<ComposerEditor>> {
         self.controls.composer.value()
     }
 
-    fn render_project(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_project(&self, cx: &mut App) -> Option<AnyElement> {
         let (state, enabled) = match &self.controls.project {
             ControlSlot::Hidden => return None,
             ControlSlot::Disabled(state) => (state.clone(), false),
@@ -161,6 +185,7 @@ impl ChatForm {
             (label, icon, enabled && state.open, state.picker.clone())
         };
         let project_state = state.clone();
+        let event_target = self.state.downgrade();
         let add_project = Button::new("jaco-chat-form-add-project")
             .ghost()
             .icon(IconName::FolderPlus)
@@ -171,40 +196,39 @@ impl ChatForm {
             .small()
             .w_full()
             .disabled(!enabled)
-            .on_click(cx.listener(|_form, _, _window, cx| {
-                cx.emit(ChatFormUiEvent::AddProjectRequested);
-            }));
+            .on_click(move |_, _window, cx| {
+                let _ = event_target.update(cx, |_, cx| {
+                    cx.emit(ChatFormUiEvent::AddProjectRequested);
+                });
+            });
 
-        let picker = picker_popover(
-            cx,
-            PickerPopoverConfig {
-                id: "jaco-chat-form-project-popover",
+        let picker = PickerPopover::new(PickerPopoverConfig {
+            id: "jaco-chat-form-project-popover",
+            open,
+            trigger: project_picker_trigger(
+                "jaco-chat-form-project-trigger",
+                icon,
+                label,
                 open,
-                trigger: project_picker_trigger(
-                    "jaco-chat-form-project-trigger",
-                    icon,
-                    label,
-                    open,
-                    cx,
-                )
-                .disabled(!enabled),
-                list: picker,
-                width: px(320.),
-                max_height: rems(18.).into(),
-                search_placeholder: Some(
-                    cx.global::<crate::foundation::I18n>()
-                        .t("new-conversation-project-search")
-                        .into(),
-                ),
-                footer: enabled.then_some(add_project.into_any_element()),
-                on_open_change: move |open, _window, cx| {
-                    project_state.update(cx, |state, cx| {
-                        state.open = *open;
-                        cx.notify();
-                    });
-                },
+                cx,
+            )
+            .disabled(!enabled),
+            list: picker,
+            width: px(320.),
+            max_height: rems(18.).into(),
+            search_placeholder: Some(
+                cx.global::<crate::foundation::I18n>()
+                    .t("new-conversation-project-search")
+                    .into(),
+            ),
+            footer: enabled.then_some(add_project.into_any_element()),
+            on_open_change: move |open, _window, cx| {
+                project_state.update(cx, |state, cx| {
+                    state.open = *open;
+                    cx.notify();
+                });
             },
-        );
+        });
 
         Some(
             h_flex()
@@ -231,7 +255,7 @@ impl ChatForm {
         )
     }
 
-    fn render_attachments(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_attachments(&self, cx: &mut App) -> Option<AnyElement> {
         let (ControlSlot::Enabled(attachments) | ControlSlot::Disabled(attachments)) =
             &self.controls.attachments
         else {
@@ -267,7 +291,7 @@ impl ChatForm {
         &self,
         attachment: ComposerAttachment,
         enabled: bool,
-        cx: &mut Context<Self>,
+        cx: &mut App,
     ) -> AnyElement {
         match attachment.kind {
             ComposerAttachmentKind::Image => {
@@ -283,7 +307,7 @@ impl ChatForm {
         &self,
         attachment: ComposerAttachment,
         enabled: bool,
-        cx: &mut Context<Self>,
+        cx: &mut App,
     ) -> AnyElement {
         let local_id = attachment.local_id;
         let radius = attachments::CARD_RADIUS;
@@ -317,13 +341,16 @@ impl ChatForm {
             );
         if enabled {
             let open_attachment = attachment.clone();
+            let event_target = self.state.downgrade();
             card = card
                 .cursor(CursorStyle::PointingHand)
-                .on_click(cx.listener(move |_form, _, _, cx| {
-                    cx.emit(ChatFormUiEvent::OpenAttachmentRequested(
-                        open_attachment.clone(),
-                    ));
-                }))
+                .on_click(move |_, _, cx| {
+                    let _ = event_target.update(cx, |_, cx| {
+                        cx.emit(ChatFormUiEvent::OpenAttachmentRequested(
+                            open_attachment.clone(),
+                        ));
+                    });
+                })
                 .child(self.render_remove_attachment_button(
                     local_id,
                     "chat-form-remove-image",
@@ -337,7 +364,7 @@ impl ChatForm {
         &self,
         attachment: ComposerAttachment,
         enabled: bool,
-        cx: &mut Context<Self>,
+        cx: &mut App,
     ) -> AnyElement {
         let local_id = attachment.local_id;
         let mut card = h_flex()
@@ -384,14 +411,17 @@ impl ChatForm {
             );
         if enabled {
             let open_attachment = attachment.clone();
+            let event_target = self.state.downgrade();
             card = card
                 .cursor(CursorStyle::PointingHand)
                 .hover(|this| this.border_color(cx.theme().primary.opacity(0.55)))
-                .on_click(cx.listener(move |_form, _, _, cx| {
-                    cx.emit(ChatFormUiEvent::OpenAttachmentRequested(
-                        open_attachment.clone(),
-                    ));
-                }))
+                .on_click(move |_, _, cx| {
+                    let _ = event_target.update(cx, |_, cx| {
+                        cx.emit(ChatFormUiEvent::OpenAttachmentRequested(
+                            open_attachment.clone(),
+                        ));
+                    });
+                })
                 .child(self.render_remove_attachment_button(local_id, "chat-form-remove-file", cx));
         }
         card.into_any_element()
@@ -401,7 +431,7 @@ impl ChatForm {
         &self,
         local_id: u64,
         id_prefix: &'static str,
-        cx: &mut Context<Self>,
+        cx: &mut App,
     ) -> AnyElement {
         Button::new(format!("{id_prefix}-{local_id}"))
             .ghost()
@@ -418,18 +448,23 @@ impl ChatForm {
                 cx.global::<crate::foundation::I18n>()
                     .t("chat-form-attachment-remove"),
             )
-            .on_click(cx.listener(move |_form, _, _, cx| {
-                cx.stop_propagation();
-                cx.emit(ChatFormUiEvent::RemoveAttachmentRequested(local_id));
-            }))
+            .on_click({
+                let event_target = self.state.downgrade();
+                move |_, _, cx| {
+                    cx.stop_propagation();
+                    let _ = event_target.update(cx, |_, cx| {
+                        cx.emit(ChatFormUiEvent::RemoveAttachmentRequested(local_id));
+                    });
+                }
+            })
             .into_any_element()
     }
 
-    fn render_add_attachment_menu(&self, enabled: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn render_add_attachment_menu(&self, enabled: bool, cx: &mut App) -> AnyElement {
         let i18n = cx.global::<crate::foundation::I18n>();
         let add_files = i18n.t("chat-form-attachment-add-files");
         let add_from_clipboard = i18n.t("chat-form-attachment-add-from-clipboard");
-        let form = cx.entity().downgrade();
+        let form = self.state.downgrade();
 
         Button::new("chat-form-add")
             .ghost()
@@ -467,54 +502,43 @@ impl ChatForm {
 
     fn render_run_settings(
         &self,
-        cx: &mut Context<Self>,
-    ) -> (Option<AnyElement>, Option<AnyElement>, Option<AnyElement>) {
+    ) -> (
+        Option<run_settings::ModelSelector>,
+        Option<run_settings::ReasoningSelector>,
+        Option<run_settings::ApprovalSelector>,
+    ) {
         let model = match &self.controls.run_settings.model {
             ControlSlot::Hidden => None,
-            ControlSlot::Disabled(state) => Some(run_settings::render_model_selector(
-                state.clone(),
-                false,
-                cx,
-            )),
+            ControlSlot::Disabled(state) => {
+                Some(run_settings::ModelSelector::new(state.clone(), false))
+            }
             ControlSlot::Enabled(state) => {
-                Some(run_settings::render_model_selector(state.clone(), true, cx))
+                Some(run_settings::ModelSelector::new(state.clone(), true))
             }
         };
         let reasoning = match &self.controls.run_settings.reasoning {
             ControlSlot::Hidden => None,
-            ControlSlot::Disabled(state) => Some(run_settings::render_reasoning_selector(
-                state.clone(),
-                false,
-                cx,
-            )),
-            ControlSlot::Enabled(state) => Some(run_settings::render_reasoning_selector(
-                state.clone(),
-                true,
-                cx,
-            )),
+            ControlSlot::Disabled(state) => {
+                Some(run_settings::ReasoningSelector::new(state.clone(), false))
+            }
+            ControlSlot::Enabled(state) => {
+                Some(run_settings::ReasoningSelector::new(state.clone(), true))
+            }
         };
         let approval = match &self.controls.run_settings.approval {
             ControlSlot::Hidden => None,
-            ControlSlot::Disabled(state) => Some(run_settings::render_approval_selector(
-                state.clone(),
-                false,
-                cx,
-            )),
-            ControlSlot::Enabled(state) => Some(run_settings::render_approval_selector(
-                state.clone(),
-                true,
-                cx,
-            )),
+            ControlSlot::Disabled(state) => {
+                Some(run_settings::ApprovalSelector::new(state.clone(), false))
+            }
+            ControlSlot::Enabled(state) => {
+                Some(run_settings::ApprovalSelector::new(state.clone(), true))
+            }
         };
         (model, reasoning, approval)
     }
 
-    fn render_skill_completion(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let Some(bounds) = self.bounds else {
+    fn render_skill_completion(&mut self, window: &mut Window, cx: &mut App) -> AnyElement {
+        let Some(bounds) = self.state.read(cx).bounds else {
             return div().into_any_element();
         };
         let Some(composer) = self.composer().cloned() else {
@@ -612,17 +636,111 @@ fn footer_primary_controls() -> Div {
     h_flex().items_center().gap(px(5.)).flex_none()
 }
 
-impl Render for ChatForm {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let form = cx.entity();
+#[derive(IntoElement)]
+struct PrimaryAction {
+    state: Entity<PrimaryActionControlState>,
+    event_target: WeakEntity<ChatFormState>,
+    enabled: bool,
+    can_submit: bool,
+    disabled_reason: Option<SharedString>,
+}
+
+impl PrimaryAction {
+    fn new(
+        state: &Entity<PrimaryActionControlState>,
+        event_target: WeakEntity<ChatFormState>,
+        enabled: bool,
+        can_submit: bool,
+        disabled_reason: Option<SharedString>,
+    ) -> Self {
+        Self {
+            state: state.clone(),
+            event_target,
+            enabled,
+            can_submit,
+            disabled_reason,
+        }
+    }
+}
+
+impl View for PrimaryAction {
+    fn entity_id(&self) -> Option<EntityId> {
+        Some(self.state.entity_id())
+    }
+
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let state = self.state.read(cx);
+        let agent_status = state.agent_status(cx);
+        let agent_active = agent_status != AgentRunControlStatus::Idle;
+        let agent_stopping = agent_status == AgentRunControlStatus::Stopping;
+        let submission_pending = state.submission_pending();
+        let enabled = self.enabled;
+        let event_target = self.event_target;
+
+        Button::new(if agent_active {
+            "chat-form-stop"
+        } else {
+            "chat-form-send"
+        })
+        .primary()
+        .with_size(px(28.))
+        .size(px(28.))
+        .p(px(0.))
+        .rounded(px(999.))
+        .disabled(
+            !enabled || submission_pending || agent_stopping || (!agent_active && !self.can_submit),
+        )
+        .loading(submission_pending)
+        .when_some(
+            match agent_status {
+                AgentRunControlStatus::Running => Some(
+                    cx.global::<crate::foundation::I18n>()
+                        .t("chat-form-stop-tooltip")
+                        .into(),
+                ),
+                AgentRunControlStatus::Stopping => Some(
+                    cx.global::<crate::foundation::I18n>()
+                        .t("chat-form-stopping-tooltip")
+                        .into(),
+                ),
+                AgentRunControlStatus::Idle => self.disabled_reason,
+            },
+            |button, reason| button.tooltip(reason),
+        )
+        .child(Icon::new(if agent_active {
+            IconName::Square
+        } else {
+            IconName::Send
+        }))
+        .on_click(move |_, _window, cx| {
+            if enabled {
+                let _ = event_target.update(cx, |_, cx| {
+                    cx.emit(ChatFormUiEvent::PrimaryActionRequested);
+                });
+            }
+        })
+    }
+}
+
+impl View for ChatForm {
+    fn entity_id(&self) -> Option<EntityId> {
+        Some(self.state.entity_id())
+    }
+
+    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let form = self.state.downgrade();
         let composer = self.composer().cloned();
         let project = self.render_project(cx);
         let attachments = self.render_attachments(cx);
-        let (model, reasoning, approval) = self.render_run_settings(cx);
+        let (model, reasoning, approval) = self.render_run_settings();
         let add_attachment = self.controls.add_attachment.is_visible();
         let add_attachment_enabled = self.controls.add_attachment.is_enabled();
         let primary_action = self.controls.primary_action.value().cloned();
         let primary_enabled = self.controls.primary_action.is_enabled();
+        let primary_action_can_submit = self.primary_action_can_submit;
+        let primary_action_disabled_reason = self.primary_action_disabled_reason.clone();
+        let attachments_enabled_for_drop = self.controls.attachments.is_enabled();
+        let drop_event_target = self.state.downgrade();
         let skill_completion_open = composer
             .as_ref()
             .is_some_and(|composer| composer.read(cx).skill_completion_open());
@@ -633,7 +751,7 @@ impl Render for ChatForm {
             .w_full()
             .relative()
             .on_prepaint(move |bounds, _, cx| {
-                form.update(cx, |form, _| {
+                let _ = form.update(cx, |form, _| {
                     form.bounds = Some(bounds);
                 });
             })
@@ -651,13 +769,15 @@ impl Render for ChatForm {
                     cx.theme().foreground.opacity(0.05),
                 )])
             })
-            .on_drop(cx.listener(|form, paths: &ExternalPaths, _window, cx| {
-                if form.controls.attachments.is_enabled() {
-                    cx.emit(ChatFormUiEvent::ExternalPathsDropped(
-                        paths.paths().to_vec(),
-                    ));
+            .on_drop(move |paths: &ExternalPaths, _window, cx| {
+                if attachments_enabled_for_drop {
+                    let _ = drop_event_target.update(cx, |_, cx| {
+                        cx.emit(ChatFormUiEvent::ExternalPathsDropped(
+                            paths.paths().to_vec(),
+                        ));
+                    });
                 }
-            }))
+            })
             .when_some(composer, |this, composer| {
                 this.child(
                     v_flex()
@@ -696,61 +816,13 @@ impl Render for ChatForm {
                         footer_primary_controls()
                             .when_some(model, |this, model| this.child(model))
                             .when_some(primary_action, |this, action| {
-                                let action = action.read(cx);
-                                let agent_status = action.agent_status(cx);
-                                let agent_active = agent_status != AgentRunControlStatus::Idle;
-                                let agent_stopping =
-                                    agent_status == AgentRunControlStatus::Stopping;
-                                let submission_pending = action.submission_pending();
-                                let can_submit = action.can_submit;
-                                let disabled_reason = action.disabled_reason.clone();
-                                this.child(
-                                    Button::new(if agent_active {
-                                        "chat-form-stop"
-                                    } else {
-                                        "chat-form-send"
-                                    })
-                                    .primary()
-                                    .with_size(px(28.))
-                                    .size(px(28.))
-                                    .p(px(0.))
-                                    .rounded(px(999.))
-                                    .disabled(
-                                        !primary_enabled
-                                            || submission_pending
-                                            || agent_stopping
-                                            || (!agent_active && !can_submit),
-                                    )
-                                    .loading(submission_pending)
-                                    .when_some(
-                                        match agent_status {
-                                            AgentRunControlStatus::Running => Some(
-                                                cx.global::<crate::foundation::I18n>()
-                                                    .t("chat-form-stop-tooltip")
-                                                    .into(),
-                                            ),
-                                            AgentRunControlStatus::Stopping => Some(
-                                                cx.global::<crate::foundation::I18n>()
-                                                    .t("chat-form-stopping-tooltip")
-                                                    .into(),
-                                            ),
-                                            AgentRunControlStatus::Idle => disabled_reason,
-                                        },
-                                        |button, reason| button.tooltip(reason),
-                                    )
-                                    .child(Icon::new(if agent_active {
-                                        IconName::Square
-                                    } else {
-                                        IconName::Send
-                                    }))
-                                    .on_click(cx.listener(
-                                        |form, _, _window, cx| {
-                                            if form.controls.primary_action.is_enabled() {
-                                                cx.emit(ChatFormUiEvent::PrimaryActionRequested);
-                                            }
-                                        },
-                                    )),
-                                )
+                                this.child(PrimaryAction::new(
+                                    &action,
+                                    self.state.downgrade(),
+                                    primary_enabled,
+                                    primary_action_can_submit,
+                                    primary_action_disabled_reason.clone(),
+                                ))
                             }),
                     ),
             )
@@ -783,13 +855,16 @@ impl Render for ChatForm {
 
 #[cfg(test)]
 mod tests {
-    use super::footer_primary_controls;
+    use super::{
+        ChatForm, ChatFormControls, ChatFormState, ControlSlot, PrimaryAction,
+        PrimaryActionControlState, RunSettingsControls, footer_primary_controls,
+    };
     use crate::components::picker::{
         PickerContentPopoverConfig, picker_content_popover, picker_trigger_with_icon,
     };
     use gpui::{
         AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _,
-        TestAppContext, Window, div, px,
+        TestAppContext, View as _, Window, div, px,
     };
     use gpui_component::{h_flex, v_flex};
 
@@ -829,6 +904,47 @@ mod tests {
                     ),
             )
         }
+    }
+
+    fn hidden_controls() -> ChatFormControls {
+        ChatFormControls {
+            project: ControlSlot::Hidden,
+            composer: ControlSlot::Hidden,
+            attachments: ControlSlot::Hidden,
+            add_attachment: ControlSlot::Hidden,
+            run_settings: RunSettingsControls {
+                model: ControlSlot::Hidden,
+                reasoning: ControlSlot::Hidden,
+                approval: ControlSlot::Hidden,
+            },
+            primary_action: ControlSlot::Hidden,
+        }
+    }
+
+    #[gpui::test]
+    fn direct_views_use_backing_identity_across_rebuilds(cx: &mut TestAppContext) {
+        let controls = hidden_controls();
+        let form_state = cx.new(|cx| ChatFormState::new(&controls, cx));
+        let first_form = ChatForm::new(&form_state, controls.clone());
+        let refreshed_form = ChatForm::new(&form_state, controls)
+            .primary_action_projection(true, Some("ready".into()));
+
+        assert_eq!(first_form.entity_id(), Some(form_state.entity_id()));
+        assert_eq!(refreshed_form.entity_id(), first_form.entity_id());
+
+        let primary_state = cx.new(|_| PrimaryActionControlState::default());
+        let first_primary =
+            PrimaryAction::new(&primary_state, form_state.downgrade(), true, false, None);
+        let refreshed_primary = PrimaryAction::new(
+            &primary_state,
+            form_state.downgrade(),
+            false,
+            true,
+            Some("disabled".into()),
+        );
+
+        assert_eq!(first_primary.entity_id(), Some(primary_state.entity_id()));
+        assert_eq!(refreshed_primary.entity_id(), first_primary.entity_id());
     }
 
     #[gpui::test]

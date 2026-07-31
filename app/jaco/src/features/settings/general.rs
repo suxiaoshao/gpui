@@ -1,5 +1,8 @@
 use crate::{
-    components::hotkey_input::{HotkeyInput, format_hotkey_label, string_to_keystroke},
+    components::hotkey_input::{
+        HotkeyInput, HotkeyInputEvent, HotkeyInputState, format_hotkey_label, keystroke_to_string,
+        string_to_keystroke,
+    },
     foundation::{I18n, assets::IconName},
     state::{self, JacoConfig},
 };
@@ -27,32 +30,34 @@ struct SettingsTextInputState {
 
 struct TemporaryHotkeyControlState {
     editing: bool,
-    hotkey_input: Entity<HotkeyInput>,
+    draft: Option<String>,
+    hotkey_input: Entity<HotkeyInputState>,
+    _hotkey_subscription: Subscription,
 }
 
 impl TemporaryHotkeyControlState {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let hotkey_input = Self::new_hotkey_input(current_temporary_hotkey(cx), window, cx);
+        let draft = current_temporary_hotkey(cx);
+        let hotkey_input = cx.new(|cx| HotkeyInputState::new(window, cx));
+        let _hotkey_subscription = cx.subscribe_in(
+            &hotkey_input,
+            window,
+            |this, _state, event: &HotkeyInputEvent, _window, cx| {
+                let HotkeyInputEvent::Change(value) = event;
+                this.draft = value.clone();
+                cx.notify();
+            },
+        );
         Self {
             editing: false,
+            draft,
             hotkey_input,
+            _hotkey_subscription,
         }
     }
 
-    fn new_hotkey_input(
-        current_hotkey: Option<Keystroke>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Entity<HotkeyInput> {
-        cx.new(|cx| {
-            HotkeyInput::new("temporary-hotkey-inline-input", window, cx)
-                .small()
-                .default_value(current_hotkey)
-        })
-    }
-
-    fn reset_hotkey_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.hotkey_input = Self::new_hotkey_input(current_temporary_hotkey(cx), window, cx);
+    fn reset_hotkey_input(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.draft = current_temporary_hotkey(cx);
     }
 
     fn focus_hotkey_input(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -76,7 +81,7 @@ impl TemporaryHotkeyControlState {
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let next_hotkey = self.hotkey_input.read(cx).current_hotkey_string();
+        let next_hotkey = self.draft.clone();
         if save_temporary_hotkey(next_hotkey, window, cx) {
             self.reset_hotkey_input(window, cx);
             self.editing = false;
@@ -88,11 +93,12 @@ impl TemporaryHotkeyControlState {
     fn set_draft_hotkey_for_test(
         &mut self,
         hotkey: Option<&str>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
     ) {
-        self.hotkey_input =
-            Self::new_hotkey_input(hotkey.and_then(string_to_keystroke), window, cx);
+        self.draft = hotkey
+            .and_then(string_to_keystroke)
+            .map(|hotkey| keystroke_to_string(&hotkey));
     }
 }
 
@@ -115,7 +121,11 @@ impl Render for TemporaryHotkeyControlState {
                 .items_center()
                 .justify_end()
                 .gap_2()
-                .child(self.hotkey_input.clone())
+                .child(
+                    HotkeyInput::new("temporary-hotkey-inline-input", &self.hotkey_input)
+                        .small()
+                        .value(self.draft.as_deref().and_then(string_to_keystroke)),
+                )
                 .child(
                     Button::new("temporary-hotkey-inline-save")
                         .icon(IconName::Check)
@@ -225,10 +235,11 @@ fn temporary_hotkey_control(window: &mut Window, cx: &mut App) -> AnyElement {
         .into_any_element()
 }
 
-fn current_temporary_hotkey(cx: &App) -> Option<Keystroke> {
+fn current_temporary_hotkey(cx: &App) -> Option<String> {
     state::config::app_settings(cx)
         .temporary_hotkey()
         .and_then(string_to_keystroke)
+        .map(|hotkey| keystroke_to_string(&hotkey))
 }
 
 fn save_temporary_hotkey(next_hotkey: Option<String>, window: &mut Window, cx: &mut App) -> bool {

@@ -470,6 +470,60 @@ where
     pub(crate) on_open_change: F,
 }
 
+#[derive(IntoElement)]
+pub(crate) struct PickerPopover<D, F>
+where
+    D: ListDelegate + 'static,
+    F: Fn(&bool, &mut Window, &mut App) + 'static,
+{
+    config: PickerPopoverConfig<D, F>,
+}
+
+impl<D, F> PickerPopover<D, F>
+where
+    D: ListDelegate + 'static,
+    F: Fn(&bool, &mut Window, &mut App) + 'static,
+{
+    pub(crate) fn new(config: PickerPopoverConfig<D, F>) -> Self {
+        Self { config }
+    }
+}
+
+impl<D, F> View for PickerPopover<D, F>
+where
+    D: ListDelegate + 'static,
+    F: Fn(&bool, &mut Window, &mut App) + 'static,
+{
+    fn entity_id(&self) -> Option<EntityId> {
+        Some(self.config.list.entity_id())
+    }
+
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let content = List::new(&self.config.list)
+            .when_some(self.config.search_placeholder, |this, placeholder| {
+                this.search_placeholder(placeholder)
+            })
+            .with_size(Size::Small)
+            .scrollbar_visible(false)
+            .max_h(self.config.max_height)
+            .paddings(Edges::all(px(4.)))
+            .into_any_element();
+
+        picker_content_popover(
+            cx,
+            PickerContentPopoverConfig {
+                id: self.config.id,
+                open: self.config.open,
+                trigger: self.config.trigger,
+                content,
+                width: self.config.width,
+                footer: self.config.footer,
+                on_open_change: self.config.on_open_change,
+            },
+        )
+    }
+}
+
 pub(crate) struct PickerContentPopoverConfig<F>
 where
     F: Fn(&bool, &mut Window, &mut App) + 'static,
@@ -481,34 +535,6 @@ where
     pub(crate) width: Pixels,
     pub(crate) footer: Option<AnyElement>,
     pub(crate) on_open_change: F,
-}
-
-pub(crate) fn picker_popover<D, F>(cx: &App, config: PickerPopoverConfig<D, F>) -> impl IntoElement
-where
-    D: ListDelegate + 'static,
-    F: Fn(&bool, &mut Window, &mut App) + 'static,
-{
-    let content = List::new(&config.list)
-        .when_some(config.search_placeholder, |this, placeholder| {
-            this.search_placeholder(placeholder)
-        })
-        .with_size(Size::Small)
-        .scrollbar_visible(false)
-        .max_h(config.max_height)
-        .paddings(Edges::all(px(4.)))
-        .into_any_element();
-    picker_content_popover(
-        cx,
-        PickerContentPopoverConfig {
-            id: config.id,
-            open: config.open,
-            trigger: config.trigger,
-            content,
-            width: config.width,
-            footer: config.footer,
-            on_open_change: config.on_open_change,
-        },
-    )
 }
 
 pub(crate) fn picker_content_popover<F>(
@@ -543,14 +569,15 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{PickerListDelegate, PickerSection};
+    use super::{PickerListDelegate, PickerPopover, PickerPopoverConfig, PickerSection};
     use gpui::{
-        App, AppContext, Context, Entity, IntoElement, Render, SharedString, TestAppContext,
-        Window, div,
+        App, AppContext, Context, Entity, IntoElement, Render, SharedString, TestAppContext, View,
+        Window, div, px,
     };
     use gpui_component::select::SelectItem;
     use gpui_component::{
         IndexPath,
+        button::Button,
         list::{ListDelegate, ListState},
     };
     use std::{
@@ -732,6 +759,51 @@ mod tests {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             div()
         }
+    }
+
+    #[gpui::test]
+    fn picker_popover_uses_list_identity_across_rebuilds(cx: &mut TestAppContext) {
+        let (_, _) = cx.add_window_view(|window, cx| {
+            let list = cx.new(|cx| {
+                ListState::new(
+                    PickerListDelegate::<TestItem>::new(
+                        Vec::new(),
+                        None,
+                        |_| "Empty".into(),
+                        Rc::new(|_, _, _| {}),
+                        Rc::new(|_, _| {}),
+                    ),
+                    window,
+                    cx,
+                )
+            });
+
+            let first = PickerPopover::new(PickerPopoverConfig {
+                id: "first-picker",
+                open: false,
+                trigger: Button::new("first-trigger"),
+                list: list.clone(),
+                width: px(180.),
+                max_height: px(240.).into(),
+                search_placeholder: None,
+                footer: None,
+                on_open_change: |_, _, _| {},
+            });
+            let refreshed = PickerPopover::new(PickerPopoverConfig {
+                id: "refreshed-picker",
+                open: true,
+                trigger: Button::new("refreshed-trigger"),
+                list: list.clone(),
+                width: px(320.),
+                max_height: px(360.).into(),
+                search_placeholder: Some("Search".into()),
+                footer: Some(div().into_any_element()),
+                on_open_change: |_, _, _| {},
+            });
+            assert_eq!(first.entity_id(), Some(list.entity_id()));
+            assert_eq!(refreshed.entity_id(), first.entity_id());
+            TestRoot
+        });
     }
 
     #[gpui::test]

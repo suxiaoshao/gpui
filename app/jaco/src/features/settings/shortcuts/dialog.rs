@@ -1,14 +1,16 @@
 use crate::{
     components::chat::form::{
-        AddAttachmentControl, AttachmentControlState, ChatForm, ChatFormControls, ControlSlot,
-        PrimaryActionControlState, RunSettingsControls,
+        AddAttachmentControl, AttachmentControlState, ChatForm, ChatFormControls, ChatFormState,
+        ControlSlot, PrimaryActionControlState, RunSettingsControls,
     },
     components::chat::input::ComposerEditor,
     components::chat::run_settings::{
         RunSettingsController, RunSettingsSubmitError, resolve_run_settings,
     },
     components::delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
-    components::hotkey_input::{HotkeyInput, HotkeyInputEvent, string_to_keystroke},
+    components::hotkey_input::{
+        HotkeyInput, HotkeyInputEvent, HotkeyInputState, string_to_keystroke,
+    },
     foundation::{I18n, assets::IconName},
     state::{self, shortcuts::ShortcutDraft},
 };
@@ -31,7 +33,7 @@ use gpui_form::typed::FormStore as _;
 use gpui_form_gpui_component::FormSelect;
 use jaco_core::{ShortcutId, ShortcutInputSource};
 use jaco_db::ShortcutRecord;
-use std::{cell::Cell, rc::Rc};
+use std::rc::Rc;
 
 use super::super::push_settings_error;
 use super::{
@@ -44,85 +46,6 @@ use super::{
 };
 
 type ShortcutRecordDialogHandler = Rc<dyn Fn(ShortcutRecord, &mut Window, &mut App) + 'static>;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum HotkeySyncState {
-    #[default]
-    Idle,
-    FromForm,
-    FromComponent,
-}
-
-fn bind_hotkey<Form, Owner>(
-    field: gpui_form::typed::FormField<Form, Option<String>>,
-    state: &Entity<HotkeyInput>,
-    window: &mut Window,
-    cx: &mut Context<Owner>,
-) -> Result<Vec<Subscription>, gpui_form_gpui_component::FormControlError>
-where
-    Form: gpui_form::typed::FormStore + EventEmitter<gpui_form::typed::FormEvent<Form::Field>>,
-    Owner: 'static,
-{
-    let initial = field
-        .value(cx)
-        .map_err(gpui_form_gpui_component::FormControlError::from)?;
-    state.update(cx, |input, cx| {
-        input.set_hotkey(initial.as_deref().and_then(string_to_keystroke), cx);
-    });
-
-    let sync = Rc::new(Cell::new(HotkeySyncState::Idle));
-    let mut subscriptions = Vec::new();
-    let form_sync = sync.clone();
-    let form_state = state.clone();
-    let subscribed_field = field.clone();
-    subscriptions.push(subscribed_field.clone().subscribe_in(
-        window,
-        cx,
-        move |_owner, window, cx| {
-            if form_sync.get() == HotkeySyncState::FromComponent {
-                return;
-            }
-            let field = subscribed_field.clone();
-            let form_state = form_state.clone();
-            let form_sync = form_sync.clone();
-            cx.defer_in(window, move |_owner, _window, cx| {
-                let Ok(value) = field.value(cx) else { return };
-                form_sync.set(HotkeySyncState::FromForm);
-                form_state.update(cx, |input, cx| {
-                    input.set_hotkey(value.as_deref().and_then(string_to_keystroke), cx);
-                });
-                form_sync.set(HotkeySyncState::Idle);
-            });
-        },
-    )?);
-
-    let component_sync = sync;
-    let component_field = field;
-    subscriptions.push(cx.subscribe_in(
-        state,
-        window,
-        move |_owner, state, event: &HotkeyInputEvent, window, cx| {
-            if !matches!(event, HotkeyInputEvent::Change)
-                || component_sync.get() == HotkeySyncState::FromForm
-            {
-                return;
-            }
-            let draft = state.read(cx).current_hotkey_string();
-            let sync = component_sync.clone();
-            let field = component_field.clone();
-            cx.defer_in(window, move |_owner, _window, cx| {
-                if sync.get() == HotkeySyncState::FromForm {
-                    return;
-                }
-                sync.set(HotkeySyncState::FromComponent);
-                let _ = field.set_user_value(draft, cx);
-                sync.set(HotkeySyncState::Idle);
-            });
-        },
-    ));
-
-    Ok(subscriptions)
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ShortcutEditMode {
@@ -143,12 +66,13 @@ pub(super) struct ShortcutEditDialogState {
     mode: ShortcutEditMode,
     shortcut_id: Option<ShortcutId>,
     form: Entity<ShortcutEditFormStore>,
-    hotkey_input: Entity<HotkeyInput>,
+    hotkey_input: Entity<HotkeyInputState>,
     prompt_select: Entity<SelectState<Vec<PromptChoice>>>,
     _prompt_control: FormSelect<Vec<PromptChoice>>,
     _subscriptions: Vec<Subscription>,
     _run_settings: Entity<RunSettingsController<ShortcutEditFormStore>>,
-    chat_form: Entity<ChatForm>,
+    chat_form: Entity<ChatFormState>,
+    chat_form_controls: ChatFormControls,
     existing_shortcuts: Vec<ShortcutRecord>,
     temporary_hotkey: Option<String>,
     save_task: Option<Task<()>>,
@@ -184,14 +108,7 @@ impl ShortcutEditDialogState {
                 cx,
             )
         });
-        let hotkey_input = cx.new(|cx| {
-            let hotkey = ShortcutEditFormStore::hotkey_field(&form)
-                .value(cx)
-                .unwrap_or_default();
-            HotkeyInput::new("shortcut-dialog-hotkey", window, cx)
-                .w_full()
-                .default_value(hotkey.as_deref().and_then(string_to_keystroke))
-        });
+        let hotkey_input = cx.new(|cx| HotkeyInputState::new(window, cx));
         let prompt_field = ShortcutEditFormStore::prompt_field(&form).project_value(
             "selection",
             |selection| Some(Some(selection.0.clone())),
@@ -209,14 +126,24 @@ impl ShortcutEditDialogState {
         .expect("shortcut prompt form entity is alive");
         let prompt_select = (*prompt_control).clone();
         let mut subscriptions = Vec::new();
-        subscriptions.extend(
-            bind_hotkey(
-                ShortcutEditFormStore::hotkey_field(&form),
-                &hotkey_input,
-                window,
-                cx,
-            )
-            .expect("shortcut hotkey form entity is alive"),
+        let hotkey_field = ShortcutEditFormStore::hotkey_field(&form);
+        let component_field = hotkey_field.clone();
+        subscriptions.push(cx.subscribe_in(
+            &hotkey_input,
+            window,
+            move |_owner, _state, event: &HotkeyInputEvent, window, cx| {
+                let HotkeyInputEvent::Change(value) = event;
+                let value = value.clone();
+                let field = component_field.clone();
+                cx.defer_in(window, move |_owner, _window, cx| {
+                    let _ = field.set_user_value(value, cx);
+                });
+            },
+        ));
+        subscriptions.push(
+            hotkey_field
+                .subscribe_in(window, cx, |_owner, _window, cx| cx.notify())
+                .expect("shortcut hotkey form entity is alive"),
         );
         let run_settings_field = ShortcutEditFormStore::run_settings_field(&form);
         let run_settings = cx.new(|cx| RunSettingsController::new(run_settings_field, window, cx));
@@ -225,24 +152,19 @@ impl ShortcutEditDialogState {
         let composer = cx.new(|cx| ComposerEditor::new(placeholder, window, cx));
         let attachments = cx.new(|_| AttachmentControlState::default());
         let primary_action = cx.new(|_| PrimaryActionControlState::default());
-        let chat_form = cx.new(|cx| {
-            ChatForm::new(
-                ChatFormControls {
-                    project: ControlSlot::Hidden,
-                    composer: ControlSlot::Disabled(composer.clone()),
-                    attachments: ControlSlot::Disabled(attachments),
-                    add_attachment: ControlSlot::Disabled(AddAttachmentControl),
-                    run_settings: RunSettingsControls {
-                        model: ControlSlot::Enabled(run_settings_states.model),
-                        reasoning: ControlSlot::Enabled(run_settings_states.reasoning),
-                        approval: ControlSlot::Enabled(run_settings_states.approval),
-                    },
-                    primary_action: ControlSlot::Disabled(primary_action),
-                },
-                window,
-                cx,
-            )
-        });
+        let chat_form_controls = ChatFormControls {
+            project: ControlSlot::Hidden,
+            composer: ControlSlot::Disabled(composer),
+            attachments: ControlSlot::Disabled(attachments),
+            add_attachment: ControlSlot::Disabled(AddAttachmentControl),
+            run_settings: RunSettingsControls {
+                model: ControlSlot::Enabled(run_settings_states.model),
+                reasoning: ControlSlot::Enabled(run_settings_states.reasoning),
+                approval: ControlSlot::Enabled(run_settings_states.approval),
+            },
+            primary_action: ControlSlot::Disabled(primary_action),
+        };
+        let chat_form = cx.new(|cx| ChatFormState::new(&chat_form_controls, cx));
 
         Self {
             mode,
@@ -254,6 +176,7 @@ impl ShortcutEditDialogState {
             _subscriptions: subscriptions,
             _run_settings: run_settings,
             chat_form,
+            chat_form_controls,
             existing_shortcuts,
             temporary_hotkey,
             save_task: None,
@@ -434,10 +357,10 @@ impl Render for ShortcutEditDialogState {
         );
         let hotkey_error = field_error_message(hotkey_field.errors(cx).unwrap_or_default(), cx);
         let model_error = field_error_message(model_field.errors(cx).unwrap_or_default(), cx);
-        let (hotkey_input, prompt_select, input_source, enabled) = {
+        let (hotkey, prompt_select, input_source, enabled) = {
             let form = self.form.read(cx);
             (
-                self.hotkey_input.clone(),
+                form.value().hotkey.clone(),
                 self.prompt_select.clone(),
                 form.value().input_source,
                 form.value().enabled,
@@ -448,7 +371,10 @@ impl Render for ShortcutEditDialogState {
             .gap_4()
             .child(form_field(
                 field_hotkey,
-                hotkey_input.into_any_element(),
+                HotkeyInput::new("shortcut-dialog-hotkey", &self.hotkey_input)
+                    .w_full()
+                    .value(hotkey.as_deref().and_then(string_to_keystroke))
+                    .into_any_element(),
                 hotkey_error,
                 true,
                 cx,
@@ -465,7 +391,7 @@ impl Render for ShortcutEditDialogState {
             ))
             .child(form_field(
                 field_model.clone(),
-                self.chat_form.clone().into_any_element(),
+                ChatForm::new(&self.chat_form, self.chat_form_controls.clone()).into_any_element(),
                 model_error,
                 true,
                 cx,

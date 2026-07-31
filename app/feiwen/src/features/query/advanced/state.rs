@@ -157,9 +157,8 @@ impl AdvancedQueryState {
         this
     }
 
-    pub(crate) fn set_disabled(&mut self, disabled: bool, cx: &mut Context<QueryView>) {
+    pub(crate) fn set_disabled(&mut self, disabled: bool) {
         self.disabled = disabled;
-        Self::set_group_disabled(&mut self.root, disabled, cx);
     }
 
     pub(crate) fn condition_count(&self) -> usize {
@@ -708,15 +707,6 @@ impl AdvancedQueryState {
             FilterNode::Group(group) => Self::remove_node_from(group, node_id),
         })
     }
-
-    fn set_group_disabled(group: &mut FilterGroup, disabled: bool, cx: &mut Context<QueryView>) {
-        for item in &mut group.items {
-            match item {
-                FilterNode::Condition(condition) => condition.set_disabled(disabled, cx),
-                FilterNode::Group(group) => Self::set_group_disabled(group, disabled, cx),
-            }
-        }
-    }
 }
 
 impl FilterGroup {
@@ -762,28 +752,6 @@ impl FilterNode {
         match self {
             FilterNode::Condition(condition) => condition.id,
             FilterNode::Group(group) => group.id,
-        }
-    }
-}
-
-impl ConditionRow {
-    fn set_disabled(&mut self, disabled: bool, cx: &mut Context<QueryView>) {
-        match &self.draft {
-            ConditionDraft::Number(condition) => {
-                if let NumberValue::Range(range) = &condition.value {
-                    range.update(cx, |range, cx| range.set_disabled(disabled, cx));
-                }
-            }
-            ConditionDraft::Author(condition) => match &condition.value {
-                AuthorValue::Single(_) => {}
-                AuthorValue::Multi(_) => {}
-                AuthorValue::Text(_) => {}
-            },
-            ConditionDraft::NoField
-            | ConditionDraft::NoCondition { .. }
-            | ConditionDraft::Text(_)
-            | ConditionDraft::Tags(_)
-            | ConditionDraft::Bool(_) => {}
         }
     }
 }

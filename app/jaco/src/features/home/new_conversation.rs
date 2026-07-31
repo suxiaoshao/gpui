@@ -24,7 +24,8 @@ use crate::{
             project_sections,
         },
         chat::input::{
-            ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
+            ChatFormSkillCompletionPlacement, ChatInput, ChatInputController, ChatInputEvent,
+            ChatInputSubmit,
         },
         chat::runtime_status::ConversationRuntimeStatus,
         picker::PickerListDelegate,
@@ -115,12 +116,8 @@ impl NewConversationPage {
             open: false,
             picker: project_picker,
         });
-        let chat_form = cx.new(|cx| {
-            let mut chat_form = ChatInputController::new_with_project(project.clone(), window, cx);
-            chat_form
-                .set_skill_completion_placement(ChatFormSkillCompletionPlacement::BelowForm, cx);
-            chat_form
-        });
+        let chat_form =
+            cx.new(|cx| ChatInputController::new_with_project(project.clone(), window, cx));
         let project_catalog = state::projects::catalog(cx);
         let project_subscription = project_catalog.observe_select_in(
             cx,
@@ -611,7 +608,10 @@ impl Render for NewConversationPage {
                             .text_color(cx.theme().foreground),
                     )
                     .children(ConversationRuntimeStatus::from_runtime(&self.runtime, cx))
-                    .child(self.chat_form.clone()),
+                    .child(ChatInput::new(
+                        &self.chat_form,
+                        ChatFormSkillCompletionPlacement::BelowForm,
+                    )),
             )
     }
 }

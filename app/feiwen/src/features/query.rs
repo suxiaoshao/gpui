@@ -257,7 +257,7 @@ impl QueryView {
         let pool = cx.global::<Db>().pool();
         let this = cx.entity().downgrade();
 
-        self.advanced.set_disabled(true, cx);
+        self.advanced.set_disabled(true);
         self.set_table_loading(true, cx);
 
         let task = cx.spawn(async move |_, cx| {
@@ -298,7 +298,7 @@ impl QueryView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.advanced.set_disabled(false, cx);
+        self.advanced.set_disabled(false);
         match result {
             Ok(result) => {
                 let count = result.novels.len();

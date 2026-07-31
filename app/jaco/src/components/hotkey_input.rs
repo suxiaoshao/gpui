@@ -20,25 +20,30 @@ actions!(
 
 const KEY_CONTEXT: &str = "JacoHotkeyInput";
 
-pub(crate) struct HotkeyInput {
-    id: ElementId,
-    style: StyleRefinement,
-    size: Size,
-    value: Option<Keystroke>,
+pub(crate) struct HotkeyInputState {
     outer_focus_handle: FocusHandle,
     capture_focus_handle: FocusHandle,
     intercept_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HotkeyInputEvent {
-    Change,
+    Change(Option<String>),
 }
 
-impl EventEmitter<HotkeyInputEvent> for HotkeyInput {}
+impl EventEmitter<HotkeyInputEvent> for HotkeyInputState {}
 
-fn keystroke_to_string(keystroke: &Keystroke) -> String {
+#[derive(IntoElement)]
+pub(crate) struct HotkeyInput {
+    state: Entity<HotkeyInputState>,
+    id: ElementId,
+    style: StyleRefinement,
+    size: Size,
+    value: Option<Keystroke>,
+}
+
+pub(crate) fn keystroke_to_string(keystroke: &Keystroke) -> String {
     let mut result = String::new();
     if keystroke.modifiers.control {
         result.push_str("ctrl+");
@@ -195,12 +200,8 @@ pub(crate) fn string_to_keystroke(string: &str) -> Option<Keystroke> {
     })
 }
 
-impl HotkeyInput {
-    pub(crate) fn new(
-        id: impl Into<ElementId>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+impl HotkeyInputState {
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let outer_focus_handle = cx.focus_handle();
         let capture_focus_handle = cx.focus_handle();
         let _subscriptions = vec![
@@ -208,33 +209,11 @@ impl HotkeyInput {
             cx.on_focus_out(&capture_focus_handle, window, Self::on_capture_focus_out),
         ];
         Self {
-            id: id.into(),
-            style: StyleRefinement::default(),
-            size: Size::default(),
             outer_focus_handle,
             capture_focus_handle,
             intercept_subscription: None,
-            value: None,
             _subscriptions,
         }
-    }
-
-    pub(crate) fn default_value(mut self, default_value: Option<Keystroke>) -> Self {
-        self.value = default_value;
-        self
-    }
-
-    pub(crate) fn current_hotkey_string(&self) -> Option<String> {
-        self.value.as_ref().map(keystroke_to_string)
-    }
-
-    pub(crate) fn set_hotkey(&mut self, value: Option<Keystroke>, cx: &mut Context<Self>) {
-        if self.value == value {
-            return;
-        }
-
-        self.value = value;
-        cx.notify();
     }
 
     pub(crate) fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -274,15 +253,22 @@ impl HotkeyInput {
             return;
         }
 
-        self.value = Some(event.keystroke.clone());
         self.stop_recording(&StopRecording, window, cx);
-        cx.emit(HotkeyInputEvent::Change);
+        cx.emit(HotkeyInputEvent::Change(Some(keystroke_to_string(
+            &event.keystroke,
+        ))));
         cx.notify();
     }
 
-    fn start_recording(&mut self, _: &StartRecording, window: &mut Window, cx: &mut Context<Self>) {
+    fn start_recording(
+        &mut self,
+        had_value: bool,
+        _: &StartRecording,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         window.focus(&self.capture_focus_handle, cx);
-        self.clear_hotkey(&ClearHotkey, window, cx);
+        self.clear_hotkey(had_value, &ClearHotkey, window, cx);
         cx.stop_propagation();
     }
 
@@ -294,9 +280,15 @@ impl HotkeyInput {
         cx.notify();
     }
 
-    fn clear_hotkey(&mut self, _: &ClearHotkey, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.value.take().is_some() {
-            cx.emit(HotkeyInputEvent::Change);
+    fn clear_hotkey(
+        &mut self,
+        had_value: bool,
+        _: &ClearHotkey,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if had_value {
+            cx.emit(HotkeyInputEvent::Change(None));
             cx.notify();
         }
         cx.stop_propagation();
@@ -307,15 +299,36 @@ impl HotkeyInput {
     }
 }
 
-impl Focusable for HotkeyInput {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.outer_focus_handle.clone()
+impl HotkeyInput {
+    pub(crate) fn new(id: impl Into<ElementId>, state: &Entity<HotkeyInputState>) -> Self {
+        Self {
+            state: state.clone(),
+            id: id.into(),
+            style: StyleRefinement::default(),
+            size: Size::default(),
+            value: None,
+        }
+    }
+
+    pub(crate) fn value(mut self, value: Option<Keystroke>) -> Self {
+        self.value = value;
+        self
     }
 }
 
-impl Render for HotkeyInput {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_recording = self.is_recording(window);
+impl Focusable for HotkeyInput {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.state.read(cx).outer_focus_handle.clone()
+    }
+}
+
+impl View for HotkeyInput {
+    fn entity_id(&self) -> Option<EntityId> {
+        Some(self.state.entity_id())
+    }
+
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let is_recording = self.state.read(cx).is_recording(window);
         let (record_label, stop_label, clear_label, not_set_label) = {
             let i18n = cx.global::<I18n>();
             (
@@ -325,6 +338,15 @@ impl Render for HotkeyInput {
                 i18n.t("hotkey-not-set"),
             )
         };
+        let outer_focus_handle = self.state.read(cx).outer_focus_handle.clone();
+        let capture_focus_handle = self.state.read(cx).capture_focus_handle.clone();
+        let had_value = self.value.is_some();
+        let start_action_state = self.state.clone();
+        let stop_action_state = self.state.clone();
+        let clear_action_state = self.state.clone();
+        let start_button_state = self.state.clone();
+        let stop_button_state = self.state.clone();
+        let clear_button_state = self.state.clone();
 
         h_flex()
             .w_64()
@@ -333,11 +355,23 @@ impl Render for HotkeyInput {
             .px_2()
             .id(self.id.clone())
             .refine_style(&self.style)
-            .track_focus(&self.outer_focus_handle)
+            .track_focus(&outer_focus_handle)
             .key_context(KEY_CONTEXT)
-            .on_action(cx.listener(Self::start_recording))
-            .on_action(cx.listener(Self::stop_recording))
-            .on_action(cx.listener(Self::clear_hotkey))
+            .on_action(move |action: &StartRecording, window, cx| {
+                start_action_state.update(cx, |state, cx| {
+                    state.start_recording(had_value, action, window, cx);
+                });
+            })
+            .on_action(move |action: &StopRecording, window, cx| {
+                stop_action_state.update(cx, |state, cx| {
+                    state.stop_recording(action, window, cx);
+                });
+            })
+            .on_action(move |action: &ClearHotkey, window, cx| {
+                clear_action_state.update(cx, |state, cx| {
+                    state.clear_hotkey(had_value, action, window, cx);
+                });
+            })
             .map(|this| match self.size {
                 Size::Large => this.h_11(),
                 Size::Medium => this.h_8(),
@@ -355,7 +389,7 @@ impl Render for HotkeyInput {
             .when(is_recording, |this| this.border_color(cx.theme().primary))
             .child(
                 div()
-                    .track_focus(&self.capture_focus_handle)
+                    .track_focus(&capture_focus_handle)
                     .flex_1()
                     .min_w_0()
                     .flex()
@@ -406,9 +440,11 @@ impl Render for HotkeyInput {
                                 .ghost()
                                 .icon(IconName::X)
                                 .tooltip(stop_label.clone())
-                                .on_click(cx.listener(|this, _event, window, cx| {
-                                    this.stop_recording(&StopRecording, window, cx);
-                                })),
+                                .on_click(move |_event, window, cx| {
+                                    stop_button_state.update(cx, |state, cx| {
+                                        state.stop_recording(&StopRecording, window, cx);
+                                    });
+                                }),
                         )
                     })
                     .when(!is_recording, |this| {
@@ -418,9 +454,16 @@ impl Render for HotkeyInput {
                                 .ghost()
                                 .icon(IconName::Keyboard)
                                 .tooltip(record_label.clone())
-                                .on_click(cx.listener(|this, _event, window, cx| {
-                                    this.start_recording(&StartRecording, window, cx);
-                                })),
+                                .on_click(move |_event, window, cx| {
+                                    start_button_state.update(cx, |state, cx| {
+                                        state.start_recording(
+                                            had_value,
+                                            &StartRecording,
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                }),
                         )
                     })
                     .when(self.value.is_some(), |this| {
@@ -430,9 +473,11 @@ impl Render for HotkeyInput {
                                 .ghost()
                                 .icon(IconName::Trash)
                                 .tooltip(clear_label.clone())
-                                .on_click(cx.listener(|this, _event, window, cx| {
-                                    this.clear_hotkey(&ClearHotkey, window, cx);
-                                })),
+                                .on_click(move |_event, window, cx| {
+                                    clear_button_state.update(cx, |state, cx| {
+                                        state.clear_hotkey(had_value, &ClearHotkey, window, cx);
+                                    });
+                                }),
                         )
                     }),
             )
@@ -455,12 +500,51 @@ impl Sizable for HotkeyInput {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClearHotkey, HotkeyInput, StartRecording, format_hotkey_label, string_to_keystroke,
+        ClearHotkey, HotkeyInput, HotkeyInputEvent, HotkeyInputState, StartRecording,
+        format_hotkey_label, keystroke_to_string, string_to_keystroke,
     };
     use gpui::{
-        AppContext as _, KeyContext, Keystroke, KeystrokeEvent, Modifiers, TestAppContext,
-        VisualTestContext, WindowHandle,
+        AppContext as _, Context, Entity, IntoElement, KeyContext, Keystroke, KeystrokeEvent,
+        Modifiers, Render, Subscription, TestAppContext, View, VisualTestContext, Window,
+        WindowHandle,
     };
+
+    struct HotkeyInputHarness {
+        input: Entity<HotkeyInputState>,
+        value: Option<Keystroke>,
+        _subscription: Subscription,
+    }
+
+    impl HotkeyInputHarness {
+        fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+            let input = cx.new(|cx| HotkeyInputState::new(window, cx));
+            let _subscription =
+                cx.subscribe(&input, |this, _input, event: &HotkeyInputEvent, cx| {
+                    let HotkeyInputEvent::Change(value) = event;
+                    this.value = value.as_deref().and_then(string_to_keystroke);
+                    cx.notify();
+                });
+            Self {
+                input,
+                value: None,
+                _subscription,
+            }
+        }
+
+        fn view(&self) -> HotkeyInput {
+            HotkeyInput::new("test-hotkey-input", &self.input).value(self.value.clone())
+        }
+
+        fn current_hotkey_string(&self) -> Option<String> {
+            self.value.as_ref().map(keystroke_to_string)
+        }
+    }
+
+    impl Render for HotkeyInputHarness {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            self.view()
+        }
+    }
 
     #[test]
     fn string_to_keystroke_accepts_plus_format_only() {
@@ -475,14 +559,20 @@ mod tests {
     }
 
     #[gpui::test]
-    fn recorder_captures_modified_hotkey_and_clear_is_local(cx: &mut TestAppContext) {
+    fn recorder_captures_modified_hotkey_and_clear_emits_value_changes(cx: &mut TestAppContext) {
         let window = open_hotkey_input_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let input = window.root(&mut cx).expect("hotkey input");
+        let harness = window.root(&mut cx).expect("hotkey input harness");
+        let input = harness.read_with(&cx, |harness, _| harness.input.clone());
 
         cx.update(|window, cx| {
             input.update(cx, |input, cx| {
-                input.start_recording(&StartRecording, window, cx);
+                input.start_recording(false, &StartRecording, window, cx);
+            });
+        });
+        cx.update(|window, cx| {
+            assert!(input.read(cx).is_recording(window));
+            input.update(cx, |input, cx| {
                 input.handle_keystroke(
                     &keystroke_event(Keystroke {
                         modifiers: Modifiers {
@@ -498,20 +588,23 @@ mod tests {
                 );
             });
         });
+        cx.update(|window, cx| {
+            assert!(!input.read(cx).is_recording(window));
+        });
 
         assert_eq!(
-            input.read_with(&cx, |input, _| input.current_hotkey_string()),
+            harness.read_with(&cx, |harness, _| harness.current_hotkey_string()),
             Some("shift+super+j".to_string())
         );
 
         cx.update(|window, cx| {
             input.update(cx, |input, cx| {
-                input.clear_hotkey(&ClearHotkey, window, cx);
+                input.clear_hotkey(true, &ClearHotkey, window, cx);
             });
         });
 
         assert_eq!(
-            input.read_with(&cx, |input, _| input.current_hotkey_string()),
+            harness.read_with(&cx, |harness, _| harness.current_hotkey_string()),
             None
         );
     }
@@ -520,11 +613,12 @@ mod tests {
     fn recorder_ignores_plain_keys(cx: &mut TestAppContext) {
         let window = open_hotkey_input_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let input = window.root(&mut cx).expect("hotkey input");
+        let harness = window.root(&mut cx).expect("hotkey input harness");
+        let input = harness.read_with(&cx, |harness, _| harness.input.clone());
 
         cx.update(|window, cx| {
             input.update(cx, |input, cx| {
-                input.start_recording(&StartRecording, window, cx);
+                input.start_recording(false, &StartRecording, window, cx);
                 input.handle_keystroke(
                     &keystroke_event(Keystroke {
                         modifiers: Modifiers::default(),
@@ -538,17 +632,38 @@ mod tests {
         });
 
         assert_eq!(
-            input.read_with(&cx, |input, _| input.current_hotkey_string()),
+            harness.read_with(&cx, |harness, _| harness.current_hotkey_string()),
             None
         );
     }
 
-    fn open_hotkey_input_window(cx: &mut TestAppContext) -> WindowHandle<HotkeyInput> {
+    #[gpui::test]
+    fn view_uses_backing_identity_across_rebuilds(cx: &mut TestAppContext) {
+        let window = open_hotkey_input_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let harness = window.root(&mut cx).expect("hotkey input harness");
+        let state = harness.read_with(&cx, |harness, _| harness.input.clone());
+
+        let first = HotkeyInput::new("first-hotkey-input", &state);
+        let rebuilt = HotkeyInput::new("rebuilt-hotkey-input", &state).value(Some(Keystroke {
+            modifiers: Modifiers {
+                control: true,
+                ..Default::default()
+            },
+            key: "k".to_string(),
+            key_char: Some("k".to_string()),
+        }));
+
+        assert_eq!(View::entity_id(&first), Some(state.entity_id()));
+        assert_eq!(View::entity_id(&rebuilt), Some(state.entity_id()));
+    }
+
+    fn open_hotkey_input_window(cx: &mut TestAppContext) -> WindowHandle<HotkeyInputHarness> {
         cx.update(|cx| {
             gpui_component::init(cx);
             crate::foundation::init_i18n(cx);
             cx.open_window(Default::default(), |window, cx| {
-                cx.new(|cx| HotkeyInput::new("test-hotkey-input", window, cx))
+                cx.new(|cx| HotkeyInputHarness::new(window, cx))
             })
             .expect("open window")
         })
