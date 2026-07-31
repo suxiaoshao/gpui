@@ -15,8 +15,8 @@ use crate::{
     components::{
         chat::form::{
             AgentRunControlStatus, AgentRunStatusSource, AttachmentControlState, ChatForm,
-            ChatFormControls, ChatFormUiEvent, ControlSlot, PrimaryActionControlState,
-            ProjectControlState, RunSettingsControls,
+            ChatFormControls, ChatFormState, ChatFormUiEvent, ControlSlot,
+            PrimaryActionControlState, ProjectControlState, RunSettingsControls,
         },
         chat::run_settings::resolve_run_settings,
         chat::run_settings::{RunSettingsController, RunSettingsInput},
@@ -112,7 +112,8 @@ enum ChatInputPrimaryButtonAction {
 
 pub(crate) struct ChatInputController {
     composer: Entity<ComposerEditor>,
-    chat_form: Entity<ChatForm>,
+    chat_form: Entity<ChatFormState>,
+    chat_form_controls: ChatFormControls,
     form: Entity<ChatInputFormStore>,
     run_settings: Entity<RunSettingsController<ChatInputFormStore>>,
     primary_action_state: Entity<PrimaryActionControlState>,
@@ -121,6 +122,24 @@ pub(crate) struct ChatInputController {
     skill_catalog_scope: skills::SkillCatalogScope,
     skill_catalog: skills::SkillCatalogOperation,
     _subscriptions: Vec<Subscription>,
+}
+
+#[derive(IntoElement)]
+pub(crate) struct ChatInput {
+    controller: Entity<ChatInputController>,
+    skill_completion_placement: ChatFormSkillCompletionPlacement,
+}
+
+impl ChatInput {
+    pub(crate) fn new(
+        controller: &Entity<ChatInputController>,
+        skill_completion_placement: ChatFormSkillCompletionPlacement,
+    ) -> Self {
+        Self {
+            controller: controller.clone(),
+            skill_completion_placement,
+        }
+    }
 }
 
 pub(crate) fn init(cx: &mut App) {
@@ -218,26 +237,21 @@ impl ChatInputController {
             form: Some(form.clone()),
         });
         let primary_action_state = cx.new(|_| PrimaryActionControlState::default());
-        let chat_form = cx.new(|cx| {
-            ChatForm::new(
-                ChatFormControls {
-                    project,
-                    composer: ControlSlot::Enabled(composer.clone()),
-                    attachments: ControlSlot::Enabled(attachments_state.clone()),
-                    add_attachment: ControlSlot::Enabled(
-                        crate::components::chat::form::AddAttachmentControl,
-                    ),
-                    run_settings: RunSettingsControls {
-                        model: ControlSlot::Enabled(run_settings_states.model),
-                        reasoning: ControlSlot::Enabled(run_settings_states.reasoning),
-                        approval: ControlSlot::Enabled(run_settings_states.approval),
-                    },
-                    primary_action: ControlSlot::Enabled(primary_action_state.clone()),
-                },
-                window,
-                cx,
-            )
-        });
+        let chat_form_controls = ChatFormControls {
+            project,
+            composer: ControlSlot::Enabled(composer.clone()),
+            attachments: ControlSlot::Enabled(attachments_state.clone()),
+            add_attachment: ControlSlot::Enabled(
+                crate::components::chat::form::AddAttachmentControl,
+            ),
+            run_settings: RunSettingsControls {
+                model: ControlSlot::Enabled(run_settings_states.model),
+                reasoning: ControlSlot::Enabled(run_settings_states.reasoning),
+                approval: ControlSlot::Enabled(run_settings_states.approval),
+            },
+            primary_action: ControlSlot::Enabled(primary_action_state.clone()),
+        };
+        let chat_form = cx.new(|cx| ChatFormState::new(&chat_form_controls, cx));
         let chat_form_subscription = cx.subscribe_in(
             &chat_form,
             window,
@@ -275,34 +289,32 @@ impl ChatInputController {
                 })
                 .expect("chat run-settings preference field is alive"),
         );
-        subscriptions.push(cx.observe(&form, |form, _, cx| {
-            form.sync_chat_form_projection(cx);
-            cx.notify();
-        }));
+        subscriptions.push(cx.observe(&form, |_, _, cx| cx.notify()));
         subscriptions.push(state::config::store(cx).observe_select_in(
             cx,
             window,
             state::config::SelectConfigGateStatus,
-            |form, _status, _window, cx| form.sync_chat_form_projection(cx),
+            |_form, _status, _window, cx| cx.notify(),
         ));
         subscriptions.push(crate::database::store(cx).observe_select_in(
             cx,
             window,
             crate::database::SelectDatabaseReady,
-            |form, _ready, _window, cx| form.sync_chat_form_projection(cx),
+            |_form, _ready, _window, cx| cx.notify(),
         ));
         if cx.has_global::<state::providers::ProviderStore>() {
             subscriptions.push(state::providers::catalog(cx).observe_select_in(
                 cx,
                 window,
                 state::providers::SelectProviderStatus,
-                |form, _status, _window, cx| form.sync_chat_form_projection(cx),
+                |_form, _status, _window, cx| cx.notify(),
             ));
         }
 
-        let mut form = Self {
+        Self {
             composer,
             chat_form,
+            chat_form_controls,
             form,
             run_settings,
             primary_action_state,
@@ -311,21 +323,7 @@ impl ChatInputController {
             skill_catalog_scope: skills::SkillCatalogScope::Global,
             skill_catalog,
             _subscriptions: subscriptions,
-        };
-
-        form.sync_chat_form_projection(cx);
-
-        form
-    }
-
-    pub(crate) fn set_skill_completion_placement(
-        &mut self,
-        placement: ChatFormSkillCompletionPlacement,
-        cx: &mut Context<Self>,
-    ) {
-        self.chat_form.update(cx, |form, _| {
-            form.set_skill_completion_placement(placement);
-        });
+        }
     }
 
     pub(crate) fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -415,7 +413,7 @@ impl ChatInputController {
     }
 
     pub(crate) fn refresh_primary_action(&self, cx: &mut Context<Self>) {
-        self.primary_action_state.update(cx, |_, cx| cx.notify());
+        cx.notify();
     }
 
     pub(crate) fn set_submission_problem(
@@ -427,7 +425,6 @@ impl ChatInputController {
             return;
         }
         self.submission_problem = problem;
-        self.sync_chat_form_projection(cx);
         cx.notify();
     }
 
@@ -436,20 +433,7 @@ impl ChatInputController {
         let empty_composer = self.composer.read(cx).snapshot();
         let _ = ChatInputFormStore::composer_field(&self.form).set(empty_composer, cx);
         let _ = ChatInputFormStore::attachments_field(&self.form).set(Vec::new(), cx);
-        self.sync_chat_form_projection(cx);
         cx.notify();
-    }
-
-    pub(crate) fn sync_chat_form_projection(&mut self, cx: &mut Context<Self>) {
-        let can_submit = self.can_send(cx);
-        let disabled_reason = self.submission_problem.clone().or_else(|| {
-            send_resource_problem(cx).map(|key| cx.global::<foundation::I18n>().t(key).into())
-        });
-        self.primary_action_state.update(cx, |state, cx| {
-            state.can_submit = can_submit;
-            state.disabled_reason = disabled_reason;
-            cx.notify();
-        });
     }
 
     fn primary_action_busy(&self, cx: &App) -> bool {
@@ -495,7 +479,7 @@ impl ChatInputController {
         }
     }
 
-    fn can_send(&self, cx: &Context<Self>) -> bool {
+    fn can_send(&self, cx: &App) -> bool {
         if self.submission_problem.is_some() || send_resource_problem(cx).is_some() {
             return false;
         }
@@ -586,52 +570,65 @@ fn send_resource_problem(cx: &App) -> Option<&'static str> {
     None
 }
 
-impl Render for ChatInputController {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let status =
-            (!matches!(self.skill_catalog, skills::SkillCatalogOperation::Ready(_))).then(|| {
-                let running = self.skill_catalog.is_running();
-                let message = self
-                    .skill_catalog
-                    .problem()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| {
-                        cx.global::<foundation::I18n>().t("resource-status-loading")
-                    });
-                let warning = self.skill_catalog.problem().is_some();
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .rounded(cx.theme().radius)
-                    .bg(cx.theme().warning.opacity(0.08))
-                    .child(
-                        Label::new(message)
-                            .text_xs()
-                            .text_color(if warning {
-                                cx.theme().warning
-                            } else {
-                                cx.theme().muted_foreground
-                            })
-                            .flex_1(),
-                    )
-                    .child(
-                        Button::new("chat-form-refresh-skills")
-                            .label(cx.global::<foundation::I18n>().t("resource-status-refresh"))
-                            .xsmall()
-                            .disabled(running)
-                            .on_click(cx.listener(|form, _, _window, cx| {
-                                form.load_skill_catalog(form.skill_catalog_scope.clone(), cx);
-                            })),
-                    )
-            });
-        v_flex()
-            .w_full()
-            .gap_2()
-            .children(status)
-            .child(self.chat_form.clone())
+impl View for ChatInput {
+    fn entity_id(&self) -> Option<EntityId> {
+        Some(self.controller.entity_id())
+    }
+
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let controller = self.controller.read(cx);
+        let can_submit = controller.can_send(cx);
+        let disabled_reason = controller.submission_problem.clone().or_else(|| {
+            send_resource_problem(cx).map(|key| cx.global::<foundation::I18n>().t(key).into())
+        });
+        let chat_form = ChatForm::new(&controller.chat_form, controller.chat_form_controls.clone())
+            .skill_completion_placement(self.skill_completion_placement)
+            .primary_action_projection(can_submit, disabled_reason);
+        let refresh_target = self.controller.downgrade();
+        let status = (!matches!(
+            controller.skill_catalog,
+            skills::SkillCatalogOperation::Ready(_)
+        ))
+        .then(|| {
+            let running = controller.skill_catalog.is_running();
+            let message = controller
+                .skill_catalog
+                .problem()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| cx.global::<foundation::I18n>().t("resource-status-loading"));
+            let warning = controller.skill_catalog.problem().is_some();
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .rounded(cx.theme().radius)
+                .bg(cx.theme().warning.opacity(0.08))
+                .child(
+                    Label::new(message)
+                        .text_xs()
+                        .text_color(if warning {
+                            cx.theme().warning
+                        } else {
+                            cx.theme().muted_foreground
+                        })
+                        .flex_1(),
+                )
+                .child(
+                    Button::new("chat-form-refresh-skills")
+                        .label(cx.global::<foundation::I18n>().t("resource-status-refresh"))
+                        .xsmall()
+                        .disabled(running)
+                        .on_click(move |_, _window, cx| {
+                            let _ = refresh_target.update(cx, |controller, cx| {
+                                controller
+                                    .load_skill_catalog(controller.skill_catalog_scope.clone(), cx);
+                            });
+                        }),
+                )
+        });
+        v_flex().w_full().gap_2().children(status).child(chat_form)
     }
 }
 
@@ -683,7 +680,7 @@ fn initial_reasoning_selection(
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatFormSkillCompletionPlacement, ChatInputController, ChatInputFormStore,
+        ChatFormSkillCompletionPlacement, ChatInput, ChatInputController, ChatInputFormStore,
         ChatInputPrimaryButtonAction,
         composer_editor::{ComposerSendPolicy, ComposerSnapshot},
         selected_model_choice_in,
@@ -701,8 +698,8 @@ mod tests {
     };
     use gpui::{
         Anchor, App, AppContext as _, Bounds, Entity, IntoElement, ParentElement as _, Render,
-        Styled as _, Subscription, Task, TestAppContext, VisualTestContext, WindowHandle, div,
-        point, px, size,
+        Styled as _, Subscription, Task, TestAppContext, View, VisualTestContext, WindowHandle,
+        div, point, px, size,
     };
     use gpui_operation::Transition as _;
     use jaco_core::{
@@ -850,7 +847,7 @@ mod tests {
         configure_chat_form_model(cx, "gpt-5");
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let form = window.root(&mut cx).unwrap();
+        let form = chat_input_controller(window, &mut cx);
 
         assert_eq!(selected_model_id(&form, &cx).as_deref(), Some("gpt-5"));
 
@@ -882,7 +879,7 @@ mod tests {
         configure_chat_form_model(cx, "claude-3-7-sonnet");
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let form = window.root(&mut cx).unwrap();
+        let form = chat_input_controller(window, &mut cx);
 
         cx.update(|window, cx| {
             form.update(cx, |form, cx| {
@@ -918,7 +915,7 @@ mod tests {
         configure_chat_form_model(cx, "gpt-5");
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let form = window.root(&mut cx).unwrap();
+        let form = chat_input_controller(window, &mut cx);
 
         let default_submit = submit_snapshot(&form, test_snapshot("hello"), &mut cx)
             .expect("selected model can be submitted");
@@ -956,7 +953,7 @@ mod tests {
 
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let form = window.root(&mut cx).unwrap();
+        let form = chat_input_controller(window, &mut cx);
 
         assert_eq!(selected_model_id(&form, &cx).as_deref(), Some("gpt-5-mini"));
         let submit = submit_snapshot(&form, test_snapshot("hello"), &mut cx)
@@ -970,7 +967,7 @@ mod tests {
         let config_path = test_config_path(&dir);
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let form = window.root(&mut cx).unwrap();
+        let form = chat_input_controller(window, &mut cx);
         let provider_id = cx.update(|_, cx| provider_id_for_kind(cx, "openai"));
 
         cx.update(|window, cx| {
@@ -1024,7 +1021,7 @@ mod tests {
 
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let form = window.root(&mut cx).unwrap();
+        let form = chat_input_controller(window, &mut cx);
         assert_eq!(
             submit_snapshot(&form, test_snapshot("hello"), &mut cx)
                 .expect("GPT-5.6 max can be submitted")
@@ -1089,7 +1086,7 @@ mod tests {
 
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let form = window.root(&mut cx).unwrap();
+        let form = chat_input_controller(window, &mut cx);
         cx.update(|_window, cx| {
             form.update(cx, |form, cx| {
                 ChatInputFormStore::composer_field(&form.form)
@@ -1109,7 +1106,7 @@ mod tests {
         let config_path = test_config_path(&dir);
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let form = window.root(&mut cx).unwrap();
+        let form = chat_input_controller(window, &mut cx);
 
         cx.update(|window, cx| {
             form.update(cx, |form, cx| {
@@ -1144,7 +1141,7 @@ mod tests {
         configure_chat_form_model(cx, "gpt-5");
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let form = window.root(&mut cx).unwrap();
+        let form = chat_input_controller(window, &mut cx);
         let status = Rc::new(Cell::new(AgentRunControlStatus::Running));
 
         cx.update(|_, cx| {
@@ -1175,7 +1172,7 @@ mod tests {
         configure_chat_form_model(cx, "gpt-5");
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let form = window.root(&mut cx).unwrap();
+        let form = chat_input_controller(window, &mut cx);
 
         cx.update(|_, cx| {
             form.update(cx, |form, cx| {
@@ -1201,7 +1198,7 @@ mod tests {
         configure_chat_form_model(cx, "gpt-5");
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let form = window.root(&mut cx).unwrap();
+        let form = chat_input_controller(window, &mut cx);
 
         cx.update(|_, cx| {
             form.update(cx, |form, cx| {
@@ -1313,13 +1310,38 @@ mod tests {
         }
     }
 
-    fn open_chat_form_window(cx: &mut TestAppContext) -> WindowHandle<ChatInputController> {
+    struct ChatInputTestHost {
+        form: Entity<ChatInputController>,
+    }
+
+    impl Render for ChatInputTestHost {
+        fn render(
+            &mut self,
+            _window: &mut gpui::Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            ChatInput::new(&self.form, ChatFormSkillCompletionPlacement::BelowForm)
+        }
+    }
+
+    fn open_chat_form_window(cx: &mut TestAppContext) -> WindowHandle<ChatInputTestHost> {
         cx.update(|cx| {
             cx.open_window(Default::default(), |window, cx| {
-                cx.new(|cx| ChatInputController::new(window, cx))
+                let form = cx.new(|cx| ChatInputController::new(window, cx));
+                cx.new(|_| ChatInputTestHost { form })
             })
         })
         .unwrap()
+    }
+
+    fn chat_input_controller(
+        window: WindowHandle<ChatInputTestHost>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<ChatInputController> {
+        window
+            .root(cx)
+            .expect("chat input test host")
+            .read_with(cx, |host, _| host.form.clone())
     }
 
     struct ChatInputLayoutTestHost {
@@ -1337,7 +1359,10 @@ mod tests {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(div().w(px(600.)).h(px(180.)).child(self.form.clone()))
+                .child(div().w(px(600.)).h(px(180.)).child(ChatInput::new(
+                    &self.form,
+                    ChatFormSkillCompletionPlacement::BelowForm,
+                )))
         }
     }
 
@@ -1354,17 +1379,32 @@ mod tests {
     }
 
     #[gpui::test]
+    fn view_uses_controller_identity_across_rebuilds(cx: &mut TestAppContext) {
+        let _dir = init_chat_form_test(cx);
+        let window = open_chat_form_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let controller = chat_input_controller(window, &mut cx);
+
+        let below = ChatInput::new(&controller, ChatFormSkillCompletionPlacement::BelowForm);
+        let above = ChatInput::new(&controller, ChatFormSkillCompletionPlacement::AboveForm);
+
+        assert_eq!(below.entity_id(), Some(controller.entity_id()));
+        assert_eq!(above.entity_id(), Some(controller.entity_id()));
+    }
+
+    #[gpui::test]
     fn constructor_can_leave_composer_unfocused_for_embedded_inputs(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         let window = cx
             .update(|cx| {
                 cx.open_window(Default::default(), |window, cx| {
-                    cx.new(|cx| ChatInputController::new_without_focus(window, cx))
+                    let form = cx.new(|cx| ChatInputController::new_without_focus(window, cx));
+                    cx.new(|_| ChatInputTestHost { form })
                 })
             })
             .unwrap();
         let mut visual_cx = VisualTestContext::from_window(window.into(), cx);
-        let form = window.root(&mut visual_cx).expect("chat input root");
+        let form = chat_input_controller(window, &mut visual_cx);
 
         let composer_focused = visual_cx.update(|window, cx| {
             form.read(cx)

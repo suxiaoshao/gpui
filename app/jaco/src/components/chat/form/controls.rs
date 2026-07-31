@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use gpui::{App, Entity, SharedString, Task};
+use gpui::{App, Entity, Task};
 
 use super::project_control::ProjectControlState;
 
@@ -67,8 +67,6 @@ pub(crate) trait AgentRunStatusSource {
 pub(crate) struct PrimaryActionControlState {
     submission_task: Option<Task<()>>,
     agent_run_status: Option<Rc<dyn AgentRunStatusSource>>,
-    pub(crate) can_submit: bool,
-    pub(crate) disabled_reason: Option<SharedString>,
 }
 
 impl PrimaryActionControlState {

@@ -15,7 +15,9 @@ use crate::{
     components::{
         chat::input::{approval_select, effort_select},
         chat::model_picker::{ModelOption, model_sections},
-        picker::{PickerContentPopoverConfig, PickerListDelegate},
+        picker::{
+            PickerContentPopoverConfig, PickerListDelegate, PickerPopover, PickerPopoverConfig,
+        },
         resource_status::refresh_status,
     },
     features::settings,
@@ -1074,105 +1076,120 @@ fn token_budget_policy(capability: Option<&ModelCapabilitiesSnapshot>) -> Intege
     policy
 }
 
-pub(crate) fn render_model_selector(
+#[derive(IntoElement)]
+pub(crate) struct ModelSelector {
     state: Entity<ModelControlState>,
     enabled: bool,
-    cx: &mut App,
-) -> AnyElement {
-    let state_snapshot = state.read(cx);
-    let selected = state_snapshot.selected.clone();
-    let (phase, choices, problem) = state::providers::catalog(cx).read(cx, |operation| {
-        (
-            operation.phase(),
-            operation.data().map(|data| data.enabled_models.clone()),
-            operation.problem().map(ToString::to_string),
-        )
-    });
-    let i18n = cx.global::<I18n>();
-    let label: SharedString = match choices.as_ref() {
-        Some(choices) => selected
-            .as_ref()
-            .and_then(|key| selected_model_choice_from_slice(choices, Some(key)))
-            .map(|choice| choice.display_label().into())
-            .unwrap_or_else(|| i18n.t("chat-form-model-empty").into()),
-        None if problem.is_some() => i18n.t("chat-form-model-load-failed").into(),
-        None => i18n.t("resource-status-loading").into(),
-    };
-    let resource_ready = model_catalog_is_ready(cx);
-    let open = enabled && state_snapshot.open;
-    let list = state_snapshot.picker.clone();
-    let on_open_change = state_snapshot.on_open_change.clone();
-    let trigger = crate::components::picker::picker_trigger(
-        "chat-form-model-trigger",
-        crate::foundation::assets::IconName::Sparkles,
-        label,
-        open,
-    )
-    .disabled(!enabled)
-    .when(!resource_ready, |trigger| {
-        trigger.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
-    });
-    let list_content = || {
-        List::new(&list)
-            .search_placeholder(i18n.t("chat-form-model-search-placeholder"))
-            .with_size(Size::Small)
-            .scrollbar_visible(false)
-            .max_h(rems(18.))
-            .paddings(Edges::all(px(4.)))
-            .into_any_element()
-    };
-    let content = match (phase, choices.as_ref()) {
-        (gpui_operation::refresh::Phase::Ready, Some(choices)) if choices.is_empty() => {
-            render_empty_model_catalog(cx)
-        }
-        (gpui_operation::refresh::Phase::Ready, Some(_)) => list_content(),
-        (
-            gpui_operation::refresh::Phase::Refreshing
-            | gpui_operation::refresh::Phase::Degraded
-            | gpui_operation::refresh::Phase::RefreshingDegraded,
-            Some(_),
-        ) => v_flex()
-            .child(list_content())
-            .when_some(
-                refresh_status(
-                    "chat-form-refresh-providers",
-                    phase,
-                    problem,
-                    state::providers::request_refresh,
-                    cx,
-                ),
-                |this, status| this.child(div().p_2().child(status)),
+}
+
+impl ModelSelector {
+    pub(crate) fn new(state: Entity<ModelControlState>, enabled: bool) -> Self {
+        Self { state, enabled }
+    }
+}
+
+impl View for ModelSelector {
+    fn entity_id(&self) -> Option<EntityId> {
+        Some(self.state.entity_id())
+    }
+
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let state = self.state;
+        let enabled = self.enabled;
+        let state_snapshot = state.read(cx);
+        let selected = state_snapshot.selected.clone();
+        let (phase, choices, problem) = state::providers::catalog(cx).read(cx, |operation| {
+            (
+                operation.phase(),
+                operation.data().map(|data| data.enabled_models.clone()),
+                operation.problem().map(ToString::to_string),
             )
-            .into_any_element(),
-        _ => div()
-            .p_2()
-            .child(
-                refresh_status(
-                    "chat-form-refresh-providers",
-                    phase,
-                    problem,
-                    state::providers::request_refresh,
-                    cx,
-                )
-                .unwrap_or_else(|| render_empty_model_catalog(cx)),
-            )
-            .into_any_element(),
-    };
-    crate::components::picker::picker_content_popover(
-        cx,
-        PickerContentPopoverConfig {
-            id: "chat-form-model-popover",
+        });
+        let i18n = cx.global::<I18n>();
+        let label: SharedString = match choices.as_ref() {
+            Some(choices) => selected
+                .as_ref()
+                .and_then(|key| selected_model_choice_from_slice(choices, Some(key)))
+                .map(|choice| choice.display_label().into())
+                .unwrap_or_else(|| i18n.t("chat-form-model-empty").into()),
+            None if problem.is_some() => i18n.t("chat-form-model-load-failed").into(),
+            None => i18n.t("resource-status-loading").into(),
+        };
+        let resource_ready = model_catalog_is_ready(cx);
+        let open = enabled && state_snapshot.open;
+        let list = state_snapshot.picker.clone();
+        let on_open_change = state_snapshot.on_open_change.clone();
+        let trigger = crate::components::picker::picker_trigger(
+            "chat-form-model-trigger",
+            crate::foundation::assets::IconName::Sparkles,
+            label,
             open,
-            trigger,
-            content,
-            width: px(340.),
-            footer: None,
-            on_open_change: move |open, window, cx| {
-                on_open_change(*open, window, cx);
+        )
+        .disabled(!enabled)
+        .when(!resource_ready, |trigger| {
+            trigger.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
+        });
+        let list_content = || {
+            List::new(&list)
+                .search_placeholder(i18n.t("chat-form-model-search-placeholder"))
+                .with_size(Size::Small)
+                .scrollbar_visible(false)
+                .max_h(rems(18.))
+                .paddings(Edges::all(px(4.)))
+                .into_any_element()
+        };
+        let content = match (phase, choices.as_ref()) {
+            (gpui_operation::refresh::Phase::Ready, Some(choices)) if choices.is_empty() => {
+                render_empty_model_catalog(cx)
+            }
+            (gpui_operation::refresh::Phase::Ready, Some(_)) => list_content(),
+            (
+                gpui_operation::refresh::Phase::Refreshing
+                | gpui_operation::refresh::Phase::Degraded
+                | gpui_operation::refresh::Phase::RefreshingDegraded,
+                Some(_),
+            ) => v_flex()
+                .child(list_content())
+                .when_some(
+                    refresh_status(
+                        "chat-form-refresh-providers",
+                        phase,
+                        problem,
+                        state::providers::request_refresh,
+                        cx,
+                    ),
+                    |this, status| this.child(div().p_2().child(status)),
+                )
+                .into_any_element(),
+            _ => div()
+                .p_2()
+                .child(
+                    refresh_status(
+                        "chat-form-refresh-providers",
+                        phase,
+                        problem,
+                        state::providers::request_refresh,
+                        cx,
+                    )
+                    .unwrap_or_else(|| render_empty_model_catalog(cx)),
+                )
+                .into_any_element(),
+        };
+        crate::components::picker::picker_content_popover(
+            cx,
+            PickerContentPopoverConfig {
+                id: "chat-form-model-popover",
+                open,
+                trigger,
+                content,
+                width: px(340.),
+                footer: None,
+                on_open_change: move |open, window, cx| {
+                    on_open_change(*open, window, cx);
+                },
             },
-        },
-    )
-    .into_any_element()
+        )
+    }
 }
 
 fn render_empty_model_catalog(cx: &App) -> AnyElement {
@@ -1197,43 +1214,56 @@ fn render_empty_model_catalog(cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-pub(crate) fn render_reasoning_selector(
+#[derive(IntoElement)]
+pub(crate) struct ReasoningSelector {
     state: Entity<ReasoningControlState>,
     enabled: bool,
-    cx: &mut App,
-) -> AnyElement {
-    let resource_ready = config_is_ready(cx);
-    let (label, has_options, open, picker, capability, token_budget_input, on_open_change) = {
-        let snapshot = state.read(cx);
-        let selected = snapshot.selected.clone();
-        let label = selected
-            .as_ref()
-            .map(|selection| reasoning_selection_label(selection, cx.global::<I18n>()))
-            .unwrap_or_else(|| cx.global::<I18n>().t("chat-form-effort-select"));
-        let has_options = snapshot
-            .capability
-            .as_ref()
-            .and_then(|capability| capability.reasoning.as_ref())
-            .is_some_and(|reasoning| !reasoning_selections(Some(reasoning)).is_empty());
-        (
-            label,
-            has_options,
-            enabled && resource_ready && snapshot.open,
-            snapshot.picker.clone(),
-            snapshot.capability.clone(),
-            snapshot.token_budget_input.clone(),
-            snapshot.on_open_change.clone(),
-        )
-    };
-    let footer = token_budget_footer(
-        capability.as_ref(),
-        token_budget_input,
-        enabled && resource_ready,
-        cx,
-    );
-    crate::components::picker::picker_popover(
-        cx,
-        crate::components::picker::PickerPopoverConfig {
+}
+
+impl ReasoningSelector {
+    pub(crate) fn new(state: Entity<ReasoningControlState>, enabled: bool) -> Self {
+        Self { state, enabled }
+    }
+}
+
+impl View for ReasoningSelector {
+    fn entity_id(&self) -> Option<EntityId> {
+        Some(self.state.entity_id())
+    }
+
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let state = self.state;
+        let enabled = self.enabled;
+        let resource_ready = config_is_ready(cx);
+        let (label, has_options, open, picker, capability, token_budget_input, on_open_change) = {
+            let snapshot = state.read(cx);
+            let selected = snapshot.selected.clone();
+            let label = selected
+                .as_ref()
+                .map(|selection| reasoning_selection_label(selection, cx.global::<I18n>()))
+                .unwrap_or_else(|| cx.global::<I18n>().t("chat-form-effort-select"));
+            let has_options = snapshot
+                .capability
+                .as_ref()
+                .and_then(|capability| capability.reasoning.as_ref())
+                .is_some_and(|reasoning| !reasoning_selections(Some(reasoning)).is_empty());
+            (
+                label,
+                has_options,
+                enabled && resource_ready && snapshot.open,
+                snapshot.picker.clone(),
+                snapshot.capability.clone(),
+                snapshot.token_budget_input.clone(),
+                snapshot.on_open_change.clone(),
+            )
+        };
+        let footer = token_budget_footer(
+            capability.as_ref(),
+            token_budget_input,
+            enabled && resource_ready,
+            cx,
+        );
+        PickerPopover::new(PickerPopoverConfig {
             id: "chat-form-effort-popover",
             open,
             trigger: crate::components::picker::picker_trigger(
@@ -1254,9 +1284,8 @@ pub(crate) fn render_reasoning_selector(
             on_open_change: move |open, window, cx| {
                 on_open_change(*open, window, cx);
             },
-        },
-    )
-    .into_any_element()
+        })
+    }
 }
 
 fn token_budget_footer(
@@ -1292,18 +1321,31 @@ fn token_budget_footer(
     )
 }
 
-pub(crate) fn render_approval_selector(
+#[derive(IntoElement)]
+pub(crate) struct ApprovalSelector {
     state: Entity<ApprovalControlState>,
     enabled: bool,
-    cx: &mut App,
-) -> AnyElement {
-    let resource_ready = config_is_ready(cx);
-    let snapshot = state.read(cx);
-    let selected = snapshot.selected;
-    let on_open_change = snapshot.on_open_change.clone();
-    crate::components::picker::picker_popover(
-        cx,
-        crate::components::picker::PickerPopoverConfig {
+}
+
+impl ApprovalSelector {
+    pub(crate) fn new(state: Entity<ApprovalControlState>, enabled: bool) -> Self {
+        Self { state, enabled }
+    }
+}
+
+impl View for ApprovalSelector {
+    fn entity_id(&self) -> Option<EntityId> {
+        Some(self.state.entity_id())
+    }
+
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let state = self.state;
+        let enabled = self.enabled;
+        let resource_ready = config_is_ready(cx);
+        let snapshot = state.read(cx);
+        let selected = snapshot.selected;
+        let on_open_change = snapshot.on_open_change.clone();
+        PickerPopover::new(PickerPopoverConfig {
             id: "chat-form-approval-popover",
             open: enabled && resource_ready && snapshot.open,
             trigger: crate::components::picker::picker_trigger(
@@ -1324,16 +1366,127 @@ pub(crate) fn render_approval_selector(
             on_open_change: move |open, window, cx| {
                 on_open_change(*open, window, cx);
             },
-        },
-    )
-    .into_any_element()
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{RunSettingsInput, RunSettingsSubmitError, resolve_run_settings};
+    use std::rc::Rc;
+
+    use super::{
+        ApprovalControlState, ApprovalSelector, ModelControlState, ModelSelector,
+        ReasoningControlState, ReasoningSelector, RunSettingsInput, RunSettingsSubmitError,
+        resolve_run_settings,
+    };
+    use crate::components::{
+        chat::{
+            input::{approval_select::ApprovalModeOption, effort_select::EffortOption},
+            model_picker::ModelOption,
+        },
+        picker::PickerListDelegate,
+    };
     use crate::state::providers::{ProviderModelChoice, ProviderModelKey};
+    use gpui::{
+        AppContext as _, Context, Entity, IntoElement, Render, TestAppContext, View as _, Window,
+        div,
+    };
+    use gpui_component::list::ListState;
     use jaco_core::conservative_model_capabilities;
+
+    struct TestRoot;
+
+    impl Render for TestRoot {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    #[gpui::test]
+    fn selector_views_use_backing_identity_across_rebuilds(cx: &mut TestAppContext) {
+        let (_, _) = cx.add_window_view(|window, cx| {
+            let model_picker: Entity<ListState<PickerListDelegate<ModelOption>>> = cx.new(|cx| {
+                ListState::new(
+                    PickerListDelegate::new(
+                        Vec::new(),
+                        None,
+                        |_| "Empty".into(),
+                        Rc::new(|_, _, _| {}),
+                        Rc::new(|_, _| {}),
+                    ),
+                    window,
+                    cx,
+                )
+            });
+            let reasoning_picker: Entity<ListState<PickerListDelegate<EffortOption>>> =
+                cx.new(|cx| {
+                    ListState::new(
+                        PickerListDelegate::new(
+                            Vec::new(),
+                            None,
+                            |_| "Empty".into(),
+                            Rc::new(|_, _, _| {}),
+                            Rc::new(|_, _| {}),
+                        ),
+                        window,
+                        cx,
+                    )
+                });
+            let approval_picker: Entity<ListState<PickerListDelegate<ApprovalModeOption>>> = cx
+                .new(|cx| {
+                    ListState::new(
+                        PickerListDelegate::new(
+                            Vec::new(),
+                            None,
+                            |_| "Empty".into(),
+                            Rc::new(|_, _, _| {}),
+                            Rc::new(|_, _| {}),
+                        ),
+                        window,
+                        cx,
+                    )
+                });
+
+            let model_state = cx.new(|_| ModelControlState {
+                selected: None,
+                picker: model_picker,
+                open: false,
+                on_open_change: Rc::new(|_, _, _| {}),
+            });
+            let reasoning_state = cx.new(|_| ReasoningControlState {
+                capability: None,
+                selected: None,
+                picker: reasoning_picker,
+                token_budget_input: None,
+                open: false,
+                on_open_change: Rc::new(|_, _, _| {}),
+            });
+            let approval_state = cx.new(|_| ApprovalControlState {
+                selected: jaco_core::ToolApprovalMode::RequestApproval,
+                picker: approval_picker,
+                open: false,
+                on_open_change: Rc::new(|_, _, _| {}),
+            });
+
+            let model = ModelSelector::new(model_state.clone(), true);
+            let refreshed_model = ModelSelector::new(model_state.clone(), false);
+            let reasoning = ReasoningSelector::new(reasoning_state.clone(), true);
+            let refreshed_reasoning = ReasoningSelector::new(reasoning_state.clone(), false);
+            let approval = ApprovalSelector::new(approval_state.clone(), true);
+            let refreshed_approval = ApprovalSelector::new(approval_state.clone(), false);
+
+            assert_eq!(model.entity_id(), Some(model_state.entity_id()));
+            assert_eq!(refreshed_model.entity_id(), model.entity_id());
+
+            assert_eq!(reasoning.entity_id(), Some(reasoning_state.entity_id()));
+            assert_eq!(refreshed_reasoning.entity_id(), reasoning.entity_id());
+
+            assert_eq!(approval.entity_id(), Some(approval_state.entity_id()));
+            assert_eq!(refreshed_approval.entity_id(), approval.entity_id());
+
+            TestRoot
+        });
+    }
 
     #[test]
     fn submit_resolver_rejects_an_unavailable_model_without_mutating_the_form() {

@@ -52,3 +52,6 @@ r2d2 = "0.8.10"
 # log
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

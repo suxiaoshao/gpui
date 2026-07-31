@@ -17,6 +17,7 @@ use jaco_core::SkillSourceKind;
 use std::{
     path::{Path, PathBuf},
     rc::Rc,
+    sync::Arc,
 };
 
 type ToggleSkillContentHandler = Rc<dyn Fn(PathBuf, &mut Window, &mut App) + 'static>;
@@ -79,6 +80,106 @@ impl SkillCatalogEntryView {
     }
 }
 
+#[derive(IntoElement)]
+struct LoadedSkillContentView {
+    scroll_state: Entity<ScrollHandle>,
+    content: SharedString,
+    content_sha256: SharedString,
+    on_chain_content_scroll: ChainSkillContentScrollHandler,
+}
+
+impl LoadedSkillContentView {
+    fn new(
+        skill_path: &Path,
+        content: SharedString,
+        content_sha256: SharedString,
+        on_chain_content_scroll: ChainSkillContentScrollHandler,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
+        let scroll_state = window.use_keyed_state(
+            skill_content_element_id(skill_path, "skill-content-scroll"),
+            cx,
+            |_, _| ScrollHandle::default(),
+        );
+        Self {
+            scroll_state,
+            content,
+            content_sha256,
+            on_chain_content_scroll,
+        }
+    }
+}
+
+impl View for LoadedSkillContentView {
+    fn entity_id(&self) -> Option<EntityId> {
+        Some(self.scroll_state.entity_id())
+    }
+
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let hash_label = format!("sha256: {}", short_hash(&self.content_sha256));
+        let scroll_handle = self.scroll_state.read(cx).clone();
+        let content_scroll_handle = scroll_handle.clone();
+        let chain_scroll = self.on_chain_content_scroll;
+
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(
+                Label::new(hash_label)
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .max_h(px(420.))
+                    .relative()
+                    .occlude()
+                    .overflow_hidden()
+                    .rounded(cx.theme().radius)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().tokens.background.background)
+                    .child(
+                        div()
+                            .id("skill-content-scroll-area")
+                            .max_h(px(420.))
+                            .track_scroll(&scroll_handle)
+                            .on_scroll_wheel(move |event, window, cx| {
+                                let delta = event.delta.pixel_delta(window.line_height());
+                                let current_offset = content_scroll_handle.offset();
+                                let max_offset = content_scroll_handle.max_offset();
+                                let requested_y = current_offset.y + delta.y;
+                                let next_offset = point(
+                                    current_offset.x,
+                                    requested_y.clamp(-max_offset.y, px(0.)),
+                                );
+                                let residual_y = requested_y - next_offset.y;
+
+                                if next_offset != current_offset {
+                                    content_scroll_handle.set_offset(next_offset);
+                                    window.refresh();
+                                }
+                                if residual_y != px(0.) {
+                                    chain_scroll(-residual_y, window, cx);
+                                }
+                                cx.stop_propagation();
+                            })
+                            .p_3()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .line_height(relative(1.45))
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .child(self.content),
+                            ),
+                    )
+                    .vertical_scrollbar(&scroll_handle),
+            )
+    }
+}
+
 impl RenderOnce for SkillCatalogEntryView {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let Self {
@@ -99,7 +200,8 @@ impl RenderOnce for SkillCatalogEntryView {
             IconName::ChevronDown
         };
         let row_key = row.key.clone();
-        let stable_id = skill_row_id(&row.key);
+        let content_key = row.key.clone();
+        let toggle_id = skill_content_element_id(&row.key, "skill-content-toggle");
         let description = row
             .description
             .unwrap_or_else(|| cx.global::<I18n>().t("skill-description-empty").into());
@@ -144,7 +246,7 @@ impl RenderOnce for SkillCatalogEntryView {
                 )
                 .child(
                     h_flex().w_full().justify_start().child(
-                        Button::new(format!("skill-content-toggle-{stable_id}"))
+                        Button::new(toggle_id)
                             .icon(toggle_icon)
                             .label(toggle_label)
                             .small()
@@ -159,7 +261,7 @@ impl RenderOnce for SkillCatalogEntryView {
         if let Some(content) = content {
             body = body.content(render_content_state(
                 content,
-                &stable_id,
+                &content_key,
                 on_chain_content_scroll,
                 window,
                 cx,
@@ -217,7 +319,7 @@ pub(super) fn skill_catalog_list_items(rows: &[SkillCatalogRow]) -> Vec<PathBuf>
 
 fn render_content_state(
     content: SkillContentPanelState,
-    stable_id: &str,
+    skill_path: &Path,
     on_chain_content_scroll: ChainSkillContentScrollHandler,
     window: &mut Window,
     cx: &mut App,
@@ -234,73 +336,15 @@ fn render_content_state(
         SkillContentPanelState::Loaded {
             content,
             content_sha256,
-        } => {
-            let hash_label = format!("sha256: {}", short_hash(&content_sha256));
-            let scroll_handle = window
-                .use_keyed_state(format!("skill-content-scroll-{stable_id}"), cx, |_, _| {
-                    ScrollHandle::default()
-                })
-                .read(cx)
-                .clone();
-            let content_scroll_handle = scroll_handle.clone();
-            let chain_scroll = on_chain_content_scroll.clone();
-            v_flex()
-                .w_full()
-                .gap_2()
-                .child(
-                    Label::new(hash_label)
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .max_h(px(420.))
-                        .relative()
-                        .occlude()
-                        .overflow_hidden()
-                        .rounded(cx.theme().radius)
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.background.background)
-                        .child(
-                            div()
-                                .id(format!("skill-content-scroll-area-{stable_id}"))
-                                .max_h(px(420.))
-                                .track_scroll(&scroll_handle)
-                                .on_scroll_wheel(move |event, window, cx| {
-                                    let delta = event.delta.pixel_delta(window.line_height());
-                                    let current_offset = content_scroll_handle.offset();
-                                    let max_offset = content_scroll_handle.max_offset();
-                                    let requested_y = current_offset.y + delta.y;
-                                    let next_offset = point(
-                                        current_offset.x,
-                                        requested_y.clamp(-max_offset.y, px(0.)),
-                                    );
-                                    let residual_y = requested_y - next_offset.y;
-
-                                    if next_offset != current_offset {
-                                        content_scroll_handle.set_offset(next_offset);
-                                        window.refresh();
-                                    }
-                                    if residual_y != px(0.) {
-                                        chain_scroll(-residual_y, window, cx);
-                                    }
-                                    cx.stop_propagation();
-                                })
-                                .p_3()
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .line_height(relative(1.45))
-                                        .font_family(cx.theme().mono_font_family.clone())
-                                        .child(content),
-                                ),
-                        )
-                        .vertical_scrollbar(&scroll_handle),
-                )
-                .into_any_element()
-        }
+        } => LoadedSkillContentView::new(
+            skill_path,
+            content,
+            content_sha256,
+            on_chain_content_scroll,
+            window,
+            cx,
+        )
+        .into_any_element(),
     }
 }
 
@@ -331,11 +375,11 @@ fn skill_source_label(source_kind: SkillSourceKind, i18n: &I18n) -> SharedString
     .into()
 }
 
-fn skill_row_id(path: &Path) -> String {
-    path.to_string_lossy()
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-        .collect()
+fn skill_content_element_id(path: &Path, child: &'static str) -> ElementId {
+    ElementId::NamedChild(
+        Arc::new(ElementId::Path(Arc::<Path>::from(path))),
+        child.into(),
+    )
 }
 
 fn short_hash(hash: &str) -> String {
@@ -346,10 +390,11 @@ fn short_hash(hash: &str) -> String {
 mod tests {
     use super::{
         filter_skill_catalog_rows, short_hash, skill_catalog_list_items, skill_catalog_rows,
+        skill_content_element_id,
     };
     use crate::{features::skills::GlobalSkillEntry, foundation::I18n};
     use jaco_core::SkillSourceKind;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn rows_filter_by_metadata() {
@@ -365,6 +410,17 @@ mod tests {
         assert_eq!(filter_skill_catalog_rows(&rows, "automation").len(), 1);
         assert_eq!(filter_skill_catalog_rows(&rows, "skill.md").len(), 1);
         assert!(filter_skill_catalog_rows(&rows, "missing").is_empty());
+    }
+
+    #[test]
+    fn content_state_keys_preserve_full_path_identity() {
+        let hyphenated = Path::new("/tmp/a-b/SKILL.md");
+        let nested = Path::new("/tmp/a/b/SKILL.md");
+
+        assert_ne!(
+            skill_content_element_id(hyphenated, "skill-content-scroll"),
+            skill_content_element_id(nested, "skill-content-scroll"),
+        );
     }
 
     #[test]

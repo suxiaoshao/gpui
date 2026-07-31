@@ -1,4 +1,5 @@
 use super::{
+    components::NumericRangeInput,
     options::GroupRelation,
     sort::DragSortRow,
     state::{
@@ -535,7 +536,9 @@ fn render_number_value(value: &NumberValue, disabled: bool) -> AnyElement {
             .disabled(disabled)
             .w_full()
             .into_any_element(),
-        NumberValue::Range(range) => range.clone().into_any_element(),
+        NumberValue::Range(range) => NumericRangeInput::new(range, "最小值", "最大值")
+            .disabled(disabled)
+            .into_any_element(),
     }
 }
 

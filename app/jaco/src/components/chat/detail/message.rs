@@ -33,6 +33,39 @@ struct CopyButtonState {
     copied_at: Option<Instant>,
 }
 
+#[derive(IntoElement)]
+struct CopyButton {
+    state: Entity<CopyButtonState>,
+    id: String,
+    copy_text: String,
+    on_copy: OnCopy,
+    copy_tooltip: String,
+    copied_tooltip: String,
+}
+
+impl CopyButton {
+    fn new(
+        id: String,
+        copy_text: String,
+        on_copy: OnCopy,
+        copy_tooltip: String,
+        copied_tooltip: String,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
+        let state_key = format!("{id}-copied-state");
+        let state = window.use_keyed_state(state_key, cx, CopyButtonState::new);
+        Self {
+            state,
+            id,
+            copy_text,
+            on_copy,
+            copy_tooltip,
+            copied_tooltip,
+        }
+    }
+}
+
 impl CopyButtonState {
     fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
         Self { copied_at: None }
@@ -45,6 +78,55 @@ impl CopyButtonState {
 
     fn mark_copied(&mut self) {
         self.copied_at = Some(Instant::now());
+    }
+}
+
+impl View for CopyButton {
+    fn entity_id(&self) -> Option<EntityId> {
+        Some(self.state.entity_id())
+    }
+
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let is_copied = self.state.read(cx).is_copied();
+        let icon = if is_copied {
+            Icon::new(IconName::Check).text_color(cx.theme().success)
+        } else {
+            Icon::new(IconName::Copy)
+        };
+        let tooltip = if is_copied {
+            self.copied_tooltip
+        } else {
+            self.copy_tooltip
+        };
+        let state = self.state;
+        let copy_text = self.copy_text;
+        let on_copy = self.on_copy;
+
+        Button::new(self.id)
+            .ghost()
+            .xsmall()
+            .icon(icon)
+            .tooltip(tooltip)
+            .disabled(is_copied)
+            .on_click(move |_, window, cx| {
+                if !on_copy(copy_text.clone(), window, cx) {
+                    return;
+                }
+
+                state.update(cx, |state, cx| {
+                    state.mark_copied();
+                    cx.notify();
+                });
+
+                let state_id = state.entity_id();
+                let timer = cx.spawn(async move |cx| {
+                    cx.background_executor().timer(COPIED_STATE_DURATION).await;
+                    cx.update(|cx| {
+                        cx.notify(state_id);
+                    })
+                });
+                crate::app::tasks::retain_window(window, timer, cx);
+            })
     }
 }
 
@@ -116,7 +198,7 @@ impl RenderOnce for UserMessageRow {
             "conversation-user-sent-time",
             format::timestamp_label(self.item.created_at, i18n),
         );
-        let copy_button = copy_button(
+        let copy_button = CopyButton::new(
             format!("conversation-copy-user-{}", self.item.id),
             copy_text,
             on_copy,
@@ -380,7 +462,7 @@ impl AgentTurnRow {
                 }
                 _ => false,
             };
-            blocks.push(super::tool_blocks::detail_block(
+            blocks.push(super::tool_blocks::DetailBlock::new(
                 item,
                 text_state,
                 approval_decidable,
@@ -435,7 +517,7 @@ struct AgentActionRow {
 
 fn agent_action_row(row: AgentActionRow, window: &mut Window, cx: &mut App) -> AnyElement {
     let action_group = format!("conversation-agent-actions-{}", row.id_suffix);
-    let copy_button = copy_button(
+    let copy_button = CopyButton::new(
         format!("conversation-copy-agent-{}", row.id_suffix),
         row.copy_text,
         row.on_copy,
@@ -464,58 +546,6 @@ fn agent_action_row(row: AgentActionRow, window: &mut Window, cx: &mut App) -> A
                         .text_color(cx.theme().muted_foreground),
                 ),
         )
-        .into_any_element()
-}
-
-fn copy_button(
-    id: String,
-    copy_text: String,
-    on_copy: OnCopy,
-    copy_tooltip: String,
-    copied_tooltip: String,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let state_key = format!("{id}-copied-state");
-    let state: Entity<CopyButtonState> =
-        window.use_keyed_state(state_key, cx, CopyButtonState::new);
-    let is_copied = state.read(cx).is_copied();
-    let icon = if is_copied {
-        Icon::new(IconName::Check).text_color(cx.theme().success)
-    } else {
-        Icon::new(IconName::Copy)
-    };
-    let tooltip = if is_copied {
-        copied_tooltip
-    } else {
-        copy_tooltip
-    };
-
-    Button::new(id)
-        .ghost()
-        .xsmall()
-        .icon(icon)
-        .tooltip(tooltip)
-        .disabled(is_copied)
-        .on_click(move |_, window, cx| {
-            if !on_copy(copy_text.clone(), window, cx) {
-                return;
-            }
-
-            state.update(cx, |state, cx| {
-                state.mark_copied();
-                cx.notify();
-            });
-
-            let state_id = state.entity_id();
-            let timer = cx.spawn(async move |cx| {
-                cx.background_executor().timer(COPIED_STATE_DURATION).await;
-                cx.update(|cx| {
-                    cx.notify(state_id);
-                })
-            });
-            crate::app::tasks::retain_window(window, timer, cx);
-        })
         .into_any_element()
 }
 

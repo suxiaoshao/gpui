@@ -105,7 +105,6 @@ impl ChatInputController {
                 cx,
             );
         }
-        self.sync_chat_form_projection(cx);
         cx.notify();
     }
 
@@ -119,7 +118,6 @@ impl ChatInputController {
         let mut attachments = field.value(cx).unwrap_or_default();
         attachments.retain(|attachment| attachment.local_id != local_id);
         let _ = field.set_user_value(attachments, cx);
-        self.sync_chat_form_projection(cx);
         cx.notify();
     }
 

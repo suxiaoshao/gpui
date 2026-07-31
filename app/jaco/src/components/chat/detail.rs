@@ -27,7 +27,8 @@ use jaco_core::{
 use crate::{
     components::chat::form::{AgentRunControlStatus, AgentRunStatusSource},
     components::chat::input::{
-        ChatFormSkillCompletionPlacement, ChatInputController, ChatInputEvent, ChatInputSubmit,
+        ChatFormSkillCompletionPlacement, ChatInput, ChatInputController, ChatInputEvent,
+        ChatInputSubmit,
     },
     components::chat::runtime_status::ConversationRuntimeStatus,
     features::conversation,
@@ -129,8 +130,6 @@ impl ConversationDetailPage {
             } else {
                 ChatInputController::new_without_focus(window, cx)
             };
-            chat_form
-                .set_skill_completion_placement(ChatFormSkillCompletionPlacement::AboveForm, cx);
             chat_form.set_agent_run_status(run_status, cx);
             chat_form
         });
@@ -904,7 +903,10 @@ impl Render for ConversationDetailPage {
                             .w_full()
                             .max_w(px(860.))
                             .mx_auto()
-                            .child(self.chat_form.clone()),
+                            .child(ChatInput::new(
+                                &self.chat_form,
+                                ChatFormSkillCompletionPlacement::AboveForm,
+                            )),
                     ),
             )
             .into_any_element()
