@@ -12,6 +12,59 @@ help: the trait `GardePathMapper` is not implemented for `Child`
 help: the trait `GardePathMapper` is implemented for `Root`
   --> tests/ui/fail/recursive_garde_mapper_bounds.rs:32:28
    |
-32 | #[derive(Clone, PartialEq, gpui_form::FormStore, garde::Validate)]
+32 | #[derive(Clone, PartialEq, gpui_form::FormModel, garde::Validate)]
    |                            ^^^^^^^^^^^^^^^^^^^^
-   = note: this error originates in the derive macro `gpui_form::FormStore` (in Nightly builds, run with -Z macro-backtrace for more info)
+   = note: this error originates in the derive macro `gpui_form::FormModel` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `Child: GardePathMapper` is not satisfied
+  --> tests/ui/fail/recursive_garde_mapper_bounds.rs:34:8
+   |
+34 | struct Root {
+   |        ^^^^ unsatisfied trait bound
+   |
+help: the trait `GardePathMapper` is not implemented for `Child`
+  --> tests/ui/fail/recursive_garde_mapper_bounds.rs:7:1
+   |
+ 7 | struct Child {
+   | ^^^^^^^^^^^^
+help: the trait `GardePathMapper` is implemented for `Root`
+  --> tests/ui/fail/recursive_garde_mapper_bounds.rs:32:28
+   |
+32 | #[derive(Clone, PartialEq, gpui_form::FormModel, garde::Validate)]
+   |                            ^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `RootForm`
+  --> tests/ui/fail/recursive_garde_mapper_bounds.rs:37:12
+   |
+34 | struct Root {
+   |        ---- required by a bound in this struct
+...
+37 |     child: Child,
+   |            ^^^^^ required by this bound in `RootForm`
+   = note: this error originates in the derive macro `gpui_form::FormModel` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0599]: the associated function or constant `CHILD` exists for struct `RootForm`, but its trait bounds were not satisfied
+  --> tests/ui/fail/recursive_garde_mapper_bounds.rs:32:28
+   |
+ 7 | struct Child {
+   | ------------ doesn't satisfy `Child: GardePathMapper`
+...
+32 | #[derive(Clone, PartialEq, gpui_form::FormModel, garde::Validate)]
+   |                            ^^^^^^^^^^^^^^^^^^^^
+   |                            |
+   |                            associated function or constant cannot be called on `RootForm` due to unsatisfied trait bounds
+   |                            associated function or constant `CHILD` not found for this struct
+   |
+note: trait bound `Child: GardePathMapper` was not satisfied
+  --> tests/ui/fail/recursive_garde_mapper_bounds.rs:37:12
+   |
+34 | struct Root {
+   |        ----
+...
+37 |     child: Child,
+   |            ^^^^^ unsatisfied trait bound introduced here
+note: the trait `GardePathMapper` must be implemented
+  --> src/validation.rs
+   |
+   | pub trait GardePathMapper {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the derive macro `gpui_form::FormModel` (in Nightly builds, run with -Z macro-backtrace for more info)

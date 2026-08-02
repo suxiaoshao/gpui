@@ -1,30 +1,9 @@
 use std::marker::PhantomData;
 
-use crate::validation::report::ValidationIssue;
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct TransformReport {
-    issues: Vec<ValidationIssue>,
-}
-
-impl TransformReport {
-    pub fn new(issues: Vec<ValidationIssue>) -> Self {
-        Self { issues }
-    }
-
-    pub fn issues(&self) -> &[ValidationIssue] {
-        &self.issues
-    }
-
-    pub fn into_issues(self) -> Vec<ValidationIssue> {
-        self.issues
-    }
-}
-
-pub trait SubmitTransform<Model>: Default + 'static {
+pub trait SubmitTransform<Model>: 'static {
     type Output: 'static;
 
-    fn transform(&self, model: &Model) -> Result<Self::Output, TransformReport>;
+    fn transform(model: &Model) -> Self::Output;
 }
 
 #[derive(Clone, Debug)]
@@ -46,8 +25,8 @@ where
 {
     type Output = T;
 
-    fn transform(&self, model: &T) -> Result<Self::Output, TransformReport> {
-        Ok(model.clone())
+    fn transform(model: &T) -> Self::Output {
+        model.clone()
     }
 }
 
@@ -73,9 +52,9 @@ where
 {
     type Output = T;
 
-    fn transform(&self, model: &T) -> Result<Self::Output, TransformReport> {
+    fn transform(model: &T) -> Self::Output {
         let mut output = model.clone();
         validify::Modify::modify(&mut output);
-        Ok(output)
+        output
     }
 }

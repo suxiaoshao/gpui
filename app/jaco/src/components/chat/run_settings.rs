@@ -9,7 +9,7 @@
 mod policy;
 
 use std::ops::Deref;
-use std::{marker::PhantomData, rc::Rc};
+use std::rc::Rc;
 
 use crate::{
     components::{
@@ -35,7 +35,7 @@ use gpui_component::{
     list::{List, ListState},
     v_flex,
 };
-use gpui_form::typed::{FormField, FormStore};
+use gpui_form::typed::{FormField, FormState};
 use gpui_form_gpui_component::integer_input::{
     FormIntegerInput, IntegerInputPolicy, IntegerInputState,
 };
@@ -49,8 +49,8 @@ use policy::{projected_reasoning_selection, reasoning_selection_after_model_chan
 
 pub(crate) type ControlOpenHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 
-#[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
-#[form(store = RunSettingsFormStore)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormModel)]
+#[form(state = RunSettingsForm)]
 pub(crate) struct RunSettingsInput {
     #[form(required)]
     pub(crate) model: Option<ProviderModelKey>,
@@ -232,21 +232,16 @@ pub(crate) struct RunSettingsBoundControls {
 
 pub(crate) struct RunSettingsController<Form>
 where
-    Form: FormStore,
+    Form: FormState,
 {
-    #[cfg(test)]
-    settings_field: FormField<Form, RunSettingsInput>,
-    model_field: FormField<Form, Option<ProviderModelKey>>,
-    reasoning_field: FormField<Form, Option<ReasoningSelectionSnapshot>>,
-    approval_field: FormField<Form, ToolApprovalMode>,
+    form: Entity<Form>,
     orchestration_subscriptions: Vec<Subscription>,
     controls: RunSettingsBoundControls,
-    marker: PhantomData<Form>,
 }
 
 impl<Form> Drop for RunSettingsController<Form>
 where
-    Form: FormStore,
+    Form: FormState,
 {
     fn drop(&mut self) {
         self.orchestration_subscriptions.clear();
@@ -255,25 +250,20 @@ where
 
 impl<Form> RunSettingsController<Form>
 where
-    Form: FormStore + EventEmitter<gpui_form::typed::FormEvent<Form::Field>>,
+    Form: FormState,
 {
     pub(crate) fn new(
+        form: Entity<Form>,
         field: gpui_form::typed::FormField<Form, RunSettingsInput>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let model_field = RunSettingsFormStore::model_in(field.clone());
-        let reasoning_field = RunSettingsFormStore::reasoning_selection_in(field.clone());
-        let approval_field = RunSettingsFormStore::approval_mode_in(field.clone());
-        let reasoning_attachment = reasoning_field
-            .attach_control(cx)
-            .expect("run-settings reasoning field is available");
-        let approval_attachment = approval_field
-            .attach_control(cx)
-            .expect("run-settings approval field is available");
-        let draft = field
-            .value(cx)
-            .expect("run-settings field is available while its controller is alive");
+        let model_field = RunSettingsForm::MODEL.within(field.clone());
+        let reasoning_field = RunSettingsForm::REASONING_SELECTION.within(field.clone());
+        let approval_field = RunSettingsForm::APPROVAL_MODE.within(field.clone());
+        let reasoning_binding = reasoning_field.bind_control(&form, cx);
+        let approval_binding = approval_field.bind_control(&form, cx);
+        let draft = field.value(&form, cx);
         let choices = load_model_choices(cx);
         let selected_model = draft.model.clone();
         let capability = selected_model_choice(&choices, selected_model.as_ref())
@@ -293,12 +283,13 @@ where
             PickerListDelegate::selected_index_for(&model_sections, selected_model.as_ref());
         let model_confirm = Rc::new({
             let state = state.clone();
+            let form = form.clone();
             let field = field.clone();
             move |option: ModelOption, window: &mut Window, cx: &mut App| {
                 if !model_catalog_is_ready(cx) {
                     return;
                 }
-                if !apply_explicit_model_selection(&field, option.key(), cx) {
+                if !apply_explicit_model_selection(&form, &field, option.key(), cx) {
                     return;
                 }
                 let _ = state.update(cx, |controller, cx| {
@@ -355,14 +346,14 @@ where
         );
         let reasoning_confirm = Rc::new({
             let state = state.clone();
-            let attachment = reasoning_attachment.clone();
+            let binding = reasoning_binding.clone();
             move |option: effort_select::EffortOption, window: &mut Window, cx: &mut App| {
                 if !config_is_ready(cx) {
                     return;
                 }
-                let attachment = attachment.clone();
+                let binding = binding.clone();
                 let _ = state.update(cx, |controller, cx| {
-                    attachment.defer_set_user_value(Some(option.selection().clone()), window, cx);
+                    binding.defer_set(Some(option.selection().clone()), window, cx);
                     controller.set_reasoning_open(false, window, cx);
                 });
             }
@@ -402,7 +393,7 @@ where
             picker.set_selected_index(reasoning_selected_ix, window, cx);
             picker
         });
-        let token_budget_field = reasoning_field.project_value(
+        let token_budget_field = reasoning_field.clone().project_value(
             "token_budget",
             |value| custom_token_budget_value(value.as_ref()),
             set_existing_custom_token_budget,
@@ -414,7 +405,8 @@ where
         )
         .and_then(|_| {
             let policy = token_budget_policy(capability.as_ref());
-            FormIntegerInput::new(
+            FormIntegerInput::try_new(
+                &form,
                 token_budget_field,
                 move |window, cx| integer_input_state(policy, window, cx),
                 window,
@@ -431,14 +423,14 @@ where
             PickerListDelegate::selected_index_for(&approval_sections, Some(&approval));
         let approval_confirm = Rc::new({
             let state = state.clone();
-            let attachment = approval_attachment.clone();
+            let binding = approval_binding.clone();
             move |option: approval_select::ApprovalModeOption, window: &mut Window, cx: &mut App| {
                 if !config_is_ready(cx) {
                     return;
                 }
-                let attachment = attachment.clone();
+                let binding = binding.clone();
                 let _ = state.update(cx, |controller, cx| {
-                    attachment.defer_set_user_value(option.mode(), window, cx);
+                    binding.defer_set(option.mode(), window, cx);
                     controller.set_approval_open(false, window, cx);
                 });
             }
@@ -499,42 +491,46 @@ where
             open: false,
             on_open_change: approval_open_change,
         });
-        let model_subscription = model_field
-            .subscribe_in(window, cx, {
-                let field = model_field.clone();
-                move |_controller, window, cx| {
-                    let field = field.clone();
-                    cx.defer_in(window, move |controller, window, cx| {
-                        let Ok(value) = field.value(cx) else { return };
-                        controller.sync_model_from_form(value, window, cx);
-                    });
-                }
-            })
-            .expect("run-settings model field is alive");
-        let reasoning_subscription = reasoning_field
-            .subscribe_in(window, cx, {
-                let field = reasoning_field.clone();
-                move |_controller, window, cx| {
-                    let field = field.clone();
-                    cx.defer_in(window, move |controller, window, cx| {
-                        let Ok(value) = field.value(cx) else { return };
-                        controller.sync_reasoning_from_form(value, window, cx);
-                    });
-                }
-            })
-            .expect("run-settings reasoning field is alive");
-        let approval_subscription = approval_field
-            .subscribe_in(window, cx, {
-                let field = approval_field.clone();
-                move |_controller, window, cx| {
-                    let field = field.clone();
-                    cx.defer_in(window, move |controller, window, cx| {
-                        let Ok(value) = field.value(cx) else { return };
-                        controller.sync_approval_picker(value, window, cx);
-                    });
-                }
-            })
-            .expect("run-settings approval field is alive");
+        let model_subscription = model_field.subscribe_in(&form, window, cx, {
+            let form = form.clone();
+            let settings_field = field.clone();
+            let field = model_field.clone();
+            move |_controller, window, cx| {
+                let form = form.clone();
+                let settings_field = settings_field.clone();
+                let field = field.clone();
+                cx.defer_in(window, move |controller, window, cx| {
+                    let value = field.value(&form, cx);
+                    controller.sync_model_from_form(settings_field, value, window, cx);
+                });
+            }
+        });
+        let reasoning_subscription = reasoning_field.subscribe_in(&form, window, cx, {
+            let form = form.clone();
+            let settings_field = field.clone();
+            let field = reasoning_field.clone();
+            move |_controller, window, cx| {
+                let form = form.clone();
+                let settings_field = settings_field.clone();
+                let field = field.clone();
+                cx.defer_in(window, move |controller, window, cx| {
+                    let value = field.value(&form, cx);
+                    controller.sync_reasoning_from_form(settings_field, value, window, cx);
+                });
+            }
+        });
+        let approval_subscription = approval_field.subscribe_in(&form, window, cx, {
+            let form = form.clone();
+            let field = approval_field.clone();
+            move |_controller, window, cx| {
+                let form = form.clone();
+                let field = field.clone();
+                cx.defer_in(window, move |controller, window, cx| {
+                    let value = field.value(&form, cx);
+                    controller.sync_approval_picker(value, window, cx);
+                });
+            }
+        });
 
         let mut orchestration_subscriptions = Vec::new();
         if cx.has_global::<state::providers::ProviderStore>() {
@@ -543,8 +539,11 @@ where
                 cx,
                 window,
                 state::providers::SelectProviderModelCatalog,
-                |controller, _catalog, window, cx| {
-                    controller.reload_models(window, cx);
+                {
+                    let field = field.clone();
+                    move |controller, _catalog, window, cx| {
+                        controller.reload_models(field.clone(), window, cx);
+                    }
                 },
             ));
         }
@@ -555,11 +554,7 @@ where
         );
 
         Self {
-            #[cfg(test)]
-            settings_field: field,
-            model_field,
-            reasoning_field,
-            approval_field,
+            form,
             orchestration_subscriptions,
             controls: RunSettingsBoundControls {
                 model: FormModelPicker {
@@ -576,7 +571,6 @@ where
                 },
                 token_budget: token_budget_control,
             },
-            marker: PhantomData,
         }
     }
 
@@ -588,29 +582,30 @@ where
         }
     }
 
-    pub(crate) fn value(&self, cx: &App) -> Option<RunSettingsInput> {
-        Some(RunSettingsInput::new(
-            self.model_field.value(cx).ok()?,
-            self.reasoning_field.value(cx).ok()?,
-            self.approval_field.value(cx).ok()?,
-        ))
-    }
-
     #[cfg(test)]
-    pub(crate) fn selected_model(&self, cx: &App) -> Option<ProviderModelChoice> {
-        let selected = self.model_field.value(cx).ok()?;
+    pub(crate) fn selected_model(
+        &self,
+        field: FormField<Form, RunSettingsInput>,
+        cx: &App,
+    ) -> Option<ProviderModelChoice> {
+        let selected = RunSettingsForm::MODEL.within(field).value(&self.form, cx);
         let choices = load_model_choices(cx);
         selected_model_choice(&choices, selected.as_ref()).cloned()
     }
 
-    pub(crate) fn reload_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn reload_models(
+        &mut self,
+        field: FormField<Form, RunSettingsInput>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let choices = load_model_choices(cx);
-        let Ok(previous_key) = self.model_field.value(cx) else {
-            return;
-        };
-        let Ok(previous_reasoning) = self.reasoning_field.value(cx) else {
-            return;
-        };
+        let previous_key = RunSettingsForm::MODEL
+            .within(field.clone())
+            .value(&self.form, cx);
+        let previous_reasoning = RunSettingsForm::REASONING_SELECTION
+            .within(field.clone())
+            .value(&self.form, cx);
         // A catalog/options refresh must not rebase the form draft.  Keep an
         // unavailable selected key in the form so the submit policy can make
         // the explicit fallback/require decision later.
@@ -628,7 +623,7 @@ where
         });
         self.sync_model_picker(selected.clone(), window, cx);
         self.sync_reasoning_picker(capability.clone(), reasoning.clone(), window, cx);
-        self.sync_token_budget_control(window, cx);
+        self.sync_token_budget_control(field, window, cx);
         cx.notify();
     }
 
@@ -697,54 +692,59 @@ where
     #[cfg(test)]
     pub(crate) fn select_model_value(
         &mut self,
+        field: FormField<Form, RunSettingsInput>,
         key: ProviderModelKey,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if apply_explicit_model_selection(&self.settings_field, key.clone(), cx) {
-            self.sync_model_from_form(Some(key), window, cx);
+        if apply_explicit_model_selection(&self.form, &field, key.clone(), cx) {
+            self.sync_model_from_form(field, Some(key), window, cx);
         }
     }
 
     #[cfg(test)]
     pub(crate) fn select_approval_value(
         &mut self,
+        field: FormField<Form, RunSettingsInput>,
         mode: ToolApprovalMode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let _ = self.approval_field.set_user_value(mode, cx);
+        RunSettingsForm::APPROVAL_MODE
+            .within(field)
+            .set(&self.form, mode, cx);
         self.sync_approval_picker(mode, window, cx);
     }
 
     #[cfg(test)]
     pub(crate) fn select_reasoning_value(
         &mut self,
+        field: FormField<Form, RunSettingsInput>,
         selection: ReasoningSelectionSnapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let _ = self
-            .reasoning_field
-            .set_user_value(Some(selection.clone()), cx);
+        RunSettingsForm::REASONING_SELECTION
+            .within(field.clone())
+            .set(&self.form, Some(selection.clone()), cx);
         let capability = self.controls.reasoning.read(cx).capability.clone();
         self.sync_reasoning_picker(capability, Some(selection), window, cx);
-        self.sync_token_budget_control(window, cx);
+        self.sync_token_budget_control(field, window, cx);
     }
 
     #[cfg(test)]
     pub(crate) fn set_custom_token_budget(
         &mut self,
+        field: FormField<Form, RunSettingsInput>,
         value: u32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let _ = window;
-        let Ok(mut reasoning) = self.reasoning_field.value(cx) else {
-            return;
-        };
+        let reasoning_field = RunSettingsForm::REASONING_SELECTION.within(field);
+        let mut reasoning = reasoning_field.value(&self.form, cx);
         if set_existing_custom_token_budget(&mut reasoning, value) {
-            let _ = self.reasoning_field.set_user_value(reasoning, cx);
+            reasoning_field.set(&self.form, reasoning, cx);
         }
     }
 
@@ -821,7 +821,12 @@ where
         cx.notify();
     }
 
-    fn sync_token_budget_control(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn sync_token_budget_control(
+        &mut self,
+        field: FormField<Form, RunSettingsInput>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let capability = self.controls.reasoning.read(cx).capability.clone();
         let supports_token_budget = token_budget_bounds(
             capability
@@ -829,11 +834,9 @@ where
                 .and_then(|capability| capability.reasoning.as_ref()),
         )
         .is_some();
-        let has_custom_value = self
-            .reasoning_field
-            .value(cx)
-            .ok()
-            .flatten()
+        let reasoning_field = RunSettingsForm::REASONING_SELECTION.within(field);
+        let has_custom_value = reasoning_field
+            .value(&self.form, cx)
             .as_ref()
             .and_then(|selection| custom_token_budget_value(Some(selection)))
             .is_some();
@@ -855,12 +858,13 @@ where
             return;
         }
 
-        let token_budget_field = self.reasoning_field.project_value(
+        let token_budget_field = reasoning_field.project_value(
             "token_budget",
             |value| custom_token_budget_value(value.as_ref()),
             set_existing_custom_token_budget,
         );
-        let Ok(control) = FormIntegerInput::new(
+        let Ok(control) = FormIntegerInput::try_new(
+            &self.form,
             token_budget_field,
             move |window, cx| integer_input_state(policy, window, cx),
             window,
@@ -951,6 +955,7 @@ where
 
     fn sync_model_from_form(
         &mut self,
+        field: FormField<Form, RunSettingsInput>,
         model: Option<ProviderModelKey>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -962,30 +967,32 @@ where
             state.capability = capability.clone();
         });
         self.sync_model_picker(model, window, cx);
-        let reasoning = self.reasoning_field.value(cx).ok().flatten();
+        let reasoning = self.controls.reasoning.read(cx).selected.clone();
         self.sync_reasoning_picker(capability, reasoning, window, cx);
-        self.sync_token_budget_control(window, cx);
+        self.sync_token_budget_control(field, window, cx);
     }
 
     fn sync_reasoning_from_form(
         &mut self,
+        field: FormField<Form, RunSettingsInput>,
         reasoning: Option<ReasoningSelectionSnapshot>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let capability = self.controls.reasoning.read(cx).capability.clone();
         self.sync_reasoning_picker(capability, reasoning, window, cx);
-        self.sync_token_budget_control(window, cx);
+        self.sync_token_budget_control(field, window, cx);
     }
 }
 
 fn apply_explicit_model_selection<Form>(
+    form: &Entity<Form>,
     field: &FormField<Form, RunSettingsInput>,
     key: ProviderModelKey,
     cx: &mut App,
 ) -> bool
 where
-    Form: FormStore,
+    Form: FormState,
 {
     let Ok(choices) = load_model_choices(cx) else {
         return false;
@@ -993,15 +1000,14 @@ where
     let Some(choice) = selected_model_choice_from_slice(&choices, Some(&key)) else {
         return false;
     };
-    let Ok(mut settings) = field.value(cx) else {
-        return false;
-    };
+    let mut settings = field.value(form, cx);
     settings.reasoning_selection = reasoning_selection_after_model_change(
         choice.capabilities.reasoning.as_ref(),
         settings.reasoning_selection.as_ref(),
     );
     settings.model = Some(key);
-    field.set_user_value(settings, cx).is_ok()
+    field.set(form, settings, cx);
+    true
 }
 
 fn load_model_choices(cx: &App) -> Result<Vec<ProviderModelChoice>, SharedString> {

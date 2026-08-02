@@ -45,7 +45,7 @@ impl<T> ControlSlot<T> {
 
 #[derive(Clone, Default)]
 pub(crate) struct AttachmentControlState {
-    pub(crate) form: Option<Entity<crate::components::chat::input::ChatInputFormStore>>,
+    pub(crate) attachments: Vec<crate::features::conversation::attachments::ComposerAttachment>,
 }
 
 #[derive(Clone, Default)]

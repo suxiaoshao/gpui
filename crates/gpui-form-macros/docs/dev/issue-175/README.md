@@ -1,14 +1,20 @@
 # `FormStore` derive breaking 重构实施计划
 
+> **历史归档（Superseded）。** 本计划随
+> [PR #176](https://github.com/suxiaoshao/gpui/pull/176) 交付；该 PR 的 closing issue 为
+> [#175](https://github.com/suxiaoshao/gpui/issues/175)。Issue #199 的 `FormModel` / associated
+> const 设计已经取代本文公开 API；后继计划见
+> [Issue #199 macro owner plan](../issue-199/README.md)。下文中的状态是 2026-07-21/22 的历史快照。
+
 ## 1. 状态与范围
 
-- 文档位置：`crates/gpui-form-macros/dev/form-store-derive.md`。
+- 文档位置：`crates/gpui-form-macros/docs/dev/issue-175/README.md`（历史归档）。
 - 关联分支：`codex/175-jaco-shortcut-temporary-window`。
-- 关联 issue：无独立 issue；这是跨 crate form 基础设施迁移，不属于 issue #175 的产品需求。
+- 交付归属：基础设施本身没有独立 issue，但实际通过 PR #176 随 Issue #175 合入；按交付来源归档。
 - **当前状态：2026-07-22 重新打开 Garde 消息 provider attribute 门禁。** 既有严格 parser、
   pure nested model lens、完整路径 schema 与 array mapper 门禁保持完成；新增 `MACRO-50` 尚未实施，
   用于把 `i18n = ProviderType` 替换为不执行翻译的 `messages = ProviderType`。公开契约完成迁移后以
-  [`README.md`](../README.md) 和 [`docs/guide.md`](../docs/guide.md) 为准。
+  [`README.md`](../../../README.md) 和 [`docs/guide.md`](../../../docs/guide.md) 为准。
 - **2026-07-21 验证：**已按仓库规则通过 Cargo 添加 dev-only `trybuild 1.0.118`，由 Cargo
   同步更新同一份 `Cargo.lock`；11 组 compile-fail fixture 及其 `.stderr` 契约均通过，未手工
   改写 manifest 或 lockfile。
@@ -547,7 +553,7 @@ root source。
 
 - 本 gate 不修改 macro 文件。
 - `Cargo.toml` 与 `Cargo.lock` 的唯一修改 owner 是
-  `crates/gpui-form-gpui-component/dev/typed-bound-controls.md` 的 `DEP-00`。
+  `crates/gpui-form-gpui-component/docs/dev/issue-175/README.md` 的 `DEP-00`。
 
 **API 契约**
 
@@ -1098,7 +1104,7 @@ git diff --check
 - `[历史基线已完成，不在 corrective MACRO-40 修改]`：
   `crates/gpui-form-macros/src/**` 的 legacy branch/helper/export 清理。
 - 修改 `README.md`、`README.zh-CN.md`、`docs/guide.md`、`docs/guide.zh-CN.md`、
-  `dev/form-store-derive.md`。
+  `docs/dev/issue-175/README.md`。
 
 **API 契约**
 

@@ -5,7 +5,7 @@ use syn::{
 
 #[derive(Default)]
 pub(crate) struct FormAttributes {
-    pub(crate) store: Option<Ident>,
+    pub(crate) state: Option<Ident>,
     pub(crate) validation: ValidationAdapterKind,
     pub(crate) transform: TransformAdapterKind,
 }
@@ -24,10 +24,10 @@ impl FormAttributes {
             ));
         }
         let args = attr.parse_args::<FormArgs>()?;
-        if let Some(store) = args.store
-            && parsed.store.replace(store).is_some()
+        if let Some(state) = args.state
+            && parsed.state.replace(state).is_some()
         {
-            return Err(syn::Error::new_spanned(attr, "duplicate form store name"));
+            return Err(syn::Error::new_spanned(attr, "duplicate form state name"));
         }
         if !matches!(args.validation, ValidationAdapterKind::None) {
             if !matches!(parsed.validation, ValidationAdapterKind::None) {
@@ -150,7 +150,7 @@ fn merge_triggers(
 }
 
 struct FormArgs {
-    store: Option<Ident>,
+    state: Option<Ident>,
     validation: ValidationAdapterKind,
     transform: TransformAdapterKind,
 }
@@ -160,18 +160,24 @@ impl Parse for FormArgs {
         if input.is_empty() {
             return Err(input.error("#[form(...)] requires at least one option"));
         }
-        let mut store = None;
+        let mut state = None;
         let mut validation = ValidationAdapterKind::None;
         let mut transform = TransformAdapterKind::Identity;
         while !input.is_empty() {
             let key: Ident = input.parse()?;
             match key.to_string().as_str() {
-                "store" => {
-                    if store.is_some() {
-                        return Err(syn::Error::new(key.span(), "duplicate form option `store`"));
+                "state" => {
+                    if state.is_some() {
+                        return Err(syn::Error::new(key.span(), "duplicate form option `state`"));
                     }
                     input.parse::<Token![=]>()?;
-                    store = Some(input.parse()?);
+                    state = Some(input.parse()?);
+                }
+                "store" => {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        "form option `store` was removed; use `state = StateName`",
+                    ));
                 }
                 "validation" => {
                     if !matches!(validation, ValidationAdapterKind::None) {
@@ -205,7 +211,7 @@ impl Parse for FormArgs {
             consume_comma(input)?;
         }
         Ok(Self {
-            store,
+            state,
             validation,
             transform,
         })
@@ -599,7 +605,7 @@ mod tests {
     #[test]
     fn rejects_duplicate_helper_attributes_and_options() {
         let helpers: Vec<Attribute> = vec![
-            parse_quote!(#[form(store = ExampleForm)]),
+            parse_quote!(#[form(state = ExampleForm)]),
             parse_quote!(#[form(transform(adapter = "validify"))]),
         ];
         assert!(
@@ -611,14 +617,14 @@ mod tests {
         );
 
         let options: Vec<Attribute> = vec![parse_quote!(
-            #[form(store = ExampleForm, store = OtherForm)]
+            #[form(state = ExampleForm, state = OtherForm)]
         )];
         assert!(
             FormAttributes::parse(&options)
                 .err()
                 .expect("duplicate options must be rejected")
                 .to_string()
-                .contains("duplicate form option `store`")
+                .contains("duplicate form option `state`")
         );
     }
 

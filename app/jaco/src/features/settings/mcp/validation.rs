@@ -7,8 +7,8 @@ use crate::{
     },
 };
 use gpui_form::typed::{
-    ErrorParamValue, FieldPath, FieldPathSegment, SubmitTransform, TransformReport,
-    ValidationScope, ValidationTrigger,
+    ErrorParamValue, FieldPath, FieldPathSegment, SubmitTransform, ValidationScope,
+    ValidationTrigger,
 };
 
 use super::form_state::McpServerFormInput;
@@ -79,8 +79,8 @@ pub(super) struct McpServerTransform;
 impl SubmitTransform<McpServerFormInput> for McpServerTransform {
     type Output = McpServerFormInput;
 
-    fn transform(&self, draft: &McpServerFormInput) -> Result<Self::Output, TransformReport> {
-        Ok(normalize_mcp_input(draft))
+    fn transform(draft: &McpServerFormInput) -> Self::Output {
+        normalize_mcp_input(draft)
     }
 }
 

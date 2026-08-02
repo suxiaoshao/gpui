@@ -17,7 +17,7 @@ use gpui_component::{
     scroll::ScrollableElement,
     v_flex,
 };
-use gpui_form::typed::{FormFieldId as _, FormStore as _, SubmitError};
+use gpui_form::typed::{FormState as _, PreparedSubmit, SubmitError};
 use gpui_form_gpui_component::FormInput;
 use jaco_core::PromptId;
 use jaco_db::PromptRecord;
@@ -25,8 +25,7 @@ use jaco_db::PromptRecord;
 use super::super::form_validation::validation_message;
 use super::super::push_settings_error;
 use super::form_state::{
-    PromptEditFormInput, PromptEditFormInputField, PromptEditFormStore,
-    PromptEditValidationContext, PromptValidationDependencies,
+    PromptEditForm, PromptEditFormInput, PromptEditValidationContext, PromptValidationDependencies,
 };
 use super::rows::prompt_updated_label;
 
@@ -48,7 +47,7 @@ impl PromptEditMode {
 pub(super) struct PromptEditDialogState {
     mode: PromptEditMode,
     prompt_id: Option<PromptId>,
-    form: Entity<PromptEditFormStore>,
+    form: Entity<PromptEditForm>,
     name_input: FormInput,
     content_input: FormInput,
     save_task: Option<Task<()>>,
@@ -76,24 +75,21 @@ impl PromptEditDialogState {
                     PromptEditValidationContext::new(PromptValidationDependencies::default())
                 });
         let form = cx.new(|cx| {
-            PromptEditFormStore::from_value_with_validation_context(
-                form_input,
-                validation_context,
-                cx,
-            )
+            PromptEditForm::from_value_with_validation_context(form_input, validation_context, cx)
         });
         let name_input = FormInput::new(
-            PromptEditFormStore::name_field(&form),
+            &form,
+            PromptEditForm::NAME,
             |window, cx| {
                 InputState::new(window, cx)
                     .placeholder(cx.global::<I18n>().t("prompt-placeholder-name"))
             },
             window,
             cx,
-        )
-        .expect("prompt name form entity is alive");
+        );
         let content_input = FormInput::new(
-            PromptEditFormStore::content_field(&form),
+            &form,
+            PromptEditForm::CONTENT,
             |window, cx| {
                 InputState::new(window, cx)
                     .multi_line(true)
@@ -101,8 +97,7 @@ impl PromptEditDialogState {
             },
             window,
             cx,
-        )
-        .expect("prompt content form entity is alive");
+        );
         Self {
             mode,
             prompt_id: prompt.map(|prompt| prompt.id),
@@ -129,16 +124,14 @@ impl PromptEditDialogState {
         };
         let prepared = self.form.update(cx, |form, cx| {
             form.set_validation_context(validation_context, cx);
-            let revision = form.revision();
-            form.prepare_submit(cx).map(|draft| (revision, draft))
+            form.prepare_submit(cx)
         });
-        let (revision, draft) = match prepared {
+        let PreparedSubmit {
+            revision,
+            output: draft,
+        } = match prepared {
             Ok(prepared) => prepared,
-            Err(
-                SubmitError::Validation(_)
-                | SubmitError::ValidationPending
-                | SubmitError::Transform(_),
-            ) => {
+            Err(SubmitError::Validation(_) | SubmitError::ValidationPending) => {
                 return false;
             }
         };
@@ -198,18 +191,18 @@ impl PromptEditDialogState {
 
 impl Render for PromptEditDialogState {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let name_error = PromptEditFormStore::name_field(&self.form)
-            .errors(cx)
-            .ok()
-            .and_then(|issues| issues.into_iter().next())
+        let name_error = PromptEditForm::NAME
+            .errors(&self.form, cx)
+            .into_iter()
+            .next()
             .map(|issue| validation_message(&issue.message, cx));
-        let content_error = PromptEditFormStore::content_field(&self.form)
-            .errors(cx)
-            .ok()
-            .and_then(|issues| issues.into_iter().next())
+        let content_error = PromptEditForm::CONTENT
+            .errors(&self.form, cx)
+            .into_iter()
+            .next()
             .map(|issue| validation_message(&issue.message, cx));
-        let name_required = PromptEditFormInputField::Name.schema().is_required();
-        let content_required = PromptEditFormInputField::Content.schema().is_required();
+        let name_required = PromptEditForm::NAME.schema().is_required();
+        let content_required = PromptEditForm::CONTENT.schema().is_required();
         v_flex()
             .w_full()
             .gap_4()
@@ -516,14 +509,14 @@ fn form_field(
 
 #[cfg(test)]
 mod tests {
-    use super::super::form_state::{PromptEditFormInputField, PromptEditFormStore};
+    use super::super::form_state::PromptEditForm;
     use super::{
         PromptEditDialogState, PromptEditMode, confirm_prompt_edit_dialog, validation_message,
     };
     use crate::{database, foundation, state};
     use gpui::{AppContext as _, Entity, Render, TestAppContext, VisualTestContext, WindowHandle};
     use gpui_component::input::{InputEvent, InputState};
-    use gpui_form::typed::FormStore as _;
+    use gpui_form::typed::FormState as _;
     use tempfile::{TempDir, tempdir};
 
     #[gpui::test]
@@ -540,10 +533,7 @@ mod tests {
         assert!(!saved);
 
         assert!(form.read_with(&cx, |dialog, cx| {
-            !PromptEditFormStore::name_field(&dialog.form)
-                .errors(cx)
-                .unwrap_or_default()
-                .is_empty()
+            !PromptEditForm::NAME.errors(&dialog.form, cx).is_empty()
         }));
         cx.update(|_, cx| {
             assert!(
@@ -613,23 +603,15 @@ mod tests {
         assert_ne!(chinese_error, english_error);
         assert_eq!(
             form.read_with(&cx, |dialog, cx| {
-                if !PromptEditFormStore::name_field(&dialog.form)
-                    .errors(cx)
-                    .unwrap_or_default()
-                    .is_empty()
-                {
-                    Some(PromptEditFormInputField::Name)
-                } else if !PromptEditFormStore::content_field(&dialog.form)
-                    .errors(cx)
-                    .unwrap_or_default()
-                    .is_empty()
-                {
-                    Some(PromptEditFormInputField::Content)
+                if !PromptEditForm::NAME.errors(&dialog.form, cx).is_empty() {
+                    Some("name")
+                } else if !PromptEditForm::CONTENT.errors(&dialog.form, cx).is_empty() {
+                    Some("content")
                 } else {
                     None
                 }
             }),
-            Some(PromptEditFormInputField::Name)
+            Some("name")
         );
         assert_eq!(
             cx.update(|_, cx| {

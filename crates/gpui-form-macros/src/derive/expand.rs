@@ -12,20 +12,18 @@ struct FieldModel<'a> {
     ident: &'a syn::Ident,
     ty: &'a Type,
     name: String,
-    variant: syn::Ident,
     attrs: FieldAttributes,
 }
 
-pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
+pub(crate) fn derive_form_model(input: TokenStream) -> Result<TokenStream> {
     let input = parse2::<DeriveInput>(input)?;
     let model_ident = &input.ident;
     let visibility = &input.vis;
     let attrs = FormAttributes::parse(&input.attrs)?;
-    let store_ident = attrs
-        .store
+    let state_ident = attrs
+        .state
         .clone()
-        .unwrap_or_else(|| format_ident!("{}FormStore", model_ident));
-    let field_ident = format_ident!("{}Field", model_ident);
+        .unwrap_or_else(|| format_ident!("{}Form", model_ident));
 
     let fields = match &input.data {
         Data::Struct(data) => match &data.fields {
@@ -33,14 +31,14 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
             _ => {
                 return Err(syn::Error::new_spanned(
                     &input.ident,
-                    "FormStore can only be derived for structs with named fields",
+                    "FormModel can only be derived for structs with named fields",
                 ));
             }
         },
         _ => {
             return Err(syn::Error::new_spanned(
                 &input.ident,
-                "FormStore can only be derived for structs",
+                "FormModel can only be derived for structs",
             ));
         }
     };
@@ -53,7 +51,6 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
             Ok(FieldModel {
                 ident,
                 ty: &field.ty,
-                variant: variant_ident(&name),
                 name,
                 attrs: FieldAttributes::parse(&field.attrs)?,
             })
@@ -218,66 +215,52 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
     let (mapper_impl_generics, mapper_ty_generics, mapper_where_clause) =
         mapper_generics.split_for_impl();
     let model_ty = quote!(#model_ident #ty_generics);
+    let state_ty = quote!(#state_ident #ty_generics);
     let (validation_context_ty, validation_adapter_ty) =
         validation_parts(&attrs.validation, &model_ty);
     let transform_ty = transform_parts(&attrs.transform, &model_ty);
-    let default_constructor = matches!(attrs.validation, ValidationAdapterKind::None).then(|| {
-        quote! {
-            pub fn from_value(
-                value: #model_ty,
-                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
-            ) -> Self {
-                <Self as ::gpui_form::typed::FormStore>::from_value(value, cx)
+    let default_constructor = match &attrs.validation {
+        ValidationAdapterKind::Garde { .. }
+        | ValidationAdapterKind::Custom {
+            context: Some(_), ..
+        } => quote! {},
+        ValidationAdapterKind::None | ValidationAdapterKind::Custom { context: None, .. } => {
+            quote! {
+                pub fn from_value(
+                    value: #model_ty,
+                    cx: &mut ::gpui_form::__private::gpui::Context<Self>,
+                ) -> Self {
+                    <Self as ::gpui_form::typed::FormState>::from_value(value, cx)
+                }
             }
         }
-    });
+    };
 
-    let variants = fields
+    let descriptors = fields
         .iter()
-        .map(|field| &field.variant)
-        .collect::<Vec<_>>();
-    let names = fields
-        .iter()
-        .map(|field| field.name.as_str())
-        .collect::<Vec<_>>();
-    let required = fields
-        .iter()
-        .map(|field| field.attrs.required)
-        .collect::<Vec<_>>();
-    let trigger_values = fields
-        .iter()
-        .map(|field| trigger_tokens(field.attrs.triggers))
-        .collect::<Vec<_>>();
-    let schema_consts = fields
-        .iter()
-        .map(|field| format_ident!("{}_SCHEMA", field.name.to_uppercase()))
-        .collect::<Vec<_>>();
-
-    let accessors = fields
-        .iter()
-        .map(|field| field_accessor(&field_ident, &model_ty, field))
-        .collect::<Vec<_>>();
-    let array_accessors = fields
-        .iter()
-        .filter_map(|field| array_item_accessor(&model_ty, field))
+        .map(|field| field_descriptor(&model_ty, field))
         .collect::<Result<Vec<_>>>()?;
-    let structural_required_checks = fields.iter().filter(|field| field.attrs.required).map(|field| {
-        let ident = field.ident;
-        let variant = &field.variant;
-        let name = field.name.as_str();
-        quote! {
-            let path = base.join_field(#name);
-            if scope.includes(Some(&path))
-                && (trigger == ::gpui_form::typed::ValidationTrigger::Submit
-                    || <#field_ident as ::gpui_form::typed::FormFieldId>::schema(#field_ident::#variant)
-                        .triggers()
-                        .includes(trigger))
-                && ::gpui_form::typed::RequiredValue::is_missing(&self.#ident)
-            {
-                issues.push(::gpui_form::typed::required_issue(path, trigger));
-            }
-        }
-    });
+    let structural_required_checks =
+        fields
+            .iter()
+            .filter(|field| field.attrs.required)
+            .map(|field| {
+                let ident = field.ident;
+                let descriptor = format_ident!("{}", field.name.to_uppercase());
+                let name = field.name.as_str();
+                quote! {
+                    let path = base.join_field(#name);
+                    if scope.includes(Some(&path))
+                        && (trigger == ::gpui_form::typed::ValidationTrigger::Submit
+                            || <#state_ty>::#descriptor.schema()
+                                .triggers()
+                                .includes(trigger))
+                        && ::gpui_form::typed::RequiredValue::is_missing(&self.#ident)
+                    {
+                        issues.push(::gpui_form::typed::required_issue(path, trigger));
+                    }
+                }
+            });
     let structural_statements = fields
         .iter()
         .filter_map(structural_validation_statement)
@@ -288,49 +271,15 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
         .collect::<Result<Vec<_>>>()?;
     let schema_arms = fields
         .iter()
-        .map(|field| schema_resolver_statement(&field_ident, field))
+        .map(|field| schema_resolver_statement(&state_ty, field))
         .collect::<Vec<_>>();
 
     Ok(quote! {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        #visibility enum #field_ident {
-            #(#variants,)*
-        }
-
-        impl #field_ident {
-            #(pub const #schema_consts: ::gpui_form::typed::FieldSchema =
-                ::gpui_form::typed::FieldSchema::new(
-                    #names,
-                    #required,
-                    #trigger_values,
-                );)*
-
-            pub const ALL: &'static [Self] = &[#(Self::#variants,)*];
-
-            pub const fn key(self) -> &'static str {
-                match self {
-                    #(Self::#variants => #names,)*
-                }
-            }
-        }
-
-        impl ::gpui_form::typed::FormFieldId for #field_ident {
-            fn path(self) -> ::gpui_form::typed::FieldPath {
-                ::gpui_form::typed::FieldPath::field(self.key())
-            }
-
-            fn schema(self) -> &'static ::gpui_form::typed::FieldSchema {
-                match self {
-                    #(Self::#variants => &Self::#schema_consts,)*
-                }
-            }
-        }
-
-        #visibility struct #store_ident #store_generics #where_clause {
+        #visibility struct #state_ident #store_generics #where_clause {
             runtime: ::gpui_form::__private::FormRuntime<#model_ty, #validation_context_ty>,
         }
 
-        impl #impl_generics #store_ident #ty_generics #where_clause {
+        impl #impl_generics #state_ident #ty_generics #where_clause {
             #default_constructor
 
             pub fn from_value_with_validation_context(
@@ -338,7 +287,7 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 validation_context: #validation_context_ty,
                 cx: &mut ::gpui_form::__private::gpui::Context<Self>,
             ) -> Self {
-                <Self as ::gpui_form::typed::FormStore>::from_value_with_validation_context(
+                <Self as ::gpui_form::typed::FormState>::from_value_with_validation_context(
                     value,
                     validation_context,
                     cx,
@@ -346,7 +295,7 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
             }
 
             pub fn validation_context(&self) -> &#validation_context_ty {
-                <Self as ::gpui_form::typed::FormStore>::validation_context(self)
+                <Self as ::gpui_form::typed::FormState>::validation_context(self)
             }
 
             pub fn set_validation_context(
@@ -354,23 +303,20 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 validation_context: #validation_context_ty,
                 cx: &mut ::gpui_form::__private::gpui::Context<Self>,
             ) {
-                <Self as ::gpui_form::typed::FormStore>::set_validation_context(
+                <Self as ::gpui_form::typed::FormState>::set_validation_context(
                     self, validation_context, cx,
                 );
             }
 
-            #(#accessors)*
-            #(#array_accessors)*
+            #(#descriptors)*
         }
 
         impl #impl_generics ::gpui_form::__private::gpui::EventEmitter<
-            ::gpui_form::typed::FormEvent<#field_ident>
-        > for #store_ident #ty_generics #where_clause {}
+            ::gpui_form::typed::FormEvent
+        > for #state_ident #ty_generics #where_clause {}
 
-        impl #impl_generics ::gpui_form::typed::FormStore for #store_ident #ty_generics #where_clause {
+        impl #impl_generics ::gpui_form::typed::FormState for #state_ident #ty_generics #where_clause {
             type Model = #model_ty;
-            type Output = <#transform_ty as ::gpui_form::typed::SubmitTransform<#model_ty>>::Output;
-            type Field = #field_ident;
             type ValidationContext = #validation_context_ty;
             type ValidationAdapter = #validation_adapter_ty;
             type SubmitTransform = #transform_ty;
@@ -383,7 +329,7 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 let mut form = Self {
                     runtime: ::gpui_form::__private::FormRuntime::new(value, validation_context),
                 };
-                <Self as ::gpui_form::typed::FormStore>::validate(
+                <Self as ::gpui_form::typed::FormState>::validate(
                     &mut form,
                     ::gpui_form::typed::ValidationTrigger::Mount,
                     ::gpui_form::typed::ValidationScope::Form,
@@ -400,13 +346,13 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 &mut self.runtime
             }
 
-            fn __validate_snapshot(
-                &mut self,
+            fn __validation_snapshot(
+                &self,
                 snapshot: &Self::Model,
                 trigger: ::gpui_form::typed::ValidationTrigger,
                 scope: ::gpui_form::typed::ValidationScope,
-                cx: &mut ::gpui_form::__private::gpui::Context<Self>,
-            ) {
+                cx: &::gpui_form::__private::gpui::App,
+            ) -> ::gpui_form::__private::ValidationSnapshot {
                 let mut generated_issues = ::std::vec::Vec::new();
                 ::gpui_form::typed::StructuralValidate::structural_issues(
                     snapshot,
@@ -415,14 +361,11 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                     &scope,
                     &mut generated_issues,
                 );
-                let adapter_report = ::gpui_form::typed::ValidationAdapter::validate(
-                    &<#validation_adapter_ty as Default>::default(),
+                let adapter_report = <#validation_adapter_ty as ::gpui_form::typed::ValidationAdapter<#model_ty>>::validate(
                     snapshot,
                     trigger,
-                    scope.clone(),
-                    ::gpui_form::typed::ValidationContext {
-                        external: self.runtime.validation_context(),
-                    },
+                    &scope,
+                    self.runtime.validation_context(),
                     cx,
                 );
                 let adapter_issues = ::gpui_form::typed::normalize_adapter_report(
@@ -431,12 +374,11 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                     &scope,
                     adapter_report,
                 );
-                self.runtime
-                    .validation_mut()
-                    .replace_generated(&scope, generated_issues);
-                self.runtime
-                    .validation_mut()
-                    .replace_adapter(adapter_issues);
+                ::gpui_form::__private::ValidationSnapshot::new(
+                    scope,
+                    generated_issues,
+                    adapter_issues,
+                )
             }
         }
 
@@ -458,7 +400,7 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
                 &self,
                 segments: &[::gpui_form::typed::FieldPathSegment],
             ) -> Result<
-                &'static ::gpui_form::typed::FieldSchema,
+                ::gpui_form::typed::FieldSchema,
                 ::gpui_form::typed::FormSchemaPathError,
             > {
                 let Some((segment, remaining)) = segments.split_first() else {
@@ -494,22 +436,6 @@ pub(crate) fn derive_form_store(input: TokenStream) -> Result<TokenStream> {
             }
         }
     })
-}
-
-fn variant_ident(name: &str) -> syn::Ident {
-    let mut result = String::new();
-    let mut uppercase = true;
-    for character in name.chars() {
-        if character == '_' || character == '-' {
-            uppercase = true;
-        } else if uppercase {
-            result.extend(character.to_uppercase());
-            uppercase = false;
-        } else {
-            result.push(character);
-        }
-    }
-    format_ident!("{result}")
 }
 
 fn trigger_tokens(triggers: super::attributes::ValidationTriggers) -> TokenStream {
@@ -566,52 +492,53 @@ fn transform_parts(transform: &TransformAdapterKind, model: &TokenStream) -> Tok
     }
 }
 
-fn field_accessor(
-    field_enum: &syn::Ident,
-    model: &TokenStream,
-    field: &FieldModel<'_>,
-) -> TokenStream {
+fn field_descriptor(model: &TokenStream, field: &FieldModel<'_>) -> Result<TokenStream> {
     let ident = field.ident;
     let ty = field.ty;
-    let variant = &field.variant;
     let name = field.name.as_str();
-    let method = format_ident!("{}_field", field.name);
-    let nested_method = format_ident!("{}_in", field.name);
-    quote! {
-        pub fn #method(
-            form: &::gpui_form::__private::gpui::Entity<Self>,
-        ) -> ::gpui_form::typed::FormField<Self, #ty> {
-            ::gpui_form::typed::FormField::new(
-                form.downgrade(),
-                #field_enum::#variant,
-                ::gpui_form::typed::FieldPath::field(#name),
-                |model| &model.#ident,
-                |model, value| model.#ident = value,
+    let descriptor = format_ident!("{}", field.name.to_uppercase());
+    let schema = trigger_tokens(field.attrs.triggers);
+    let required = field.attrs.required;
+    let (helper, item_id_at) = match &field.attrs.shape {
+        FieldShape::Array { id } => {
+            let item_ty = vec_inner(ty)
+                .ok_or_else(|| syn::Error::new_spanned(ty, "identified array requires Vec<T>"))?;
+            let helper = format_ident!("__{}_item_id_at", field.name);
+            let to_item_id = quote_spanned!(id.span()=>
+                ::gpui_form::typed::ToFormItemId::to_form_item_id(&item.#id)
+            );
+            (
+                quote! {
+                    #[allow(clippy::ptr_arg)]
+                    fn #helper(items: &#ty, index: usize) -> Option<::gpui_form::typed::FormItemId> {
+                        let item: &#item_ty = items.get(index)?;
+                        #to_item_id
+                    }
+                },
+                quote!(Some(Self::#helper)),
             )
         }
+        FieldShape::Value | FieldShape::Group => (TokenStream::new(), quote!(None)),
+    };
+    Ok(quote! {
+        #helper
 
-        pub fn #nested_method<ParentForm>(
-            parent: ::gpui_form::typed::FormField<ParentForm, #model>,
-        ) -> ::gpui_form::typed::FormField<ParentForm, #ty>
-        where
-            ParentForm: ::gpui_form::typed::FormStore,
-        {
-            parent.project(
+        pub const #descriptor: ::gpui_form::typed::FormField<Self, #ty> =
+            ::gpui_form::typed::FormField::__new(
                 #name,
-                |model| &model.#ident,
-                |model, value| model.#ident = value,
-            )
-        }
-    }
+                ::gpui_form::typed::FieldSchema::new(#name, #required, #schema),
+                |model: &#model| &model.#ident,
+                |model: &mut #model, value: #ty| model.#ident = value,
+                #item_id_at,
+            );
+    })
 }
 
-fn schema_resolver_statement(field_enum: &syn::Ident, field: &FieldModel<'_>) -> TokenStream {
+fn schema_resolver_statement(state: &TokenStream, field: &FieldModel<'_>) -> TokenStream {
     let ident = field.ident;
-    let variant = &field.variant;
     let name = field.name.as_str();
-    let schema = quote!(
-        <#field_enum as ::gpui_form::typed::FormFieldId>::schema(#field_enum::#variant)
-    );
+    let descriptor = format_ident!("{}", field.name.to_uppercase());
+    let schema = quote!(<#state>::#descriptor.schema());
     match &field.attrs.shape {
         FieldShape::Value => quote! {
             if name.as_ref() == #name {
@@ -682,47 +609,6 @@ fn schema_resolver_statement(field_enum: &syn::Ident, field: &FieldModel<'_>) ->
             }
         }
     }
-}
-
-fn array_item_accessor(
-    model_ty: &TokenStream,
-    field: &FieldModel<'_>,
-) -> Option<Result<TokenStream>> {
-    let FieldShape::Array { id } = &field.attrs.shape else {
-        return None;
-    };
-    let item_ty = match vec_inner(field.ty) {
-        Some(item) => item,
-        None => {
-            return Some(Err(syn::Error::new_spanned(
-                field.ty,
-                "identified array requires Vec<T>",
-            )));
-        }
-    };
-    let field_method = format_ident!("{}_field", field.name);
-    let nested_field_method = format_ident!("{}_in", field.name);
-    let item_method = format_ident!("{}_item", field.name);
-    let nested_item_method = format_ident!("{}_item_in", field.name);
-    let item_id_getter = quote_spanned!(id.span()=> |item| &item.#id);
-    Some(Ok(quote! {
-        pub fn #item_method(
-            form: &::gpui_form::__private::gpui::Entity<Self>,
-            id: ::gpui_form::typed::FormItemId,
-        ) -> ::gpui_form::typed::FormField<Self, #item_ty> {
-            Self::#field_method(form).identified_item(id, #item_id_getter)
-        }
-
-        pub fn #nested_item_method<ParentForm>(
-            parent: ::gpui_form::typed::FormField<ParentForm, #model_ty>,
-            id: ::gpui_form::typed::FormItemId,
-        ) -> ::gpui_form::typed::FormField<ParentForm, #item_ty>
-        where
-            ParentForm: ::gpui_form::typed::FormStore,
-        {
-            Self::#nested_field_method(parent).identified_item(id, #item_id_getter)
-        }
-    }))
 }
 
 fn structural_validation_statement(field: &FieldModel<'_>) -> Option<TokenStream> {
@@ -941,4 +827,17 @@ fn vec_inner(ty: &Type) -> Option<&Type> {
         syn::GenericArgument::Type(ty) => Some(ty),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod expansion_tests {
+    #[test]
+    fn generated_tokens_parse_as_rust() {
+        let input = quote::quote! {
+            #[form(state = ExampleForm)]
+            struct ExampleInput { value: String }
+        };
+        let output = super::derive_form_model(input).expect("derive succeeds");
+        syn::parse2::<syn::File>(output).expect("generated tokens parse");
+    }
 }

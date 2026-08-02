@@ -1,7 +1,7 @@
-use gpui_form_macros::FormStore;
+use gpui_form_macros::FormModel;
 
-#[derive(FormStore)]
-#[form(store = ExampleForm)]
+#[derive(FormModel)]
+#[form(state = ExampleForm)]
 #[form(transform(adapter = "validify"))]
 struct Example {
     value: String,

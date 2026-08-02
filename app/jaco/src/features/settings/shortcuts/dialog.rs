@@ -5,7 +5,7 @@ use crate::{
     },
     components::chat::input::ComposerEditor,
     components::chat::run_settings::{
-        RunSettingsController, RunSettingsSubmitError, resolve_run_settings,
+        RunSettingsController, RunSettingsForm, RunSettingsSubmitError, resolve_run_settings,
     },
     components::delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
     components::hotkey_input::{
@@ -29,7 +29,7 @@ use gpui_component::{
     switch::Switch,
     v_flex,
 };
-use gpui_form::typed::FormStore as _;
+use gpui_form::typed::{FormState as _, PreparedSubmit};
 use gpui_form_gpui_component::FormSelect;
 use jaco_core::{ShortcutId, ShortcutInputSource};
 use jaco_db::ShortcutRecord;
@@ -39,7 +39,7 @@ use super::super::push_settings_error;
 use super::{
     choices::{InputSourceChoice, PromptChoice},
     form_state::{
-        ShortcutEditFormInput, ShortcutEditFormStore, ShortcutEditValidationContext,
+        ShortcutEditForm, ShortcutEditFormInput, ShortcutEditValidationContext,
         ShortcutValidationDependencies,
     },
     rows::{ShortcutManagementRow, input_source_label},
@@ -65,12 +65,12 @@ impl ShortcutEditMode {
 pub(super) struct ShortcutEditDialogState {
     mode: ShortcutEditMode,
     shortcut_id: Option<ShortcutId>,
-    form: Entity<ShortcutEditFormStore>,
+    form: Entity<ShortcutEditForm>,
     hotkey_input: Entity<HotkeyInputState>,
     prompt_select: Entity<SelectState<Vec<PromptChoice>>>,
     _prompt_control: FormSelect<Vec<PromptChoice>>,
     _subscriptions: Vec<Subscription>,
-    _run_settings: Entity<RunSettingsController<ShortcutEditFormStore>>,
+    _run_settings: Entity<RunSettingsController<ShortcutEditForm>>,
     chat_form: Entity<ChatFormState>,
     chat_form_controls: ChatFormControls,
     existing_shortcuts: Vec<ShortcutRecord>,
@@ -102,14 +102,10 @@ impl ShortcutEditDialogState {
                 temporary_hotkey: temporary_hotkey.clone(),
             });
         let form = cx.new(|cx| {
-            ShortcutEditFormStore::from_value_with_validation_context(
-                form_input,
-                validation_context,
-                cx,
-            )
+            ShortcutEditForm::from_value_with_validation_context(form_input, validation_context, cx)
         });
         let hotkey_input = cx.new(|cx| HotkeyInputState::new(window, cx));
-        let prompt_field = ShortcutEditFormStore::prompt_field(&form).project_value(
+        let prompt_field = ShortcutEditForm::PROMPT.project_value(
             "selection",
             |selection| Some(Some(selection.0.clone())),
             |selection, value| {
@@ -117,7 +113,8 @@ impl ShortcutEditDialogState {
                 true
             },
         );
-        let prompt_control = FormSelect::new(
+        let prompt_control = FormSelect::try_new(
+            &form,
             prompt_field,
             move |window, cx| SelectState::new(prompt_choices, None, window, cx),
             window,
@@ -126,27 +123,21 @@ impl ShortcutEditDialogState {
         .expect("shortcut prompt form entity is alive");
         let prompt_select = (*prompt_control).clone();
         let mut subscriptions = Vec::new();
-        let hotkey_field = ShortcutEditFormStore::hotkey_field(&form);
-        let component_field = hotkey_field.clone();
+        let hotkey_field = ShortcutEditForm::HOTKEY;
+        let hotkey_binding = hotkey_field.bind_control(&form, cx);
         subscriptions.push(cx.subscribe_in(
             &hotkey_input,
             window,
             move |_owner, _state, event: &HotkeyInputEvent, window, cx| {
                 let HotkeyInputEvent::Change(value) = event;
-                let value = value.clone();
-                let field = component_field.clone();
-                cx.defer_in(window, move |_owner, _window, cx| {
-                    let _ = field.set_user_value(value, cx);
-                });
+                hotkey_binding.defer_set(value.clone(), window, cx);
             },
         ));
-        subscriptions.push(
-            hotkey_field
-                .subscribe_in(window, cx, |_owner, _window, cx| cx.notify())
-                .expect("shortcut hotkey form entity is alive"),
-        );
-        let run_settings_field = ShortcutEditFormStore::run_settings_field(&form);
-        let run_settings = cx.new(|cx| RunSettingsController::new(run_settings_field, window, cx));
+        subscriptions
+            .push(hotkey_field.subscribe_in(&form, window, cx, |_owner, _window, cx| cx.notify()));
+        let run_settings_field = ShortcutEditForm::RUN_SETTINGS;
+        let run_settings =
+            cx.new(|cx| RunSettingsController::new(form.clone(), run_settings_field, window, cx));
         let run_settings_states = run_settings.read(cx).control_states();
         let placeholder = cx.global::<I18n>().t("chat-form-placeholder");
         let composer = cx.new(|cx| ComposerEditor::new(placeholder, window, cx));
@@ -197,10 +188,13 @@ impl ShortcutEditDialogState {
             });
         let result = self.form.update(cx, |form, cx| {
             form.set_validation_context(validation_context, cx);
-            let revision = form.revision();
-            form.prepare_submit(cx).map(|draft| (revision, draft))
+            form.prepare_submit(cx)
         });
-        let Ok((revision, draft)) = result else {
+        let Ok(PreparedSubmit {
+            revision,
+            output: draft,
+        }) = result
+        else {
             return false;
         };
         let Some(hotkey) = draft.hotkey.clone() else {
@@ -326,12 +320,9 @@ impl ShortcutEditDialogState {
                     .h(px(40.))
             }))
             .on_click(cx.listener(|this, states: &Vec<bool>, _window, cx| {
-                let current = ShortcutEditFormStore::input_source_field(&this.form)
-                    .value(cx)
-                    .unwrap_or(ShortcutInputSource::SelectionOrClipboard);
+                let current = ShortcutEditForm::INPUT_SOURCE.value(&this.form, cx);
                 let input_source = input_source_from_toggle_states(current, states);
-                let _ = ShortcutEditFormStore::input_source_field(&this.form)
-                    .set_user_value(input_source, cx);
+                ShortcutEditForm::INPUT_SOURCE.set(&this.form, input_source, cx);
             }))
             .into_any_element()
     }
@@ -349,14 +340,10 @@ impl Render for ShortcutEditDialogState {
                 i18n.t("shortcut-field-enabled"),
             )
         };
-        let hotkey_field = ShortcutEditFormStore::hotkey_field(&self.form);
-        let model_field = ShortcutEditFormStore::run_settings_field(&self.form).project(
-            "model",
-            |settings| &settings.model,
-            |settings, model| settings.model = model,
-        );
-        let hotkey_error = field_error_message(hotkey_field.errors(cx).unwrap_or_default(), cx);
-        let model_error = field_error_message(model_field.errors(cx).unwrap_or_default(), cx);
+        let hotkey_field = ShortcutEditForm::HOTKEY;
+        let model_field = RunSettingsForm::MODEL.within(ShortcutEditForm::RUN_SETTINGS);
+        let hotkey_error = field_error_message(hotkey_field.errors(&self.form, cx), cx);
+        let model_error = field_error_message(model_field.errors(&self.form, cx), cx);
         let (hotkey, prompt_select, input_source, enabled) = {
             let form = self.form.read(cx);
             (
@@ -414,8 +401,7 @@ impl Render for ShortcutEditDialogState {
                         Switch::new("shortcut-dialog-enabled")
                             .checked(enabled)
                             .on_click(cx.listener(|this, checked, _window, cx| {
-                                let _ = ShortcutEditFormStore::enabled_field(&this.form)
-                                    .set_user_value(*checked, cx);
+                                ShortcutEditForm::ENABLED.set(&this.form, *checked, cx);
                             })),
                     ),
             )
@@ -807,7 +793,8 @@ mod tests {
         ShortcutDialogChoices, ShortcutEditDialogState, ShortcutEditMode,
         confirm_shortcut_edit_dialog, field_error_message, input_source_from_toggle_states,
     };
-    use crate::features::settings::shortcuts::form_state::ShortcutEditFormStore;
+    use crate::components::chat::run_settings::RunSettingsForm;
+    use crate::features::settings::shortcuts::form_state::ShortcutEditForm;
     use crate::{database, foundation, state};
     use gpui::{AppContext as _, TestAppContext, VisualTestContext, WindowHandle};
     use tempfile::{TempDir, tempdir};
@@ -825,24 +812,15 @@ mod tests {
         let form_store = form.read_with(&cx, |dialog, _| dialog.form.clone());
         assert_eq!(
             form_store.read_with(&cx, |_store, cx| {
-                field_error_message(
-                    ShortcutEditFormStore::hotkey_field(&form_store)
-                        .errors(cx)
-                        .unwrap_or_default(),
-                    cx,
-                )
-                .map(|message| message.to_string())
+                field_error_message(ShortcutEditForm::HOTKEY.errors(&form_store, cx), cx)
+                    .map(|message| message.to_string())
             }),
             Some(required_message.clone())
         );
         assert_eq!(
             form_store.read_with(&cx, |_store, cx| {
-                let model = ShortcutEditFormStore::run_settings_field(&form_store).project(
-                    "model",
-                    |settings| &settings.model,
-                    |settings, model| settings.model = model,
-                );
-                field_error_message(model.errors(cx).unwrap_or_default(), cx)
+                let model = RunSettingsForm::MODEL.within(ShortcutEditForm::RUN_SETTINGS);
+                field_error_message(model.errors(&form_store, cx), cx)
                     .map(|message| message.to_string())
             }),
             Some(required_message)
@@ -864,9 +842,7 @@ mod tests {
         let form = window.root(&mut cx).expect("shortcut dialog root");
 
         assert!(form.read_with(&cx, |dialog, cx| {
-            let run_settings = ShortcutEditFormStore::run_settings_field(&dialog.form)
-                .value(cx)
-                .expect("shortcut run settings field is available");
+            let run_settings = ShortcutEditForm::RUN_SETTINGS.value(&dialog.form, cx);
             run_settings.model.is_none()
         }));
     }

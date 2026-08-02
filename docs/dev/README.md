@@ -1,5 +1,14 @@
 # Workspace development plans
 
+## Feature plans
+
+| Issue | 状态 | 入口 |
+| --- | --- | --- |
+| [#199](https://github.com/suxiaoshao/gpui/issues/199) form owner、app store/form/operation 与 Transition 重构 | form 阶段已实施并通过自动化门禁；Jaco UI 已完成定向 smoke，其他 app/store/operation 阶段仍待规划 | [issue-199/README.md](issue-199/README.md) |
+| [#175](https://github.com/suxiaoshao/gpui/issues/175) previous typed form delivery | Issue/PR 已完成；form API 计划被 #199 取代 | [issue-175/README.md](issue-175/README.md) |
+
+## Framework migrations
+
 这里仅登记跨 workspace 的迁移批次。每次框架迁移使用独立的目标版本或 Git hash 标识，
 不会用一个无版本文件覆盖历史计划；具体 app/crate 的实现内容放在各自的 `docs/dev`。
 
@@ -9,6 +18,9 @@
 
 ## 目录约定
 
+- `docs/dev/issue-<number>/README.md`：跨 owner feature/refactor 的共享规格、顺序与子计划索引。
+- `app/<name>/docs/dev/issue-<number>/README.md`、
+  `crates/<name>/docs/dev/issue-<number>/README.md`：同一 issue 的 owner plan 或历史归档。
 - `docs/dev/migrations/<target-id>/README.md`：只保存跨 workspace 的顺序、发布门和子计划索引。
 - `docs/dev/migrations/<target-id>/workspace.md`：root manifest/toolchain、dependency graph 与最终 CI 门。
 - `docs/dev/migrations/<target-id>/dependency-evidence.md`：共享依赖与上游证据。

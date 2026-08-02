@@ -73,15 +73,14 @@ impl ValidationScope {
     }
 }
 
-pub trait ValidationAdapter<Model>: Default + 'static {
+pub trait ValidationAdapter<Model>: 'static {
     type Context: ValidationContextValue;
 
     fn validate(
-        &self,
         model: &Model,
         trigger: ValidationTrigger,
-        scope: ValidationScope,
-        context: ValidationContext<'_, Self::Context>,
+        scope: &ValidationScope,
+        context: &Self::Context,
         cx: &App,
     ) -> ValidationAdapterReport;
 }
@@ -93,11 +92,10 @@ impl<Model: 'static> ValidationAdapter<Model> for NoopValidationAdapter {
     type Context = NoValidationContext;
 
     fn validate(
-        &self,
         _model: &Model,
         _trigger: ValidationTrigger,
-        _scope: ValidationScope,
-        _context: ValidationContext<'_, Self::Context>,
+        _scope: &ValidationScope,
+        _context: &Self::Context,
         _cx: &App,
     ) -> ValidationAdapterReport {
         ValidationAdapterReport::default()
@@ -184,6 +182,28 @@ struct AsyncValidationEntry {
     issue: Option<ValidationIssue>,
 }
 
+#[doc(hidden)]
+pub struct ValidationSnapshot {
+    pub(crate) scope: ValidationScope,
+    pub(crate) generated_issues: Vec<ValidationIssue>,
+    pub(crate) adapter_issues: Vec<ValidationIssue>,
+}
+
+impl ValidationSnapshot {
+    #[doc(hidden)]
+    pub fn new(
+        scope: ValidationScope,
+        generated_issues: Vec<ValidationIssue>,
+        adapter_issues: Vec<ValidationIssue>,
+    ) -> Self {
+        Self {
+            scope,
+            generated_issues,
+            adapter_issues,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct FormValidationRuntime {
     generated_issues: Vec<ValidationIssue>,
@@ -211,26 +231,22 @@ impl FormValidationRuntime {
         ValidationReport::new(issues)
     }
 
-    #[doc(hidden)]
-    pub fn replace_generated(&mut self, scope: &ValidationScope, next: Vec<ValidationIssue>) {
+    pub(crate) fn replace_synchronous(&mut self, snapshot: ValidationSnapshot) -> bool {
+        let before_generated = self.generated_issues.clone();
+        let before_adapter = self.adapter_issues.clone();
+        let scope = &snapshot.scope;
+
         self.generated_issues
             .retain(|issue| !scope.includes(issue.path.as_ref()));
-        self.generated_issues.extend(next);
+        self.generated_issues.extend(snapshot.generated_issues);
+        self.adapter_issues
+            .retain(|issue| !scope.includes(issue.path.as_ref()));
+        self.adapter_issues.extend(snapshot.adapter_issues);
+
+        before_generated != self.generated_issues || before_adapter != self.adapter_issues
     }
 
-    #[doc(hidden)]
-    pub fn replace_adapter(&mut self, next: Vec<ValidationIssue>) {
-        self.adapter_issues = next;
-    }
-
-    pub fn clear(&mut self) {
-        self.generated_issues.clear();
-        self.adapter_issues.clear();
-        self.control_issues.clear();
-        self.async_entries.clear();
-    }
-
-    pub fn clear_for_model_replacement(&mut self) {
+    pub(crate) fn clear_for_model_replacement(&mut self) {
         self.generated_issues.clear();
         self.adapter_issues.clear();
         self.async_entries.clear();
@@ -913,15 +929,14 @@ where
     type Context = T::Context;
 
     fn validate(
-        &self,
         model: &T,
         trigger: ValidationTrigger,
-        _scope: ValidationScope,
-        context: ValidationContext<'_, Self::Context>,
+        _scope: &ValidationScope,
+        context: &Self::Context,
         _cx: &App,
     ) -> ValidationAdapterReport {
         let result = garde::i18n::with_i18n(GardeMessageI18n::<P>::default(), || {
-            garde::Validate::validate_with(model, context.external)
+            garde::Validate::validate_with(model, context)
         });
         let Err(report) = result else {
             return ValidationAdapterReport::default();

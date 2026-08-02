@@ -24,12 +24,12 @@ impl FormModelSchema for Child {
     fn schema_at_path(
         &self,
         _segments: &[FieldPathSegment],
-    ) -> Result<&'static FieldSchema, FormSchemaPathError> {
+    ) -> Result<FieldSchema, FormSchemaPathError> {
         Err(FormSchemaPathError::UnknownField)
     }
 }
 
-#[derive(Clone, PartialEq, gpui_form::FormStore, garde::Validate)]
+#[derive(Clone, PartialEq, gpui_form::FormModel, garde::Validate)]
 #[form(validation(adapter = "garde"))]
 struct Root {
     #[form(group)]

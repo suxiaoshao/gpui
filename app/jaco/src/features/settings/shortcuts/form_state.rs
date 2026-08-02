@@ -6,7 +6,7 @@ use crate::{
     },
     state::providers::ProviderModelKey,
 };
-use gpui_form::typed::{SubmitTransform, TransformReport};
+use gpui_form::typed::SubmitTransform;
 use jaco_core::{PromptId, ShortcutInputSource};
 use jaco_db::ShortcutRecord;
 
@@ -20,10 +20,10 @@ pub(super) struct ShortcutValidationDependencies {
 pub(super) type ShortcutEditValidationContext =
     JacoValidationContext<ShortcutValidationDependencies>;
 
-#[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormModel, garde::Validate)]
 #[garde(context(ShortcutEditValidationContext))]
 #[form(
-    store = ShortcutEditFormStore,
+    state = ShortcutEditForm,
     validation(adapter = "garde", messages = JacoGardeMessageProvider),
     transform(adapter = ShortcutEditTransform)
 )]
@@ -90,8 +90,8 @@ pub(super) struct ShortcutEditTransform;
 impl SubmitTransform<ShortcutEditFormInput> for ShortcutEditTransform {
     type Output = ShortcutEditFormInput;
 
-    fn transform(&self, model: &ShortcutEditFormInput) -> Result<Self::Output, TransformReport> {
-        Ok(normalize_shortcut_input(model))
+    fn transform(model: &ShortcutEditFormInput) -> Self::Output {
+        normalize_shortcut_input(model)
     }
 }
 

@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 
 use gpui::{Entity, SharedString, Subscription};
 use gpui_component::input::InputState;
-use gpui_form::typed::ValidationMessage;
 use jaco_core::{
     ModelCapabilitiesSnapshot, ProviderId, ProviderModelId, ProviderModelMetadata,
     ProviderSecretRefs, ProviderSettingValue,
@@ -61,13 +60,6 @@ impl ProviderEditorMetadata {
             existing_secret_refs: seed.existing_secret_refs.clone(),
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(super) enum ProviderValidationState {
-    Idle,
-    Valid,
-    Invalid(ValidationMessage),
 }
 
 #[derive(Debug, Clone, PartialEq)]

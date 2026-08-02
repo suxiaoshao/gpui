@@ -2,8 +2,6 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-> **Implementation status:** this README documents the implemented public API.
-
 `gpui-form-gpui-component` connects typed `gpui-form` fields to
 `gpui-component` state entities. The form remains the only business-value and
 submit source. Each stateful bound control is a small Rust handle that owns only
@@ -12,22 +10,30 @@ that entity:
 
 ```rust,ignore
 use gpui_component::input::{Input, InputState};
-use gpui_form::FormControl as _;
 use gpui_form_gpui_component::FormInput;
 
 let name_input = FormInput::new(
-    ProviderInputFormStore::name_field(&form),
+    &form,
+    ProviderForm::NAME,
     |window, cx| InputState::new(window, cx).placeholder("Provider name"),
     window,
     cx,
-)?;
+);
 
 let element = Input::new(&name_input);
 ```
 
+`ProviderForm::NAME` exposes the field's single schema-level definition as an
+associated `const` descriptor. It is allocation-free and reusable: it provides
+only static schema and field access, and never retains this form entity, a value,
+or a subscription. Passing `&form` makes the ownership boundary explicit.
+For a statically present (total) field, `FormInput::new` returns `Self`, not a
+`Result`. A projected or identified (partial) field uses `FormInput::try_new`
+and returns `FieldAccessError` if the path no longer exists.
+
 The construction closure configures the native state. There is no adapter
-`Config`, delegate copy, attachment field, focus flag, or error-visibility
-state. `FormSelect<D>` binds `Option<D::Item::Value>` and confirms through
+`Config`, delegate copy, binding field, focus flag, or error-visibility state.
+`FormSelect<D>` binds `Option<D::Item::Value>` and confirms through
 `SelectEvent::Confirm`; `FormCombobox<D>` binds `Vec<D::Item::Value>` and writes
 on `ComboboxEvent::Change`. Programmatic form changes are silently projected to
 every mounted instance through the native value setters.
@@ -50,33 +56,28 @@ elements rather than creating an artificial bound wrapper:
 ```rust,ignore
 use gpui_component::{checkbox::Checkbox, switch::Switch};
 
-let enabled_field = ProviderInputFormStore::enabled_field(&self.form);
-let enabled = enabled_field
-    .value(cx)
-    .expect("ProviderPage owns the form while rendering");
+let enabled = ProviderForm::ENABLED.value(&self.form, cx);
 
-let checkbox_field = enabled_field.clone();
+let checkbox_field = ProviderForm::ENABLED;
+let checkbox_form = self.form.clone();
 let checkbox = Checkbox::new("provider-enabled-checkbox")
     .checked(enabled)
     .on_click(move |checked, _window, cx| {
-        checkbox_field
-            .set_user_value(*checked, cx)
-            .expect("ProviderPage owns the form while this element is mounted");
+        checkbox_field.set(&checkbox_form, *checked, cx);
     });
 
+let switch_form = self.form.clone();
+let switch_field = ProviderForm::ENABLED;
 let switch = Switch::new("provider-enabled-switch")
     .checked(enabled)
     .on_click(move |checked, _window, cx| {
-        enabled_field
-            .set_user_value(*checked, cx)
-            .expect("ProviderPage owns the form while this element is mounted");
+        switch_field.set(&switch_form, *checked, cx);
     });
 ```
 
-The `expect` calls document a structural lifetime invariant during rendering;
-use normal `Result` handling where the form or projected path can legitimately
-disappear.
+Total descriptors have infallible synchronous reads and writes once the caller
+supplies an `Entity<Form>`. Only partial descriptors use `try_value` and
+`try_set` with normal `FieldAccessError` handling.
 
-See the [user guide](docs/guide.md), the
-[Chinese guide](docs/guide.zh-CN.md), and the
-[implementation plan](dev/typed-bound-controls.md).
+See the [user guide](docs/guide.md) and the
+[Chinese guide](docs/guide.zh-CN.md).

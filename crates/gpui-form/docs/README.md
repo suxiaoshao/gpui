@@ -5,6 +5,9 @@
 - [User guide (English)](guide.md)
 - [使用指南（中文）](guide.zh-CN.md)
 
-The user guide is the public documentation for model declaration, bound
-controls, rendering, Garde and custom validation, validation localization,
-submit preparation, programmatic updates, nested data, and custom controls.
+The guides define the public contract for `FormModel` / `FormState`,
+allocation-free schema-level `SCREAMING_SNAKE_CASE` associated-const field
+descriptors, total and partial paths, owning controls,
+scope-preserving validation, prepared submission, nested data, and custom
+controls. They also define the boundary between a form draft, shared
+`gpui-store` state, and `gpui-operation` lifecycles.

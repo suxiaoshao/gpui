@@ -1,7 +1,7 @@
-use gpui_form_macros::FormStore;
+use gpui_form_macros::FormModel;
 
-#[derive(FormStore)]
-#[form(store = ExampleForm, store = OtherForm)]
+#[derive(FormModel)]
+#[form(state = ExampleForm, state = OtherForm)]
 struct Example {
     value: String,
 }

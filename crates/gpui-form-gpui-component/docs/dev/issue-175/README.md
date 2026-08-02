@@ -1,10 +1,16 @@
 # 类型化 bound control 实施计划
 
+> **历史归档（Superseded）。** 本计划随
+> [PR #176](https://github.com/suxiaoshao/gpui/pull/176) 交付；该 PR 的 closing issue 为
+> [#175](https://github.com/suxiaoshao/gpui/issues/175)。Issue #199 的显式 form、
+> `ControlBinding` 与 total/partial constructor 设计已经取代本文公开 API；后继计划见
+> [Issue #199 adapter owner plan](../issue-199/README.md)。下文状态仅代表原实施阶段。
+
 ## 1. 状态与范围
 
-- 文档位置：`crates/gpui-form-gpui-component/dev/typed-bound-controls.md`。
+- 文档位置：`crates/gpui-form-gpui-component/docs/dev/issue-175/README.md`（历史归档）。
 - 关联分支：`codex/175-jaco-shortcut-temporary-window`。
-- 关联 issue：无独立 issue；这是跨 crate form 基础设施迁移，不属于 #175 产品需求。
+- 交付归属：基础设施本身没有独立 issue，但实际通过 PR #176 随 Issue #175 合入；按交付来源归档。
 - 当前阶段：**目标 API、依赖升级、源码迁移与自动化验证已完成；隔离数据目录的 Jaco bundle
   已完成输入校验、blur/change、picker 与 switch 的定向 Computer Use smoke。**
 - 当前源码说明：`src/` 已提供只持有 subscriptions 与原生 state entity 的 `FormInput`、
@@ -21,7 +27,7 @@
 - 非目标：应用布局、catalog/store、fallback、持久化、路由、页面 focus 策略、应用翻译资源。
 - 兼容策略：这是破坏性重构。删除旧 `Form*State<Form, ...>`、`Form*Config`、
   `FormControlStatus`、`FormBoolState` 和 `bind_*` 风格 API，不保留兼容 wrapper。
-- 协同门槛：Jaco 调用点由 `app/jaco/docs/dev/gpui-form-migration.md` 负责迁移；旧 API
+- 协同门槛：Jaco 调用点由 `app/jaco/docs/dev/issue-175/gpui-form-migration.md` 负责迁移；旧 API
   只有在这些调用点已迁移后才能从同一 changeset 中删除。
 
 ### 已确认的用户决策
@@ -208,7 +214,7 @@ crates/gpui-form-gpui-component/
   README.zh-CN.md                               # 已更新：中文镜像
   docs/guide.md                                 # 已更新：英文完整指南
   docs/guide.zh-CN.md                           # 已更新：中文镜像
-  dev/typed-bound-controls.md                   # 本实施计划
+  docs/dev/issue-175/README.md                  # 本实施计划（历史归档）
   src/
     lib.rs                                      # 重写 exports
     error.rs                                    # 新增：binding 与 integer policy 构造错误
@@ -584,8 +590,8 @@ cargo check -p gpui-form-gpui-component --all-targets --all-features --locked
 **Prerequisites**
 
 - DEP-00 完成。
-- `crates/gpui-form/dev/typed-form-store.md` 的 FORM-10 至 FORM-60 已完成。
-- `crates/gpui-form-macros/dev/form-store-derive.md` 的 MACRO-10 至 MACRO-40 已完成，adapter
+- `crates/gpui-form/docs/dev/issue-175/README.md` 的 FORM-10 至 FORM-60 已完成。
+- `crates/gpui-form-macros/docs/dev/issue-175/README.md` 的 MACRO-10 至 MACRO-40 已完成，adapter
   tests 可以使用最终 generated fields。
 
 **Evidence**
@@ -937,7 +943,7 @@ cargo clippy -p gpui-form-gpui-component --all-targets --all-features --locked -
 **Evidence**
 
 - 2.1 列出旧 bool/status/config/form-generic wrapper；5 章已经逐项完成 upstream 复用、保留或删除决定。
-- `app/jaco/docs/dev/gpui-form-migration.md` 固定所有应用调用点的 owner 与替换顺序；本包不重新设计 Jaco UI。
+- `app/jaco/docs/dev/issue-175/gpui-form-migration.md` 固定所有应用调用点的 owner 与替换顺序；本包不重新设计 Jaco UI。
 
 **Files**
 
@@ -1072,7 +1078,7 @@ rg -n '^## ' crates/gpui-form-gpui-component/{README.md,README.zh-CN.md,docs/gui
 rg -c '^```' crates/gpui-form-gpui-component/{README.md,README.zh-CN.md,docs/guide.md,docs/guide.zh-CN.md}
 test -f crates/gpui-form-gpui-component/docs/guide.md
 test -f crates/gpui-form-gpui-component/docs/guide.zh-CN.md
-test -f crates/gpui-form-gpui-component/dev/typed-bound-controls.md
+test -f crates/gpui-form-gpui-component/docs/dev/issue-175/README.md
 test -f crates/gpui-form/docs/guide.md
 test -f crates/gpui-form/docs/guide.zh-CN.md
 test -f crates/gpui-form-macros/docs/guide.md

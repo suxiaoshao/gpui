@@ -23,7 +23,9 @@ See the [complete design](design.md) for concepts, ownership, and final behavior
 
 ### Issue implementation plans
 
-These plans cover issue #175 product work only. The application-wide form-library migration is documented separately in [`../gpui-form-migration.md`](../gpui-form-migration.md).
+These plans cover issue #175 product work. The form-library migration delivered by the same PR is
+preserved as a superseded historical plan in
+[`gpui-form-migration.md`](gpui-form-migration.md).
 
 - [chat-form-refactor.md](chat-form-refactor.md)
 - [run-settings.md](run-settings.md)

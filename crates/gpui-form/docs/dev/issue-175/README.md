@@ -1,10 +1,16 @@
 # gpui-form 类型化表单核心重构实施计划
 
+> **历史归档（Superseded）。** 本计划随
+> [PR #176](https://github.com/suxiaoshao/gpui/pull/176) 交付；该 PR 的 closing issue 为
+> [#175](https://github.com/suxiaoshao/gpui/issues/175)。Issue #199 的显式 form owner 设计已经取代
+> 本文公开 API；后继计划见 [Issue #199 core owner plan](../issue-199/README.md)。下文中的“当前”均为
+> 2026-07-21/22 实施阶段的历史快照。
+
 ## 1. 状态与范围
 
-- 文档位置：`crates/gpui-form/dev/typed-form-store.md`。
+- 文档位置：`crates/gpui-form/docs/dev/issue-175/README.md`（历史归档）。
 - 关联分支：`codex/175-jaco-shortcut-temporary-window`。
-- 关联 issue：无独立 issue；这是跨 crate form 基础设施迁移，不属于 issue #175 的产品需求。
+- 交付归属：基础设施本身没有独立 issue，但实际通过 PR #176 随 Issue #175 合入；按交付来源归档。
 - 当前阶段：**2026-07-22 重新打开验证消息国际化边界。既有 `FORM-45`/`MACRO-35` nested
   group/array 门禁保持完成；新增 `FORM-80`、macro `MACRO-50` 与 Jaco `JACO-FORM-80` 尚未实施，
   用于把验证报告从“已翻译字符串”改为“语义消息 + 渲染时翻译”。在这三个工作包完成前，不能把
@@ -1699,11 +1705,11 @@ git diff --check
 
 - FORM-60。
 - 2026-07-22 corrective gate：FORM-45 与
-  `crates/gpui-form-macros/dev/form-store-derive.md` 的 `MACRO-35` 已在同一 changeset 完成。
-- `crates/gpui-form-macros/dev/form-store-derive.md` 的 `MACRO-40` 已在 corrective changeset 后完成
+  `crates/gpui-form-macros/docs/dev/issue-175/README.md` 的 `MACRO-35` 已在同一 changeset 完成。
+- `crates/gpui-form-macros/docs/dev/issue-175/README.md` 的 `MACRO-40` 已在 corrective changeset 后完成
   双语文档纠偏；其当时保留的中间未完成状态已由本 FORM-70 gate 翻转。
-- `crates/gpui-form-gpui-component/dev/typed-bound-controls.md` 的 `CONTROL-50`。
-- `app/jaco/docs/dev/gpui-form-migration.md` 的 `JACO-FORM-70`。
+- `crates/gpui-form-gpui-component/docs/dev/issue-175/README.md` 的 `CONTROL-50`。
+- `app/jaco/docs/dev/issue-175/gpui-form-migration.md` 的 `JACO-FORM-70`。
 
 **Evidence**
 
@@ -1715,11 +1721,11 @@ git diff --check
 **Files**
 
 - 审核并按最终实现同步：`README.md`、`README.zh-CN.md`、`docs/guide.md`、
-  `docs/guide.zh-CN.md`、`dev/README.md`、`dev/typed-form-store.md`。
+  `docs/guide.zh-CN.md`、`docs/dev/README.md`、`docs/dev/issue-175/README.md`。
 - 审核并只做最终状态翻转：`crates/gpui-form-macros/README.md`、
   `crates/gpui-form-macros/README.zh-CN.md`、`crates/gpui-form-macros/docs/guide.md`、
   `crates/gpui-form-macros/docs/guide.zh-CN.md`、
-  `crates/gpui-form-macros/dev/form-store-derive.md`。
+  `crates/gpui-form-macros/docs/dev/issue-175/README.md`。
 - 只在验证发现目标文档与最终 public API 不一致时修改上述文档；不得在本 gate 修改 macro、
   adapter 或 Jaco 源码来掩盖其未完成工作包。
 
@@ -1882,7 +1888,7 @@ rg --files crates/gpui-form/src | rg '/(core|pipeline|view)(\\.rs|/)'
 - `README.md` 为默认英文项目介绍与最短完整示例；`README.zh-CN.md` 是语义一致的中文镜像。
 - `docs/guide.md` 与 `docs/guide.zh-CN.md` 覆盖全部公开使用契约；代码 block/API 名必须一致。
 - 实施计划只使用中文，并区分 `[当前事实]`、`[上游事实]`、`[用户决定]` 和目标设计。
-- `docs/README.md` 与 `dev/README.md` 链接必须可解析；不把实施步骤混入 README。
+- `docs/README.md` 与 `docs/dev/README.md` 链接必须可解析；不把实施步骤混入 README。
 
 ## 8. 执行交接审计
 

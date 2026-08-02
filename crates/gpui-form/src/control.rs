@@ -1,6 +1,5 @@
 use std::{
     borrow::Cow,
-    ops::Deref,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -8,10 +7,12 @@ use std::{
 };
 
 use gpui::{App, Context, Entity, Window};
+use gpui_operation::Transition as _;
 
 use crate::{
-    field::{FormField, FormFieldError},
-    form::{FormEvent, FormStore},
+    field::{FieldMutationError, PartialFormField},
+    form::transition::{ClearControlValidationIssue, SetControlValidationIssue},
+    form::{FormState, apply_validation_effect},
     validation::report::{ValidationIssue, ValidationMessage, ValidationSource},
     validation::trigger::ValidationTrigger,
 };
@@ -37,16 +38,18 @@ impl ControlLease {
             active: AtomicBool::new(true),
         }
     }
+
     fn deactivate(&self) {
         self.active.store(false, Ordering::Release);
     }
+
     fn is_active(&self) -> bool {
         self.active.load(Ordering::Acquire)
     }
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ControlLifetime(Weak<ControlLease>);
+pub(crate) struct ControlLifetime(pub(crate) Weak<ControlLease>);
 
 impl ControlLifetime {
     pub(crate) fn is_alive(&self) -> bool {
@@ -54,21 +57,23 @@ impl ControlLifetime {
     }
 }
 
-pub struct ControlAttachment<Form, T>
+pub struct ControlBinding<Form, T>
 where
-    Form: FormStore,
+    Form: FormState,
 {
-    field: FormField<Form, T>,
+    form: gpui::WeakEntity<Form>,
+    field: PartialFormField<Form, T>,
     id: ControlId,
     lease: Arc<ControlLease>,
 }
 
-impl<Form, T> Clone for ControlAttachment<Form, T>
+impl<Form, T> Clone for ControlBinding<Form, T>
 where
-    Form: FormStore,
+    Form: FormState,
 {
     fn clone(&self) -> Self {
         Self {
+            form: self.form.clone(),
             field: self.field.clone(),
             id: self.id,
             lease: self.lease.clone(),
@@ -76,54 +81,66 @@ where
     }
 }
 
-impl<Form, T> ControlAttachment<Form, T>
+impl<Form, T> Drop for ControlBinding<Form, T>
 where
-    Form: FormStore,
+    Form: FormState,
+{
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.lease) == 1 {
+            self.lease.deactivate();
+        }
+    }
+}
+
+impl<Form, T> ControlBinding<Form, T>
+where
+    Form: FormState,
     T: Clone + PartialEq + 'static,
 {
-    pub(crate) fn new(field: FormField<Form, T>) -> Self {
+    pub(crate) fn new(form: &Entity<Form>, field: PartialFormField<Form, T>) -> Self {
         Self {
+            form: form.downgrade(),
             field,
             id: ControlId::next(),
             lease: Arc::new(ControlLease::new()),
         }
     }
 
-    fn deactivate_and_clear_issue(
-        field: &FormField<Form, T>,
-        id: ControlId,
-        lease: &ControlLease,
-        cx: &mut App,
-    ) {
-        lease.deactivate();
-        let _ = field.update_form_if_alive(cx, move |form, form_cx| {
-            if form
+    fn clear_issue(form: &Entity<Form>, id: ControlId, cx: &mut App) {
+        form.update(cx, move |form, form_cx| {
+            let effect = form
                 .__runtime_mut()
                 .validation_mut()
-                .clear_control_issue(id)
-            {
-                form_cx.emit(FormEvent::RuntimeChanged);
-                form_cx.notify();
-            }
+                .transition(ClearControlValidationIssue { id });
+            apply_validation_effect(effect, form_cx);
         });
     }
 
-    pub fn defer_set_user_value<Owner>(&self, value: T, window: &Window, cx: &mut Context<Owner>)
+    fn deactivate(&self, form: Option<&Entity<Form>>, cx: &mut App) {
+        self.lease.deactivate();
+        if let Some(form) = form {
+            Self::clear_issue(form, self.id, cx);
+        }
+    }
+
+    pub fn defer_set<Owner>(&self, value: T, window: &Window, cx: &mut Context<Owner>)
     where
         Owner: 'static,
     {
-        let field = self.field.clone();
-        let id = self.id;
+        let binding = self.clone();
         let lease = Arc::downgrade(&self.lease);
         cx.defer_in(window, move |_, _, cx| {
-            let Some(lease) = lease.upgrade().filter(|lease| lease.is_active()) else {
+            let Some(_lease) = lease.upgrade().filter(|lease| lease.is_active()) else {
+                return;
+            };
+            let Some(form) = binding.form.upgrade() else {
                 return;
             };
             if matches!(
-                field.set_user_value(value, cx),
-                Err(FormFieldError::ValueUnavailable)
+                binding.field.try_set(&form, value, cx),
+                Err(FieldMutationError::Access(_))
             ) {
-                Self::deactivate_and_clear_issue(&field, id, &lease, cx);
+                binding.deactivate(Some(&form), cx);
             }
         });
     }
@@ -132,18 +149,21 @@ where
     where
         Owner: 'static,
     {
-        let field = self.field.clone();
-        let id = self.id;
+        let binding = self.clone();
         let lease = Arc::downgrade(&self.lease);
         cx.defer_in(window, move |_, _, cx| {
-            let Some(lease) = lease.upgrade().filter(|lease| lease.is_active()) else {
+            let Some(_lease) = lease.upgrade().filter(|lease| lease.is_active()) else {
                 return;
             };
-            if matches!(
-                field.validate(ValidationTrigger::Blur, cx),
-                Err(FormFieldError::ValueUnavailable)
-            ) {
-                Self::deactivate_and_clear_issue(&field, id, &lease, cx);
+            let Some(form) = binding.form.upgrade() else {
+                return;
+            };
+            if binding
+                .field
+                .try_validate(&form, ValidationTrigger::Blur, cx)
+                .is_err()
+            {
+                binding.deactivate(Some(&form), cx);
             }
         });
     }
@@ -157,32 +177,38 @@ where
     ) where
         Owner: 'static,
     {
-        let field = self.field.clone();
-        let id = self.id;
-        let code = code.into();
+        let binding = self.clone();
         let lease = Arc::downgrade(&self.lease);
+        let code = code.into();
         cx.defer_in(window, move |_, _, cx| {
             let Some(active) = lease.upgrade().filter(|lease| lease.is_active()) else {
                 return;
             };
-            let lifetime = ControlLifetime(Arc::downgrade(&active));
+            let Some(form) = binding.form.upgrade() else {
+                return;
+            };
+            if binding.field.try_value(&form, cx).is_err() {
+                binding.deactivate(Some(&form), cx);
+                return;
+            }
             let issue = ValidationIssue::field(
-                field.path().clone(),
+                binding.field.path().clone(),
                 ValidationTrigger::Change,
                 ValidationSource::Control,
                 code,
                 message,
             );
-            let result = field.update_form(cx, move |form, form_cx| {
-                form.__runtime_mut()
-                    .validation_mut()
-                    .set_control_issue(id, lifetime, issue);
-                form_cx.emit(FormEvent::RuntimeChanged);
-                form_cx.notify();
+            form.update(cx, move |form, form_cx| {
+                let effect =
+                    form.__runtime_mut()
+                        .validation_mut()
+                        .transition(SetControlValidationIssue {
+                            id: binding.id,
+                            lease: active,
+                            issue,
+                        });
+                apply_validation_effect(effect, form_cx);
             });
-            if matches!(result, Err(FormFieldError::ValueUnavailable)) {
-                Self::deactivate_and_clear_issue(&field, id, &active, cx);
-            }
         });
     }
 
@@ -190,45 +216,20 @@ where
     where
         Owner: 'static,
     {
-        let field = self.field.clone();
-        let id = self.id;
+        let binding = self.clone();
         let lease = Arc::downgrade(&self.lease);
         cx.defer_in(window, move |_, _, cx| {
-            let Some(active) = lease.upgrade().filter(|lease| lease.is_active()) else {
+            let Some(_lease) = lease.upgrade().filter(|lease| lease.is_active()) else {
                 return;
             };
-            let result = field.update_form(cx, move |form, form_cx| {
-                if form
-                    .__runtime_mut()
-                    .validation_mut()
-                    .clear_control_issue(id)
-                {
-                    form_cx.emit(FormEvent::RuntimeChanged);
-                    form_cx.notify();
-                }
-            });
-            if matches!(result, Err(FormFieldError::ValueUnavailable)) {
-                Self::deactivate_and_clear_issue(&field, id, &active, cx);
+            let Some(form) = binding.form.upgrade() else {
+                return;
+            };
+            if binding.field.try_value(&form, cx).is_err() {
+                binding.deactivate(Some(&form), cx);
+                return;
             }
+            Self::clear_issue(&form, binding.id, cx);
         });
     }
-}
-
-pub trait FormControl<T>: Deref<Target = Entity<Self::State>> + Sized
-where
-    T: Clone + PartialEq + 'static,
-{
-    type State: 'static;
-    type Error;
-
-    fn new<Form, Owner, Build>(
-        field: FormField<Form, T>,
-        build: Build,
-        window: &mut Window,
-        cx: &mut Context<Owner>,
-    ) -> Result<Self, Self::Error>
-    where
-        Form: FormStore,
-        Owner: 'static,
-        Build: FnOnce(&mut Window, &mut Context<Self::State>) -> Self::State;
 }

@@ -1,5 +1,5 @@
-error: duplicate form option `store`
+error: duplicate form option `state`
  --> tests/ui/fail/duplicate_option.rs:4:29
   |
-4 | #[form(store = ExampleForm, store = OtherForm)]
+4 | #[form(state = ExampleForm, state = OtherForm)]
   |                             ^^^^^

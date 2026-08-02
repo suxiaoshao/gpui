@@ -1,8 +1,14 @@
 # Jaco gpui-form 类型化双向表单迁移实施计划
 
+> **历史归档（Superseded）。** 本计划由
+> [PR #176](https://github.com/suxiaoshao/gpui/pull/176) 为
+> [Issue #175](https://github.com/suxiaoshao/gpui/issues/175) 交付。Issue #199 的静态 descriptor
+> 与显式 form owner 设计已经取代本文公开 API；后继计划见
+> [Issue #199 Jaco owner plan](../issue-199/README.md)。下文状态与验证是原交付快照。
+
 ## 1. 状态与范围
 
-- 文档位置：`app/jaco/docs/dev/gpui-form-migration.md`。
+- 文档位置：`app/jaco/docs/dev/issue-175/gpui-form-migration.md`（历史归档）。
 - 当前分支：`codex/175-jaco-shortcut-temporary-window`；本计划是跨功能的表单基础设施迁移，不属于 issue #175 的产品需求。
 - [当前事实] 目标迁移源码已落地：prompt、provider、MCP、shortcut 与 ChatInput/RunSettings 使用
   generated typed form 和 owning controls；active source 中的旧 submit/source/draft/binding API 与直接
@@ -33,9 +39,9 @@ adapter DEP-00
 core FORM-80 -> macro MACRO-50 -> JACO-FORM-80
 ```
 
-  - core：`crates/gpui-form/dev/typed-form-store.md`
-  - macro：`crates/gpui-form-macros/dev/form-store-derive.md`
-  - adapter：`crates/gpui-form-gpui-component/dev/typed-bound-controls.md`
+  - core：`crates/gpui-form/docs/dev/issue-175/README.md`
+  - macro：`crates/gpui-form-macros/docs/dev/issue-175/README.md`
+  - adapter：`crates/gpui-form-gpui-component/docs/dev/issue-175/README.md`
 
 ### 目标
 

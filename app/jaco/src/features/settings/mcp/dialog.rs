@@ -25,7 +25,7 @@ use gpui_component::{
     v_flex,
 };
 use gpui_form::typed::{
-    FormItemId, FormRevision, FormStore as _, ValidationScope, ValidationTrigger,
+    FormItemId, FormRevision, FormState as _, PreparedSubmit, ValidationScope, ValidationTrigger,
 };
 use jaco_agent::McpOAuthStatusSnapshot;
 use std::{
@@ -39,9 +39,7 @@ use super::{
     form_rows::{
         AddMcpRow, McpRowList, RemoveMcpRow, one_input_rows, two_input_rows, validation_error_list,
     },
-    form_state::{
-        McpServerFormComponents, McpServerFormDraft, McpServerFormInput, McpServerFormStore,
-    },
+    form_state::{McpServerForm, McpServerFormComponents, McpServerFormDraft, McpServerFormInput},
     validation::mcp_validation_context,
 };
 
@@ -137,7 +135,8 @@ impl McpServerEditDialogState {
         let server_id = mode.original_server_id().unwrap_or_default().to_string();
         let server_for_draft = server.clone().unwrap_or_default();
         let draft = McpServerFormDraft::from_config(server_id, &server_for_draft, window, cx);
-        let components = McpServerFormComponents::bind(&draft.form, window, cx);
+        let components = McpServerFormComponents::try_bind(&draft.form, window, cx)
+            .expect("fresh MCP form rows have unique stable ids");
 
         Self {
             mode,
@@ -160,10 +159,7 @@ impl McpServerEditDialogState {
         let input = if !self.mode.is_edit() {
             self.components.server_id.clone()
         } else {
-            match McpServerFormStore::transport_field(&self.draft.form)
-                .value(cx)
-                .unwrap_or(McpTransportKind::Stdio)
-            {
+            match McpServerForm::TRANSPORT.value(&self.draft.form, cx) {
                 McpTransportKind::Stdio => self.components.command.clone(),
                 McpTransportKind::StreamableHttp => self.components.url.clone(),
             }
@@ -172,8 +168,9 @@ impl McpServerEditDialogState {
     }
 
     fn rebind_form_components(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let components = McpServerFormComponents::bind(&self.draft.form, window, cx);
-        self.components = components;
+        if let Ok(components) = McpServerFormComponents::try_bind(&self.draft.form, window, cx) {
+            self.components = components;
+        }
     }
 
     fn is_saving(&self, cx: &App) -> bool {
@@ -220,12 +217,9 @@ impl McpServerEditDialogState {
                 mcp_validation_context(original_server_id.clone(), existing_server_ids.clone()),
                 cx,
             );
-            let revision = form_store.revision();
-            form_store
-                .prepare_submit(cx)
-                .map(|output| (revision, output))
+            form_store.prepare_submit(cx)
         });
-        let Ok((revision, output)) = prepared else {
+        let Ok(PreparedSubmit { revision, output }) = prepared else {
             return false;
         };
         let server_id = output.server_id(original_server_id.as_deref());
@@ -388,9 +382,7 @@ impl McpServerEditDialogState {
     }
 
     fn render_transport_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
-        let transport = McpServerFormStore::transport_field(&self.draft.form)
-            .value(cx)
-            .unwrap_or(McpTransportKind::Stdio);
+        let transport = McpServerForm::TRANSPORT.value(&self.draft.form, cx);
         ToggleGroup::new("mcp-dialog-transport")
             .segmented()
             .outline()
@@ -409,9 +401,7 @@ impl McpServerEditDialogState {
             ])
             .on_click(cx.listener(|this, states: &Vec<bool>, window, cx| {
                 let transport = transport_from_toggle_states(
-                    McpServerFormStore::transport_field(&this.draft.form)
-                        .value(cx)
-                        .unwrap_or(McpTransportKind::Stdio),
+                    McpServerForm::TRANSPORT.value(&this.draft.form, cx),
                     states,
                 );
                 this.draft.set_transport(transport, window, cx);
@@ -627,9 +617,7 @@ impl McpServerEditDialogState {
         let dialog = cx.entity().downgrade();
         let authorize_dialog = dialog.clone();
         let sign_out_dialog = dialog.clone();
-        let enabled = McpServerFormStore::oauth_enabled_field(&self.draft.form)
-            .value(cx)
-            .unwrap_or(false);
+        let enabled = McpServerForm::OAUTH_ENABLED.value(&self.draft.form, cx);
         let status = self.oauth_status(cx);
         let authorized = matches!(status, McpOAuthStatusSnapshot::Authorized { .. });
         let signing_in = matches!(status, McpOAuthStatusSnapshot::SigningIn);
@@ -778,10 +766,7 @@ impl McpServerEditDialogState {
     }
 
     fn oauth_status(&self, cx: &App) -> McpOAuthStatusSnapshot {
-        if !McpServerFormStore::oauth_enabled_field(&self.draft.form)
-            .value(cx)
-            .unwrap_or(false)
-        {
+        if !McpServerForm::OAUTH_ENABLED.value(&self.draft.form, cx) {
             return McpOAuthStatusSnapshot::SignedOut;
         }
         let Some(target) = self.draft_oauth_target(cx) else {
@@ -1639,7 +1624,7 @@ fn form_field(
 }
 
 fn validation_errors_at(
-    form: &super::form_state::McpServerFormStore,
+    form: &super::form_state::McpServerForm,
     path: &gpui_form::typed::FieldPath,
     cx: &App,
 ) -> Vec<SharedString> {
@@ -1652,7 +1637,7 @@ fn validation_errors_at(
 }
 
 fn validation_item_errors(
-    form: &super::form_state::McpServerFormStore,
+    form: &super::form_state::McpServerForm,
     array: &'static str,
     id: FormItemId,
     fields: &[&'static str],
@@ -1724,13 +1709,13 @@ mod tests {
     use std::collections::BTreeSet;
 
     use crate::{
-        features::settings::mcp::form_state::McpServerFormStore,
+        features::settings::mcp::form_state::McpServerForm,
         foundation, state,
         state::config::{McpOAuthTomlConfig, McpServerTomlConfig},
     };
     use gpui::{AppContext as _, Entity, Render, TestAppContext, VisualTestContext, WindowHandle};
     use gpui_component::input::{InputEvent, InputState};
-    use gpui_form::typed::{FieldPath, FormStore as _};
+    use gpui_form::typed::{FieldPath, FormState as _};
     use jaco_agent::McpOAuthStatusSnapshot;
     use tempfile::{TempDir, tempdir};
 
@@ -1872,10 +1857,7 @@ mod tests {
         });
         let arg_input = cx.update(|_, cx| {
             let dialog = form.read(cx);
-            let row_id = McpServerFormStore::args_field(&dialog.draft.form)
-                .value(cx)
-                .unwrap()[0]
-                .row_id;
+            let row_id = McpServerForm::ARGS.value(&dialog.draft.form, cx)[0].row_id;
             dialog
                 .components
                 .args

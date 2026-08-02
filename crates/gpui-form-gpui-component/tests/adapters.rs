@@ -7,13 +7,14 @@ use gpui_component::{
     input::{InputEvent, InputState},
     select::{SelectEvent, SelectState},
 };
-use gpui_form::FormStore as _;
+use gpui_form::{FieldAccessError, FormState as _};
 use gpui_form_gpui_component::{
-    FormCombobox, FormInput, FormIntegerInput, FormSelect, IntegerInput, IntegerInputState,
+    FormCombobox, FormInput, FormIntegerInput, FormSelect, IntegerInput, IntegerInputPolicyError,
+    IntegerInputState,
 };
 
-#[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
-#[form(store = AdapterFormStore)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormModel)]
+#[form(state = AdapterForm)]
 struct AdapterInput {
     #[form(required, validate(on_blur, on_submit))]
     name: String,
@@ -23,7 +24,7 @@ struct AdapterInput {
 }
 
 struct AdapterHarness {
-    form: Entity<AdapterFormStore>,
+    form: Entity<AdapterForm>,
     input: Entity<InputState>,
     control: Option<FormInput>,
     integer_input: Entity<InputState>,
@@ -35,7 +36,7 @@ struct AdapterHarness {
 impl AdapterHarness {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let form = cx.new(|cx| {
-            AdapterFormStore::from_value(
+            AdapterForm::from_value(
                 AdapterInput {
                     name: "initial".to_string(),
                     budget: 1024,
@@ -45,16 +46,11 @@ impl AdapterHarness {
                 cx,
             )
         });
-        let control = FormInput::new(
-            AdapterFormStore::name_field(&form),
-            InputState::new,
-            window,
-            cx,
-        )
-        .expect("bind input");
+        let control = FormInput::new(&form, AdapterForm::NAME, InputState::new, window, cx);
         let input = (*control).clone();
         let integer_control = FormIntegerInput::new(
-            AdapterFormStore::budget_field(&form),
+            &form,
+            AdapterForm::BUDGET,
             |window, cx| IntegerInputState::new(window, cx).min(1).max(4096).step(1),
             window,
             cx,
@@ -63,22 +59,22 @@ impl AdapterHarness {
         let integer_input = integer_control.read(cx).editor().clone();
         let options = vec!["alpha".to_string(), "beta".to_string()];
         let select_control = FormSelect::new(
-            AdapterFormStore::model_field(&form),
+            &form,
+            AdapterForm::MODEL,
             {
                 let options = options.clone();
                 move |window, cx| SelectState::new(options, None, window, cx)
             },
             window,
             cx,
-        )
-        .expect("bind select");
+        );
         let combobox_control = FormCombobox::new(
-            AdapterFormStore::tools_field(&form),
+            &form,
+            AdapterForm::TOOLS,
             move |window, cx| ComboboxState::new(options, Vec::new(), window, cx).multiple(true),
             window,
             cx,
-        )
-        .expect("bind combobox");
+        );
 
         Self {
             form,
@@ -135,7 +131,7 @@ fn integer_inputs_use_backing_entity_identity(cx: &mut TestAppContext) {
 fn entities(
     root: &Entity<AdapterHarness>,
     cx: &mut VisualTestContext,
-) -> (Entity<AdapterFormStore>, Entity<InputState>) {
+) -> (Entity<AdapterForm>, Entity<InputState>) {
     cx.update(|_, cx| root.read_with(cx, |root, _| (root.form.clone(), root.input.clone())))
 }
 
@@ -156,9 +152,7 @@ fn input_adapter_mirrors_form_and_component_without_reentrant_update(cx: &mut Te
     cx.update(|_, cx| assert_eq!(form.read(cx).value().name, "user"));
 
     cx.update(|_, cx| {
-        AdapterFormStore::name_field(&form)
-            .set("external".to_string(), cx)
-            .expect("form is alive");
+        AdapterForm::NAME.set(&form, "external".to_string(), cx);
     });
     cx.run_until_parked();
     cx.update(|_, cx| assert_eq!(input.read(cx).value().as_ref(), "external"));
@@ -172,13 +166,8 @@ fn two_inputs_share_one_typed_field_without_echo(cx: &mut TestAppContext) {
     let (form, first_input) = entities(&root, &mut cx);
     let (second_control, second_input) = cx.update(|window, cx| {
         root.update(cx, |root, cx| {
-            let control = FormInput::new(
-                AdapterFormStore::name_field(&root.form),
-                InputState::new,
-                window,
-                cx,
-            )
-            .expect("bind second input");
+            let control =
+                FormInput::new(&root.form, AdapterForm::NAME, InputState::new, window, cx);
             let input = (*control).clone();
             (control, input)
         })
@@ -215,12 +204,7 @@ fn input_blur_runs_field_validation(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|_, cx| {
         assert_eq!(form.read(cx).value().name, "");
-        assert!(
-            !AdapterFormStore::name_field(&form)
-                .errors(cx)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(!AdapterForm::NAME.errors(&form, cx).is_empty());
     });
 }
 
@@ -239,6 +223,63 @@ fn dropping_bound_control_stops_component_to_form_sync(cx: &mut TestAppContext) 
     });
     cx.run_until_parked();
     cx.update(|_, cx| assert_eq!(form.read(cx).value().name, "initial"));
+}
+
+#[gpui::test]
+fn partial_input_constructor_reports_unavailable_projection(cx: &mut TestAppContext) {
+    let window = open_harness(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).expect("adapter harness root");
+
+    cx.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            let form = root.form.clone();
+            let available_name = AdapterForm::NAME.project_value(
+                "available_name",
+                |name| (!name.is_empty()).then(|| name.clone()),
+                |name, value| {
+                    if name.is_empty() {
+                        return false;
+                    }
+                    *name = value;
+                    true
+                },
+            );
+            let control =
+                FormInput::try_new(&form, available_name.clone(), InputState::new, window, cx)
+                    .expect("initial projection is available");
+            drop(control);
+
+            AdapterForm::NAME.set(&form, String::new(), cx);
+            assert!(matches!(
+                FormInput::try_new(&form, available_name, InputState::new, window, cx),
+                Err(FieldAccessError::ValueUnavailable)
+            ));
+        });
+    });
+}
+
+#[gpui::test]
+fn integer_constructor_reports_typed_policy_error(cx: &mut TestAppContext) {
+    let window = open_harness(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).expect("adapter harness root");
+
+    cx.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            let form = root.form.clone();
+            assert!(matches!(
+                FormIntegerInput::new(
+                    &form,
+                    AdapterForm::BUDGET,
+                    |window, cx| IntegerInputState::new(window, cx).min(10).max(1),
+                    window,
+                    cx,
+                ),
+                Err(IntegerInputPolicyError::ReversedRange)
+            ));
+        });
+    });
 }
 
 #[gpui::test]

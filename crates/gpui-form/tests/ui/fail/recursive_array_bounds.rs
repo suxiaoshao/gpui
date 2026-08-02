@@ -14,7 +14,7 @@ impl gpui_form::typed::GardePathMapper for Row {
     }
 }
 
-#[derive(Clone, PartialEq, gpui_form::FormStore)]
+#[derive(Clone, PartialEq, gpui_form::FormModel)]
 struct Root {
     #[form(array(id = "row_id"))]
     rows: Vec<Row>,

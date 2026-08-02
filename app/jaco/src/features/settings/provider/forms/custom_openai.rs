@@ -72,10 +72,10 @@ pub(in crate::features::settings::provider) fn localized_api_mode_choices(
     ]
 }
 
-#[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormModel, garde::Validate)]
 #[garde(context(super::ProviderValidationContext))]
 #[form(
-    store = CustomOpenAiProviderFormStore,
+    state = CustomOpenAiProviderForm,
     validation(adapter = "garde", messages = super::JacoGardeMessageProvider),
     transform(adapter = super::CustomOpenAiProviderTransform)
 )]

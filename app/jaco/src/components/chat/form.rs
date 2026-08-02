@@ -14,7 +14,7 @@ use gpui_component::{
     menu::{DropdownMenu, PopupMenuItem},
     v_flex,
 };
-use gpui_form::typed::FormStore as _;
+use gpui_form::typed::FormState as _;
 
 use crate::{
     components::{
@@ -96,9 +96,6 @@ impl ChatFormState {
         }
         if let Some(attachments) = controls.attachments.value() {
             subscriptions.push(cx.observe(attachments, |_, _, cx| cx.notify()));
-            if let Some(form) = attachments.read(cx).form.clone() {
-                subscriptions.push(cx.observe(&form, |_, _, cx| cx.notify()));
-            }
         }
         if let Some(primary_action) = controls.primary_action.value() {
             subscriptions.push(cx.observe(primary_action, |_, _, cx| cx.notify()));
@@ -262,14 +259,7 @@ impl ChatForm {
             return None;
         };
         let enabled = self.controls.attachments.is_enabled();
-        let form = attachments.read(cx).form.clone();
-        let attachments = form
-            .and_then(|form| {
-                crate::components::chat::input::ChatInputFormStore::attachments_field(&form)
-                    .value(cx)
-                    .ok()
-            })
-            .unwrap_or_default();
+        let attachments = attachments.read(cx).attachments.clone();
         (!attachments.is_empty()).then(|| {
             div()
                 .id("chat-form-attachments-strip")

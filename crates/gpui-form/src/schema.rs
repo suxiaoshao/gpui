@@ -1,11 +1,10 @@
 pub(crate) mod array;
 pub(crate) mod path;
 
-use std::{fmt, hash::Hash};
+use std::fmt;
 
 use crate::{
-    schema::array::FormItemId,
-    schema::path::{FieldPath, FieldPathSegment},
+    schema::array::FormItemId, schema::path::FieldPathSegment,
     validation::trigger::ValidationTrigger,
 };
 
@@ -14,7 +13,7 @@ pub trait FormModelSchema {
     fn schema_at_path(
         &self,
         segments: &[FieldPathSegment],
-    ) -> Result<&'static FieldSchema, FormSchemaPathError>;
+    ) -> Result<FieldSchema, FormSchemaPathError>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,11 +47,6 @@ impl fmt::Display for FormSchemaPathError {
 }
 
 impl std::error::Error for FormSchemaPathError {}
-
-pub trait FormFieldId: Clone + Copy + Eq + Hash + 'static {
-    fn path(self) -> FieldPath;
-    fn schema(self) -> &'static FieldSchema;
-}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ValidationTriggers {

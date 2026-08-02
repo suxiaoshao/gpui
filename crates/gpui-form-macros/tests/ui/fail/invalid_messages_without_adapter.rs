@@ -1,6 +1,6 @@
-use gpui_form_macros::FormStore;
+use gpui_form_macros::FormModel;
 
-#[derive(FormStore)]
+#[derive(FormModel)]
 #[form(validation(messages = AppMessageProvider))]
 struct Example {
     value: String,

@@ -2,21 +2,26 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-> **实现状态：** 本 README 描述已经实现的公开 API。
+`gpui-form` 面向 GPUI 应用提供类型化 draft、验证和提交准备能力。生成的 form state 持有一份
+可编辑的 Rust model；field 是该 model 路径的可复用类型化描述符，绝不持有 `Entity` 或
+`WeakEntity`。
 
-`gpui-form` 是面向 GPUI 应用的类型化表单状态、验证和提交准备库。一个生成的
-form store 持有当前 Rust model；control 只是这个 model 的同步投影，不是另一份
-业务状态。
+边界明确如下：
+
+- `gpui-form` 持有本地 draft、baseline、revision、验证和 prepared submit snapshot；
+- `gpui-store` 持有 catalog、已加载记录、选择项等共享应用状态；
+- `gpui-operation` 持有远程保存、刷新、重试的生命周期和 task。
 
 ## 快速开始
 
-声明应用最终要提交的精确 model：
+声明应用最终提交的精确 model。`FormModel` 会生成指定名称、实现 `FormState` 的
+`ProviderForm` entity state：
 
 ```rust,ignore
-use gpui_form::FormStore;
+use gpui_form::FormModel;
 
-#[derive(Clone, Debug, PartialEq, FormStore, garde::Validate)]
-#[form(validation(adapter = "garde"))]
+#[derive(Clone, Debug, PartialEq, FormModel, garde::Validate)]
+#[form(state = ProviderForm, validation(adapter = "garde"))]
 struct ProviderInput {
     #[form(required, validate(on_change, on_blur))]
     #[garde(skip)]
@@ -28,181 +33,146 @@ struct ProviderInput {
 }
 ```
 
-创建一个 form entity，并从对应的类型化字段创建每个 bound control：
+每个编辑会话创建一个 entity。每个静态声明的 model field 都是一个无 allocation 的 schema 层
+`SCREAMING_SNAKE_CASE` associated const，例如
+`ProviderForm::NAME: FormField<ProviderForm, String>`。它可直接复用为只包含静态
+schema/access 信息的微小 descriptor；访问它绝不构造每个 form 或 field 的 state、进行 allocation、
+捕获 value 或建立 subscription。所有同步操作都显式传入自己要操作的 form：
 
 ```rust,ignore
 use gpui::{AppContext as _, Context, Entity, Subscription, Window};
 use gpui_component::input::InputState;
-use gpui_form::{FormControl as _, SubmitError};
-use gpui_form_gpui_component::{
-    FormControlError, FormInput, FormIntegerInput, IntegerInputState,
-};
+use gpui_form::FormState as _;
+use gpui_form_gpui_component::{FormInput, FormIntegerInput, IntegerInputState};
 
 struct ProviderPage {
     form_subscription: Subscription,
     name_input: FormInput,
     retry_limit_input: FormIntegerInput<u32>,
-    form: Entity<ProviderInputFormStore>,
+    form: Entity<ProviderForm>,
 }
 
 impl ProviderPage {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Result<Self, FormControlError> {
-        let form = cx.new(|cx| {
-            ProviderInputFormStore::from_value(
-                ProviderInput {
-                    name: String::new(),
-                    retry_limit: 3,
-                },
-                cx,
-            )
-        });
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> anyhow::Result<Self> {
+        let form = cx.new(|cx| ProviderForm::from_value(
+            ProviderInput { name: String::new(), retry_limit: 3 },
+            cx,
+        ));
 
         let name_input = FormInput::new(
-            ProviderInputFormStore::name_field(&form),
+            &form,
+            ProviderForm::NAME,
             |window, cx| InputState::new(window, cx).placeholder("Provider name"),
             window,
             cx,
-        )?;
+        );
         let retry_limit_input = FormIntegerInput::new(
-            ProviderInputFormStore::retry_limit_field(&form),
-            |window, cx| {
-                IntegerInputState::new(window, cx)
-                    .min(0u32)
-                    .max(10u32)
-                    .step(1u32)
-            },
+            &form,
+            ProviderForm::RETRY_LIMIT,
+            |window, cx| IntegerInputState::new(window, cx)
+                .min(0u32).max(10u32).step(1u32),
             window,
             cx,
         )?;
+
         let form_subscription = cx.observe(&form, |_, _, cx| cx.notify());
-
-        Ok(Self {
-            form_subscription,
-            name_input,
-            retry_limit_input,
-            form,
-        })
+        Ok(Self { form_subscription, name_input, retry_limit_input, form })
     }
 }
 ```
 
-渲染原生 control，并从类型化字段读取验证状态。下面的 `validation_text` 是应用用于处理
-`ValidationMessage` 的本地化 helper：
+`ProviderForm::NAME` 是 total 的 `FormField<ProviderForm, String>`。它是轻量的静态类型化 lens，
+可供多个 control 共用；其中没有 entity、value 或 subscription。调用者提供强
+`&Entity<ProviderForm>`，因此不存在 liveness `Result`：
 
 ```rust,ignore
-use gpui::{
-    Context, IntoElement, ParentElement as _, Render, Window,
-    prelude::FluentBuilder as _,
-};
-use gpui_component::{
-    button::{Button, ButtonVariants as _},
-    form::{field, v_form},
-    h_flex,
-    input::Input,
-    label::Label,
-    spinner::Spinner,
-    v_flex,
-};
-use gpui_form::{FormFieldId as _, FormStore as _};
-use gpui_form_gpui_component::IntegerInput;
-
-impl Render for ProviderPage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let name_field = ProviderInputFormStore::name_field(&self.form);
-        let name_error = name_field
-            .errors(cx)
-            .expect("ProviderPage owns the form while rendering")
-            .into_iter()
-            .next()
-            .map(|issue| validation_text(&issue.message, cx));
-        let name_is_validating = name_field
-            .is_validating(cx)
-            .expect("ProviderPage owns the form while rendering");
-
-        v_form()
-            .child(
-                field()
-                    .label("Provider name")
-                    .required(ProviderInputField::Name.schema().is_required())
-                    .child(
-                        v_flex()
-                            .child(
-                                h_flex()
-                                    .child(Input::new(&self.name_input))
-                                    .when(name_is_validating, |row| {
-                                        row.child(Spinner::new())
-                                    }),
-                            )
-                            .when_some(name_error, |this, error| {
-                                this.child(Label::new(error))
-                            }),
-                    ),
-            )
-            .child(
-                field()
-                    .label("Retry limit")
-                    .child(IntegerInput::new(&self.retry_limit_input)),
-            )
-            .child(
-                Button::new("save-provider")
-                    .primary()
-                    .label("Save")
-                    .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
-            )
-    }
-}
+let value = ProviderForm::NAME.value(&self.form, cx);
+let issues = ProviderForm::NAME.errors(&self.form, cx);
+ProviderForm::NAME.set(&self.form, "OpenAI".to_owned(), cx);
+ProviderForm::NAME.validate(&self.form, ValidationTrigger::Dynamic, cx);
 ```
 
-Bound control 是普通 Rust handle。它会解引用到原生 GPUI component entity，并且只
-保存 entity 和同步 subscription。Focus、IME、selection、popup 状态、options 和临时
-editor text 仍由 component 或应用负责。
-
-提交 form 中已经存储的 model。在同一次 entity update 中捕获 revision，把持久化状态
-保存在页面或应用 store 上，并在请求完成后有条件地 rebase 已保存值：
+渲染原生 control 与字段 runtime state 时不再需要 `expect` 或无意义的 `Result`：
 
 ```rust,ignore
-let prepared = self.form.update(cx, |form, cx| {
-    let output = form.prepare_submit(cx)?;
-    Ok::<_, SubmitError>((form.revision(), output))
-});
+let name_error = ProviderForm::NAME.errors(&self.form, cx)
+    .first()
+    .map(|issue| validation_text(&issue.message, cx));
 
-match prepared {
-    Ok((revision, output)) => self.start_save(revision, output, cx),
-    Err(error) => self.show_submit_error(error, cx),
-}
+field()
+    .label("Provider name")
+    .required(ProviderForm::NAME.schema().is_required())
+    .child(Input::new(&self.name_input));
+```
 
-// 在 save task 的完成回调中：
+Bound control 仍是很小的 Rust handle：先放 subscription，后放 native component entity。
+native component event 通过内部 `ControlBinding` defer；weak lifetime 的边界属于 binding，
+不属于 `FormField`。wrapper 不保存 form state、field value、option、focus 或 editor text。
+
+## 动态路径
+
+identified array item 或计算 projection 可能消失，因此返回 `PartialFormField<Form, T>`，并在
+调用点显式处理不确定性：
+
+```rust,ignore
+let header_parent = ServerForm::HEADERS.item(FormItemId::new(row_id));
+let header_name = HeaderRowForm::NAME.within(header_parent);
+
+let name = header_name.try_value(&form, cx)?;
+header_name.try_set(&form, "Authorization".to_owned(), cx)?;
+```
+
+`FieldAccessError` 描述 projection 不可用、item 缺失或重复；`FieldMutationError` 额外描述试图
+改写已捕获 stable ID。没有 `FormReleased`：同步调用者已经持有强 form entity。
+
+`AuthForm::USERNAME.within(ServerForm::AUTH)` 仍是 total，因为 parent 和 child 都是静态的。
+`ServerForm::HEADERS.item(id)` 创建运行时寻址的 `PartialFormField`；因此
+`HeaderRowForm::NAME.within(partial_parent)` 仍是 partial。无论调用者是静态 descriptor 还是组合后
+的 descriptor，`project_value` 都是 partial。`within` 与 `item` 创建的是轻量定位 descriptor，
+不是新的 schema 定义。
+
+## 准备、保存与 rebase
+
+`prepare_submit` 对同一个 model snapshot 验证并只转换一次，返回 output 及其 revision。
+transform 是静态且不可失败的；业务内联失败属于 validation，持久化失败属于页面的 operation：
+
+```rust,ignore
+use gpui_form::{PreparedSubmit, SubmitError};
+
+let PreparedSubmit { revision, output } = self.form.update(cx, |form, cx| {
+    form.prepare_submit(cx)
+})?;
+
+self.save_provider(revision, output, cx); // 应用持有的 operation
+
+// operation completion callback：
 let applied = self.form.update(cx, |form, cx| {
-    form.rebase_if_revision(submitted_revision, saved_value, cx)
+    form.rebase_if_revision(revision, saved_value, cx)
 });
 if !applied {
     self.show_saved_while_editing_notice(cx);
 }
 ```
 
-`prepare_submit` 只执行同步 submit validation 和一次纯 transform。它不会启动持久化；
-form 不保存 submit task、busy flag、retry policy 或 submission-attempt counter。存在
-active async validation 时返回 `SubmitError::ValidationPending`。
+`gpui-form` 不启动持久化、不保存 busy/retry state，也不写入 `gpui-store`。`gpui-operation`
+可以协调保存生命周期，但不会替代 form 的本地 draft 或 revision-CAS rebase 边界。
 
-每个 `FieldChanged` 和 `ModelReplaced` event 都会把值静默重投影到所有已挂载的 bound
-control，包括发起字段写入的 control。Adapter 不依赖跳过 origin echo，也不会把 component
-state 当作权威值。
+## 验证与 event
 
-Nested group 和 stable-ID array 仍属于同一个顶层 model。生成的字段 accessor 可以直接
-组合而不会创建 child form entity；`FormField::project_value` 可以暴露计算得到的类型化值，
-而不会创建平行业务值。每个 accessor 都只是作用于 cloned model candidate 的纯 lens；成功写入时，
-`FormField` 统一负责唯一一次 commit、带 scope 的 `on_change` validation、event 与 notify。
-Nested adapter issue 会按完整 stable path 匹配，因此 group/array leaf 使用自己的 schema，
-不会错误复用 ancestor 的 validation trigger。
+验证是类型化且 path-scoped 的。一次 scoped adapter run 只替换 scope 内的 adapter issue bucket；
+sibling field 的 issue 会保留。form-level issue 只参与 form-wide run，因此修改一个字段不会意外
+清空无关的 adapter error。
 
-## Crate
+`FormEvent` 不再带泛型。当 `ValueChanged { path, revision }` 可能影响 descriptor 的值时，
+以及每次 `ModelReplaced { revision }` 后，descriptor subscription 会进行重投影，其中包括
+发起写入的 control。`ValidationChanged` 不重投影 value。不存在 origin echo 协议或从
+component 回读权威 value。
 
-- `gpui-form`：类型化 form state、revision/baseline tracking、validation 和 submit
-  preparation；
-- `gpui-form-macros`：`#[derive(FormStore)]` 和类型化字段 accessor；
-- `gpui-form-gpui-component`：面向 `gpui-component` 的 owning bound control。
+## Crate 与文档
 
-## 文档
+- `gpui-form`：类型化 form state、验证、revision 与 submit preparation；
+- `gpui-form-macros`：`#[derive(FormModel)]` 与类型化 descriptor；
+- `gpui-form-gpui-component`：owning control 与 `ControlBinding` 集成。
 
 - [User guide](docs/guide.md)
 - [使用指南（中文）](docs/guide.zh-CN.md)

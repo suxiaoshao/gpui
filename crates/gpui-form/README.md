@@ -2,22 +2,29 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-> **Implementation status:** this README documents the implemented public API.
+`gpui-form` is a typed draft, validation, and submit-preparation library for
+GPUI applications. A generated form state owns one editable Rust model. A
+field is a reusable typed descriptor of a path in that model; it never owns an
+`Entity` or `WeakEntity`.
 
-`gpui-form` is a typed form-state, validation, and submit-preparation library
-for GPUI applications. One generated form store owns the current Rust model;
-controls are synchronized projections of that model, not additional business
-state.
+The separation is intentional:
+
+- `gpui-form` owns the local draft, baseline, revision, validation, and a
+  prepared submit snapshot;
+- `gpui-store` owns shared application state such as catalogs, selected
+  resources, and loaded records;
+- `gpui-operation` owns remote save/refresh/retry lifecycles and their tasks.
 
 ## Quick start
 
-Declare the exact model that the application will submit:
+Declare the exact model that the application will submit. `FormModel` generates
+the named `ProviderForm` entity state, which implements `FormState`:
 
 ```rust,ignore
-use gpui_form::FormStore;
+use gpui_form::FormModel;
 
-#[derive(Clone, Debug, PartialEq, FormStore, garde::Validate)]
-#[form(validation(adapter = "garde"))]
+#[derive(Clone, Debug, PartialEq, FormModel, garde::Validate)]
+#[form(state = ProviderForm, validation(adapter = "garde"))]
 struct ProviderInput {
     #[form(required, validate(on_change, on_blur))]
     #[garde(skip)]
@@ -29,188 +36,162 @@ struct ProviderInput {
 }
 ```
 
-Create one form entity and create each bound control from its typed field:
+Create one entity for one editing session. Every statically declared model
+field is one allocation-free schema-level associated constant in
+`SCREAMING_SNAKE_CASE`, such as
+`ProviderForm::NAME: FormField<ProviderForm, String>`. It can be reused
+directly as a tiny descriptor containing only static schema/access information;
+accessing it never constructs per-form or per-field state, allocates, captures
+a value, or subscribes. Every synchronous operation explicitly receives the
+form it uses:
 
 ```rust,ignore
 use gpui::{AppContext as _, Context, Entity, Subscription, Window};
 use gpui_component::input::InputState;
-use gpui_form::{FormControl as _, SubmitError};
-use gpui_form_gpui_component::{
-    FormControlError, FormInput, FormIntegerInput, IntegerInputState,
-};
+use gpui_form::FormState as _;
+use gpui_form_gpui_component::{FormInput, FormIntegerInput, IntegerInputState};
 
 struct ProviderPage {
     form_subscription: Subscription,
     name_input: FormInput,
     retry_limit_input: FormIntegerInput<u32>,
-    form: Entity<ProviderInputFormStore>,
+    form: Entity<ProviderForm>,
 }
 
 impl ProviderPage {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Result<Self, FormControlError> {
-        let form = cx.new(|cx| {
-            ProviderInputFormStore::from_value(
-                ProviderInput {
-                    name: String::new(),
-                    retry_limit: 3,
-                },
-                cx,
-            )
-        });
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> anyhow::Result<Self> {
+        let form = cx.new(|cx| ProviderForm::from_value(
+            ProviderInput { name: String::new(), retry_limit: 3 },
+            cx,
+        ));
 
         let name_input = FormInput::new(
-            ProviderInputFormStore::name_field(&form),
+            &form,
+            ProviderForm::NAME,
             |window, cx| InputState::new(window, cx).placeholder("Provider name"),
             window,
             cx,
-        )?;
+        );
         let retry_limit_input = FormIntegerInput::new(
-            ProviderInputFormStore::retry_limit_field(&form),
-            |window, cx| {
-                IntegerInputState::new(window, cx)
-                    .min(0u32)
-                    .max(10u32)
-                    .step(1u32)
-            },
+            &form,
+            ProviderForm::RETRY_LIMIT,
+            |window, cx| IntegerInputState::new(window, cx)
+                .min(0u32).max(10u32).step(1u32),
             window,
             cx,
         )?;
+
         let form_subscription = cx.observe(&form, |_, _, cx| cx.notify());
-
-        Ok(Self {
-            form_subscription,
-            name_input,
-            retry_limit_input,
-            form,
-        })
+        Ok(Self { form_subscription, name_input, retry_limit_input, form })
     }
 }
 ```
 
-Render the native controls and read validation state from their typed fields.
-`validation_text` below is the application's localization helper for
-`ValidationMessage`:
+`ProviderForm::NAME` is a total `FormField<ProviderForm, String>`. It is a
+lightweight static typed lens that can be shared by many controls;
+it contains neither an entity, a value, nor a subscription. It has no liveness
+error because the caller supplies a strong `&Entity<ProviderForm>`:
 
 ```rust,ignore
-use gpui::{
-    Context, IntoElement, ParentElement as _, Render, Window,
-    prelude::FluentBuilder as _,
-};
-use gpui_component::{
-    button::{Button, ButtonVariants as _},
-    form::{field, v_form},
-    h_flex,
-    input::Input,
-    label::Label,
-    spinner::Spinner,
-    v_flex,
-};
-use gpui_form::{FormFieldId as _, FormStore as _};
-use gpui_form_gpui_component::IntegerInput;
-
-impl Render for ProviderPage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let name_field = ProviderInputFormStore::name_field(&self.form);
-        let name_error = name_field
-            .errors(cx)
-            .expect("ProviderPage owns the form while rendering")
-            .into_iter()
-            .next()
-            .map(|issue| validation_text(&issue.message, cx));
-        let name_is_validating = name_field
-            .is_validating(cx)
-            .expect("ProviderPage owns the form while rendering");
-
-        v_form()
-            .child(
-                field()
-                    .label("Provider name")
-                    .required(ProviderInputField::Name.schema().is_required())
-                    .child(
-                        v_flex()
-                            .child(
-                                h_flex()
-                                    .child(Input::new(&self.name_input))
-                                    .when(name_is_validating, |row| {
-                                        row.child(Spinner::new())
-                                    }),
-                            )
-                            .when_some(name_error, |this, error| {
-                                this.child(Label::new(error))
-                            }),
-                    ),
-            )
-            .child(
-                field()
-                    .label("Retry limit")
-                    .child(IntegerInput::new(&self.retry_limit_input)),
-            )
-            .child(
-                Button::new("save-provider")
-                    .primary()
-                    .label("Save")
-                    .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
-            )
-    }
-}
+let value = ProviderForm::NAME.value(&self.form, cx);
+let issues = ProviderForm::NAME.errors(&self.form, cx);
+ProviderForm::NAME.set(&self.form, "OpenAI".to_owned(), cx);
+ProviderForm::NAME.validate(&self.form, ValidationTrigger::Dynamic, cx);
 ```
 
-Bound controls are plain Rust handles. They dereference to their native GPUI
-component entities and retain only the entity plus synchronization
-subscriptions. Focus, IME state, selection, popup state, options, and temporary
-editor text remain component or application concerns.
-
-Submit the model already stored in the form. Capture its revision in the same
-entity update, keep persistence state on the page or application store, and
-conditionally rebase the saved value when the request completes:
+Render the native controls and field runtime state without `expect` or a
+spurious `Result`:
 
 ```rust,ignore
-let prepared = self.form.update(cx, |form, cx| {
-    let output = form.prepare_submit(cx)?;
-    Ok::<_, SubmitError>((form.revision(), output))
-});
+let name_error = ProviderForm::NAME.errors(&self.form, cx)
+    .first()
+    .map(|issue| validation_text(&issue.message, cx));
 
-match prepared {
-    Ok((revision, output)) => self.start_save(revision, output, cx),
-    Err(error) => self.show_submit_error(error, cx),
-}
+field()
+    .label("Provider name")
+    .required(ProviderForm::NAME.schema().is_required())
+    .child(Input::new(&self.name_input));
+```
 
-// In the save task's completion callback:
+Bound controls remain small Rust handles: subscriptions first, native component
+entity second. They defer native-component events through an internal
+`ControlBinding`; that binding, not `FormField`, is the deferred weak-lifetime
+boundary. The wrapper does not retain form state, field values, options, focus,
+or editor text.
+
+## Dynamic paths
+
+An identified array item or computed projection can legitimately disappear. It
+returns `PartialFormField<Form, T>` and makes the uncertainty visible at the
+call site:
+
+```rust,ignore
+let header_parent = ServerForm::HEADERS.item(FormItemId::new(row_id));
+let header_name = HeaderRowForm::NAME.within(header_parent);
+
+let name = header_name.try_value(&form, cx)?;
+header_name.try_set(&form, "Authorization".to_owned(), cx)?;
+```
+
+`FieldAccessError` describes an unavailable projection or missing/duplicate
+item. `FieldMutationError` additionally describes an attempt to change a
+captured stable ID. There is no `FormReleased`: a synchronous caller already
+holds the strong form entity.
+
+`AuthForm::USERNAME.within(ServerForm::AUTH)` stays total because both parent
+and child are static. `ServerForm::HEADERS.item(id)` creates a runtime-addressed
+`PartialFormField`; `HeaderRowForm::NAME.within(partial_parent)` consequently
+stays partial. `project_value` is also partial, whether called on a static or a
+composed descriptor. `within` and `item` create lightweight located descriptors,
+not new schema definitions.
+
+## Prepare, save, and rebase
+
+`prepare_submit` validates one model snapshot, transforms it once, and returns
+its revision with the output. Transformations are static and infallible;
+inline business failures belong in validation, while persistence failures belong
+to the page's operation:
+
+```rust,ignore
+use gpui_form::{PreparedSubmit, SubmitError};
+
+let PreparedSubmit { revision, output } = self.form.update(cx, |form, cx| {
+    form.prepare_submit(cx)
+})?;
+
+self.save_provider(revision, output, cx); // application-owned operation
+
+// In the operation completion callback:
 let applied = self.form.update(cx, |form, cx| {
-    form.rebase_if_revision(submitted_revision, saved_value, cx)
+    form.rebase_if_revision(revision, saved_value, cx)
 });
 if !applied {
     self.show_saved_while_editing_notice(cx);
 }
 ```
 
-`prepare_submit` performs synchronous submit validation and one pure transform.
-It does not start persistence and the form has no submit task, busy flag, retry
-policy, or submission-attempt counter. Active asynchronous validation returns
-`SubmitError::ValidationPending`.
+`gpui-form` never starts persistence, owns no busy/retry state, and does not
+write `gpui-store`. `gpui-operation` may coordinate the save lifecycle, but it
+does not replace the form's local draft or revision-CAS rebase boundary.
 
-Every `FieldChanged` and `ModelReplaced` event silently reprojects every mounted
-bound control, including the control that initiated a field write. Adapters
-never depend on skipping an origin echo or treating component state as
-authoritative.
+## Validation and events
 
-Nested groups and stable-ID arrays remain inside the same top-level model.
-Generated field accessors compose without creating child form entities, and
-`FormField::project_value` exposes a computed typed value without creating a
-parallel business value. Every accessor is a pure lens over a cloned model
-candidate; `FormField` owns the one commit, scoped `on_change` validation pass,
-event, and notification for a successful write. Nested adapter issues are
-matched against their complete stable path, so group and array leaves use
-their own schema rather than an ancestor's validation triggers.
+Validation is typed and path-scoped. A scoped adapter run replaces only the
+adapter issue buckets inside that scope; sibling field issues remain intact.
+Form-level issues participate only in a form-wide run. This prevents changing
+one field from accidentally clearing an unrelated adapter error.
 
-## Crates
+`FormEvent` is non-generic. A descriptor subscription reprojects when a
+`ValueChanged { path, revision }` can affect its value, and after every
+`ModelReplaced { revision }`, including the originating control.
+`ValidationChanged` does not reproject values. There is no origin-echo protocol
+or authoritative component read-back.
 
-- `gpui-form`: typed form state, revision/baseline tracking, validation, and
-  submit preparation;
-- `gpui-form-macros`: `#[derive(FormStore)]` and typed field accessors;
-- `gpui-form-gpui-component`: owning bound controls for `gpui-component`.
+## Crates and documentation
 
-## Documentation
+- `gpui-form`: typed form state, validation, revisions, and submit preparation;
+- `gpui-form-macros`: `#[derive(FormModel)]` and typed descriptors;
+- `gpui-form-gpui-component`: owning controls and `ControlBinding` integration.
 
 - [User guide](docs/guide.md)
 - [使用指南（中文）](docs/guide.zh-CN.md)

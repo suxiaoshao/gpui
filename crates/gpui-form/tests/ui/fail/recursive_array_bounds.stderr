@@ -12,9 +12,9 @@ help: the trait `gpui_form::FormModelSchema` is not implemented for `Row`
 help: the trait `gpui_form::FormModelSchema` is implemented for `Root`
   --> tests/ui/fail/recursive_array_bounds.rs:17:28
    |
-17 | #[derive(Clone, PartialEq, gpui_form::FormStore)]
+17 | #[derive(Clone, PartialEq, gpui_form::FormModel)]
    |                            ^^^^^^^^^^^^^^^^^^^^
-   = note: this error originates in the derive macro `gpui_form::FormStore` (in Nightly builds, run with -Z macro-backtrace for more info)
+   = note: this error originates in the derive macro `gpui_form::FormModel` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `Row: gpui_form::StructuralValidate` is not satisfied
   --> tests/ui/fail/recursive_array_bounds.rs:20:11
@@ -30,9 +30,9 @@ help: the trait `gpui_form::StructuralValidate` is not implemented for `Row`
 help: the trait `gpui_form::StructuralValidate` is implemented for `Root`
   --> tests/ui/fail/recursive_array_bounds.rs:17:28
    |
-17 | #[derive(Clone, PartialEq, gpui_form::FormStore)]
+17 | #[derive(Clone, PartialEq, gpui_form::FormModel)]
    |                            ^^^^^^^^^^^^^^^^^^^^
-   = note: this error originates in the derive macro `gpui_form::FormStore` (in Nightly builds, run with -Z macro-backtrace for more info)
+   = note: this error originates in the derive macro `gpui_form::FormModel` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `Row: gpui_form::StructuralValidate` is not satisfied
   --> tests/ui/fail/recursive_array_bounds.rs:20:11
@@ -48,9 +48,9 @@ help: the trait `gpui_form::StructuralValidate` is not implemented for `Row`
 help: the trait `gpui_form::StructuralValidate` is implemented for `Root`
   --> tests/ui/fail/recursive_array_bounds.rs:17:28
    |
-17 | #[derive(Clone, PartialEq, gpui_form::FormStore)]
+17 | #[derive(Clone, PartialEq, gpui_form::FormModel)]
    |                            ^^^^^^^^^^^^^^^^^^^^
-   = note: this error originates in the derive macro `gpui_form::FormStore` (in Nightly builds, run with -Z macro-backtrace for more info)
+   = note: this error originates in the derive macro `gpui_form::FormModel` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `Row: gpui_form::FormModelSchema` is not satisfied
   --> tests/ui/fail/recursive_array_bounds.rs:20:11
@@ -66,6 +66,59 @@ help: the trait `gpui_form::FormModelSchema` is not implemented for `Row`
 help: the trait `gpui_form::FormModelSchema` is implemented for `Root`
   --> tests/ui/fail/recursive_array_bounds.rs:17:28
    |
-17 | #[derive(Clone, PartialEq, gpui_form::FormStore)]
+17 | #[derive(Clone, PartialEq, gpui_form::FormModel)]
    |                            ^^^^^^^^^^^^^^^^^^^^
-   = note: this error originates in the derive macro `gpui_form::FormStore` (in Nightly builds, run with -Z macro-backtrace for more info)
+   = note: this error originates in the derive macro `gpui_form::FormModel` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `Row: gpui_form::StructuralValidate` is not satisfied
+  --> tests/ui/fail/recursive_array_bounds.rs:18:8
+   |
+18 | struct Root {
+   |        ^^^^ unsatisfied trait bound
+   |
+help: the trait `gpui_form::StructuralValidate` is not implemented for `Row`
+  --> tests/ui/fail/recursive_array_bounds.rs:2:1
+   |
+ 2 | struct Row {
+   | ^^^^^^^^^^
+help: the trait `gpui_form::StructuralValidate` is implemented for `Root`
+  --> tests/ui/fail/recursive_array_bounds.rs:17:28
+   |
+17 | #[derive(Clone, PartialEq, gpui_form::FormModel)]
+   |                            ^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `RootForm`
+  --> tests/ui/fail/recursive_array_bounds.rs:20:11
+   |
+18 | struct Root {
+   |        ---- required by a bound in this struct
+19 |     #[form(array(id = "row_id"))]
+20 |     rows: Vec<Row>,
+   |           ^^^ required by this bound in `RootForm`
+   = note: this error originates in the derive macro `gpui_form::FormModel` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0599]: the associated function or constant `ROWS` exists for struct `RootForm`, but its trait bounds were not satisfied
+  --> tests/ui/fail/recursive_array_bounds.rs:17:28
+   |
+ 2 | struct Row {
+   | ---------- doesn't satisfy `Row: gpui_form::StructuralValidate`
+...
+17 | #[derive(Clone, PartialEq, gpui_form::FormModel)]
+   |                            ^^^^^^^^^^^^^^^^^^^^
+   |                            |
+   |                            associated function or constant cannot be called on `RootForm` due to unsatisfied trait bounds
+   |                            associated function or constant `ROWS` not found for this struct
+   |
+note: trait bound `Row: gpui_form::StructuralValidate` was not satisfied
+  --> tests/ui/fail/recursive_array_bounds.rs:20:11
+   |
+18 | struct Root {
+   |        ----
+19 |     #[form(array(id = "row_id"))]
+20 |     rows: Vec<Row>,
+   |           ^^^ unsatisfied trait bound introduced here
+note: the trait `gpui_form::StructuralValidate` must be implemented
+  --> src/validation.rs
+   |
+   | pub trait StructuralValidate {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the derive macro `gpui_form::FormModel` (in Nightly builds, run with -Z macro-backtrace for more info)

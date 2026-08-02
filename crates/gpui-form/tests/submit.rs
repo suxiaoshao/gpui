@@ -1,78 +1,113 @@
 use gpui::{App, AppContext as _, TestAppContext};
-use gpui_form::typed::{
-    SubmitTransform, TransformReport, ValidationAdapter, ValidationAdapterReport,
-    ValidationContext, ValidationScope, ValidationTrigger,
+use gpui_form::{
+    FormModel, FormState as _, PreparedSubmit, SubmitError, SubmitTransform, ValidationAdapter,
+    ValidationAdapterReport, ValidationIssue, ValidationMessage, ValidationScope, ValidationSource,
+    ValidationTrigger,
 };
 
-#[derive(Clone, Debug, Default)]
-struct Context {
-    suffix: String,
-}
-
-#[derive(Clone, Debug, Default)]
 struct Validator;
 
 impl ValidationAdapter<Input> for Validator {
-    type Context = Context;
+    type Context = ();
 
     fn validate(
-        &self,
-        _model: &Input,
-        _trigger: ValidationTrigger,
-        _scope: ValidationScope,
-        _context: ValidationContext<'_, Self::Context>,
+        model: &Input,
+        trigger: ValidationTrigger,
+        _scope: &ValidationScope,
+        _context: &Self::Context,
         _cx: &App,
     ) -> ValidationAdapterReport {
-        ValidationAdapterReport::default()
+        if model.blocked {
+            ValidationAdapterReport::new(vec![ValidationIssue::field(
+                InputForm::BLOCKED.path(),
+                trigger,
+                ValidationSource::App("submit".into()),
+                "blocked",
+                ValidationMessage::literal("blocked"),
+            )])
+        } else {
+            ValidationAdapterReport::default()
+        }
     }
 }
 
-#[derive(Clone, Debug, Default)]
 struct Transform;
 
 impl SubmitTransform<Input> for Transform {
-    type Output = Input;
+    type Output = String;
 
-    fn transform(&self, model: &Input) -> Result<Input, TransformReport> {
-        Ok(Input {
-            value: format!("{}-normalized", model.value),
-        })
+    fn transform(model: &Input) -> Self::Output {
+        model.value.trim().to_owned()
     }
 }
 
-#[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
+#[derive(Clone, Debug, PartialEq, FormModel)]
 #[form(
-    validation(adapter = Validator, context = Context),
+    state = InputForm,
+    validation(adapter = Validator),
     transform(adapter = Transform)
 )]
 struct Input {
-    #[form(validate(on_submit))]
     value: String,
+    #[form(validate(on_submit))]
+    blocked: bool,
 }
 
 #[gpui::test]
-fn custom_validation_and_transform_use_the_same_model_version(cx: &mut TestAppContext) {
+fn prepare_submit_returns_revision_and_output_from_one_snapshot(cx: &mut TestAppContext) {
     let form = cx.update(|cx| {
         cx.new(|cx| {
-            InputFormStore::from_value_with_validation_context(
+            InputForm::from_value_with_validation_context(
                 Input {
-                    value: "input".into(),
+                    value: "  ready  ".into(),
+                    blocked: false,
                 },
-                Context {
-                    suffix: "-normalized".into(),
-                },
+                (),
                 cx,
             )
         })
     });
 
     cx.update(|cx| {
-        let output = form
-            .update(cx, |form, cx| {
-                assert_eq!(form.validation_context().suffix, "-normalized");
-                gpui_form::typed::FormStore::prepare_submit(form, cx)
-            })
-            .unwrap();
-        assert_eq!(output.value, "input-normalized");
+        let PreparedSubmit { revision, output } = form
+            .update(cx, |form, cx| form.prepare_submit(cx))
+            .expect("valid form prepares");
+        assert_eq!(revision, form.read(cx).revision());
+        assert_eq!(output, "ready");
+
+        InputForm::VALUE.set(&form, "later".into(), cx);
+        assert!(!form.update(cx, |form, cx| {
+            form.rebase_if_revision(
+                revision,
+                Input {
+                    value: output,
+                    blocked: false,
+                },
+                cx,
+            )
+        }));
+    });
+}
+
+#[gpui::test]
+fn submit_rejects_validation_issues(cx: &mut TestAppContext) {
+    let form = cx.update(|cx| {
+        cx.new(|cx| {
+            InputForm::from_value_with_validation_context(
+                Input {
+                    value: "value".into(),
+                    blocked: true,
+                },
+                (),
+                cx,
+            )
+        })
+    });
+
+    cx.update(|cx| {
+        let error = form
+            .update(cx, |form, cx| form.prepare_submit(cx))
+            .expect_err("blocked model is invalid");
+        assert!(matches!(error, SubmitError::Validation(_)));
     });
 }

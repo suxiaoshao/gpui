@@ -1,4 +1,4 @@
-use gpui_form::typed::{SubmitTransform, TransformReport};
+use gpui_form::typed::SubmitTransform;
 use jaco_core::PromptId;
 
 use super::super::form_validation::{
@@ -13,10 +13,10 @@ pub(super) struct PromptValidationDependencies {
 
 pub(super) type PromptEditValidationContext = JacoValidationContext<PromptValidationDependencies>;
 
-#[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormModel, garde::Validate)]
 #[garde(context(PromptEditValidationContext))]
 #[form(
-    store = PromptEditFormStore,
+    state = PromptEditForm,
     validation(adapter = "garde", messages = JacoGardeMessageProvider),
     transform(adapter = PromptEditTransform)
 )]
@@ -62,8 +62,8 @@ pub(super) struct PromptEditTransform;
 impl SubmitTransform<PromptEditFormInput> for PromptEditTransform {
     type Output = PromptEditFormInput;
 
-    fn transform(&self, model: &PromptEditFormInput) -> Result<Self::Output, TransformReport> {
-        Ok(normalize_prompt_input(model))
+    fn transform(model: &PromptEditFormInput) -> Self::Output {
+        normalize_prompt_input(model)
     }
 }
 

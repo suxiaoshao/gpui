@@ -1,6 +1,6 @@
 use std::fmt;
 
-use gpui_form::typed::FormFieldError;
+use gpui_form::FieldAccessError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IntegerInputPolicyError {
@@ -19,31 +19,31 @@ impl fmt::Display for IntegerInputPolicyError {
 
 impl std::error::Error for IntegerInputPolicyError {}
 
-#[derive(Debug)]
-pub enum FormControlError {
-    Field(FormFieldError),
-    IntegerPolicy(IntegerInputPolicyError),
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FormIntegerInputBuildError {
+    Field(FieldAccessError),
+    Policy(IntegerInputPolicyError),
 }
 
-impl fmt::Display for FormControlError {
+impl fmt::Display for FormIntegerInputBuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Field(error) => error.fmt(f),
-            Self::IntegerPolicy(error) => error.fmt(f),
+            Self::Policy(error) => error.fmt(f),
         }
     }
 }
 
-impl std::error::Error for FormControlError {}
+impl std::error::Error for FormIntegerInputBuildError {}
 
-impl From<FormFieldError> for FormControlError {
-    fn from(error: FormFieldError) -> Self {
+impl From<FieldAccessError> for FormIntegerInputBuildError {
+    fn from(error: FieldAccessError) -> Self {
         Self::Field(error)
     }
 }
 
-impl From<IntegerInputPolicyError> for FormControlError {
+impl From<IntegerInputPolicyError> for FormIntegerInputBuildError {
     fn from(error: IntegerInputPolicyError) -> Self {
-        Self::IntegerPolicy(error)
+        Self::Policy(error)
     }
 }

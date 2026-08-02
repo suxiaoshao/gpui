@@ -11,9 +11,9 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState, NumberInput, NumberInputEvent, StepAction};
 use gpui_component::{Disableable, Sizable, Size};
-use gpui_form::typed::{FormControl, FormField, FormStore, ValidationMessage};
+use gpui_form::{FormField, FormState, PartialFormField, ValidationMessage};
 
-use crate::{FormControlError, IntegerInputPolicyError};
+use crate::{FormIntegerInputBuildError, IntegerInputPolicyError};
 
 pub use error::IntegerInputError;
 pub use policy::IntegerInputPolicy;
@@ -185,7 +185,7 @@ where
     N: IntegerValue,
 {
     subscriptions: Vec<Subscription>,
-    input: Entity<IntegerInputState<N>>,
+    state: Entity<IntegerInputState<N>>,
 }
 
 impl<N> FormIntegerInput<N>
@@ -193,17 +193,95 @@ where
     N: IntegerValue,
 {
     pub fn new<Form, Owner, Build>(
+        form: &Entity<Form>,
         field: FormField<Form, N>,
         build: Build,
         window: &mut Window,
         cx: &mut Context<Owner>,
-    ) -> Result<Self, FormControlError>
+    ) -> Result<Self, IntegerInputPolicyError>
     where
-        Form: FormStore + EventEmitter<gpui_form::typed::FormEvent<Form::Field>>,
+        Form: FormState,
         Owner: 'static,
         Build: FnOnce(&mut Window, &mut Context<IntegerInputState<N>>) -> IntegerInputState<N>,
     {
-        <Self as FormControl<N>>::new(field, build, window, cx)
+        let value = field.value(form, cx);
+        let state = cx.new(|cx| build(window, cx));
+        state.read(cx).validate_policy()?;
+        state.update(cx, |state, cx| state.set_value(value, window, cx));
+        let binding = field.bind_control(form, cx);
+
+        let weak_state = state.downgrade();
+        let weak_form = form.downgrade();
+        let projection = field.clone();
+        let projection_binding = binding.clone();
+        let form_subscription = field.subscribe_in(form, window, cx, move |_, window, cx| {
+            let weak_state = weak_state.clone();
+            let weak_form = weak_form.clone();
+            let projection = projection.clone();
+            let binding = projection_binding.clone();
+            cx.defer_in(window, move |_, window, cx| {
+                let (Some(state), Some(form)) = (weak_state.upgrade(), weak_form.upgrade()) else {
+                    return;
+                };
+                let value = projection.value(&form, cx);
+                state.update(cx, |state, cx| state.set_value(value, window, cx));
+                binding.defer_clear_issue(window, cx);
+            });
+        });
+
+        let event_subscription = integer_event_subscription(&state, binding, window, cx);
+        Ok(Self {
+            subscriptions: vec![form_subscription, event_subscription],
+            state,
+        })
+    }
+
+    pub fn try_new<Form, Owner, Build>(
+        form: &Entity<Form>,
+        field: PartialFormField<Form, N>,
+        build: Build,
+        window: &mut Window,
+        cx: &mut Context<Owner>,
+    ) -> Result<Self, FormIntegerInputBuildError>
+    where
+        Form: FormState,
+        Owner: 'static,
+        Build: FnOnce(&mut Window, &mut Context<IntegerInputState<N>>) -> IntegerInputState<N>,
+    {
+        let value = field.try_value(form, cx)?;
+        let state = cx.new(|cx| build(window, cx));
+        state.read(cx).validate_policy()?;
+        state.update(cx, |state, cx| state.set_value(value, window, cx));
+        let binding = field.try_bind_control(form, cx)?;
+
+        let weak_state = state.downgrade();
+        let weak_form = form.downgrade();
+        let projection = field.clone();
+        let projection_binding = binding.clone();
+        let form_subscription =
+            field.try_subscribe_in(form, window, cx, move |_, window, cx| {
+                let weak_state = weak_state.clone();
+                let weak_form = weak_form.clone();
+                let projection = projection.clone();
+                let binding = projection_binding.clone();
+                cx.defer_in(window, move |_, window, cx| {
+                    let (Some(state), Some(form)) = (weak_state.upgrade(), weak_form.upgrade())
+                    else {
+                        return;
+                    };
+                    let Ok(value) = projection.try_value(&form, cx) else {
+                        return;
+                    };
+                    state.update(cx, |state, cx| state.set_value(value, window, cx));
+                    binding.defer_clear_issue(window, cx);
+                });
+            })?;
+
+        let event_subscription = integer_event_subscription(&state, binding, window, cx);
+        Ok(Self {
+            subscriptions: vec![form_subscription, event_subscription],
+            state,
+        })
     }
 }
 
@@ -213,7 +291,7 @@ where
 {
     type Target = Entity<IntegerInputState<N>>;
     fn deref(&self) -> &Self::Target {
-        &self.input
+        &self.state
     }
 }
 
@@ -226,71 +304,32 @@ where
     }
 }
 
-impl<N> FormControl<N> for FormIntegerInput<N>
+fn integer_event_subscription<N, Form, Owner>(
+    state: &Entity<IntegerInputState<N>>,
+    binding: gpui_form::ControlBinding<Form, N>,
+    window: &Window,
+    cx: &mut Context<Owner>,
+) -> Subscription
 where
     N: IntegerValue,
+    Form: FormState,
+    Owner: 'static,
 {
-    type State = IntegerInputState<N>;
-    type Error = FormControlError;
-
-    fn new<Form, Owner, Build>(
-        field: FormField<Form, N>,
-        build: Build,
-        window: &mut Window,
-        cx: &mut Context<Owner>,
-    ) -> Result<Self, Self::Error>
-    where
-        Form: FormStore,
-        Owner: 'static,
-        Build: FnOnce(&mut Window, &mut Context<Self::State>) -> Self::State,
-    {
-        let value = field.value(cx)?;
-        let attachment = field.attach_control(cx)?;
-        let input = cx.new(|cx| build(window, cx));
-        input.read(cx).validate_policy()?;
-        input.update(cx, |input, cx| input.set_value(value, window, cx));
-
-        let weak_input = input.downgrade();
-        let projection = field.clone();
-        let projection_attachment = attachment.clone();
-        let form_subscription = field.subscribe_in(window, cx, move |_, window, cx| {
-            let weak_input = weak_input.clone();
-            let projection = projection.clone();
-            let attachment = projection_attachment.clone();
-            cx.defer_in(window, move |_, window, cx| {
-                let Some(input) = weak_input.upgrade() else {
-                    return;
-                };
-                let Ok(value) = projection.value(cx) else {
-                    return;
-                };
-                input.update(cx, |input, cx| input.set_value(value, window, cx));
-                attachment.defer_clear_issue(window, cx);
-            });
-        })?;
-
-        let event_attachment = attachment.clone();
-        let event_subscription = cx.subscribe_in(
-            &input,
-            window,
-            move |_, _, event: &IntegerInputEvent<N>, window, cx| match event {
-                IntegerInputEvent::Change(Ok(value)) => {
-                    event_attachment.defer_clear_issue(window, cx);
-                    event_attachment.defer_set_user_value(*value, window, cx);
-                }
-                IntegerInputEvent::Change(Err(error)) => {
-                    let (code, message) = integer_issue(*error);
-                    event_attachment.defer_set_issue(code, message, window, cx);
-                }
-                IntegerInputEvent::Blur => event_attachment.defer_blur(window, cx),
-            },
-        );
-
-        Ok(Self {
-            subscriptions: vec![form_subscription, event_subscription],
-            input,
-        })
-    }
+    cx.subscribe_in(
+        state,
+        window,
+        move |_, _, event: &IntegerInputEvent<N>, window, cx| match event {
+            IntegerInputEvent::Change(Ok(value)) => {
+                binding.defer_clear_issue(window, cx);
+                binding.defer_set(*value, window, cx);
+            }
+            IntegerInputEvent::Change(Err(error)) => {
+                let (code, message) = integer_issue(*error);
+                binding.defer_set_issue(code, message, window, cx);
+            }
+            IntegerInputEvent::Blur => binding.defer_blur(window, cx),
+        },
+    )
 }
 
 fn integer_issue<N: IntegerValue>(
