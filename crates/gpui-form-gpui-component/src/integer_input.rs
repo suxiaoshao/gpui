@@ -11,7 +11,9 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState, NumberInput, NumberInputEvent, StepAction};
 use gpui_component::{Disableable, Sizable, Size};
-use gpui_form::{FormField, FormState, PartialFormField, ValidationMessage};
+use gpui_form::{
+    DynamicPath, Form, FormEvent, FormSchema, IntoTotalPath, TotalPath, ValidationMessage,
+};
 
 use crate::{FormIntegerInputBuildError, IntegerInputPolicyError};
 
@@ -185,6 +187,7 @@ where
     N: IntegerValue,
 {
     subscriptions: Vec<Subscription>,
+    _lease: gpui_form::ControlLease,
     state: Entity<IntegerInputState<N>>,
 }
 
@@ -192,97 +195,134 @@ impl<N> FormIntegerInput<N>
 where
     N: IntegerValue,
 {
-    pub fn new<Form, Owner, Build>(
-        form: &Entity<Form>,
-        field: FormField<Form, N>,
+    pub fn new<Root, Owner, Path, Build>(
+        form: &Entity<Form<Root>>,
+        path: Path,
         build: Build,
         window: &mut Window,
         cx: &mut Context<Owner>,
     ) -> Result<Self, IntegerInputPolicyError>
     where
-        Form: FormState,
+        Root: FormSchema,
         Owner: 'static,
+        Path: IntoTotalPath<Root, N>,
         Build: FnOnce(&mut Window, &mut Context<IntegerInputState<N>>) -> IntegerInputState<N>,
     {
-        let value = field.value(form, cx);
+        let path = path.into_total_path();
+        let value = path.value(form, cx);
         let state = cx.new(|cx| build(window, cx));
         state.read(cx).validate_policy()?;
         state.update(cx, |state, cx| state.set_value(value, window, cx));
-        let binding = field.bind_control(form, cx);
-
-        let weak_state = state.downgrade();
-        let weak_form = form.downgrade();
-        let projection = field.clone();
-        let projection_binding = binding.clone();
-        let form_subscription = field.subscribe_in(form, window, cx, move |_, window, cx| {
-            let weak_state = weak_state.clone();
-            let weak_form = weak_form.clone();
-            let projection = projection.clone();
-            let binding = projection_binding.clone();
-            cx.defer_in(window, move |_, window, cx| {
-                let (Some(state), Some(form)) = (weak_state.upgrade(), weak_form.upgrade()) else {
-                    return;
-                };
-                let value = projection.value(&form, cx);
-                state.update(cx, |state, cx| state.set_value(value, window, cx));
-                binding.defer_clear_issue(window, cx);
-            });
-        });
+        let binding = path.bind_control(form, cx);
+        let lease = binding.lease();
+        let form_subscription = subscribe_total(form, path, &state, binding.clone(), window, cx);
 
         let event_subscription = integer_event_subscription(&state, binding, window, cx);
         Ok(Self {
             subscriptions: vec![form_subscription, event_subscription],
+            _lease: lease,
             state,
         })
     }
 
-    pub fn try_new<Form, Owner, Build>(
-        form: &Entity<Form>,
-        field: PartialFormField<Form, N>,
+    pub fn try_new<Root, Owner, Build>(
+        form: &Entity<Form<Root>>,
+        path: DynamicPath<Root, N>,
         build: Build,
         window: &mut Window,
         cx: &mut Context<Owner>,
     ) -> Result<Self, FormIntegerInputBuildError>
     where
-        Form: FormState,
+        Root: FormSchema,
         Owner: 'static,
         Build: FnOnce(&mut Window, &mut Context<IntegerInputState<N>>) -> IntegerInputState<N>,
     {
-        let value = field.try_value(form, cx)?;
+        let value = path.try_value(form, cx)?;
         let state = cx.new(|cx| build(window, cx));
         state.read(cx).validate_policy()?;
         state.update(cx, |state, cx| state.set_value(value, window, cx));
-        let binding = field.try_bind_control(form, cx)?;
-
-        let weak_state = state.downgrade();
-        let weak_form = form.downgrade();
-        let projection = field.clone();
-        let projection_binding = binding.clone();
-        let form_subscription =
-            field.try_subscribe_in(form, window, cx, move |_, window, cx| {
-                let weak_state = weak_state.clone();
-                let weak_form = weak_form.clone();
-                let projection = projection.clone();
-                let binding = projection_binding.clone();
-                cx.defer_in(window, move |_, window, cx| {
-                    let (Some(state), Some(form)) = (weak_state.upgrade(), weak_form.upgrade())
-                    else {
-                        return;
-                    };
-                    let Ok(value) = projection.try_value(&form, cx) else {
-                        return;
-                    };
-                    state.update(cx, |state, cx| state.set_value(value, window, cx));
-                    binding.defer_clear_issue(window, cx);
-                });
-            })?;
+        let binding = path.try_bind_control(form, cx)?;
+        let lease = binding.lease();
+        let form_subscription = subscribe_dynamic(form, path, &state, binding.clone(), window, cx);
 
         let event_subscription = integer_event_subscription(&state, binding, window, cx);
         Ok(Self {
             subscriptions: vec![form_subscription, event_subscription],
+            _lease: lease,
             state,
         })
     }
+}
+
+fn subscribe_total<Root, Owner, N>(
+    form: &Entity<Form<Root>>,
+    path: TotalPath<Root, N>,
+    state: &Entity<IntegerInputState<N>>,
+    binding: gpui_form::ControlBinding<Root, N>,
+    window: &Window,
+    cx: &mut Context<Owner>,
+) -> Subscription
+where
+    Root: FormSchema,
+    Owner: 'static,
+    N: IntegerValue,
+{
+    let weak_form = form.downgrade();
+    let weak_state = state.downgrade();
+    cx.subscribe_in(form, window, move |_, _, event: &FormEvent, window, cx| {
+        if matches!(event, FormEvent::ValidationChanged { .. }) {
+            return;
+        }
+        let weak_form = weak_form.clone();
+        let weak_state = weak_state.clone();
+        let path = path.clone();
+        let binding = binding.clone();
+        cx.defer_in(window, move |_, window, cx| {
+            let (Some(form), Some(state)) = (weak_form.upgrade(), weak_state.upgrade()) else {
+                return;
+            };
+            state.update(cx, |state, cx| {
+                state.set_value(path.value(&form, cx), window, cx)
+            });
+            binding.defer_clear_issue(window, cx);
+        });
+    })
+}
+
+fn subscribe_dynamic<Root, Owner, N>(
+    form: &Entity<Form<Root>>,
+    path: DynamicPath<Root, N>,
+    state: &Entity<IntegerInputState<N>>,
+    binding: gpui_form::ControlBinding<Root, N>,
+    window: &Window,
+    cx: &mut Context<Owner>,
+) -> Subscription
+where
+    Root: FormSchema,
+    Owner: 'static,
+    N: IntegerValue,
+{
+    let weak_form = form.downgrade();
+    let weak_state = state.downgrade();
+    cx.subscribe_in(form, window, move |_, _, event: &FormEvent, window, cx| {
+        if matches!(event, FormEvent::ValidationChanged { .. }) {
+            return;
+        }
+        let weak_form = weak_form.clone();
+        let weak_state = weak_state.clone();
+        let path = path.clone();
+        let binding = binding.clone();
+        cx.defer_in(window, move |_, window, cx| {
+            let (Some(form), Some(state)) = (weak_form.upgrade(), weak_state.upgrade()) else {
+                return;
+            };
+            let Ok(value) = path.try_value(&form, cx) else {
+                return;
+            };
+            state.update(cx, |state, cx| state.set_value(value, window, cx));
+            binding.defer_clear_issue(window, cx);
+        });
+    })
 }
 
 impl<N> Deref for FormIntegerInput<N>
@@ -304,15 +344,15 @@ where
     }
 }
 
-fn integer_event_subscription<N, Form, Owner>(
+fn integer_event_subscription<N, Root, Owner>(
     state: &Entity<IntegerInputState<N>>,
-    binding: gpui_form::ControlBinding<Form, N>,
+    binding: gpui_form::ControlBinding<Root, N>,
     window: &Window,
     cx: &mut Context<Owner>,
 ) -> Subscription
 where
     N: IntegerValue,
-    Form: FormState,
+    Root: FormSchema,
     Owner: 'static,
 {
     cx.subscribe_in(

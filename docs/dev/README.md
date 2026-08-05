@@ -4,7 +4,7 @@
 
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
-| [#199](https://github.com/suxiaoshao/gpui/issues/199) form owner、app store/form/operation 与 Transition 重构 | form 阶段已实施并通过自动化门禁；Jaco UI 已完成定向 smoke，其他 app/store/operation 阶段仍待规划 | [issue-199/README.md](issue-199/README.md) |
+| [#199](https://github.com/suxiaoshao/gpui/issues/199) form owner、app store/form/operation 与 Transition 重构 | 显式owner v2已实施；当前Form vNext、Feiwen完整迁移、Jaco vNext consumer均已有独立Draft计划 | [issue-199/README.md](issue-199/README.md) |
 | [#175](https://github.com/suxiaoshao/gpui/issues/175) previous typed form delivery | Issue/PR 已完成；form API 计划被 #199 取代 | [issue-175/README.md](issue-175/README.md) |
 
 ## Framework migrations
@@ -18,9 +18,9 @@
 
 ## 目录约定
 
-- `docs/dev/issue-<number>/README.md`：跨 owner feature/refactor 的共享规格、顺序与子计划索引。
+- `docs/dev/issue-<number>/README.md`：跨 owner feature/refactor 的总指导、状态、顺序与命名专题文档索引；多轮任务的执行细节写入独立文件。
 - `app/<name>/docs/dev/issue-<number>/README.md`、
-  `crates/<name>/docs/dev/issue-<number>/README.md`：同一 issue 的 owner plan 或历史归档。
+  `crates/<name>/docs/dev/issue-<number>/README.md`：同一 issue 的 owner状态与专题文档索引；历史单轮README保持原样归档。
 - `docs/dev/migrations/<target-id>/README.md`：只保存跨 workspace 的顺序、发布门和子计划索引。
 - `docs/dev/migrations/<target-id>/workspace.md`：root manifest/toolchain、dependency graph 与最终 CI 门。
 - `docs/dev/migrations/<target-id>/dependency-evidence.md`：共享依赖与上游证据。

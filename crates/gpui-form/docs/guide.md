@@ -1,234 +1,188 @@
-# gpui-form v2 user guide
+# gpui-form vNext user guide
 
 [English](guide.md) | [简体中文](guide.zh-CN.md)
 
-`gpui-form` owns an editable typed draft. It validates and prepares that draft,
-but it does not own remote I/O, shared application state, component interaction
-state, or a second copy of the business value.
+## 1. Add the pieces a page needs
 
-## 1. Crates and boundaries
-
-Applications normally use the core crate plus a component adapter:
+An application normally uses the core crate and a native-control adapter. A
+validator adapter such as Garde is optional; it is never the path authority.
 
 ```toml
 [dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
 gpui-form.workspace = true
 gpui-form-gpui-component.workspace = true
-garde.workspace = true
+# garde.workspace = true # optional validator adapter
 ```
 
-The three relevant layers have distinct ownership:
-
-| Fact | Owner |
-| --- | --- |
-| Typed draft, baseline, revision, validation, prepared output | generated `FormState` |
-| Catalogs, selected records, shared loaded data | `gpui-store` or another application state owner |
-| Save/refresh/retry task, loading and notifications | page/controller plus `gpui-operation` when applicable |
-| Focus, IME, selection, popup/query, incomplete editor text | native component state |
-| Binding subscriptions and deferred control intent | owning control and `ControlBinding` |
-
-The form never writes a shared store as a side effect of editing. A successful
-operation explicitly applies its canonical result through
-`rebase_if_revision`.
-
-## 2. Declare a model and generated state
-
-The model uses the exact Rust types that the application will submit.
-`FormModel` generates the named entity state and one allocation-free
-schema-level `SCREAMING_SNAKE_CASE` associated const for every statically
-declared field:
+The examples use this common prelude:
 
 ```rust,ignore
-use gpui_form::FormModel;
+use std::{collections::HashSet, sync::Arc};
 
-#[derive(Clone, Debug, PartialEq, FormModel)]
-#[form(state = ProviderForm)]
-struct ProviderInput {
-    #[form(required, validate(on_change, on_blur))]
+use gpui::{AppContext as _, Context, Entity, Subscription, Window};
+use gpui_component::{
+    checkbox::Checkbox,
+    form::field,
+    input::{Input, InputState},
+};
+use gpui_form::{
+    DynamicPath, Form, FormRevision, FormSchema, Position, Prepared, TotalPath,
+    ValidationMessage, ValidationRequest, ValidationSink, ValidationTrigger,
+    Validator,
+};
+use gpui_form_gpui_component::{
+    FormInput, FormIntegerInput, IntegerInputState,
+};
+```
+
+Use one `Entity<Form<M>>` per editing session. The form owns the draft and its
+editing runtime; the page owns persistence and presentation; native controls own
+focus, IME, popup state, selection, and incomplete editor text.
+
+## 2. Declare a draft and create its session
+
+```rust,ignore
+#[derive(Clone, Debug, PartialEq, FormSchema)]
+struct ProviderDraft {
+    #[form(required, validate(on_change, on_blur, on_submit))]
     name: String,
 
-    #[form(validate(on_submit))]
+    #[form(validate(on_change, on_submit))]
     retry_limit: u32,
 
-    #[form(validate(on_dynamic, on_submit))]
-    model_id: Option<String>,
+    enabled: bool,
 }
 ```
 
-The generated `ProviderForm` implements `FormState` and owns exactly one
-runtime containing the current model, baseline, monotonic `FormRevision`, typed
-validation context, validation report, and started async-validation tasks.
+`required` and `validate(...)` are static leaf-schema metadata, not component
+configuration or a second value copy.
 
-`ProviderForm::NAME: FormField<ProviderForm, String>` is a pure typed lens and
-schema descriptor—not a form handle. Every statically declared model field has
-one such associated const. It can be reused directly as a tiny descriptor with
-only static schema/access information. Accessing it constructs no per-form or
-per-field state and performs no allocation; the descriptor stores no value,
-subscription, `Entity<ProviderForm>`, or `WeakEntity<ProviderForm>`.
-
-The generated state is the only entity required for an editing session:
+`FormSchema` produces static definitions on the model type:
 
 ```rust,ignore
-use gpui::{AppContext as _, Entity};
-use gpui_form::FormState as _;
-
-let form: Entity<ProviderForm> = cx.new(|cx| ProviderForm::from_value(
-    ProviderInput {
-        name: String::new(),
-        retry_limit: 3,
-        model_id: None,
-    },
-    cx,
-));
+ProviderDraft::NAME: FieldDef<ProviderDraft, String>
+ProviderDraft::RETRY_LIMIT: FieldDef<ProviderDraft, u32>
 ```
 
-`from_value` is available when `ValidationContext: Default`. Otherwise use
-`from_value_with_validation_context(initial, context, cx)`. Construction installs
-the model and context, then runs mount validation exactly once.
-
-## 3. Total descriptors and partial descriptors
-
-Most field paths are statically present. A normal `FormField<Form, T>` is
-**total**: every synchronous API explicitly takes a strong form entity and has
-no structural `Result`.
+Create a session by supplying the initial draft and a validator. Use
+`Form::try_new` when the session does not need an injected validator.
 
 ```rust,ignore
-let current: String = ProviderForm::NAME.value(&form, cx);
-let issues = ProviderForm::NAME.errors(&form, cx);
-let validating = ProviderForm::NAME.is_validating(&form, cx);
-
-ProviderForm::NAME.set(&form, "OpenAI".to_owned(), cx);
-ProviderForm::NAME.validate(&form, ValidationTrigger::Dynamic, cx);
+let runtime = Form::try_new_with_validator(
+    ProviderDraft { name: String::new(), retry_limit: 3, enabled: true },
+    ProviderValidator::new(reserved_names),
+)?;
+let form: Entity<Form<ProviderDraft>> = cx.new(|_| runtime);
 ```
 
-There is only one write verb: `set`. It stores the typed value, advances the
-revision once when the value changed, invalidates intersecting validation, runs
-the field's change validation, emits one event, and notifies once. Equal writes
-are complete no-ops. The library does not expose a separate `set_user_value`.
+Section 6 implements `ProviderValidator`; `reserved_names` is an
+`Arc<HashSet<String>>` supplied by the page.
 
-An identified item or computed projection can disappear. It returns a
-`PartialFormField<Form, T>` and exposes only `try_*` operations:
+The same schema may be used in another session with a different validator or
+validator context. Updating an options catalog does not mutate the form; its
+owner explicitly refreshes validator data and requests dynamic validation when
+product rules require it.
+
+## 3. Put form, controls, and observation in the page
 
 ```rust,ignore
-let partial_parent = ServerForm::HEADERS.item(FormItemId::new(row_id));
-let header_name = HeaderRowForm::NAME.within(partial_parent);
+struct ProviderPage {
+    form: Entity<Form<ProviderDraft>>,
+    form_observer: Subscription,
+    name_input: FormInput,
+    retry_limit_input: FormIntegerInput<u32>,
+}
 
-let name = header_name.try_value(&form, cx)?;
-header_name.try_set(&form, "Authorization".to_owned(), cx)?;
-let issues = header_name.try_errors(&form, cx)?;
+impl ProviderPage {
+    fn new(
+        reserved_names: Arc<HashSet<String>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<Self> {
+        let runtime = Form::try_new_with_validator(
+            ProviderDraft { name: String::new(), retry_limit: 3, enabled: true },
+            ProviderValidator::new(reserved_names),
+        )?;
+        let form = cx.new(|_| runtime);
+
+        let name_input = FormInput::new(
+            &form,
+            ProviderDraft::NAME,
+            |window, cx| InputState::new(window, cx).placeholder("Provider name"),
+            window,
+            cx,
+        );
+        let retry_limit_input = FormIntegerInput::new(
+            &form,
+            ProviderDraft::RETRY_LIMIT,
+            |window, cx| IntegerInputState::new(window, cx)
+                .min(0u32).max(10u32).step(1u32),
+            window,
+            cx,
+        )?;
+        let form_observer = cx.observe(&form, |_, _, cx| cx.notify());
+
+        Ok(Self { form, form_observer, name_input, retry_limit_input })
+    }
+}
 ```
 
-`FieldAccessError` represents an unavailable projection or a missing/duplicate
-stable item. `FieldMutationError` wraps access errors and also rejects a write
-that changes a captured stable ID. Neither includes `FormReleased`: a
-synchronous caller passed `&Entity<Form>` and therefore already established
-form liveness.
+A root `FieldDef<M, T>` is a total-path shorthand. Static nested paths are also
+total; an item, enum case, or optional payload produces a dynamic path and uses
+the adapter's `try_new` constructor instead.
 
-`AuthForm::USERNAME.within(ServerForm::AUTH)` is total: composition preserves
-the total availability of its static parent. `ServerForm::HEADERS.item(id)` is a
-runtime-addressed `PartialFormField`; `HeaderRowForm::NAME.within(partial_parent)`
-therefore remains partial. `within` preserves the parent descriptor's
-total/partial availability, while `project_value` and `item` create a partial
-descriptor; every child of a partial descriptor remains partial. `project_value`
-is partial even when its input descriptor is static or total-by-composition.
-`within` and `item` create lightweight located descriptors rather than new
-schema definitions. The marker that implements this rule is an implementation
-detail—the public guide uses `FormField` and `PartialFormField`, not marker
-generics.
+Do not reproduce every native-control rule in this guide. The
+[component adapter guide](../../gpui-form-gpui-component/docs/guide.md) explains
+deferred Input/Integer/Select/Combobox events, options refreshes, teardown, and
+custom stateful adapters.
 
-## 4. Create bound controls
+## 4. Render fields and session status
 
-The component adapter creates a native component state and binds it in one
-call. The form is explicit; a total field constructor is infallible except for
-the component's own domain errors:
+Static schema answers questions such as whether a label is required. The
+explicit form answers questions about the live editing session.
 
 ```rust,ignore
-use gpui_component::input::InputState;
-use gpui_form_gpui_component::{FormInput, FormIntegerInput, IntegerInputState};
-
-let name_input = FormInput::new(
-    &form,
-    ProviderForm::NAME,
-    |window, cx| InputState::new(window, cx).placeholder("Provider name"),
-    window,
-    cx,
-);
-
-let retry_limit_input = FormIntegerInput::new(
-    &form,
-    ProviderForm::RETRY_LIMIT,
-    |window, cx| IntegerInputState::new(window, cx)
-        .min(0u32).max(10u32).step(1u32),
-    window,
-    cx,
-)?; // invalid integer bounds remain a real component error
-```
-
-`FormInput::try_new(&form, partial_field, ...)` is the corresponding constructor
-for a `PartialFormField`; it can return `FieldAccessError`. A bound control is a
-plain Rust newtype with exactly `subscriptions: Vec<Subscription>` followed by
-its native `Entity<State>`, and dereferences to that entity. It does not store a
-form, descriptor, `ControlBinding`, value snapshot, options, focus flag, or
-temporary editor text.
-
-The binding internally owns the weak relation needed after a native entity event
-has started. It defers the typed write until the emitter update ends, upgrades
-the form only then, and silently cancels if the form or a partial path no longer
-exists. Direct synchronous page code passes the strong entity and never sees
-that weak-lifetime path.
-
-Observe the form once at the page/controller lifetime to rerender labels,
-validation feedback, and buttons:
-
-```rust,ignore
-let form_subscription = cx.observe(&form, |_, _, cx| cx.notify());
-```
-
-## 5. Render fields and form runtime
-
-Schema is static on the descriptor; runtime state comes from the explicit form:
-
-```rust,ignore
-let error = ProviderForm::NAME.errors(&self.form, cx)
+let name = ProviderDraft::NAME;
+let errors = name.errors(&self.form, cx);
+let pending = self.form.read(cx).is_validating();
+let dirty = self.form.read(cx).is_dirty();
+let valid = self.form.read(cx).is_valid();
+let feedback = errors
     .first()
-    .map(|issue| validation_text(&issue.message, cx));
-let is_validating = ProviderForm::NAME.is_validating(&self.form, cx);
+    .map(|issue| validation_text(issue, cx))
+    .unwrap_or_else(|| if pending { "Checking…".into() } else { String::new() });
 
 field()
     .label("Provider name")
-    .required(ProviderForm::NAME.schema().is_required())
+    .required(name.schema().is_required())
+    .description(feedback)
     .child(Input::new(&self.name_input));
 ```
 
-Useful form-level queries remain `is_dirty`, `is_valid`, `is_validating`,
-`validation_report`, `errors_at`, `first_error_path`, and `revision`. The form
-owns no focus, touched, blurred, or error-visibility state. After a failed
-submit, the active page chooses which visible native control to focus.
+The form-level query family includes dirty, valid, pending, validation report,
+errors at a path, first blocking error path, and revision. The form never owns touched/blurred/error-visibility mirrors;
+after failed submit, the page chooses a visible native control to focus.
 
-Stateless typed elements use the same total descriptor:
+Stateless controls use the same total shorthand when their callback is not
+running inside a native state-entity update:
 
 ```rust,ignore
+let enabled = ProviderDraft::ENABLED;
+let checked = enabled.value(&self.form, cx);
 let form = self.form.clone();
-let checked = ProviderForm::ENABLED.value(&form, cx);
 
 Checkbox::new("provider-enabled")
     .checked(checked)
-    .on_click(move |checked, _, cx| ProviderForm::ENABLED.set(&form, *checked, cx));
+    .on_click(move |checked, _, cx| enabled.set(&form, *checked, cx));
 ```
 
-This direct write is appropriate only when the callback is not inside a native
-state entity's active update. Stateful component events always go through the
-adapter's deferred `ControlBinding` path to avoid GPUI reentrancy.
+## 5. Replace, reset, rebase, and revisions
 
-Options and catalogs are configuration, not form data: update the application
-store, update or rebuild the native delegate, silently project the authoritative
-form value, then explicitly request dynamic validation if necessary. Never pick
-the first option, rewrite/rebase a value, or persist as an options-refresh side
-effect.
-
-## 6. Whole-form lifecycle and revisions
-
-Use lifecycle operations when installing application data:
+Use whole-form lifecycle operations when application data is installed or a
+save has produced a canonical model:
 
 ```rust,ignore
 self.form.update(cx, |form, cx| form.replace(next, cx));
@@ -236,237 +190,344 @@ self.form.update(cx, |form, cx| form.reset(cx));
 self.form.update(cx, |form, cx| form.rebase(saved, cx));
 ```
 
-`replace` changes current value and retains baseline; `reset` restores baseline;
-`rebase` installs both current value and baseline. Each lifecycle operation
-advances the revision even for an equal Rust value, cancels affected async work,
-clears stale data validation, and causes value reprojection. It does not
-synthesize individual field change validation.
+- `replace` installs a new current draft and retains the baseline.
+- `reset` restores the baseline as the current draft.
+- `rebase` installs one model as both current draft and baseline.
 
-`rebase_if_revision(expected, saved, cx)` is the sole async-save merge primitive.
-A failed comparison changes no draft, baseline, revision, report, task, or
-control. A success advances the revision, so two results for the same submitted
-revision cannot both apply.
+Each lifecycle operation advances revision and reprojects mounted controls even
+when Rust values compare equal. It invalidates old async and topology lifetime
+work, clears stale validation state, and does not pretend that every leaf was a
+user change. `rebase_if_revision` is the only async-save merge primitive: a
+failed comparison changes no draft, baseline, report, task, or control.
 
-## 7. Validation
+## 6. Validate synchronously, dynamically, and asynchronously
 
-### Triggers, paths, and scoped buckets
+### Validation rules and scoped results
 
-Supported triggers are mount, change, blur, dynamic, and submit. `required`
-always participates in submit and may opt into earlier triggers. Strings are
-missing when trimmed-empty; `None`, empty supported collections, and `false`
-are missing. Numeric and enum values have no implicit missing semantics.
+The runtime supports mount, change, blur, dynamic, and submit triggers.
+Required semantics are fixed: trimmed-empty strings, `None`, empty supported
+collections, and `false` are missing; numeric and enum values are not
+implicitly missing.
 
-`ValidationScope::Field(path)` includes the changed path, descendants, and
-ancestor group/array paths, but not sibling leaves. Group and identified-item
-scopes include their subtree plus ancestors; `Form` includes every data path.
+A change scope includes the changed path, its descendants, and structural
+ancestors, but not unrelated siblings. A validation run replaces only the
+source/trigger/path buckets it owns. This is why changing one field cannot clear
+another field's error. Topology errors, such as using a stale item path or
+creating a move cycle, reject a transaction before validation; they are not
+validation issues.
 
-The runtime stores adapter results in normalized, source-and-path buckets. A
-scoped validation run replaces only buckets selected by both scope and trigger;
-it preserves sibling adapter issues. An adapter's form-level issue is valid only
-for `ValidationScope::Form` and is replaced only by another form-wide run.
-Control issues retain their separate lifecycle-scoped buckets.
+### Write a session validator
 
-The core resolves every adapter path against the model snapshot before scope and
-trigger filtering. Unknown, malformed, duplicate, or unconvertible stable paths
-become blocking internal form issues rather than silently disappearing. Schema
-ownership is exact: an array owns its container and direct item roots; a nested
-item leaf uses that leaf's own schema triggers.
-
-### Garde and custom adapters
-
-Garde validates synchronous model/business rules; keep empty-value semantics in
-`#[form(required)]` rather than duplicating them in Garde:
+This complete sketch shows the validator flow.
 
 ```rust,ignore
-#[derive(Clone, Debug, PartialEq, FormModel, garde::Validate)]
-#[form(state = AccountForm, validation(adapter = "garde"))]
-#[garde(allow_unvalidated)]
-struct AccountInput {
-    #[form(required, validate(on_change, on_blur))]
-    #[garde(skip)]
-    display_name: String,
-
-    #[form(validate(on_change, on_blur, on_dynamic, on_submit))]
-    #[garde(email)]
-    email: Option<String>,
+struct ProviderValidator {
+    reserved_names: Arc<HashSet<String>>,
 }
-```
 
-For external dependencies, put typed data in the validation context and replace
-that context explicitly. A Garde message provider is a static type-level policy
-that maps Garde rules to `ValidationMessage`; it is neither stored nor
-`Default`-constructed. Applications can return stable keys and parameters and
-translate them with the current locale while rendering.
+impl ProviderValidator {
+    fn new(reserved_names: Arc<HashSet<String>>) -> Self {
+        Self { reserved_names }
+    }
+}
 
-A custom `ValidationAdapter<Model>` is a static associated policy of the
-generated state, not a stored or `Default`-constructed value. It receives the
-typed validation context directly and must treat `ValidationScope` as the
-boundary of the bucket set it reports:
-
-```rust,ignore
-impl ValidationAdapter<ProviderInput> for ProviderValidator {
-    type Context = ProviderValidationContext;
-
+impl Validator<ProviderDraft> for ProviderValidator {
     fn validate(
-        value: &ProviderInput,
-        trigger: ValidationTrigger,
-        scope: &ValidationScope,
-        context: &Self::Context,
-        cx: &App,
-    ) -> ValidationAdapterReport {
-        let mut report = ValidationAdapterReport::default();
-        let path = ProviderForm::MODEL_ID.path().clone();
-        if scope.includes(&path)
-            && value.model_id.as_ref().is_some_and(|id| !context.model_ids.contains(id))
+        &self,
+        model: &ProviderDraft,
+        request: ValidationRequest<'_, ProviderDraft>,
+        out: &mut ValidationSink<ProviderDraft>,
+    ) {
+        let path = ProviderDraft::NAME;
+        if request.includes(&path)
+            && !model.name.is_empty()
+            && self.reserved_names.contains(model.name.trim())
         {
-            report.push(ValidationIssue::field(
-                path, trigger,
-                ValidationSource::App("provider".into()),
-                "model_unavailable", ValidationMessage::key("provider-model-unavailable"),
-            ));
+            out.at(path).error(
+                "provider-name-unavailable",
+                ValidationMessage::key("provider-name-unavailable"),
+            );
         }
-        report
     }
 }
 ```
 
-The core still normalizes returned paths and enforces scope/trigger ownership;
-using the scope is both a performance opportunity and a way for an adapter to
-avoid reporting unrelated siblings.
+Native validators emit typed or canonical paths through the same sink. A Garde
+adapter, when used, maps positional collection reports through the topology of
+the same form snapshot to runtime-located item paths and active cases. A stale,
+unknown, inactive, or unresolvable adapter path becomes a blocking internal
+form issue rather than being dropped or attached to another field.
 
-### Asynchronous validation and control issues
+### Request dynamic and async validation deliberately
 
-The page decides when to begin a remote check. Once started, the form owns its
-task, generation, and scope checks:
+An owner explicitly requests dynamic validation after an external dependency
+change:
 
 ```rust,ignore
-ProviderForm::NAME.start_async_validation(
-    &self.form,
-    "provider-name",
-    ValidationTrigger::Change,
-    move |name| async move { service.check_name(name).await },
-    cx,
-);
+ProviderDraft::NAME.validate(&self.form, ValidationTrigger::Dynamic, cx);
 ```
 
-An intersecting write, cancellation, lifecycle operation, or form drop cancels
-the task. Stale completion cannot replace newer state. Active form-owned async
-validation blocks `prepare_submit`; nonblocking remote hints belong to
-application UI.
-
-A native editor that temporarily cannot produce `T` keeps its raw text locally
-and publishes a lifecycle-scoped control issue through `ControlBinding`. That
-issue blocks submit only while its binding remains mounted.
-
-## 8. Prepare submit and persist
-
-`prepare_submit` validates one snapshot, rejects validation/control/pending
-async issues, and transforms the same snapshot exactly once:
+The page also decides when a remote check is worthwhile. It starts one against a
+path and input snapshot; after that the form owns cancellation, generation,
+address/incarnation freshness, and result publication:
 
 ```rust,ignore
-use gpui_form::PreparedSubmit;
-
-let PreparedSubmit { revision, output } = self.form.update(cx, |form, cx| {
-    form.prepare_submit(cx)
+self.form.update(cx, |form, cx| {
+    form.start_async_validation(
+        ProviderDraft::NAME,
+        "provider-name",
+        |name| async move { directory.check_name(name).await },
+        cx,
+    )
 })?;
 ```
 
-`PreparedSubmit` prevents callers from accidentally reading revision and output
-from different model versions. `SubmitTransform<Model>` is a static,
-infallible transform selected by the generated state:
+An intersecting write, lifecycle replacement, subtree removal, or stale
+completion cannot publish an old result. Pending form-owned async validation
+blocks `prepare`. A native editor that cannot currently produce typed `T` keeps
+its raw text locally and publishes a lifecycle-scoped control issue through its
+binding.
+
+## 7. Prepare, persist, and conditionally rebase
 
 ```rust,ignore
-struct ProviderTransform;
+struct SaveProvider {
+    name: String,
+    retry_limit: u32,
+    enabled: bool,
+}
 
-impl SubmitTransform<ProviderInput> for ProviderTransform {
-    type Output = SaveProvider;
-
-    fn transform(model: &ProviderInput) -> SaveProvider {
-        SaveProvider {
-            name: model.name.trim().to_owned(),
-            retry_limit: model.retry_limit,
+impl From<ProviderDraft> for SaveProvider {
+    fn from(draft: ProviderDraft) -> Self {
+        Self {
+            name: draft.name,
+            retry_limit: draft.retry_limit,
+            enabled: draft.enabled,
         }
     }
 }
-```
 
-There is no `TransformReport` or transform failure variant. A condition that
-should render inline belongs in validation; remote/provider/database failures
-belong to the application operation. On successful persistence, apply the
-canonical saved value with `rebase_if_revision(revision, saved, cx)`.
+let prepared: Prepared<ProviderDraft> = self.form.update(cx, |form, cx| {
+    form.prepare(cx)
+})?;
+let revision = prepared.revision();
+let request = prepared.map(SaveProvider::from);
 
-## 9. Nested models, arrays, and projections
+self.start_save(revision, request, cx);
 
-Nested data remains in one root entity; static associated-const descriptors
-compose without creating child forms, capturing a root entity, or instantiating
-field state:
-
-```rust,ignore
-let username = AuthForm::USERNAME.within(ServerForm::AUTH);
-let username = username.value(&form, cx);
-
-let partial_parent = ServerForm::HEADERS.item(FormItemId::new(row_id));
-let header_name = HeaderRowForm::NAME.within(partial_parent);
-let header_name = header_name.try_value(&form, cx)?;
-```
-
-Stable IDs are unique within an array and immutable through an identified-item
-descriptor. Whole-array `set` is the explicit operation for insertion, removal,
-replacement, and reorder. The library neither selects the first duplicate nor
-silently repairs IDs.
-
-`project_value` creates a distinct projection path for controls and async issues
-while retaining its nearest real model path for validation. It is always partial,
-including when called directly on a static descriptor or a total composition:
-
-```rust,ignore
-let budget = JobForm::RUN_SETTINGS.project_value(
-    "token_budget",
-    |settings| settings.custom_token_budget(),
-    |settings, value| settings.set_custom_token_budget(value),
-);
-let budget = budget.try_value(&form, cx)?;
-```
-
-## 10. Implement a custom stateful control
-
-There is no `FormControl` trait. A custom control has an inherent constructor
-that accepts the form explicitly and creates a `ControlBinding` at the
-long-lived callback boundary:
-
-```rust,ignore
-pub struct FormRating {
-    subscriptions: Vec<Subscription>,
-    rating: Entity<RatingState>,
-}
-
-impl FormRating {
-    pub fn new<Owner>(
-        form: &Entity<ReviewForm>,
-        field: FormField<ReviewForm, Rating>,
-        window: &mut Window,
-        cx: &mut Context<Owner>,
-    ) -> Self {
-        let binding = field.bind_control(form, cx);
-        // Build and silently project initial value. Capture binding clones only
-        // in event/projection subscriptions; do not retain it as a struct field.
-        todo!()
-    }
+// In the page-owned async completion callback:
+let applied = self.form.update(cx, |form, cx| {
+    form.rebase_if_revision(revision, canonical_saved_model, cx)
+});
+if !applied {
+    self.show_saved_while_editing_notice(cx);
 }
 ```
 
-`ControlBinding` is cloneable and owns the internal control lease. Its public
-deferred intents are `defer_set`, `defer_blur`, `defer_set_issue`, and
-`defer_clear_issue`. It exposes neither a weak form handle, immediate mutation,
-control ID, nor component read-back. A partial field uses `try_bind_control`.
+`prepare` runs submit validation on one snapshot, rejects blocking data/control
+issues and pending async work, and atomically captures that snapshot plus
+revision. `Prepared<M>::map` consumes it and transforms it once. Persistence,
+loading, retry, and notifications remain application work.
 
-A descriptor subscription silently reprojects when a `ValueChanged` path can
-affect that descriptor, and after every `ModelReplaced`, including after that
-control's own edit. `ValidationChanged` is ignored for value projection. Do
-not add origin skipping.
+## 8. Compose static, optional, and recursive paths
 
-## 11. Related documentation
+### Static and optional children
 
-- [Project documentation index](README.md)
-- [gpui-form-macros guide](../../gpui-form-macros/docs/guide.md)
-- [gpui-form-gpui-component guide](../../gpui-form-gpui-component/docs/guide.md)
+```rust,ignore
+#[derive(Clone, FormSchema)]
+struct AuthDraft {
+    username: String,
+}
+
+#[derive(Clone, FormSchema)]
+struct RedirectDraft {
+    callback_url: String,
+}
+
+#[derive(Clone, FormSchema)]
+struct ServerDraft {
+    #[form(child)]
+    auth: AuthDraft,
+    #[form(child)]
+    redirect: Option<RedirectDraft>,
+}
+
+let username: TotalPath<ServerDraft, String> =
+    ServerDraft::AUTH.then(AuthDraft::USERNAME);
+// `server_form: Entity<Form<ServerDraft>>` owns this editing session.
+let callback: DynamicPath<ServerDraft, String> = ServerDraft::REDIRECT
+    .try_some(server_form.read(cx))?
+    .then(RedirectDraft::CALLBACK_URL);
+```
+
+Static composition remains total. `try_some(form)` and
+`try_case(form, case_def)` explicitly resolve the current optional/case
+incarnation and return a dynamic path; an `ItemPath` returned by Form is already
+dynamic. All descendants stay dynamic and use `try_*` operations. The returned
+path stores no form entity, and callers never supply an item ID.
+
+### Recursive runtime-located trees
+
+The business model contains only query data. It does not carry IDs added for
+form navigation:
+
+```rust,ignore
+#[derive(Clone, FormSchema)]
+struct QueryDraft {
+    #[form(child)]
+    root: FilterGroup,
+}
+
+#[derive(Clone, FormSchema)]
+struct FilterGroup {
+    #[form(items)]
+    children: Vec<FilterNode>,
+}
+
+#[derive(Clone, FormSchema)]
+struct FilterNode {
+    #[form(child)]
+    kind: FilterNodeKind,
+}
+
+#[derive(Clone, FormSchema)]
+enum FilterNodeKind {
+    Condition(FilterCondition),
+    Group(FilterGroup),
+}
+
+#[derive(Clone, FormSchema)]
+struct FilterCondition {
+    value: String,
+}
+
+let runtime = Form::try_new(QueryDraft {
+    root: FilterGroup {
+        children: vec![FilterNode {
+            kind: FilterNodeKind::Group(FilterGroup {
+                children: vec![FilterNode {
+                    kind: FilterNodeKind::Condition(FilterCondition {
+                        value: String::new(),
+                    }),
+                }],
+            }),
+        }],
+    },
+})?;
+let query_form: Entity<Form<QueryDraft>> = cx.new(|_| runtime);
+
+let root_children = QueryDraft::ROOT.then(FilterGroup::CHILDREN);
+let group_node = root_children
+    .items(&query_form, cx)?
+    .into_iter()
+    .next()
+    .expect("the example contains one root node");
+
+let nested_children = group_node
+    .then(FilterNode::KIND)
+    .try_case(query_form.read(cx), FilterNodeKind::GROUP)?
+    .then(FilterGroup::CHILDREN);
+let condition_node = nested_children
+    .try_items(&query_form, cx)?
+    .into_iter()
+    .next()
+    .expect("the example contains one nested node");
+
+let value = condition_node
+    .then(FilterNode::KIND)
+    .try_case(query_form.read(cx), FilterNodeKind::CONDITION)?
+    .then(FilterCondition::VALUE);
+
+let current: String = value.try_value(&query_form, cx)?;
+value.try_set(&query_form, "Rust".to_owned(), cx)?;
+```
+
+`Form` assigns an opaque session-local identity to every item occurrence while
+building the session. `items` and `try_items` return ordered typed `ItemPath`
+values carrying that identity. Choosing an entry from the returned `Vec` uses
+its current position only for selection; the resulting path never stores or
+later resolves by that index. The token cannot be constructed, read, serialized,
+or placed in the business model by the caller.
+
+Collections are not writable `Vec<T>` leaves. Topology methods accept and return
+the same typed item paths instead of raw IDs:
+
+```rust,ignore
+let children = QueryDraft::ROOT.then(FilterGroup::CHILDREN);
+let anchor = children.items(&query_form, cx)?.into_iter().next().unwrap();
+
+let appended = children.append(
+    &query_form,
+    FilterNode {
+        kind: FilterNodeKind::Condition(FilterCondition { value: String::new() }),
+    },
+    cx,
+)?;
+let inserted = children.insert_before(
+    &query_form,
+    &anchor,
+    FilterNode {
+        kind: FilterNodeKind::Condition(FilterCondition { value: String::new() }),
+    },
+    cx,
+)?;
+children.move_before(&query_form, &appended, &anchor, cx)?;
+children.remove(&query_form, inserted, cx)?;
+
+let fresh = children.replace_all(
+    &query_form,
+    vec![
+        FilterNode {
+            kind: FilterNodeKind::Group(FilterGroup { children: Vec::new() }),
+        },
+        FilterNode {
+            kind: FilterNodeKind::Condition(FilterCondition { value: String::new() }),
+        },
+    ],
+    cx,
+)?;
+
+let parent = fresh[0].clone();
+let source = fresh[1].clone();
+let destination = parent
+    .then(FilterNode::KIND)
+    .try_case(query_form.read(cx), FilterNodeKind::GROUP)?
+    .then(FilterGroup::CHILDREN);
+let moved = source.move_to(&query_form, destination, Position::End, cx)?;
+```
+
+`append` and `insert_before` return the new occurrence; `replace_all` returns
+fresh paths for every replacement item. Same-parent reorder preserves an item
+path. Removal, whole-collection replacement, case reconstruction, whole-model
+replacement/rebase, or a cross-parent move retires affected old paths. A
+cross-parent move is one cycle-checked root transaction and returns the new
+destination path; an old binding never follows it implicitly.
+
+## 9. Ownership and lifetime rules
+
+Static definitions own schema edges and typed accessors. Located paths own a
+typed access plan, canonical address, and static target. `Form<M>` owns the
+mutable draft runtime. No path or definition owns an entity, value, validation
+report, subscription, or native control.
+
+A canonical address identifies a position, while an incarnation identifies the
+current object at that position. `try_case` and `try_some` read the current
+`&Form<M>` and capture that incarnation in an entity-free path. Only deferred
+bindings and async work hold weak form ownership; they also capture address,
+incarnation, generation, and a control-issue lease. Stale callbacks become
+no-ops. The renderer destroys native entities and subscriptions when a dynamic
+subtree disappears.
+
+## 10. Contract summary
+
+Static `then` needs no form. `try_case(&Form, CaseDef)` and `try_some(&Form)`
+capture the current incarnation, while Form keeps topology snapshots private.
+Form owns item identity and returns typed located paths rather than raw IDs.
+Lifecycle replacement retires old paths, bindings, issues, and async
+completions instead of reviving them at the same structural location.
+
+## Related documentation
+
+- [Documentation index](README.md)
+- [Macro guide](../../gpui-form-macros/docs/guide.md)
+- [Component adapter guide](../../gpui-form-gpui-component/docs/guide.md)

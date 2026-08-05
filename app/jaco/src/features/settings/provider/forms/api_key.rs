@@ -1,10 +1,5 @@
-#[derive(Clone, Debug, PartialEq, gpui_form::FormModel, garde::Validate)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormSchema, garde::Validate)]
 #[garde(context(super::ProviderValidationContext))]
-#[form(
-    state = ApiKeyProviderForm,
-    validation(adapter = "garde", messages = super::JacoGardeMessageProvider),
-    transform(adapter = super::ApiKeyProviderTransform)
-)]
 pub(in crate::features::settings::provider) struct ApiKeyProviderFormInput {
     #[garde(skip)]
     pub(super) enabled: bool,

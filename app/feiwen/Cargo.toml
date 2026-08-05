@@ -24,6 +24,10 @@ category = "DeveloperTool"
 gpui.workspace = true
 gpui_platform.workspace = true
 gpui-component.workspace = true
+gpui-form.workspace = true
+gpui-form-gpui-component.workspace = true
+gpui-operation = { workspace = true, features = ["tracing"] }
+gpui-store.workspace = true
 app-assets.workspace = true
 app-theme = { workspace = true, default-features = false, features = ["system-accent"] }
 fluent-bundle = "0.16.0"

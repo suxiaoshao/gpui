@@ -1,5 +1,0 @@
-error: duplicate #[form(...)] attribute
- --> tests/ui/fail/duplicate_helper.rs:5:1
-  |
-5 | #[form(transform(adapter = "validify"))]
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

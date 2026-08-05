@@ -1,11 +1,12 @@
 # Issue #199：Jaco 子任务跟踪
 
-- 状态：`JACO-199-01 已实施`（自动化通过；定向 UI smoke 已记录）
+- 状态：`JACO-199-01 已实施`；`JACO-199-02 Done`（实际 UI 操作测试未执行）
 - 关联 issue：[#199](https://github.com/suxiaoshao/gpui/issues/199)
 - 根计划：[工作区 Issue #199 计划](../../../../../docs/dev/issue-199/README.md)
 - Jaco 开发文档索引：[开发计划](../README.md)
 - 负责范围：`app/jaco`
-- 本地 ID 范围：`E/D/F/L/ST/R/T-400..499`、`WP-400..499`
+- 本地 ID 范围：历史 `E/D/F/L/ST/R/T-400..499`、`WP-400..499`；当前
+  `E/D/F/L/ST/R/T-600..699`、`WP-600..699`
 
 本页只跟踪 Issue #199 在 Jaco 内的多轮子任务、状态、依赖、实施引用与专题开发文档。
 架构决定、调用面、工作包、测试契约和验收证据写在各自的专题文档中，不继续堆入本页。
@@ -14,7 +15,8 @@
 
 | ID | 子任务 | 状态 | 专题文档 | 工作包 | 前置与交接 | 实施引用 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `JACO-199-01` | 迁移到显式 form owner API | 已实施；自动化通过；UI smoke 部分完成 | [form-migration.md](form-migration.md) | `WP-400`–`WP-406` | `C-03`/`C-04` 已达到 `consumer-complete` | 当前分支工作树（待提交/PR） |
+| `JACO-199-01` | 迁移到显式 form owner API | 已实施；自动化通过；UI smoke 部分完成 | [form-migration.md](form-migration.md) | `WP-400`–`WP-406` | `C-03`/`C-04` 已达到 `consumer-complete` | `24d4249` |
+| `JACO-199-02` | 迁移到 greenfield Form vNext | `Done`；361 tests、Clippy与workspace gate通过；实际UI操作测试未执行 | [form-vnext-migration.md](form-vnext-migration.md) | `WP-600`–`WP-604` | Form `C-500`–`C-502`与Jaco `C-603`已交付 | 本次 Issue #199 实施提交 |
 
 ## 跟踪规则
 

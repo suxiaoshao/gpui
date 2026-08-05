@@ -32,6 +32,10 @@ impl PromptChoice {
             .to_lowercase(),
         }
     }
+
+    pub(super) fn value(&self) -> &Option<PromptId> {
+        &self.value
+    }
 }
 
 impl SelectItem for PromptChoice {

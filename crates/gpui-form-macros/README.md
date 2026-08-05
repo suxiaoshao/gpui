@@ -2,114 +2,143 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-`gpui-form-macros` provides `#[derive(FormModel)]` for `gpui-form`. It
-generates one GPUI form state type, reusable typed field descriptors, schema
-metadata, validation traversal, and submit-preparation glue from an ordinary
-Rust model.
+`gpui-form-macros` provides `#[derive(FormSchema)]`: the compile-time half of
+the greenfield `gpui-form` API. Derive it on the model you edit, then create a
+single `Form<M>` session that owns the draft, topology, validation, and commit
+boundary.
 
-## Example
+Applications normally depend on `gpui-form`, which re-exports `FormSchema`:
+
+```toml
+[dependencies]
+gpui.workspace = true
+gpui-form.workspace = true
+```
+
+## Start with a flat model
+
+A flat struct produces total root fields. Create one form session, retain it as
+`Entity<Form<M>>`, and use the generated root definition to read or update a
+field.
 
 ```rust,ignore
-use gpui::AppContext as _;
-use gpui_form::FormState as _;
+use gpui::{App, Entity};
+use gpui_form::{Form, FormRevision, FormSchema, Prepared};
 
-#[derive(Clone, Debug, PartialEq, gpui_form::FormModel)]
-#[form(state = ProviderForm)]
-struct ProviderInput {
-    #[form(required, validate(on_change, on_blur))]
+#[derive(Clone, FormSchema)]
+struct ProviderDraft {
     name: String,
     retry_limit: u32,
 }
 
-let form = cx.new(|cx| {
-    ProviderForm::from_value(
-        ProviderInput {
-            name: String::new(),
-            retry_limit: 3,
-        },
-        cx,
-    )
-});
+struct SaveProvider {
+    name: String,
+    retry_limit: u32,
+}
 
-let name = ProviderForm::NAME;
-name.set(&form, "OpenAI".to_owned(), cx);
+impl From<ProviderDraft> for SaveProvider {
+    fn from(draft: ProviderDraft) -> Self {
+        Self { name: draft.name, retry_limit: draft.retry_limit }
+    }
+}
 
-let prepared = form.update(cx, |form, cx| form.prepare_submit(cx))?;
-assert_eq!(prepared.output.name, "OpenAI");
+let runtime = Form::try_new(ProviderDraft {
+    name: "primary".to_owned(),
+    retry_limit: 3,
+})?;
+let form: Entity<Form<ProviderDraft>> = cx.new(|_| runtime);
+
+let name = ProviderDraft::NAME;
+let current: String = name.value(&form, cx);
+name.set(&form, "backup".to_owned(), cx);
+
+let prepared: Prepared<ProviderDraft> =
+    form.update(cx, |form, cx| form.prepare(cx))?;
+let revision: FormRevision = prepared.revision();
+let request = prepared.map(SaveProvider::from);
+// Give `(revision, request)` to the application's persistence task.
+
+fn apply_saved_provider(
+    form: &Entity<Form<ProviderDraft>>,
+    revision: FormRevision,
+    saved_provider: ProviderDraft,
+    cx: &mut App,
+) -> bool {
+    form.update(cx, |form, cx| {
+        form.rebase_if_revision(revision, saved_provider, cx)
+    })
+}
 ```
 
-By default `Model` generates `ModelForm`; `#[form(state = ProviderForm)]`
-overrides that state type name. The generated type implements `FormState` and
-owns exactly one internal runtime with the current model, baseline, revision,
-validation context, and validation state.
+`ProviderDraft::NAME` is a generated `FieldDef<ProviderDraft, String>`. Since
+there is no topology boundary between the root and `name`, its path is total:
+`value` and `set` can operate directly on the form session.
 
-For every statically declared field, the derive generates one schema-level
-associated constant in `SCREAMING_SNAKE_CASE`, such as `ProviderForm::NAME`.
-Each constant is one allocation-free schema definition and exposes a lightweight
-`FormField<ProviderForm, T>` typed lens backed only by static schema and access
-functions. It neither owns nor weakly references an `Entity<ProviderForm>`, and
-accessing it creates no per-form field state or subscription and performs no
-allocation.
-Callers pass the `&Entity<ProviderForm>` explicitly to every data operation.
+`prepare` is the explicit handoff from an editable session to a submit-ready
+snapshot. It runs the session validation policy and captures a revision; `map`
+then transforms that accepted snapshot without reopening mutation. Capture the
+revision before `map`; after persistence, apply the canonical `ProviderDraft`
+only through `rebase_if_revision` so an older response cannot overwrite newer
+edits.
 
-The macro does not expose a `ProviderInputField` enum or `FormFieldId` API.
-Schema belongs to the descriptor:
+## Add structure with attributes
+
+`FormSchema` derives static definitions from Rust fields and variants:
+
+| Attribute | Intended model shape | Generated definition |
+| --- | --- | --- |
+| `#[form(child)]` | a nested schema, optionally `Option<Child>` | `ChildDef` |
+| `#[form(items)]` | `Vec<Item>` whose item has a form schema | `ItemsDef` |
+
+Definitions compose from root to leaf. For example, an item property below a
+collection starts from an `ItemPath` returned by the Form runtime, then composes
+with `item_path.then(...)`. Crossing an item, optional value, or enum case makes
+the resulting path dynamic; it must be read or written with `try_value` /
+`try_set`. Models never declare or store a form-only item ID.
+
+The full tutorial covers total child paths, `try_some(&Form)`, recursive arrays,
+`try_case(&Form, CaseDef)`, topology mutations, validators, and commit/rebase
+handling:
+
+- [English guide](docs/guide.md)
+- [中文指南](docs/guide.zh-CN.md)
+
+## Generated names are the contract
+
+The derive expands schema metadata rather than an editing runtime. The runtime
+crate supplies `Form<M>`, paths, validators, topology operations, and prepared
+snapshots. The macro supplies typed, static entry points such as:
 
 ```rust,ignore
-let name = ProviderForm::NAME;
-assert!(name.schema().is_required());
-let errors = name.errors(&form, cx);
+ProfileDraft::DISPLAY_NAME; // FieldDef<ProfileDraft, String>
+ProfileDraft::ADDRESS;      // ChildDef<ProfileDraft, AddressDraft>
+ProfileDraft::RULES;        // ItemsDef<ProfileDraft, RuleDraft>
+ModeDraft::REMOTE;          // CaseDef<ModeDraft, RemoteDraft>
 ```
 
-## Total and partial descriptors
+The definition types are re-exported by `gpui-form`; the names above are the
+derive output contract.
 
-Root fields and ordinary group projections are `FormField<Form, T>` (a total
-descriptor). Their `value`, `set`, validation, and error APIs are infallible:
-their path is statically present whenever the supplied form entity exists.
+## Validation attributes
 
-An identified array item and a computed `project_value` are
-`PartialFormField<Form, T>`. They use explicit `try_*` APIs because a stable-ID
-item may have been removed or a computed projection may be unavailable:
+`child` and `items` describe structure. Leaf fields also accept validation
+metadata:
 
-```rust,ignore
-let username = AuthForm::USERNAME.within(ServerForm::AUTH);
-username.set(&form, "alice".into(), cx);
+| Attribute | Meaning |
+| --- | --- |
+| `#[form(required)]` | mark a field as required; without an explicit trigger list it enables mount/change/blur/submit |
+| `#[form(validate(...))]` | enable any of `on_mount`, `on_change`, `on_blur`, `on_dynamic`, and `on_submit` |
 
-let header = ServerForm::HEADERS.item(row_id);
-let header_name = HeaderRowForm::NAME.within(header);
-let row = header_name.try_value(&form, cx)?;
-```
+Required values use `RequiredValue`; strings are trimmed, options and supported
+collections must be nonempty, and booleans must be true.
 
-Availability propagates through composition: `within` keeps its parent's
-availability; `HEADERS.item(id)` and `project_value(...)` turn it partial; every
-descendant of a partial descriptor remains partial. The macro keeps descriptor
-construction private, so every public descriptor carries a generated path and
-schema contract.
+## Compile-time diagnostics
 
-## Validation and submit
+The derive should fail close to the model declaration for unsupported schema
+shapes: generic schema types, tuple structs, unions, struct-like enum variants,
+and enum variants with more than one payload field. An `items` field must be a
+supported collection whose item exposes the required form schema. The removed
+`#[form(identity)]` attribute is an error: item identity is generated and owned
+by the Form runtime, not by a model field.
 
-The derive supports Garde or application-defined validation adapters, generic
-models, nested groups, and stable-ID arrays. A validation adapter is selected
-as a type-level associated policy; it is not a stored value and does not require
-`Default`. Runtime dependencies belong in the typed validation context or in
-application-owned state.
-
-`SubmitTransform` is a static, pure, infallible transformation from the
-validated model to the application output. `prepare_submit` returns a
-`PreparedSubmit<Output>` containing both that output and the form revision that
-produced it. Persistence, request tasks, retry, and conditional rebase remain
-application responsibilities.
-
-Nested models also derive `FormModel`, but never create child form entities.
-`within` composes a child lens over a parent lens from the same root form;
-`item(id)` creates a `PartialFormField`, and every descendant remains partial.
-`project_value` is likewise partial. `FormField` constructors remain
-core-private. The macro does not generate controls,
-component configuration, raw drafts, codecs, focus/touched/blurred state,
-persistence, or operation lifecycle.
-
-## Documentation
-
-- [User guide](docs/guide.md)
-- [使用指南（中文）](docs/guide.zh-CN.md)
-- [Documentation index](docs/README.md)
+See the guide for diagnostics and the supported recursive shape.

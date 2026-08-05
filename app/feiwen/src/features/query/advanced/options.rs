@@ -12,7 +12,7 @@ use gpui_component::select::{SearchableVec, SelectItem};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum FieldKind {
+pub(crate) enum FieldKind {
     Title,
     Description,
     LatestChapterTitle,
@@ -25,7 +25,7 @@ pub(super) enum FieldKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum TextRelation {
+pub(crate) enum TextRelation {
     Contains,
     StartsWith,
     EndsWith,
@@ -33,7 +33,7 @@ pub(super) enum TextRelation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum NumberRelation {
+pub(crate) enum NumberRelation {
     Eq,
     Ne,
     Lt,
@@ -44,12 +44,12 @@ pub(super) enum NumberRelation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum BoolRelation {
+pub(crate) enum BoolRelation {
     Is,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum TagsRelation {
+pub(crate) enum TagsRelation {
     Intersects,
     ContainsAll,
     ContainedBy,
@@ -59,7 +59,7 @@ pub(super) enum TagsRelation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum AuthorRelation {
+pub(crate) enum AuthorRelation {
     NameContains,
     NameStartsWith,
     NameEndsWith,
@@ -71,13 +71,13 @@ pub(super) enum AuthorRelation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum GroupRelation {
+pub(crate) enum GroupRelation {
     All,
     Any,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SortField {
+pub(crate) enum SortField {
     Title,
     AuthorName,
     NovelId,
@@ -91,7 +91,7 @@ pub(super) enum SortField {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SortDirectionChoice {
+pub(crate) enum SortDirectionChoice {
     Asc,
     Desc,
 }
@@ -131,7 +131,7 @@ impl<T: Copy + Eq + 'static> SelectItem for SelectChoice<T> {
 }
 
 impl FieldKind {
-    pub(super) fn text_field(self) -> Option<TextField> {
+    pub(crate) fn text_field(self) -> Option<TextField> {
         match self {
             Self::Title => Some(TextField::Title),
             Self::Description => Some(TextField::Description),
@@ -140,7 +140,7 @@ impl FieldKind {
         }
     }
 
-    pub(super) fn number_field(self) -> Option<NumberField> {
+    pub(crate) fn number_field(self) -> Option<NumberField> {
         match self {
             Self::WordCount => Some(NumberField::WordCount),
             Self::ReadCount => Some(NumberField::ReadCount),
@@ -151,7 +151,7 @@ impl FieldKind {
 }
 
 impl TagsRelation {
-    pub(super) fn needs_value(self) -> bool {
+    pub(crate) fn needs_value(self) -> bool {
         !matches!(self, Self::IsEmpty | Self::IsNotEmpty)
     }
 }
@@ -172,7 +172,7 @@ impl SortField {
         }
     }
 
-    pub(super) fn sort_expr(self) -> SortExpr {
+    pub(crate) fn sort_expr(self) -> SortExpr {
         match self {
             Self::Title => SortExpr::Text(TextField::Title),
             Self::AuthorName => SortExpr::Text(TextField::AuthorName),
@@ -188,7 +188,7 @@ impl SortField {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub(crate) struct QueryOptions {
     pub(super) tags: Vec<TagOption>,
     pub(super) authors: Vec<AuthorOption>,
@@ -206,6 +206,7 @@ impl QueryOptions {
             .map(|tag| TagOption {
                 id: tag.id,
                 name: tag.name,
+                missing: false,
             })
             .collect();
         let mut authors = HashMap::new();
@@ -219,11 +220,44 @@ impl QueryOptions {
                 .or_insert_with(|| AuthorOption {
                     author: author_ref,
                     name: row.author_name,
+                    missing: false,
                 });
         }
         let mut authors = authors.into_values().collect::<Vec<_>>();
         sort_author_options(&mut authors);
         Ok(Self { tags, authors })
+    }
+
+    pub(super) fn tag_items_with_current(&self, current: &[String]) -> Vec<TagOption> {
+        let mut items = self.tags.clone();
+        for value in current {
+            if !items.iter().any(|item| item.value() == value) {
+                items.push(TagOption {
+                    id: 0,
+                    name: value.clone(),
+                    missing: true,
+                });
+            }
+        }
+        items
+    }
+
+    pub(super) fn author_items_with_current(&self, current: &[AuthorRef]) -> Vec<AuthorOption> {
+        let mut items = self.authors.clone();
+        for value in current {
+            if !items.iter().any(|item| item.value() == value) {
+                let name = match value {
+                    AuthorRef::Id(id) => format!("作者 ID {id}"),
+                    AuthorRef::Name(name) => name.clone(),
+                };
+                items.push(AuthorOption {
+                    author: value.clone(),
+                    name,
+                    missing: true,
+                });
+            }
+        }
+        items
     }
 }
 
@@ -243,23 +277,29 @@ fn load_author_rows(conn: &Connection) -> FeiwenResult<Vec<AuthorOptionRow>> {
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct TagOption {
     pub(super) id: i32,
     pub(super) name: String,
+    missing: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct AuthorOption {
     pub(super) author: AuthorRef,
     pub(super) name: String,
+    missing: bool,
 }
 
 impl SelectItem for TagOption {
     type Value = String;
 
     fn title(&self) -> SharedString {
-        self.name.clone().into()
+        if self.missing {
+            format!("{}（当前目录中不存在）", self.name).into()
+        } else {
+            self.name.clone().into()
+        }
     }
 
     fn value(&self) -> &Self::Value {
@@ -275,7 +315,11 @@ impl SelectItem for AuthorOption {
     type Value = AuthorRef;
 
     fn title(&self) -> SharedString {
-        self.name.clone().into()
+        if self.missing {
+            format!("{}（当前目录中不存在）", self.name).into()
+        } else {
+            self.name.clone().into()
+        }
     }
 
     fn value(&self) -> &Self::Value {
@@ -508,6 +552,7 @@ mod tests {
         let option = TagOption {
             id: 1,
             name: "中篇".to_owned(),
+            missing: false,
         };
 
         assert!(option.matches("zhongpian"));
@@ -591,18 +636,22 @@ mod tests {
             AuthorOption {
                 author: AuthorRef::Name("anonymous-b".to_owned()),
                 name: "bravo".to_owned(),
+                missing: false,
             },
             AuthorOption {
                 author: AuthorRef::Id(20),
                 name: "alpha".to_owned(),
+                missing: false,
             },
             AuthorOption {
                 author: AuthorRef::Id(10),
                 name: "alpha".to_owned(),
+                missing: false,
             },
             AuthorOption {
                 author: AuthorRef::Name("anonymous-a".to_owned()),
                 name: "alpha".to_owned(),
+                missing: false,
             },
         ];
 
@@ -620,5 +669,20 @@ mod tests {
                 AuthorRef::Name("anonymous-b".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn current_values_missing_from_catalog_remain_selectable_projection_items() {
+        let options = QueryOptions::default();
+        let tags = options.tag_items_with_current(&["旧标签".to_owned()]);
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].value(), "旧标签");
+        assert!(tags[0].title().contains("当前目录中不存在"));
+
+        let author = AuthorRef::Id(99);
+        let authors = options.author_items_with_current(std::slice::from_ref(&author));
+        assert_eq!(authors.len(), 1);
+        assert_eq!(authors[0].value(), &author);
+        assert!(authors[0].title().contains("当前目录中不存在"));
     }
 }

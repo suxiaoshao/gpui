@@ -1,76 +1,79 @@
-use std::{
-    ops::Deref,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use crate::{
     APP_NAME,
     errors::{FeiwenError, FeiwenResult},
 };
 use duckdb::DuckdbConnectionManager;
-use gpui::App;
 use r2d2::Pool;
 use tracing::{Level, event};
 
+pub(crate) mod catalog;
+pub(crate) mod database;
 pub(crate) mod query;
 pub(crate) mod service;
 pub(crate) mod types;
 
 pub(crate) type DbConn = Pool<DuckdbConnectionManager>;
 
-pub(crate) struct Db(DbConn);
-
 static DATABASE_FILE: &str = "data.duckdb";
 
-impl gpui::Global for Db {}
-
-impl Deref for Db {
-    type Target = DbConn;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl Db {
-    pub(crate) fn pool(&self) -> DbConn {
-        self.0.clone()
-    }
-}
-
-pub(crate) fn init_store(cx: &mut App) {
+pub(crate) fn init_store(cx: &mut gpui::App) {
     event!(Level::INFO, "initializing feiwen store");
-    let conn = match establish_connection() {
-        Ok(conn) => conn,
-        Err(err) => {
-            event!(Level::ERROR, error = %err, "failed to initialize feiwen store");
-            return;
-        }
-    };
-    cx.set_global(Db(conn));
-    event!(Level::INFO, "feiwen store global registered");
+    catalog::init(cx);
+    database::init(cx);
+    event!(Level::INFO, "feiwen stores registered");
 }
 
-fn establish_connection() -> FeiwenResult<DbConn> {
-    let url_path = get_data_url()?;
+pub(crate) fn establish_connection_at(url_path: &Path) -> FeiwenResult<DbConn> {
     event!(Level::INFO, db_path = %url_path.display(), "opening feiwen database");
-    let not_exists = check_data_file(&url_path)?;
-    let url = url_path.to_str().ok_or(FeiwenError::DbPath)?;
-    let manager = DuckdbConnectionManager::file(url)?;
-    let pool = Pool::builder().test_on_check_out(true).build(manager)?;
-    event!(
-        Level::INFO,
-        db_path = %url_path.display(),
-        created = not_exists,
-        "database connection pool created"
-    );
+    let created = check_data_file(url_path)?;
+    let pool = open_connection_at(url_path)?;
     let conn = pool.get()?;
     initialize_schema(&conn)?;
-    event!(Level::INFO, db_path = %url_path.display(), "database ready");
+    event!(Level::INFO, db_path = %url_path.display(), created, "database ready");
     Ok(pool)
 }
 
-fn get_data_url() -> FeiwenResult<PathBuf> {
+pub(crate) fn open_connection_at(url_path: &Path) -> FeiwenResult<DbConn> {
+    let url = url_path.to_str().ok_or(FeiwenError::DbPath)?;
+    let manager = DuckdbConnectionManager::file(url)?;
+    let pool = Pool::builder().test_on_check_out(true).build(manager)?;
+    event!(Level::INFO, db_path = %url_path.display(), "database connection pool created");
+    Ok(pool)
+}
+
+pub(crate) fn validate_schema(pool: &DbConn) -> FeiwenResult<()> {
+    let conn = pool.get()?;
+    let table_count = conn.query_row(
+        "SELECT count(*) FROM information_schema.tables \
+         WHERE table_schema = 'main' AND table_name IN ('novel', 'tag', 'novel_tag')",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let index_count = conn.query_row(
+        "SELECT count(*) FROM duckdb_indexes() \
+         WHERE schema_name = 'main' AND index_name IN (\
+             'idx_novel_is_limit', \
+             'idx_novel_reply_count', \
+             'idx_novel_tag_tag_id_novel_id'\
+         )",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    if table_count != 3 || index_count != 3 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "database schema is incomplete: expected 3 tables and 3 indexes, found {table_count} tables and {index_count} indexes"
+            ),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+pub(crate) fn get_data_url() -> FeiwenResult<PathBuf> {
     let data_path = dirs_next::config_dir()
         .ok_or(FeiwenError::DbPath)?
         .join(APP_NAME)

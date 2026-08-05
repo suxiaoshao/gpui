@@ -8,7 +8,7 @@ pub(crate) mod effort_select;
 mod form_state;
 
 pub(crate) use composer_editor::{ComposerEditor, ComposerEditorEvent, ComposerSnapshot};
-pub(crate) use form_state::{ChatInputForm, ChatInputInput};
+pub(crate) use form_state::ChatInputInput;
 
 use crate::components::chat::run_settings::reasoning_selection_is_valid;
 use crate::{
@@ -36,7 +36,7 @@ use gpui_component::{
     notification::{Notification, NotificationType},
     v_flex,
 };
-use gpui_form::typed::FormState as _;
+use gpui_form::typed::{Form, FormEvent};
 use gpui_operation::{Complete, Load, Transition};
 use jaco_core::{ReasoningSelectionSnapshot, ToolApprovalMode};
 use std::{path::Path, rc::Rc};
@@ -115,8 +115,8 @@ pub(crate) struct ChatInputController {
     composer: Entity<ComposerEditor>,
     chat_form: Entity<ChatFormState>,
     chat_form_controls: ChatFormControls,
-    form: Entity<ChatInputForm>,
-    run_settings: Entity<RunSettingsController<ChatInputForm>>,
+    form: Entity<Form<ChatInputInput>>,
+    run_settings: Entity<RunSettingsController<ChatInputInput>>,
     primary_action_state: Entity<PrimaryActionControlState>,
     next_attachment_id: u64,
     submission_problem: Option<SharedString>,
@@ -200,7 +200,7 @@ impl ChatInputController {
             |form, composer, event: &ComposerEditorEvent, window, cx| match event {
                 ComposerEditorEvent::Changed => {
                     let snapshot = composer.read(cx).snapshot();
-                    ChatInputForm::COMPOSER.set(&form.form, snapshot, cx);
+                    ChatInputInput::COMPOSER.set(&form.form, snapshot, cx);
                     cx.notify();
                 }
                 ComposerEditorEvent::PasteAttachmentRequested(item) => {
@@ -216,23 +216,21 @@ impl ChatInputController {
         let mut subscriptions = vec![composer_subscription];
 
         let form = cx.new(|cx| {
-            ChatInputForm::from_value(
-                ChatInputInput::new(
-                    composer.read(cx).snapshot(),
-                    Vec::new(),
-                    RunSettingsInput::new(
-                        selected_model_key.clone(),
-                        selected_reasoning_selection.clone(),
-                        selected_approval_mode,
-                    ),
+            Form::try_new(ChatInputInput::new(
+                composer.read(cx).snapshot(),
+                Vec::new(),
+                RunSettingsInput::new(
+                    selected_model_key.clone(),
+                    selected_reasoning_selection.clone(),
+                    selected_approval_mode,
                 ),
-                cx,
-            )
+            ))
+            .expect("build chat input form")
         });
-        let run_settings_field = ChatInputForm::RUN_SETTINGS;
-        let persisted_run_settings_field = run_settings_field.clone();
-        let run_settings =
-            cx.new(|cx| RunSettingsController::new(form.clone(), run_settings_field, window, cx));
+        let run_settings_field = ChatInputInput::ROOT.then(ChatInputInput::RUN_SETTINGS);
+        let run_settings = cx.new(|cx| {
+            RunSettingsController::new(form.clone(), run_settings_field.clone(), window, cx)
+        });
         let run_settings_states = run_settings.read(cx).control_states();
         let attachments_state = cx.new(|_| AttachmentControlState {
             attachments: Vec::new(),
@@ -283,19 +281,48 @@ impl ChatInputController {
             },
         );
         subscriptions.push(chat_form_subscription);
-        subscriptions.push(persisted_run_settings_field.subscribe_in(
+        let settings_keys = {
+            let current = form.read(cx);
+            [
+                run_settings_field.key(current),
+                run_settings_field
+                    .clone()
+                    .then(RunSettingsInput::MODEL)
+                    .key(current),
+                run_settings_field
+                    .clone()
+                    .then(RunSettingsInput::REASONING_SELECTION)
+                    .key(current),
+                run_settings_field
+                    .clone()
+                    .then(RunSettingsInput::APPROVAL_MODE)
+                    .key(current),
+            ]
+        };
+        subscriptions.push(cx.subscribe_in(
             &form,
             window,
-            cx,
-            |form, window, cx| {
-                form.save_chat_form_config(window, cx);
+            move |form, _, event: &FormEvent, window, cx| {
+                if matches!(event, FormEvent::ModelReplaced { .. })
+                    || matches!(event, FormEvent::Committed { path, .. } if settings_keys.contains(path))
+                {
+                    form.save_chat_form_config(window, cx);
+                }
             },
         ));
-        subscriptions.push(ChatInputForm::ATTACHMENTS.subscribe_in(&form, window, cx, {
+        let attachments_key = ChatInputInput::ROOT
+            .then(ChatInputInput::ATTACHMENTS)
+            .key(form.read(cx));
+        subscriptions.push(cx.subscribe_in(&form, window, {
             let form = form.clone();
             let attachments_state = attachments_state.clone();
-            move |_, _window, cx| {
-                let attachments = ChatInputForm::ATTACHMENTS.value(&form, cx);
+            move |_, _, event: &FormEvent, _window, cx| {
+                if !matches!(event, FormEvent::ModelReplaced { .. })
+                    && !matches!(event, FormEvent::Committed { path, .. } if path == &attachments_key)
+                {
+                    return;
+                }
+                let attachments = ChatInputInput::ATTACHMENTS.value(&form, cx);
                 attachments_state.update(cx, |state, cx| {
                     state.attachments = attachments;
                     cx.notify();
@@ -444,8 +471,8 @@ impl ChatInputController {
     pub(crate) fn clear_after_submit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.composer.update(cx, |composer, cx| composer.clear(cx));
         let empty_composer = self.composer.read(cx).snapshot();
-        ChatInputForm::COMPOSER.set(&self.form, empty_composer, cx);
-        ChatInputForm::ATTACHMENTS.set(&self.form, Vec::new(), cx);
+        ChatInputInput::COMPOSER.set(&self.form, empty_composer, cx);
+        ChatInputInput::ATTACHMENTS.set(&self.form, Vec::new(), cx);
         cx.notify();
     }
 
@@ -463,7 +490,9 @@ impl ChatInputController {
     }
 
     fn save_chat_form_config(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let settings = ChatInputForm::RUN_SETTINGS.value(&self.form, cx);
+        let settings = ChatInputInput::ROOT
+            .then(ChatInputInput::RUN_SETTINGS)
+            .value(&self.form, cx);
         let model = settings.model.as_ref().map(|key| ChatFormModelConfig {
             provider_id: key.provider_id.clone(),
             model_id: key.model_id.clone(),
@@ -508,15 +537,15 @@ impl ChatInputController {
         if self.primary_action_busy(cx) || send_resource_problem(cx).is_some() {
             return None;
         }
-        let prepared = self.form.update(cx, |form, cx| {
-            let mut draft = form.value().clone();
-            draft.composer = snapshot;
-            form.replace(draft, cx);
-            gpui_form::typed::FormState::prepare_submit(form, cx)
-        });
-        let prepared = prepared.ok()?.output;
+        ChatInputInput::COMPOSER.set(&self.form, snapshot, cx);
         let choices = load_model_choices(cx);
-        build_chat_input_submit(prepared, &choices).ok()
+        self.form
+            .update(cx, |form, cx| form.prepare(cx))
+            .ok()?
+            .map(|draft| build_chat_input_submit(draft, &choices))
+            .into_parts()
+            .1
+            .ok()
     }
 
     fn primary_button_action(
@@ -682,7 +711,7 @@ fn initial_reasoning_selection(
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatFormSkillCompletionPlacement, ChatInput, ChatInputController, ChatInputForm,
+        ChatFormSkillCompletionPlacement, ChatInput, ChatInputController, ChatInputInput,
         ChatInputPrimaryButtonAction,
         composer_editor::{ComposerSendPolicy, ComposerSnapshot},
         selected_model_choice_in,
@@ -887,7 +916,7 @@ mod tests {
             form.update(cx, |form, cx| {
                 form.run_settings.update(cx, |settings, cx| {
                     settings.select_reasoning_value(
-                        ChatInputForm::RUN_SETTINGS,
+                        ChatInputInput::ROOT.then(ChatInputInput::RUN_SETTINGS),
                         ReasoningSelectionSnapshot::TokenBudget {
                             mode: TokenBudgetSelectionMode::Custom,
                             value: Some(4096),
@@ -895,7 +924,12 @@ mod tests {
                         window,
                         cx,
                     );
-                    settings.set_custom_token_budget(ChatInputForm::RUN_SETTINGS, 2048, window, cx);
+                    settings.set_custom_token_budget(
+                        ChatInputInput::ROOT.then(ChatInputInput::RUN_SETTINGS),
+                        2048,
+                        window,
+                        cx,
+                    );
                 });
             });
         });
@@ -931,7 +965,7 @@ mod tests {
             form.update(cx, |form, cx| {
                 form.run_settings.update(cx, |settings, cx| {
                     settings.select_approval_value(
-                        ChatInputForm::RUN_SETTINGS,
+                        ChatInputInput::ROOT.then(ChatInputInput::RUN_SETTINGS),
                         ToolApprovalMode::FullAccess,
                         window,
                         cx,
@@ -982,7 +1016,7 @@ mod tests {
             form.update(cx, |form, cx| {
                 form.run_settings.update(cx, |settings, cx| {
                     settings.select_model_value(
-                        ChatInputForm::RUN_SETTINGS,
+                        ChatInputInput::ROOT.then(ChatInputInput::RUN_SETTINGS),
                         ProviderModelKey {
                             provider_id: provider_id.clone(),
                             model_id: "gpt-5-mini".to_string(),
@@ -991,7 +1025,7 @@ mod tests {
                         cx,
                     );
                     settings.select_approval_value(
-                        ChatInputForm::RUN_SETTINGS,
+                        ChatInputInput::ROOT.then(ChatInputInput::RUN_SETTINGS),
                         ToolApprovalMode::FullAccess,
                         window,
                         cx,
@@ -1049,7 +1083,7 @@ mod tests {
             form.update(cx, |form, cx| {
                 form.run_settings.update(cx, |settings, cx| {
                     settings.select_model_value(
-                        ChatInputForm::RUN_SETTINGS,
+                        ChatInputInput::ROOT.then(ChatInputInput::RUN_SETTINGS),
                         ProviderModelKey {
                             provider_id: provider_id.clone(),
                             model_id: "gpt-5.5".to_string(),
@@ -1104,7 +1138,7 @@ mod tests {
         let form = chat_input_controller(window, &mut cx);
         cx.update(|_window, cx| {
             form.update(cx, |form, cx| {
-                ChatInputForm::COMPOSER.set(&form.form, test_snapshot("draft"), cx);
+                ChatInputInput::COMPOSER.set(&form.form, test_snapshot("draft"), cx);
             });
         });
         cx.run_until_parked();
@@ -1125,7 +1159,7 @@ mod tests {
             form.update(cx, |form, cx| {
                 form.run_settings.update(cx, |settings, cx| {
                     settings.select_reasoning_value(
-                        ChatInputForm::RUN_SETTINGS,
+                        ChatInputInput::ROOT.then(ChatInputInput::RUN_SETTINGS),
                         ReasoningSelectionSnapshot::TokenBudget {
                             mode: TokenBudgetSelectionMode::Custom,
                             value: Some(4096),
@@ -1133,7 +1167,12 @@ mod tests {
                         window,
                         cx,
                     );
-                    settings.set_custom_token_budget(ChatInputForm::RUN_SETTINGS, 2048, window, cx);
+                    settings.set_custom_token_budget(
+                        ChatInputInput::ROOT.then(ChatInputInput::RUN_SETTINGS),
+                        2048,
+                        window,
+                        cx,
+                    );
                 });
             });
         });
@@ -1448,7 +1487,7 @@ mod tests {
         form.read_with(cx, |form, cx| {
             form.run_settings
                 .read(cx)
-                .selected_model(ChatInputForm::RUN_SETTINGS, cx)
+                .selected_model(ChatInputInput::ROOT.then(ChatInputInput::RUN_SETTINGS), cx)
                 .map(|choice| choice.model_id)
         })
     }

@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use gpui::{App, AppContext as _, Context, Entity, EntityId, Window};
 use gpui_form::typed::{
-    ErrorParamValue, FormRevision, FormState as _, PreparedSubmit, SubmitError, SubmitTransform,
-    ValidationReport, ValidationScope, ValidationTrigger,
+    ErrorParamValue, Form, FormRevision, GardeValidator, PrepareError as SubmitError,
+    ValidationReport, ValidationTrigger,
 };
 use jaco_core::{
     ProviderSecretRefs, ProviderSettingFieldValue, ProviderSettingValue, ProviderSettingsPayload,
@@ -20,12 +20,11 @@ mod custom_openai;
 mod ollama;
 mod secret;
 
-pub(super) use api_key::{ApiKeyProviderForm, ApiKeyProviderFormInput};
+pub(super) use api_key::ApiKeyProviderFormInput;
 pub(super) use custom_openai::{
-    ApiModeChoice, CustomOpenAiProviderForm, CustomOpenAiProviderFormInput, ProviderApiMode,
-    localized_api_mode_choices,
+    ApiModeChoice, CustomOpenAiProviderFormInput, ProviderApiMode, localized_api_mode_choices,
 };
-pub(super) use ollama::{OllamaProviderForm, OllamaProviderFormInput};
+pub(super) use ollama::OllamaProviderFormInput;
 pub(super) use secret::{ProviderSecretInput, ProviderSecretValue};
 
 const FIELD_NAME: &str = "name";
@@ -84,9 +83,9 @@ impl ProviderValidationKind {
 
 #[derive(Clone)]
 pub(super) enum ProviderSettingsForm {
-    ApiKey(Entity<ApiKeyProviderForm>),
-    Ollama(Entity<OllamaProviderForm>),
-    CustomOpenAi(Entity<CustomOpenAiProviderForm>),
+    ApiKey(Entity<Form<ApiKeyProviderFormInput>>),
+    Ollama(Entity<Form<OllamaProviderFormInput>>),
+    CustomOpenAi(Entity<Form<CustomOpenAiProviderFormInput>>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -107,15 +106,6 @@ pub(super) type ProviderValidationContext = JacoValidationContext<ProviderValida
 fn provider_validation_context(secret_refs: ProviderSecretRefs) -> ProviderValidationContext {
     ProviderValidationContext::new(ProviderValidationDependencies { secret_refs })
 }
-
-#[derive(Clone, Debug, Default)]
-pub(super) struct ApiKeyProviderTransform;
-
-#[derive(Clone, Debug, Default)]
-pub(super) struct OllamaProviderTransform;
-
-#[derive(Clone, Debug, Default)]
-pub(super) struct CustomOpenAiProviderTransform;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ProviderSettingsFormOutput {
@@ -216,44 +206,6 @@ impl ProviderSettingsFormOutput {
     }
 }
 
-impl SubmitTransform<ApiKeyProviderFormInput> for ApiKeyProviderTransform {
-    type Output = ApiKeyProviderFormInput;
-
-    fn transform(draft: &ApiKeyProviderFormInput) -> Self::Output {
-        ApiKeyProviderFormInput {
-            enabled: draft.enabled,
-            api_key: draft.api_key.clone(),
-            base_url: draft.base_url.trim().to_string(),
-        }
-    }
-}
-
-impl SubmitTransform<OllamaProviderFormInput> for OllamaProviderTransform {
-    type Output = OllamaProviderFormInput;
-
-    fn transform(draft: &OllamaProviderFormInput) -> Self::Output {
-        OllamaProviderFormInput {
-            enabled: draft.enabled,
-            base_url: draft.base_url.trim().to_string(),
-            bearer_token: draft.bearer_token.clone(),
-        }
-    }
-}
-
-impl SubmitTransform<CustomOpenAiProviderFormInput> for CustomOpenAiProviderTransform {
-    type Output = CustomOpenAiProviderFormInput;
-
-    fn transform(draft: &CustomOpenAiProviderFormInput) -> Self::Output {
-        CustomOpenAiProviderFormInput {
-            enabled: draft.enabled,
-            name: draft.name.trim().to_string(),
-            api_key: draft.api_key.clone(),
-            base_url: draft.base_url.trim().to_string(),
-            api_mode: draft.api_mode,
-        }
-    }
-}
-
 impl ProviderSettingsForm {
     pub(super) fn new<T>(
         form_kind: ProviderFormKind,
@@ -265,26 +217,32 @@ impl ProviderSettingsForm {
         T: 'static,
     {
         match form_kind {
-            ProviderFormKind::ApiKey => Self::ApiKey(cx.new(|cx| {
-                ApiKeyProviderForm::from_value_with_validation_context(
+            ProviderFormKind::ApiKey => Self::ApiKey(cx.new(|_| {
+                Form::try_new_with_validator(
                     ApiKeyProviderFormInput::from_seed(seed),
-                    provider_validation_context(seed.existing_secret_refs.clone()),
-                    cx,
+                    GardeValidator::<ApiKeyProviderFormInput, JacoGardeMessageProvider>::new(
+                        provider_validation_context(seed.existing_secret_refs.clone()),
+                    ),
                 )
+                .expect("build API key provider form")
             })),
-            ProviderFormKind::Ollama => Self::Ollama(cx.new(|cx| {
-                OllamaProviderForm::from_value_with_validation_context(
+            ProviderFormKind::Ollama => Self::Ollama(cx.new(|_| {
+                Form::try_new_with_validator(
                     OllamaProviderFormInput::from_seed(seed),
-                    provider_validation_context(seed.existing_secret_refs.clone()),
-                    cx,
+                    GardeValidator::<OllamaProviderFormInput, JacoGardeMessageProvider>::new(
+                        provider_validation_context(seed.existing_secret_refs.clone()),
+                    ),
                 )
+                .expect("build Ollama provider form")
             })),
-            ProviderFormKind::CustomOpenAiCompatible => Self::CustomOpenAi(cx.new(|cx| {
-                CustomOpenAiProviderForm::from_value_with_validation_context(
+            ProviderFormKind::CustomOpenAiCompatible => Self::CustomOpenAi(cx.new(|_| {
+                Form::try_new_with_validator(
                     CustomOpenAiProviderFormInput::from_seed(seed),
-                    provider_validation_context(seed.existing_secret_refs.clone()),
-                    cx,
+                    GardeValidator::<CustomOpenAiProviderFormInput, JacoGardeMessageProvider>::new(
+                        provider_validation_context(seed.existing_secret_refs.clone()),
+                    ),
                 )
+                .expect("build custom OpenAI provider form")
             })),
         }
     }
@@ -299,9 +257,9 @@ impl ProviderSettingsForm {
 
     pub(super) fn enabled(&self, cx: &App) -> bool {
         match self {
-            Self::ApiKey(form) => ApiKeyProviderForm::ENABLED.value(form, cx),
-            Self::Ollama(form) => OllamaProviderForm::ENABLED.value(form, cx),
-            Self::CustomOpenAi(form) => CustomOpenAiProviderForm::ENABLED.value(form, cx),
+            Self::ApiKey(form) => ApiKeyProviderFormInput::ENABLED.value(form, cx),
+            Self::Ollama(form) => OllamaProviderFormInput::ENABLED.value(form, cx),
+            Self::CustomOpenAi(form) => CustomOpenAiProviderFormInput::ENABLED.value(form, cx),
         }
     }
 
@@ -397,50 +355,63 @@ impl ProviderSettingsForm {
     ) -> Result<ProviderPreparedSubmit, SubmitError> {
         match self {
             Self::ApiKey(form) => {
-                let PreparedSubmit { revision, output } = form.update(cx, |form, cx| {
-                    form.set_validation_context(
-                        provider_validation_context(secret_refs.clone()),
+                let prepared = form.update(cx, |form, cx| {
+                    form.replace_validator(
+                        GardeValidator::<ApiKeyProviderFormInput, JacoGardeMessageProvider>::new(
+                            provider_validation_context(secret_refs.clone()),
+                        ),
                         cx,
                     );
-                    form.prepare_submit(cx)
+                    form.prepare(cx)
                 })?;
-                let output = ProviderSettingsFormOutput::ApiKey {
-                    enabled: output.enabled,
-                    api_key: output.api_key,
-                    base_url: output.base_url,
-                };
+                let (revision, output) = prepared
+                    .map(|output| ProviderSettingsFormOutput::ApiKey {
+                        enabled: output.enabled,
+                        api_key: output.api_key,
+                        base_url: output.base_url.trim().to_string(),
+                    })
+                    .into_parts();
                 Ok(ProviderPreparedSubmit { revision, output })
             }
             Self::Ollama(form) => {
-                let PreparedSubmit { revision, output } = form.update(cx, |form, cx| {
-                    form.set_validation_context(
-                        provider_validation_context(secret_refs.clone()),
+                let prepared = form.update(cx, |form, cx| {
+                    form.replace_validator(
+                        GardeValidator::<OllamaProviderFormInput, JacoGardeMessageProvider>::new(
+                            provider_validation_context(secret_refs.clone()),
+                        ),
                         cx,
                     );
-                    form.prepare_submit(cx)
+                    form.prepare(cx)
                 })?;
-                let output = ProviderSettingsFormOutput::Ollama {
-                    enabled: output.enabled,
-                    base_url: output.base_url,
-                    bearer_token: output.bearer_token,
-                };
+                let (revision, output) = prepared
+                    .map(|output| ProviderSettingsFormOutput::Ollama {
+                        enabled: output.enabled,
+                        base_url: output.base_url.trim().to_string(),
+                        bearer_token: output.bearer_token,
+                    })
+                    .into_parts();
                 Ok(ProviderPreparedSubmit { revision, output })
             }
             Self::CustomOpenAi(form) => {
-                let PreparedSubmit { revision, output } = form.update(cx, |form, cx| {
-                    form.set_validation_context(
-                        provider_validation_context(secret_refs.clone()),
+                let prepared = form.update(cx, |form, cx| {
+                    form.replace_validator(
+                        GardeValidator::<
+                            CustomOpenAiProviderFormInput,
+                            JacoGardeMessageProvider,
+                        >::new(provider_validation_context(secret_refs.clone())),
                         cx,
                     );
-                    form.prepare_submit(cx)
+                    form.prepare(cx)
                 })?;
-                let output = ProviderSettingsFormOutput::CustomOpenAi {
-                    enabled: output.enabled,
-                    name: output.name,
-                    api_key: output.api_key,
-                    base_url: output.base_url,
-                    api_mode: output.api_mode,
-                };
+                let (revision, output) = prepared
+                    .map(|output| ProviderSettingsFormOutput::CustomOpenAi {
+                        enabled: output.enabled,
+                        name: output.name.trim().to_string(),
+                        api_key: output.api_key,
+                        base_url: output.base_url.trim().to_string(),
+                        api_mode: output.api_mode,
+                    })
+                    .into_parts();
                 Ok(ProviderPreparedSubmit { revision, output })
             }
         }
@@ -449,13 +420,13 @@ impl ProviderSettingsForm {
     pub(super) fn set_enabled(&self, enabled: bool, _window: &mut Window, cx: &mut App) {
         match self {
             Self::ApiKey(form) => {
-                ApiKeyProviderForm::ENABLED.set(form, enabled, cx);
+                ApiKeyProviderFormInput::ENABLED.set(form, enabled, cx);
             }
             Self::Ollama(form) => {
-                OllamaProviderForm::ENABLED.set(form, enabled, cx);
+                OllamaProviderFormInput::ENABLED.set(form, enabled, cx);
             }
             Self::CustomOpenAi(form) => {
-                CustomOpenAiProviderForm::ENABLED.set(form, enabled, cx);
+                CustomOpenAiProviderFormInput::ENABLED.set(form, enabled, cx);
             }
         }
     }
@@ -480,21 +451,21 @@ impl ProviderSettingsForm {
     pub(super) fn current_output(&self, cx: &App) -> ProviderSettingsFormOutput {
         match self {
             Self::ApiKey(form) => ProviderSettingsFormOutput::ApiKey {
-                enabled: ApiKeyProviderForm::ENABLED.value(form, cx),
-                api_key: ApiKeyProviderForm::API_KEY.value(form, cx),
-                base_url: ApiKeyProviderForm::BASE_URL.value(form, cx),
+                enabled: ApiKeyProviderFormInput::ENABLED.value(form, cx),
+                api_key: ApiKeyProviderFormInput::API_KEY.value(form, cx),
+                base_url: ApiKeyProviderFormInput::BASE_URL.value(form, cx),
             },
             Self::Ollama(form) => ProviderSettingsFormOutput::Ollama {
-                enabled: OllamaProviderForm::ENABLED.value(form, cx),
-                base_url: OllamaProviderForm::BASE_URL.value(form, cx),
-                bearer_token: OllamaProviderForm::BEARER_TOKEN.value(form, cx),
+                enabled: OllamaProviderFormInput::ENABLED.value(form, cx),
+                base_url: OllamaProviderFormInput::BASE_URL.value(form, cx),
+                bearer_token: OllamaProviderFormInput::BEARER_TOKEN.value(form, cx),
             },
             Self::CustomOpenAi(form) => ProviderSettingsFormOutput::CustomOpenAi {
-                enabled: CustomOpenAiProviderForm::ENABLED.value(form, cx),
-                name: CustomOpenAiProviderForm::NAME.value(form, cx),
-                api_key: CustomOpenAiProviderForm::API_KEY.value(form, cx),
-                base_url: CustomOpenAiProviderForm::BASE_URL.value(form, cx),
-                api_mode: CustomOpenAiProviderForm::API_MODE.value(form, cx),
+                enabled: CustomOpenAiProviderFormInput::ENABLED.value(form, cx),
+                name: CustomOpenAiProviderFormInput::NAME.value(form, cx),
+                api_key: CustomOpenAiProviderFormInput::API_KEY.value(form, cx),
+                base_url: CustomOpenAiProviderFormInput::BASE_URL.value(form, cx),
+                api_mode: CustomOpenAiProviderFormInput::API_MODE.value(form, cx),
             },
         }
     }
@@ -507,18 +478,33 @@ impl ProviderSettingsForm {
     ) -> ValidationReport {
         match self {
             Self::ApiKey(form) => form.update(cx, |form, cx| {
-                form.set_validation_context(provider_validation_context(secret_refs.clone()), cx);
-                form.validate(ValidationTrigger::Submit, ValidationScope::Form, cx);
+                form.replace_validator(
+                    GardeValidator::<ApiKeyProviderFormInput, JacoGardeMessageProvider>::new(
+                        provider_validation_context(secret_refs.clone()),
+                    ),
+                    cx,
+                );
+                form.validate(ValidationTrigger::Submit, cx);
                 form.validation_report()
             }),
             Self::Ollama(form) => form.update(cx, |form, cx| {
-                form.set_validation_context(provider_validation_context(secret_refs.clone()), cx);
-                form.validate(ValidationTrigger::Submit, ValidationScope::Form, cx);
+                form.replace_validator(
+                    GardeValidator::<OllamaProviderFormInput, JacoGardeMessageProvider>::new(
+                        provider_validation_context(secret_refs.clone()),
+                    ),
+                    cx,
+                );
+                form.validate(ValidationTrigger::Submit, cx);
                 form.validation_report()
             }),
             Self::CustomOpenAi(form) => form.update(cx, |form, cx| {
-                form.set_validation_context(provider_validation_context(secret_refs.clone()), cx);
-                form.validate(ValidationTrigger::Submit, ValidationScope::Form, cx);
+                form.replace_validator(
+                    GardeValidator::<CustomOpenAiProviderFormInput, JacoGardeMessageProvider>::new(
+                        provider_validation_context(secret_refs.clone()),
+                    ),
+                    cx,
+                );
+                form.validate(ValidationTrigger::Submit, cx);
                 form.validation_report()
             }),
         }

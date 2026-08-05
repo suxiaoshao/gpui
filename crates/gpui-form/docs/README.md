@@ -1,13 +1,18 @@
 # gpui-form documentation
 
-## Library documentation
+> **Breaking proposal — not implemented.** These public documents teach the
+> Greenfield vNext workflow under review, not the API exported by the current
+> crates. Exact Rust signatures remain subject to implementation review.
 
-- [User guide (English)](guide.md)
+## Start here
+
+- [README](../README.md): build one Provider form from schema through async save
+  completion and conditional rebase.
+- [User guide (English)](guide.md): validation workflow, lifecycle operations,
+  recursive topology, and lifetime rules.
 - [使用指南（中文）](guide.zh-CN.md)
 
-The guides define the public contract for `FormModel` / `FormState`,
-allocation-free schema-level `SCREAMING_SNAKE_CASE` associated-const field
-descriptors, total and partial paths, owning controls,
-scope-preserving validation, prepared submission, nested data, and custom
-controls. They also define the boundary between a form draft, shared
-`gpui-store` state, and `gpui-operation` lifecycles.
+## Related proposal documentation
+
+- [gpui-form-macros guide](../../gpui-form-macros/docs/guide.md)
+- [gpui-form-gpui-component guide](../../gpui-form-gpui-component/docs/guide.md)

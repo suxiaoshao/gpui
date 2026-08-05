@@ -2,7 +2,7 @@ use std::ops::Deref;
 
 use gpui::{AppContext as _, Context, Entity, Subscription, Window};
 use gpui_component::input::{InputEvent, InputState};
-use gpui_form::typed::{FormField, FormState};
+use gpui_form::typed::{FieldDef, Form, FormEvent, FormSchema};
 
 use super::ProviderFormField;
 
@@ -43,18 +43,19 @@ pub(in crate::features::settings::provider) struct ProviderSecretInput {
     #[allow(dead_code)]
     subscriptions: Vec<Subscription>,
     input: Entity<InputState>,
+    _lease: gpui_form::ControlLease,
 }
 
 impl ProviderSecretInput {
-    pub(in crate::features::settings::provider) fn new<Form, Owner>(
-        form: &Entity<Form>,
-        field: FormField<Form, ProviderSecretValue>,
+    pub(in crate::features::settings::provider) fn new<M, Owner>(
+        form: &Entity<Form<M>>,
+        field: FieldDef<M, ProviderSecretValue>,
         placeholder: String,
         window: &mut Window,
         cx: &mut Context<Owner>,
     ) -> Self
     where
-        Form: FormState,
+        M: FormSchema,
         Owner: 'static,
     {
         let value = field.value(form, cx);
@@ -65,23 +66,26 @@ impl ProviderSecretInput {
         });
         state.update(cx, |input, cx| input.set_value(value.value, window, cx));
         let binding = field.bind_control(form, cx);
+        let lease = binding.lease();
         let weak_state = state.downgrade();
         let weak_form = form.downgrade();
-        let projected_field = field.clone();
-        let form_subscription = field.subscribe_in(form, window, cx, move |_owner, window, cx| {
-            let weak_state = weak_state.clone();
-            let weak_form = weak_form.clone();
-            let field = projected_field.clone();
-            cx.defer_in(window, move |_owner, window, cx| {
-                let (Some(state), Some(form)) = (weak_state.upgrade(), weak_form.upgrade()) else {
-                    return;
-                };
-                let value = field.value(&form, cx);
-                state.update(cx, |input, cx| {
-                    input.set_value(value.value, window, cx);
+        let projected_field = field;
+        let form_subscription =
+            cx.subscribe_in(form, window, move |_owner, _, _: &FormEvent, window, cx| {
+                let weak_state = weak_state.clone();
+                let weak_form = weak_form.clone();
+                let field = projected_field;
+                cx.defer_in(window, move |_owner, window, cx| {
+                    let (Some(state), Some(form)) = (weak_state.upgrade(), weak_form.upgrade())
+                    else {
+                        return;
+                    };
+                    let value = field.value(&form, cx);
+                    state.update(cx, |input, cx| {
+                        input.set_value(value.value, window, cx);
+                    });
                 });
             });
-        });
         let weak_form = form.downgrade();
         let input_field = field;
         let input_binding = binding;
@@ -107,6 +111,7 @@ impl ProviderSecretInput {
         Self {
             subscriptions: vec![form_subscription, input_subscription],
             input: state,
+            _lease: lease,
         }
     }
 }

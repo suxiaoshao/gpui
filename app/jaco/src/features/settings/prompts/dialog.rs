@@ -17,15 +17,16 @@ use gpui_component::{
     scroll::ScrollableElement,
     v_flex,
 };
-use gpui_form::typed::{FormState as _, PreparedSubmit, SubmitError};
+use gpui_form::typed::{Form, GardeValidator, PrepareError as SubmitError};
 use gpui_form_gpui_component::FormInput;
 use jaco_core::PromptId;
 use jaco_db::PromptRecord;
 
-use super::super::form_validation::validation_message;
+use super::super::form_validation::{JacoGardeMessageProvider, validation_message};
 use super::super::push_settings_error;
 use super::form_state::{
-    PromptEditForm, PromptEditFormInput, PromptEditValidationContext, PromptValidationDependencies,
+    PromptEditFormInput, PromptEditValidationContext, PromptValidationDependencies,
+    normalize_prompt_input,
 };
 use super::rows::prompt_updated_label;
 
@@ -47,7 +48,7 @@ impl PromptEditMode {
 pub(super) struct PromptEditDialogState {
     mode: PromptEditMode,
     prompt_id: Option<PromptId>,
-    form: Entity<PromptEditForm>,
+    form: Entity<Form<PromptEditFormInput>>,
     name_input: FormInput,
     content_input: FormInput,
     save_task: Option<Task<()>>,
@@ -74,12 +75,18 @@ impl PromptEditDialogState {
                 .unwrap_or_else(|_| {
                     PromptEditValidationContext::new(PromptValidationDependencies::default())
                 });
-        let form = cx.new(|cx| {
-            PromptEditForm::from_value_with_validation_context(form_input, validation_context, cx)
+        let form = cx.new(|_| {
+            Form::try_new_with_validator(
+                form_input,
+                GardeValidator::<PromptEditFormInput, JacoGardeMessageProvider>::new(
+                    validation_context,
+                ),
+            )
+            .expect("build prompt edit form")
         });
         let name_input = FormInput::new(
             &form,
-            PromptEditForm::NAME,
+            PromptEditFormInput::NAME,
             |window, cx| {
                 InputState::new(window, cx)
                     .placeholder(cx.global::<I18n>().t("prompt-placeholder-name"))
@@ -89,7 +96,7 @@ impl PromptEditDialogState {
         );
         let content_input = FormInput::new(
             &form,
-            PromptEditForm::CONTENT,
+            PromptEditFormInput::CONTENT,
             |window, cx| {
                 InputState::new(window, cx)
                     .multi_line(true)
@@ -123,17 +130,22 @@ impl PromptEditDialogState {
             }
         };
         let prepared = self.form.update(cx, |form, cx| {
-            form.set_validation_context(validation_context, cx);
-            form.prepare_submit(cx)
+            form.replace_validator(
+                GardeValidator::<PromptEditFormInput, JacoGardeMessageProvider>::new(
+                    validation_context,
+                ),
+                cx,
+            );
+            form.prepare(cx)
         });
-        let PreparedSubmit {
-            revision,
-            output: draft,
-        } = match prepared {
-            Ok(prepared) => prepared,
+        let (revision, draft) = match prepared {
+            Ok(prepared) => prepared
+                .map(|draft| normalize_prompt_input(&draft))
+                .into_parts(),
             Err(SubmitError::Validation(_) | SubmitError::ValidationPending) => {
                 return false;
             }
+            Err(_) => return false,
         };
         let mutation = match mode {
             PromptEditMode::Create => {
@@ -191,18 +203,18 @@ impl PromptEditDialogState {
 
 impl Render for PromptEditDialogState {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let name_error = PromptEditForm::NAME
+        let name_error = PromptEditFormInput::NAME
             .errors(&self.form, cx)
             .into_iter()
             .next()
-            .map(|issue| validation_message(&issue.message, cx));
-        let content_error = PromptEditForm::CONTENT
+            .map(|issue| validation_message(issue.message(), cx));
+        let content_error = PromptEditFormInput::CONTENT
             .errors(&self.form, cx)
             .into_iter()
             .next()
-            .map(|issue| validation_message(&issue.message, cx));
-        let name_required = PromptEditForm::NAME.schema().is_required();
-        let content_required = PromptEditForm::CONTENT.schema().is_required();
+            .map(|issue| validation_message(issue.message(), cx));
+        let name_required = PromptEditFormInput::NAME.schema().is_required();
+        let content_required = PromptEditFormInput::CONTENT.schema().is_required();
         v_flex()
             .w_full()
             .gap_4()
@@ -509,14 +521,13 @@ fn form_field(
 
 #[cfg(test)]
 mod tests {
-    use super::super::form_state::PromptEditForm;
+    use super::super::form_state::PromptEditFormInput;
     use super::{
         PromptEditDialogState, PromptEditMode, confirm_prompt_edit_dialog, validation_message,
     };
     use crate::{database, foundation, state};
     use gpui::{AppContext as _, Entity, Render, TestAppContext, VisualTestContext, WindowHandle};
     use gpui_component::input::{InputEvent, InputState};
-    use gpui_form::typed::FormState as _;
     use tempfile::{TempDir, tempdir};
 
     #[gpui::test]
@@ -533,7 +544,9 @@ mod tests {
         assert!(!saved);
 
         assert!(form.read_with(&cx, |dialog, cx| {
-            !PromptEditForm::NAME.errors(&dialog.form, cx).is_empty()
+            !PromptEditFormInput::NAME
+                .errors(&dialog.form, cx)
+                .is_empty()
         }));
         cx.update(|_, cx| {
             assert!(
@@ -583,7 +596,7 @@ mod tests {
                 (
                     report.clone(),
                     form.revision(),
-                    validation_message(&error.message, cx),
+                    validation_message(error.message(), cx),
                 )
             });
         cx.update(|_, cx| cx.set_global(foundation::I18n::for_locale_tag("zh-CN")));
@@ -595,7 +608,7 @@ mod tests {
                 (
                     report.clone(),
                     form.revision(),
-                    validation_message(&error.message, cx),
+                    validation_message(error.message(), cx),
                 )
             });
         assert_eq!(report_after_locale_change, report_before_locale_change);
@@ -603,9 +616,15 @@ mod tests {
         assert_ne!(chinese_error, english_error);
         assert_eq!(
             form.read_with(&cx, |dialog, cx| {
-                if !PromptEditForm::NAME.errors(&dialog.form, cx).is_empty() {
+                if !PromptEditFormInput::NAME
+                    .errors(&dialog.form, cx)
+                    .is_empty()
+                {
                     Some("name")
-                } else if !PromptEditForm::CONTENT.errors(&dialog.form, cx).is_empty() {
+                } else if !PromptEditFormInput::CONTENT
+                    .errors(&dialog.form, cx)
+                    .is_empty()
+                {
                     Some("content")
                 } else {
                     None

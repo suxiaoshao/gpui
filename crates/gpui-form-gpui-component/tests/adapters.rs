@@ -7,24 +7,31 @@ use gpui_component::{
     input::{InputEvent, InputState},
     select::{SelectEvent, SelectState},
 };
-use gpui_form::{FieldAccessError, FormState as _};
+use gpui_form::{Form, FormSchema};
 use gpui_form_gpui_component::{
-    FormCombobox, FormInput, FormIntegerInput, FormSelect, IntegerInput, IntegerInputPolicyError,
-    IntegerInputState,
+    FormCombobox, FormInput, FormIntegerInput, FormSelect, IntegerInput, IntegerInputError,
+    IntegerInputEvent, IntegerInputPolicyError, IntegerInputState,
 };
 
-#[derive(Clone, Debug, PartialEq, gpui_form::FormModel)]
-#[form(state = AdapterForm)]
+#[derive(Clone, Debug, PartialEq, FormSchema)]
+struct Details {
+    note: String,
+    budget: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, FormSchema)]
 struct AdapterInput {
     #[form(required, validate(on_blur, on_submit))]
     name: String,
     budget: u32,
     model: Option<String>,
     tools: Vec<String>,
+    #[form(child)]
+    details: Option<Details>,
 }
 
 struct AdapterHarness {
-    form: Entity<AdapterForm>,
+    form: Entity<Form<AdapterInput>>,
     input: Entity<InputState>,
     control: Option<FormInput>,
     integer_input: Entity<InputState>,
@@ -35,22 +42,24 @@ struct AdapterHarness {
 
 impl AdapterHarness {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let form = cx.new(|cx| {
-            AdapterForm::from_value(
-                AdapterInput {
-                    name: "initial".to_string(),
-                    budget: 1024,
-                    model: Some("beta".to_string()),
-                    tools: vec!["beta".to_string()],
-                },
-                cx,
-            )
+        let form = cx.new(|_| {
+            Form::try_new(AdapterInput {
+                name: "initial".to_string(),
+                budget: 1024,
+                model: Some("beta".to_string()),
+                tools: vec!["beta".to_string()],
+                details: Some(Details {
+                    note: "note".to_string(),
+                    budget: 7,
+                }),
+            })
+            .expect("build form")
         });
-        let control = FormInput::new(&form, AdapterForm::NAME, InputState::new, window, cx);
+        let control = FormInput::new(&form, AdapterInput::NAME, InputState::new, window, cx);
         let input = (*control).clone();
         let integer_control = FormIntegerInput::new(
             &form,
-            AdapterForm::BUDGET,
+            AdapterInput::BUDGET,
             |window, cx| IntegerInputState::new(window, cx).min(1).max(4096).step(1),
             window,
             cx,
@@ -60,7 +69,7 @@ impl AdapterHarness {
         let options = vec!["alpha".to_string(), "beta".to_string()];
         let select_control = FormSelect::new(
             &form,
-            AdapterForm::MODEL,
+            AdapterInput::MODEL,
             {
                 let options = options.clone();
                 move |window, cx| SelectState::new(options, None, window, cx)
@@ -70,7 +79,7 @@ impl AdapterHarness {
         );
         let combobox_control = FormCombobox::new(
             &form,
-            AdapterForm::TOOLS,
+            AdapterInput::TOOLS,
             move |window, cx| ComboboxState::new(options, Vec::new(), window, cx).multiple(true),
             window,
             cx,
@@ -103,40 +112,15 @@ fn open_harness(cx: &mut TestAppContext) -> WindowHandle<AdapterHarness> {
     })
 }
 
-#[gpui::test]
-fn integer_inputs_use_backing_entity_identity(cx: &mut TestAppContext) {
-    let window = open_harness(cx);
-    let mut cx = VisualTestContext::from_window(window.into(), cx);
-    let root = window.root(&mut cx).expect("adapter harness root");
-
-    cx.update(|window, cx| {
-        let first = {
-            let root = root.read(cx);
-            std::ops::Deref::deref(root.integer_control.as_ref().expect("integer control")).clone()
-        };
-        let second = cx.new(|cx| IntegerInputState::<u32>::new(window, cx));
-
-        assert_eq!(
-            IntegerInput::new(&first).entity_id(),
-            Some(first.entity_id())
-        );
-        assert_eq!(
-            IntegerInput::new(&second).entity_id(),
-            Some(second.entity_id())
-        );
-        assert_ne!(first.entity_id(), second.entity_id());
-    });
-}
-
 fn entities(
     root: &Entity<AdapterHarness>,
     cx: &mut VisualTestContext,
-) -> (Entity<AdapterForm>, Entity<InputState>) {
+) -> (Entity<Form<AdapterInput>>, Entity<InputState>) {
     cx.update(|_, cx| root.read_with(cx, |root, _| (root.form.clone(), root.input.clone())))
 }
 
 #[gpui::test]
-fn input_adapter_mirrors_form_and_component_without_reentrant_update(cx: &mut TestAppContext) {
+fn total_input_mirrors_form_and_component_without_echo(cx: &mut TestAppContext) {
     let window = open_harness(cx);
     let mut cx = VisualTestContext::from_window(window.into(), cx);
     let root = window.root(&mut cx).expect("adapter harness root");
@@ -151,61 +135,68 @@ fn input_adapter_mirrors_form_and_component_without_reentrant_update(cx: &mut Te
     cx.run_until_parked();
     cx.update(|_, cx| assert_eq!(form.read(cx).value().name, "user"));
 
-    cx.update(|_, cx| {
-        AdapterForm::NAME.set(&form, "external".to_string(), cx);
-    });
+    cx.update(|_, cx| AdapterInput::NAME.set(&form, "external".to_string(), cx));
     cx.run_until_parked();
     cx.update(|_, cx| assert_eq!(input.read(cx).value().as_ref(), "external"));
 }
 
 #[gpui::test]
-fn two_inputs_share_one_typed_field_without_echo(cx: &mut TestAppContext) {
+fn dynamic_input_stops_writing_after_optional_payload_is_replaced(cx: &mut TestAppContext) {
     let window = open_harness(cx);
     let mut cx = VisualTestContext::from_window(window.into(), cx);
     let root = window.root(&mut cx).expect("adapter harness root");
-    let (form, first_input) = entities(&root, &mut cx);
-    let (second_control, second_input) = cx.update(|window, cx| {
+
+    let (form, dynamic_control) = cx.update(|window, cx| {
         root.update(cx, |root, cx| {
-            let control =
-                FormInput::new(&root.form, AdapterForm::NAME, InputState::new, window, cx);
-            let input = (*control).clone();
-            (control, input)
+            let details = AdapterInput::ROOT
+                .then(AdapterInput::DETAILS)
+                .try_some(root.form.read(cx))
+                .expect("details are present");
+            let path = details.then(Details::NOTE);
+            let control = FormInput::try_new(&root.form, path, InputState::new, window, cx)
+                .expect("bind dynamic input");
+            (root.form.clone(), control)
         })
     });
+    let dynamic_input = (*dynamic_control).clone();
 
+    cx.update(|_, cx| {
+        let details = AdapterInput::ROOT.then(AdapterInput::DETAILS);
+        details.set(&form, None, cx);
+        details.set(
+            &form,
+            Some(Details {
+                note: "replacement".to_string(),
+                budget: 9,
+            }),
+            cx,
+        );
+    });
     cx.update(|window, cx| {
-        first_input.update(cx, |input, cx| {
-            input.set_value("shared", window, cx);
+        dynamic_input.update(cx, |input, cx| {
+            input.set_value("stale", window, cx);
             cx.emit(InputEvent::Change);
         });
     });
     cx.run_until_parked();
     cx.update(|_, cx| {
-        assert_eq!(form.read(cx).value().name, "shared");
-        assert_eq!(second_input.read(cx).value().as_ref(), "shared");
+        assert_eq!(
+            dynamic_input.read(cx).value().as_ref(),
+            "stale",
+            "the retired native control keeps its own editor text"
+        );
+        assert_eq!(dynamic_input.entity_id(), (*dynamic_control).entity_id());
+        assert_eq!(
+            form.read(cx)
+                .value()
+                .details
+                .as_ref()
+                .expect("replacement details")
+                .note,
+            "replacement"
+        );
     });
-    drop(second_control);
-}
-
-#[gpui::test]
-fn input_blur_runs_field_validation(cx: &mut TestAppContext) {
-    let window = open_harness(cx);
-    let mut cx = VisualTestContext::from_window(window.into(), cx);
-    let root = window.root(&mut cx).expect("adapter harness root");
-    let (form, input) = entities(&root, &mut cx);
-
-    cx.update(|window, cx| {
-        input.update(cx, |input, cx| {
-            input.set_value("", window, cx);
-            cx.emit(InputEvent::Change);
-            cx.emit(InputEvent::Blur);
-        });
-    });
-    cx.run_until_parked();
-    cx.update(|_, cx| {
-        assert_eq!(form.read(cx).value().name, "");
-        assert!(!AdapterForm::NAME.errors(&form, cx).is_empty());
-    });
+    drop(dynamic_input);
 }
 
 #[gpui::test]
@@ -226,114 +217,161 @@ fn dropping_bound_control_stops_component_to_form_sync(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
-fn partial_input_constructor_reports_unavailable_projection(cx: &mut TestAppContext) {
+fn dropping_bound_control_cancels_already_queued_callback(cx: &mut TestAppContext) {
     let window = open_harness(cx);
     let mut cx = VisualTestContext::from_window(window.into(), cx);
     let root = window.root(&mut cx).expect("adapter harness root");
-
-    cx.update(|window, cx| {
-        root.update(cx, |root, cx| {
-            let form = root.form.clone();
-            let available_name = AdapterForm::NAME.project_value(
-                "available_name",
-                |name| (!name.is_empty()).then(|| name.clone()),
-                |name, value| {
-                    if name.is_empty() {
-                        return false;
-                    }
-                    *name = value;
-                    true
-                },
-            );
-            let control =
-                FormInput::try_new(&form, available_name.clone(), InputState::new, window, cx)
-                    .expect("initial projection is available");
-            drop(control);
-
-            AdapterForm::NAME.set(&form, String::new(), cx);
-            assert!(matches!(
-                FormInput::try_new(&form, available_name, InputState::new, window, cx),
-                Err(FieldAccessError::ValueUnavailable)
-            ));
-        });
-    });
-}
-
-#[gpui::test]
-fn integer_constructor_reports_typed_policy_error(cx: &mut TestAppContext) {
-    let window = open_harness(cx);
-    let mut cx = VisualTestContext::from_window(window.into(), cx);
-    let root = window.root(&mut cx).expect("adapter harness root");
-
-    cx.update(|window, cx| {
-        root.update(cx, |root, cx| {
-            let form = root.form.clone();
-            assert!(matches!(
-                FormIntegerInput::new(
-                    &form,
-                    AdapterForm::BUDGET,
-                    |window, cx| IntegerInputState::new(window, cx).min(10).max(1),
-                    window,
-                    cx,
-                ),
-                Err(IntegerInputPolicyError::ReversedRange)
-            ));
-        });
-    });
-}
-
-#[gpui::test]
-fn incomplete_integer_text_preserves_typed_value_and_issue_dies_with_control(
-    cx: &mut TestAppContext,
-) {
-    let window = open_harness(cx);
-    let mut cx = VisualTestContext::from_window(window.into(), cx);
-    let root = window.root(&mut cx).expect("adapter harness root");
-    let (form, input) = cx.update(|_, cx| {
-        root.read_with(cx, |root, _| {
-            (root.form.clone(), root.integer_input.clone())
-        })
-    });
+    let (form, input) = entities(&root, &mut cx);
     cx.update(|window, cx| {
         input.update(cx, |input, cx| {
-            input.set_value("-", window, cx);
+            input.set_value("queued", window, cx);
             cx.emit(InputEvent::Change);
+        });
+        root.update(cx, |root, _| root.control = None);
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| assert_eq!(form.read(cx).value().name, "initial"));
+}
+
+#[gpui::test]
+fn whole_model_replacement_cancels_queued_total_callback(cx: &mut TestAppContext) {
+    let window = open_harness(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).expect("adapter harness root");
+    let (form, input) = entities(&root, &mut cx);
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            input.set_value("queued", window, cx);
+            cx.emit(InputEvent::Change);
+        });
+        form.update(cx, |form, cx| {
+            let mut replacement = form.value().clone();
+            replacement.name = "replacement".into();
+            form.replace(replacement, cx);
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| assert_eq!(form.read(cx).value().name, "replacement"));
+}
+
+#[gpui::test]
+fn dropping_integer_control_releases_its_blocking_issue(cx: &mut TestAppContext) {
+    let window = open_harness(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).expect("adapter harness root");
+    let (form, integer_control) = cx.update(|_, cx| {
+        root.read_with(cx, |root, _| {
+            (
+                root.form.clone(),
+                std::ops::Deref::deref(root.integer_control.as_ref().unwrap()).clone(),
+            )
+        })
+    });
+    cx.update(|_, cx| {
+        integer_control.update(cx, |_, cx| {
+            cx.emit(IntegerInputEvent::Change(Err(
+                IntegerInputError::InvalidSyntax,
+            )));
         });
     });
     cx.run_until_parked();
     cx.update(|_, cx| {
-        assert_eq!(form.read(cx).value().budget, 1024);
-        assert!(!form.read(cx).is_valid());
+        assert!(form.update(cx, |form, cx| form.prepare(cx)).is_err());
         root.update(cx, |root, _| root.integer_control = None);
+        assert!(form.update(cx, |form, cx| form.prepare(cx)).is_ok());
     });
-    cx.run_until_parked();
-    cx.update(|_, cx| assert!(form.read(cx).is_valid()));
 }
 
 #[gpui::test]
-fn select_and_combobox_bind_values_and_use_current_items(cx: &mut TestAppContext) {
+fn retiring_dynamic_subtree_revokes_control_issue_and_callbacks(cx: &mut TestAppContext) {
+    let window = open_harness(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).expect("adapter harness root");
+    let (form, control) = cx.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            let details = AdapterInput::ROOT
+                .then(AdapterInput::DETAILS)
+                .try_some(root.form.read(cx))
+                .unwrap();
+            let control = FormIntegerInput::try_new(
+                &root.form,
+                details.then(Details::BUDGET),
+                IntegerInputState::new,
+                window,
+                cx,
+            )
+            .unwrap();
+            (root.form.clone(), control)
+        })
+    });
+    let state = std::ops::Deref::deref(&control).clone();
+    cx.update(|_, cx| {
+        state.update(cx, |_, cx| {
+            cx.emit(IntegerInputEvent::Change(Err(
+                IntegerInputError::InvalidSyntax,
+            )));
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        assert!(form.update(cx, |form, cx| form.prepare(cx)).is_err());
+        AdapterInput::ROOT
+            .then(AdapterInput::DETAILS)
+            .set(&form, None, cx);
+        assert!(form.update(cx, |form, cx| form.prepare(cx)).is_ok());
+    });
+    cx.update(|_, cx| {
+        state.update(cx, |_, cx| cx.emit(IntegerInputEvent::Change(Ok(99))));
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| assert!(form.read(cx).value().details.is_none()));
+}
+
+#[gpui::test]
+fn integer_select_and_combobox_use_typed_total_paths(cx: &mut TestAppContext) {
     let window = open_harness(cx);
     let mut cx = VisualTestContext::from_window(window.into(), cx);
     let root = window.root(&mut cx).expect("adapter harness root");
 
-    cx.update(|window, cx| {
-        root.update(cx, |root, cx| {
-            root.select_control.update(cx, |select, cx| {
-                select.set_items(vec!["beta".into(), "alpha".into()], window, cx);
-                select.set_selected_value(&"beta".to_string(), window, cx);
-                cx.emit(SelectEvent::Confirm(Some("alpha".to_string())));
+    let form = cx.update(|_window, cx| {
+        let (form, integer_control, integer_input, select, combobox) =
+            root.read_with(cx, |root, _| {
+                (
+                    root.form.clone(),
+                    std::ops::Deref::deref(root.integer_control.as_ref().expect("integer control"))
+                        .clone(),
+                    root.integer_input.clone(),
+                    std::ops::Deref::deref(&root.select_control).clone(),
+                    std::ops::Deref::deref(&root.combobox_control).clone(),
+                )
             });
-            root.combobox_control.update(cx, |combobox, cx| {
-                combobox.set_items(vec!["beta".into(), "alpha".into()], window, cx);
-                combobox.set_selected_values(&["beta".to_string()], window, cx);
-                cx.emit(ComboboxEvent::Change(vec!["alpha".to_string()]));
-            });
+        assert_eq!(
+            IntegerInput::new(&integer_control).entity_id(),
+            Some(integer_control.entity_id())
+        );
+        assert_eq!(
+            integer_control.read(cx).editor().entity_id(),
+            integer_input.entity_id()
+        );
+        select.update(cx, |_, cx| {
+            cx.emit(SelectEvent::Confirm(Some("alpha".to_string())))
         });
+        combobox.update(cx, |_, cx| {
+            cx.emit(ComboboxEvent::Change(vec!["alpha".to_string()]))
+        });
+        form
     });
     cx.run_until_parked();
     cx.update(|_, cx| {
-        let root = root.read(cx);
-        assert_eq!(root.form.read(cx).value().model.as_deref(), Some("alpha"));
-        assert_eq!(root.form.read(cx).value().tools, ["alpha"]);
+        assert_eq!(form.read(cx).value().model.as_deref(), Some("alpha"));
+        assert_eq!(form.read(cx).value().tools, ["alpha".to_string()]);
     });
+}
+
+#[test]
+fn integer_policy_errors_are_stable() {
+    assert_eq!(
+        IntegerInputPolicyError::NonPositiveStep.to_string(),
+        "integer input step must be positive"
+    );
 }

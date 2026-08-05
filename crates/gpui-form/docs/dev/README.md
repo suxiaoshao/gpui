@@ -5,5 +5,5 @@
 
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
-| [#199](https://github.com/suxiaoshao/gpui/issues/199) 显式表单所有者 API | 已实施；自动化与残留门禁通过 | [issue-199/README.md](issue-199/README.md) |
+| [#199](https://github.com/suxiaoshao/gpui/issues/199) Form 演进 | 显式owner v2已实施；greenfield vNext执行计划为Draft | [多轮状态与索引](issue-199/README.md)、[vNext执行计划](issue-199/form-vnext-refactor-plan.md) |
 | [#175](https://github.com/suxiaoshao/gpui/issues/175) 旧版类型化表单运行时 | Superseded；PR #176 历史归档 | [issue-175/README.md](issue-175/README.md) |

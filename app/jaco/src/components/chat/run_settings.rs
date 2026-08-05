@@ -35,9 +35,9 @@ use gpui_component::{
     list::{List, ListState},
     v_flex,
 };
-use gpui_form::typed::{FormField, FormState};
+use gpui_form::typed::{Form, FormEvent, FormSchema, TotalPath, ValidationMessage};
 use gpui_form_gpui_component::integer_input::{
-    FormIntegerInput, IntegerInputPolicy, IntegerInputState,
+    IntegerInputError, IntegerInputEvent, IntegerInputPolicy, IntegerInputState,
 };
 use jaco_core::{ModelCapabilitiesSnapshot, ReasoningSelectionSnapshot, ToolApprovalMode};
 
@@ -49,8 +49,7 @@ use policy::{projected_reasoning_selection, reasoning_selection_after_model_chan
 
 pub(crate) type ControlOpenHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 
-#[derive(Clone, Debug, PartialEq, gpui_form::FormModel)]
-#[form(state = RunSettingsForm)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormSchema)]
 pub(crate) struct RunSettingsInput {
     #[form(required)]
     pub(crate) model: Option<ProviderModelKey>,
@@ -209,6 +208,103 @@ pub(crate) struct FormApprovalPicker {
     state: Entity<ApprovalControlState>,
 }
 
+struct FormTokenBudgetInput<M: FormSchema> {
+    subscriptions: Vec<Subscription>,
+    state: Entity<IntegerInputState<u32>>,
+    _lease: gpui_form::ControlLease,
+    marker: std::marker::PhantomData<fn() -> M>,
+}
+
+impl<M: FormSchema> Deref for FormTokenBudgetInput<M> {
+    type Target = Entity<IntegerInputState<u32>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl<M: FormSchema> Drop for FormTokenBudgetInput<M> {
+    fn drop(&mut self) {
+        self.subscriptions.clear();
+    }
+}
+
+impl<M: FormSchema> FormTokenBudgetInput<M> {
+    fn new<Owner: 'static>(
+        form: &Entity<Form<M>>,
+        path: TotalPath<M, Option<ReasoningSelectionSnapshot>>,
+        policy: IntegerInputPolicy<u32>,
+        window: &mut Window,
+        cx: &mut Context<Owner>,
+    ) -> Option<Self> {
+        let value = custom_token_budget_value(path.value(form, cx).as_ref())?;
+        let state = cx.new(|cx| integer_input_state(policy, window, cx));
+        state.update(cx, |state, cx| state.set_value(value, window, cx));
+        let binding = path.bind_control(form, cx);
+        let lease = binding.lease();
+
+        let weak_form = form.downgrade();
+        let weak_state = state.downgrade();
+        let form_path = path.clone();
+        let form_subscription =
+            cx.subscribe_in(form, window, move |_, _, _: &FormEvent, window, cx| {
+                let (Some(form), Some(state)) = (weak_form.upgrade(), weak_state.upgrade()) else {
+                    return;
+                };
+                let Some(value) = custom_token_budget_value(form_path.value(&form, cx).as_ref())
+                else {
+                    return;
+                };
+                state.update(cx, |state, cx| state.set_value(value, window, cx));
+            });
+
+        let weak_form = form.downgrade();
+        let event_path = path;
+        let event_binding = binding.clone();
+        let event_subscription = cx.subscribe_in(
+            &state,
+            window,
+            move |_, _, event: &IntegerInputEvent<u32>, window, cx| match event {
+                IntegerInputEvent::Change(Ok(value)) => {
+                    let Some(form) = weak_form.upgrade() else {
+                        return;
+                    };
+                    let mut selection = event_path.value(&form, cx);
+                    if set_existing_custom_token_budget(&mut selection, *value) {
+                        event_binding.defer_clear_issue(window, cx);
+                        event_binding.defer_set(selection, window, cx);
+                    }
+                }
+                IntegerInputEvent::Change(Err(error)) => {
+                    event_binding.defer_set_issue(
+                        token_budget_error_code(*error),
+                        ValidationMessage::key("gpui-form-error-integer-invalid"),
+                        window,
+                        cx,
+                    );
+                }
+                IntegerInputEvent::Blur => event_binding.defer_blur(window, cx),
+            },
+        );
+
+        Some(Self {
+            subscriptions: vec![form_subscription, event_subscription],
+            state,
+            _lease: lease,
+            marker: std::marker::PhantomData,
+        })
+    }
+}
+
+fn token_budget_error_code(error: IntegerInputError<u32>) -> &'static str {
+    match error {
+        IntegerInputError::Incomplete => "integer_input_incomplete",
+        IntegerInputError::InvalidSyntax => "integer_input_invalid",
+        IntegerInputError::Overflow => "integer_input_overflow",
+        IntegerInputError::OutOfRange { .. } => "integer_input_out_of_range",
+    }
+}
+
 impl Deref for FormApprovalPicker {
     type Target = Entity<ApprovalControlState>;
 
@@ -223,46 +319,48 @@ impl Drop for FormApprovalPicker {
     }
 }
 
-pub(crate) struct RunSettingsBoundControls {
+pub(crate) struct RunSettingsBoundControls<M: FormSchema> {
     model: FormModelPicker,
     reasoning: FormReasoningPicker,
     approval: FormApprovalPicker,
-    token_budget: Option<FormIntegerInput<u32>>,
+    token_budget: Option<FormTokenBudgetInput<M>>,
 }
 
-pub(crate) struct RunSettingsController<Form>
+pub(crate) struct RunSettingsController<M>
 where
-    Form: FormState,
+    M: FormSchema,
 {
-    form: Entity<Form>,
+    form: Entity<Form<M>>,
     orchestration_subscriptions: Vec<Subscription>,
-    controls: RunSettingsBoundControls,
+    _control_leases: [gpui_form::ControlLease; 2],
+    controls: RunSettingsBoundControls<M>,
 }
 
-impl<Form> Drop for RunSettingsController<Form>
+impl<M> Drop for RunSettingsController<M>
 where
-    Form: FormState,
+    M: FormSchema,
 {
     fn drop(&mut self) {
         self.orchestration_subscriptions.clear();
     }
 }
 
-impl<Form> RunSettingsController<Form>
+impl<M> RunSettingsController<M>
 where
-    Form: FormState,
+    M: FormSchema,
 {
     pub(crate) fn new(
-        form: Entity<Form>,
-        field: gpui_form::typed::FormField<Form, RunSettingsInput>,
+        form: Entity<Form<M>>,
+        field: TotalPath<M, RunSettingsInput>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let model_field = RunSettingsForm::MODEL.within(field.clone());
-        let reasoning_field = RunSettingsForm::REASONING_SELECTION.within(field.clone());
-        let approval_field = RunSettingsForm::APPROVAL_MODE.within(field.clone());
+        let model_field = field.clone().then(RunSettingsInput::MODEL);
+        let reasoning_field = field.clone().then(RunSettingsInput::REASONING_SELECTION);
+        let approval_field = field.clone().then(RunSettingsInput::APPROVAL_MODE);
         let reasoning_binding = reasoning_field.bind_control(&form, cx);
         let approval_binding = approval_field.bind_control(&form, cx);
+        let control_leases = [reasoning_binding.lease(), approval_binding.lease()];
         let draft = field.value(&form, cx);
         let choices = load_model_choices(cx);
         let selected_model = draft.model.clone();
@@ -393,11 +491,6 @@ where
             picker.set_selected_index(reasoning_selected_ix, window, cx);
             picker
         });
-        let token_budget_field = reasoning_field.clone().project_value(
-            "token_budget",
-            |value| custom_token_budget_value(value.as_ref()),
-            set_existing_custom_token_budget,
-        );
         let token_budget_control = token_budget_bounds(
             capability
                 .as_ref()
@@ -405,14 +498,7 @@ where
         )
         .and_then(|_| {
             let policy = token_budget_policy(capability.as_ref());
-            FormIntegerInput::try_new(
-                &form,
-                token_budget_field,
-                move |window, cx| integer_input_state(policy, window, cx),
-                window,
-                cx,
-            )
-            .ok()
+            FormTokenBudgetInput::new(&form, reasoning_field.clone(), policy, window, cx)
         });
         let token_budget_input = token_budget_control
             .as_ref()
@@ -491,11 +577,11 @@ where
             open: false,
             on_open_change: approval_open_change,
         });
-        let model_subscription = model_field.subscribe_in(&form, window, cx, {
+        let model_subscription = cx.subscribe_in(&form, window, {
             let form = form.clone();
             let settings_field = field.clone();
             let field = model_field.clone();
-            move |_controller, window, cx| {
+            move |_controller, _, _: &FormEvent, window, cx| {
                 let form = form.clone();
                 let settings_field = settings_field.clone();
                 let field = field.clone();
@@ -505,11 +591,11 @@ where
                 });
             }
         });
-        let reasoning_subscription = reasoning_field.subscribe_in(&form, window, cx, {
+        let reasoning_subscription = cx.subscribe_in(&form, window, {
             let form = form.clone();
             let settings_field = field.clone();
             let field = reasoning_field.clone();
-            move |_controller, window, cx| {
+            move |_controller, _, _: &FormEvent, window, cx| {
                 let form = form.clone();
                 let settings_field = settings_field.clone();
                 let field = field.clone();
@@ -519,10 +605,10 @@ where
                 });
             }
         });
-        let approval_subscription = approval_field.subscribe_in(&form, window, cx, {
+        let approval_subscription = cx.subscribe_in(&form, window, {
             let form = form.clone();
             let field = approval_field.clone();
-            move |_controller, window, cx| {
+            move |_controller, _, _: &FormEvent, window, cx| {
                 let form = form.clone();
                 let field = field.clone();
                 cx.defer_in(window, move |controller, window, cx| {
@@ -556,6 +642,7 @@ where
         Self {
             form,
             orchestration_subscriptions,
+            _control_leases: control_leases,
             controls: RunSettingsBoundControls {
                 model: FormModelPicker {
                     subscriptions: vec![model_subscription],
@@ -585,26 +672,28 @@ where
     #[cfg(test)]
     pub(crate) fn selected_model(
         &self,
-        field: FormField<Form, RunSettingsInput>,
+        field: TotalPath<M, RunSettingsInput>,
         cx: &App,
     ) -> Option<ProviderModelChoice> {
-        let selected = RunSettingsForm::MODEL.within(field).value(&self.form, cx);
+        let selected = field.then(RunSettingsInput::MODEL).value(&self.form, cx);
         let choices = load_model_choices(cx);
         selected_model_choice(&choices, selected.as_ref()).cloned()
     }
 
     pub(crate) fn reload_models(
         &mut self,
-        field: FormField<Form, RunSettingsInput>,
+        field: TotalPath<M, RunSettingsInput>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let choices = load_model_choices(cx);
-        let previous_key = RunSettingsForm::MODEL
-            .within(field.clone())
+        let previous_key = field
+            .clone()
+            .then(RunSettingsInput::MODEL)
             .value(&self.form, cx);
-        let previous_reasoning = RunSettingsForm::REASONING_SELECTION
-            .within(field.clone())
+        let previous_reasoning = field
+            .clone()
+            .then(RunSettingsInput::REASONING_SELECTION)
             .value(&self.form, cx);
         // A catalog/options refresh must not rebase the form draft.  Keep an
         // unavailable selected key in the form so the submit policy can make
@@ -692,7 +781,7 @@ where
     #[cfg(test)]
     pub(crate) fn select_model_value(
         &mut self,
-        field: FormField<Form, RunSettingsInput>,
+        field: TotalPath<M, RunSettingsInput>,
         key: ProviderModelKey,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -705,13 +794,13 @@ where
     #[cfg(test)]
     pub(crate) fn select_approval_value(
         &mut self,
-        field: FormField<Form, RunSettingsInput>,
+        field: TotalPath<M, RunSettingsInput>,
         mode: ToolApprovalMode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        RunSettingsForm::APPROVAL_MODE
-            .within(field)
+        field
+            .then(RunSettingsInput::APPROVAL_MODE)
             .set(&self.form, mode, cx);
         self.sync_approval_picker(mode, window, cx);
     }
@@ -719,13 +808,14 @@ where
     #[cfg(test)]
     pub(crate) fn select_reasoning_value(
         &mut self,
-        field: FormField<Form, RunSettingsInput>,
+        field: TotalPath<M, RunSettingsInput>,
         selection: ReasoningSelectionSnapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        RunSettingsForm::REASONING_SELECTION
-            .within(field.clone())
+        field
+            .clone()
+            .then(RunSettingsInput::REASONING_SELECTION)
             .set(&self.form, Some(selection.clone()), cx);
         let capability = self.controls.reasoning.read(cx).capability.clone();
         self.sync_reasoning_picker(capability, Some(selection), window, cx);
@@ -735,13 +825,13 @@ where
     #[cfg(test)]
     pub(crate) fn set_custom_token_budget(
         &mut self,
-        field: FormField<Form, RunSettingsInput>,
+        field: TotalPath<M, RunSettingsInput>,
         value: u32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let _ = window;
-        let reasoning_field = RunSettingsForm::REASONING_SELECTION.within(field);
+        let reasoning_field = field.then(RunSettingsInput::REASONING_SELECTION);
         let mut reasoning = reasoning_field.value(&self.form, cx);
         if set_existing_custom_token_budget(&mut reasoning, value) {
             reasoning_field.set(&self.form, reasoning, cx);
@@ -823,7 +913,7 @@ where
 
     fn sync_token_budget_control(
         &mut self,
-        field: FormField<Form, RunSettingsInput>,
+        field: TotalPath<M, RunSettingsInput>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -834,7 +924,7 @@ where
                 .and_then(|capability| capability.reasoning.as_ref()),
         )
         .is_some();
-        let reasoning_field = RunSettingsForm::REASONING_SELECTION.within(field);
+        let reasoning_field = field.then(RunSettingsInput::REASONING_SELECTION);
         let has_custom_value = reasoning_field
             .value(&self.form, cx)
             .as_ref()
@@ -858,18 +948,9 @@ where
             return;
         }
 
-        let token_budget_field = reasoning_field.project_value(
-            "token_budget",
-            |value| custom_token_budget_value(value.as_ref()),
-            set_existing_custom_token_budget,
-        );
-        let Ok(control) = FormIntegerInput::try_new(
-            &self.form,
-            token_budget_field,
-            move |window, cx| integer_input_state(policy, window, cx),
-            window,
-            cx,
-        ) else {
+        let Some(control) =
+            FormTokenBudgetInput::new(&self.form, reasoning_field, policy, window, cx)
+        else {
             return;
         };
         let input = control.read(cx).editor().clone();
@@ -955,7 +1036,7 @@ where
 
     fn sync_model_from_form(
         &mut self,
-        field: FormField<Form, RunSettingsInput>,
+        field: TotalPath<M, RunSettingsInput>,
         model: Option<ProviderModelKey>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -967,14 +1048,17 @@ where
             state.capability = capability.clone();
         });
         self.sync_model_picker(model, window, cx);
-        let reasoning = self.controls.reasoning.read(cx).selected.clone();
+        let reasoning = field
+            .clone()
+            .then(RunSettingsInput::REASONING_SELECTION)
+            .value(&self.form, cx);
         self.sync_reasoning_picker(capability, reasoning, window, cx);
         self.sync_token_budget_control(field, window, cx);
     }
 
     fn sync_reasoning_from_form(
         &mut self,
-        field: FormField<Form, RunSettingsInput>,
+        field: TotalPath<M, RunSettingsInput>,
         reasoning: Option<ReasoningSelectionSnapshot>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -985,15 +1069,12 @@ where
     }
 }
 
-fn apply_explicit_model_selection<Form>(
-    form: &Entity<Form>,
-    field: &FormField<Form, RunSettingsInput>,
+fn apply_explicit_model_selection<M: FormSchema>(
+    form: &Entity<Form<M>>,
+    field: &TotalPath<M, RunSettingsInput>,
     key: ProviderModelKey,
     cx: &mut App,
-) -> bool
-where
-    Form: FormState,
-{
+) -> bool {
     let Ok(choices) = load_model_choices(cx) else {
         return false;
     };

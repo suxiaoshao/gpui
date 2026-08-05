@@ -14,7 +14,6 @@ use gpui_component::{
     menu::{DropdownMenu, PopupMenuItem},
     v_flex,
 };
-use gpui_form::typed::FormState as _;
 
 use crate::{
     components::{

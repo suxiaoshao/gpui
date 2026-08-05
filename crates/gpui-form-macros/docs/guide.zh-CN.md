@@ -1,279 +1,390 @@
-# gpui-form-macros 使用指南
+# `FormSchema` derive 指南
 
 [English](guide.md) | [简体中文](guide.zh-CN.md)
 
-`gpui-form-macros` 提供 `#[derive(FormModel)]`。它把类型化 Rust model 转换为一个 root form
-state 类型和一组可复用 field descriptor。生成 state 实现 `gpui_form::FormState`；descriptor 是
-纯 lens，绝不保存强或弱 GPUI entity handle。
+本指南按“从模型声明到 prepared submission”的顺序讲解已确认的 greenfield derive 设计。
+它以任务为中心：先 derive 静态定义，再用这些定义操作一个统一的 `Form<M>` session。
 
-## 派生 form model
+应用通常通过 `gpui-form` 使用这个 derive：
+
+```toml
+[dependencies]
+gpui.workspace = true
+gpui-form.workspace = true
+```
+
+## 1. derive 一个 flat `FormSchema`
+
+从只包含叶字段的模型开始。`FormSchema` 会为每个字段生成带类型的根定义。
 
 ```rust,ignore
-#[derive(Clone, Debug, PartialEq, gpui_form::FormModel)]
-#[form(state = ServerForm)]
-struct ServerInput {
-    #[form(required, validate(on_change, on_blur))]
-    name: String,
+use gpui::Entity;
+use gpui_form::{Form, FormSchema};
 
-    #[form(group)]
-    auth: AuthInput,
-
-    #[form(array(id = "row_id"))]
-    headers: Vec<HeaderRowInput>,
+#[derive(Clone, FormSchema)]
+struct AccountDraft {
+    email: String,
+    max_projects: u32,
 }
+
+let runtime = Form::try_new(AccountDraft {
+    email: "owner@example.com".to_owned(),
+    max_projects: 5,
+})?;
+let form: Entity<Form<AccountDraft>> = cx.new(|_| runtime);
+
+let email = AccountDraft::EMAIL;
+let current = email.value(&form, cx);
+email.set(&form, "team@example.com".to_owned(), cx);
 ```
 
-对于 `ServerInput`，宏生成：
+`AccountDraft::EMAIL` 是 `FieldDef<AccountDraft, String>`。根字段是 total path：
+它不经过 item、可选值或 case 边界，因此无需运行时选择。
 
-- `ServerForm`：实现 `FormState` 的 root GPUI entity state；
-- 每个静态声明字段各有一个 schema-level、`SCREAMING_SNAKE_CASE` 的 associated const，例如
-  `ServerForm::NAME`、`ServerForm::AUTH` 与 `ServerForm::HEADERS`；
-- validation、schema traversal、revision 和 submit-preparation glue。
+## 2. helper attribute grammar
 
-每个 associated const 是一个 allocation-free、可复用的 schema definition，以及由静态 schema 与
-access function 支撑的 `FormField<ServerForm, T>` typed lens。它不保存 form instance、`Entity`、
-`WeakEntity`、value 或 subscription，也不按 form allocation；访问它不会创建 per-form field state。
-composition 可以创建轻量的 located descriptor，但不会创建第二个 field 或 schema definition。
-
-宏不会公开 `ServerInputField` enum 或 `FormFieldId`。静态 schema 从实际标识字段的 descriptor
-取得：
-
-```rust,ignore
-let name = ServerForm::NAME;
-assert!(name.schema().is_required());
-assert_eq!(name.path(), FieldPath::field("name"));
-```
-
-宏不会创建 child form entity。nested model 有自己的 descriptor namespace，但所有 descriptor 都
-读写同一个 root entity。
-
-## State 名称与泛型
-
-默认 `Model` 生成 `ModelForm`。当更具体的 state 名在调用点更清晰时，使用 `state = ...`：
-
-```rust,ignore
-#[derive(Clone, PartialEq, gpui_form::FormModel)]
-#[form(state = GenericValueForm)]
-struct ValueEditor<T>
-where
-    T: Clone + PartialEq + 'static,
-{
-    value: T,
-}
-```
-
-这会生成 `GenericValueForm<T>`。生成声明和实现保留 model 的 lifetime、type parameter、const
-generic、合法 default 与 `where` clause；实现会在 Rust 要求的位置移除 type default。
-
-## 类型属性与 canonical grammar
-
-一个 model 最多有一个 `#[form(...)]` helper attribute；每个 option 最多出现一次，option 以逗号
-分隔，顺序不限：
-
-```text
-state = StateIdent
-validation(adapter = "garde"[, messages = ProviderType])
-validation(adapter = CustomValidatorType[, context = ContextType])
-transform(adapter = "validify")
-transform(adapter = CustomTransformType)
-```
-
-`StateIdent` 是不加引号的 identifier。custom adapter、context 和 Garde message provider 是不加引号的
-Rust type path；只有内建 adapter 名 `"garde"` 和 `"validify"` 使用 string literal。带引号的
-custom type、未知内建名、重复 option、空 clause 或第二个 helper attribute 都是 compile error。
-
-内建 validation 与 transform policy 的写法：
-
-```rust,ignore
-#[form(
-    validation(adapter = "garde", messages = AppGardeMessageProvider),
-    transform(adapter = "validify")
-)]
-```
-
-Garde 的 validation context 始终是 `<Model as garde::Validate>::Context`，并在 Garde model
-本身声明：
-
-```rust,ignore
-#[derive(gpui_form::FormModel, garde::Validate)]
-#[garde(context(ServerValidationContext))]
-#[form(validation(adapter = "garde", messages = AppGardeMessageProvider))]
-struct ServerInput {
-    // ...
-}
-```
-
-应用自定义 policy 直接使用 type name：
-
-```rust,ignore
-#[form(
-    validation(adapter = ServerValidator, context = ServerValidationContext),
-    transform(adapter = ServerTransform)
-)]
-```
-
-Validation 是生成 `FormState` 实现选择的 type-level policy；它既不作为 state field 保存，也不通过
-`Default` 构造。运行时依赖属于 typed validation context 或 application state。
-
-组合规则仍然严格：
-
-| Adapter | `context` | `messages` |
+| 属性 | 可接受的目标形状 | derive 输出 |
 | --- | --- | --- |
-| 没有 validation adapter | 禁止 | 禁止 |
-| `"garde"` | 禁止；Garde 持有 `Validate::Context` | 可选 |
-| custom validation type | 可选；省略时使用其 associated context | 禁止 |
+| `#[form(child)]` | 实现 `FormSchema` 的字段类型，包括 `Option<Child>` | `ChildDef<Parent, Child>` |
+| `#[form(items)]` | `Vec<Item>`，其中 `Item` 实现 `FormSchema` | `ItemsDef<Parent, Item>` |
+| `#[form(required)]` | leaf field | required metadata |
+| `#[form(validate(...))]` | leaf field | mount/change/blur/dynamic/submit trigger metadata |
 
-## 字段属性
+`child` 与 `items` 关乎形状。item identity 不是 macro input：Form 为每个 item occurrence 生成
+不透明的 session-local identity，并且只通过 typed `ItemPath` 返回它。model 不为 form 导航实现 key
+trait，也不声明 ID field。
 
-| 属性 | 用途 |
-| --- | --- |
-| `required` | 内建 submit-time required rule 与静态 schema metadata |
-| `validate(on_mount, ...)` | 此精确 schema path 的 validation trigger |
-| `group` | nested typed form model |
-| `array(id = "row_id")` | 带 caller-owned stable item ID 的 typed `Vec<T>` |
+## 3. 组合一个 total static child path
 
-每个 field 最多有一个 `#[form(...)]` helper attribute。`required` 和 `group` 是 bare flag；
-`validate(...)` 至少包含一个不重复 trigger；`array` 只接受一个 string-literal ID field name，并且
-要求 `Vec<T>`。`group` 和 `array` 互斥。
-
-支持的 trigger 是 `on_mount`、`on_change`、`on_blur`、`on_dynamic` 和 `on_submit`。`on_mount`
-在 generated state 安装初始值和 validation context 后恰好执行一次。
-
-属性只描述 model data 与 validation rule。component type、options、layout、focus、persistence 和
-operation lifecycle 都在 derive 外部。
-
-## 创建并使用 state
-
-每个编辑会话创建一个 `Entity<State>`：
+必需的嵌套 child 仍然是 total。`then` 将 parent-child edge 与 child schema 的定义
+连接，因此结果不需要运行时选择即可读写。
 
 ```rust,ignore
-use gpui::AppContext as _;
-use gpui_form::FormState as _;
-
-let form = cx.new(|cx| {
-    ServerForm::from_value(
-        ServerInput {
-            name: String::new(),
-            auth: AuthInput::default(),
-            headers: Vec::new(),
-        },
-        cx,
-    )
-});
-
-let name = ServerForm::NAME;
-
-let current: String = name.value(&form, cx);
-name.set(&form, "api.example.com".into(), cx);
-
-let errors = name.errors(&form, cx);
-let validating = name.is_validating(&form, cx);
-```
-
-当 validation context 实现 `Default` 时可使用 `from_value`。如果 validation 需要
-application-owned dependency，使用
-`from_value_with_validation_context(value, context, cx)`。
-
-对于 total descriptor，这些 API 不返回 `Result`。entity 是强引用，generated root path 也在类型上
-确定存在。same-value `set` 是 no-op；发生业务值变化时恰好推进一次 revision、执行适用 validation、
-发出一个 event 并通知一次。
-
-`FormField` constructor 对 core 私有。应用使用 generated schema-level const 和 composition，而不是
-自行构造 path 或 model projection。
-
-## Group 与 array 中的可用性
-
-`FormField<Form, T>` 是 total descriptor，表示声明的 root path 或 parent 为 total 的 projection。
-`PartialFormField<Form, T>` 表示相对于当前 live model 可能无法解析的 path。
-
-Group 通过 `within` 保持 parent 的可用性：
-
-```rust,ignore
-let username = AuthForm::USERNAME.within(ServerForm::AUTH);
-username.set(&form, "alice".into(), cx);
-```
-
-identified item 会变为 partial，因为在创建 descriptor 与使用之间该 item 可能已被移除：
-
-```rust,ignore
-let header = ServerForm::HEADERS.item(gpui_form::FormItemId::new(row_id));
-let header_name = HeaderRowForm::NAME.within(header);
-
-let value = header_name.try_value(&form, cx)?;
-header_name.try_set(&form, "Authorization".into(), cx)?;
-```
-
-`project_value(...)` 也为 partial；它可能代表 optional 或 computed projection，因此它和每个 child
-都公开 `try_*` 方法。相应 error 只描述真正无法解析的 projection 或缺失/歧义 stable item；不存在
-同步 `FormReleased` error。
-
-完整 generated traversal vocabulary：
-
-```rust,ignore
-RootForm::FIELD;
-ChildForm::FIELD.within(parent);
-RootForm::ITEMS;
-RootForm::ITEMS.item(id);
-```
-
-whole-array write 始终是 total，是显式 add、remove、reorder 和 replace item 的 API。stable ID 在当前
-array 中唯一，且不能通过 identified-item descriptor 改变。
-
-## Validation、schema 与 submit
-
-generated state 持有 current value、baseline、monotonic revision、validation context、report 和
-validation task bookkeeping。descriptor 只标识 typed path；core 完成成功写入 transaction，并恰好
-notify 一次。
-
-nested schema ownership 是精确的：group 持有 direct path，array 持有 direct path 和 item root，
-child model 持有其 descendant。Garde model 可在 `group` 或 `array` 上使用 `#[garde(dive)]` 选择
-递归；derive 会将外部 vector index 映射成 stable item path。
-
-`SubmitTransform` 是 static、pure、不可失败的转换：从 validated model 得到 application output，
-不需要 adapter instance、不做 I/O，也不修改 form state：
-
-```rust,ignore
-struct SaveServer {
-    name: String,
+#[derive(Clone, FormSchema)]
+struct AddressDraft {
+    city: String,
 }
 
-struct ServerTransform;
+#[derive(Clone, FormSchema)]
+struct ProfileDraft {
+    #[form(child)]
+    address: AddressDraft,
+}
 
-impl gpui_form::SubmitTransform<ServerInput> for ServerTransform {
-    type Output = SaveServer;
+let runtime = Form::try_new(ProfileDraft {
+    address: AddressDraft { city: String::new() },
+})?;
+let form: Entity<Form<ProfileDraft>> = cx.new(|_| runtime);
 
-    fn transform(model: &ServerInput) -> Self::Output {
-        SaveServer {
-            name: model.name.trim().to_owned(),
+let city = ProfileDraft::ADDRESS.then(AddressDraft::CITY);
+let current = city.value(&form, cx);
+city.set(&form, "Shanghai".to_owned(), cx);
+```
+
+组合后的类型是 `TotalPath<ProfileDraft, String>`：`ADDRESS` 始终存在，因此下面的
+`CITY` 始终有唯一目标。
+
+## 4. 使用 `try_some` 进入 optional child
+
+optional child 的值为 `None` 时没有 target。应用需要创建 child 时，先写入 total option field；
+`try_some(&Form)` 在当前 session 中定位已经存在的 payload，因此结果是 dynamic path。
+
+```rust,ignore
+#[derive(Clone, Default, FormSchema)]
+struct CredentialsDraft {
+    token: String,
+}
+
+#[derive(Clone, FormSchema)]
+struct ConnectionDraft {
+    #[form(child)]
+    credentials: Option<CredentialsDraft>,
+}
+
+let runtime = Form::try_new(ConnectionDraft { credentials: None })?;
+let form: Entity<Form<ConnectionDraft>> = cx.new(|_| runtime);
+
+ConnectionDraft::CREDENTIALS.set(
+    &form,
+    Some(CredentialsDraft::default()),
+    cx,
+);
+
+let token: DynamicPath<ConnectionDraft, String> = ConnectionDraft::CREDENTIALS
+    .try_some(form.read(cx))?
+    .then(CredentialsDraft::TOKEN);
+
+let current = token.try_value(&form, cx)?;
+token.try_set(&form, "secret".to_owned(), cx)?;
+```
+
+option replacement 的详细 error field 仍在 API 设计中；resolver contract 已经固定：`try_some`
+显式接收当前 `&Form<ConnectionDraft>`，捕获 active `Some` incarnation，但不保存 form entity，并返回
+dynamic path。路径一旦经过这个边界，它和所有后代都保持 dynamic。
+
+## 5. 建模 recursive items 与 enum case
+
+这个自包含示例包含递归 group，以及用 `case` 选择具体 payload 的 enum。item model 不包含
+form-only ID。
+
+```rust,ignore
+use gpui::Entity;
+use gpui_form::{DynamicPath, Form, FormSchema};
+
+#[derive(Clone, FormSchema)]
+struct FilterCondition {
+    value: String,
+}
+
+#[derive(Clone, FormSchema)]
+struct QueryDraft {
+    #[form(child)]
+    root: FilterGroup,
+}
+
+#[derive(Clone, FormSchema)]
+struct FilterGroup {
+    #[form(items)]
+    children: Vec<FilterNode>,
+}
+
+#[derive(Clone, FormSchema)]
+struct FilterNode {
+    #[form(child)]
+    kind: FilterNodeKind,
+}
+
+#[derive(Clone, FormSchema)]
+enum FilterNodeKind {
+    Condition(FilterCondition),
+    Group(FilterGroup),
+}
+
+let runtime = Form::try_new(QueryDraft {
+    root: FilterGroup {
+        children: vec![FilterNode {
+            kind: FilterNodeKind::Group(FilterGroup {
+                children: vec![FilterNode {
+                    kind: FilterNodeKind::Condition(FilterCondition {
+                        value: String::new(),
+                    }),
+                }],
+            }),
+        }],
+    },
+})?;
+let form: Entity<Form<QueryDraft>> = cx.new(|_| runtime);
+
+let children = QueryDraft::ROOT.then(FilterGroup::CHILDREN);
+let group_node = children
+    .items(&form, cx)?
+    .into_iter()
+    .next()
+    .expect("示例包含一个 root node");
+let nested_children = group_node
+    .then(FilterNode::KIND)
+    .try_case(form.read(cx), FilterNodeKind::GROUP)?
+    .then(FilterGroup::CHILDREN);
+let condition_node = nested_children
+    .try_items(&form, cx)?
+    .into_iter()
+    .next()
+    .expect("示例包含一个 nested node");
+
+let value: DynamicPath<QueryDraft, String> = condition_node
+    .then(FilterNode::KIND)
+    .try_case(form.read(cx), FilterNodeKind::CONDITION)?
+    .then(FilterCondition::VALUE);
+
+let current = value.try_value(&form, cx)?;
+value.try_set(&form, "Rust".to_owned(), cx)?;
+```
+
+Form 为每个 item occurrence 生成并持有不透明 identity。`items` 与 `try_items` 从当前 runtime
+topology 返回 typed `ItemPath`；调用方不能从 model value 构造或恢复它。item path 已经是 dynamic；
+`try_case(&Form, CaseDef)` 定位 active case 并捕获其当前 incarnation。已经 retire 的 item 或 inactive
+case 是可恢复的 path-resolution error，不能静默 fallback。
+
+支持的 enum variant 是 unit variant，或带一个实现 `FormSchema` 的具体 tuple payload
+的 variant。泛型 schema model、struct-like variant 和带多个 payload field 的 variant
+都是编译期错误。
+
+## 6. 把生成的 definitions 当作积木
+
+derive 暴露静态 definition；应用组合它们，而不是用字符串构造 field name 或 path。
+
+```rust,ignore
+ProfileDraft::DISPLAY_NAME; // FieldDef<ProfileDraft, String>
+ProfileDraft::ADDRESS;      // ChildDef<ProfileDraft, AddressDraft>
+FilterGroup::CHILDREN;      // ItemsDef<FilterGroup, FilterNode>
+FilterNodeKind::GROUP;      // CaseDef<FilterNodeKind, FilterGroup>
+```
+
+重要的生成 family 是 `FieldDef`、`ChildDef`、`ItemsDef` 与 `CaseDef`。typed `ItemPath` 由 runtime
+创建，不属于 derive output。具体 module path 与非 resolver helper 的细节仍由 runtime API 决定；
+resolver 形状已经固定为 path 调用 `try_case(&Form, CaseDef)` 或 `try_some(&Form)`，generated definition
+与 located path 都不持有 form entity。
+
+## 7. 通过 topology methods 修改 items
+
+collection 是 topology boundary，不是从模型借出的可变 `Vec`。form session 负责 item
+创建、删除、排序、不透明 identity 与移动，从而保持 revision tracking 和 validation scope。
+
+```rust,ignore
+use gpui_form::Position;
+
+let children = QueryDraft::ROOT.then(FilterGroup::CHILDREN);
+let anchor = children.items(&form, cx)?.into_iter().next().unwrap();
+let appended = children.append(
+    &form,
+    FilterNode {
+        kind: FilterNodeKind::Condition(FilterCondition { value: String::new() }),
+    },
+    cx,
+)?;
+let inserted = children.insert_before(
+    &form,
+    &anchor,
+    FilterNode {
+        kind: FilterNodeKind::Condition(FilterCondition { value: String::new() }),
+    },
+    cx,
+)?;
+children.move_before(&form, &appended, &anchor, cx)?;
+children.remove(&form, inserted, cx)?;
+
+let fresh = children.replace_all(
+    &form,
+    vec![
+        FilterNode {
+            kind: FilterNodeKind::Group(FilterGroup { children: Vec::new() }),
+        },
+        FilterNode {
+            kind: FilterNodeKind::Condition(FilterCondition { value: String::new() }),
+        },
+    ],
+    cx,
+)?;
+```
+
+跨 parent 的移动是显式的，因为它会改变 ownership 并 retire source path：
+
+```rust,ignore
+let parent = fresh[0].clone();
+let source = fresh[1].clone();
+let destination_children = parent
+    .then(FilterNode::KIND)
+    .try_case(form.read(cx), FilterNodeKind::GROUP)?
+    .then(FilterGroup::CHILDREN);
+
+let moved = source.move_to(
+    &form,
+    destination_children,
+    Position::End,
+    cx,
+)?;
+```
+
+`items`、`append`、`insert_before`、`move_before`、`remove` 与 `replace_all` 是 topology
+vocabulary。它们只交换 typed item path，不接收 raw ID。runtime 拒绝 stale/wrong-session 的 source、
+destination 或 anchor path，以及造成 cycle 的 move。`TopologyIndex` 是私有 runtime state；调用方不会
+向这些 API 传入它或 topology snapshot。
+
+## 8. 用 validator、prepare 和 rebase 闭合 session
+
+校验属于 `Form<M>` session，而不是独立的模型 state。validator 接收请求的 scope，并向
+sink 报告；它可以按 runtime 的定义校验 leaf、subtree 或整个 model。
+
+```rust,ignore
+use gpui::{App, Entity};
+use gpui_form::{
+    Form, FormRevision, ValidationMessage, ValidationRequest, ValidationSink,
+    Validator,
+};
+
+#[derive(Clone)]
+struct QueryContext {
+    allow_empty: bool,
+}
+
+struct QueryValidator {
+    context: QueryContext,
+}
+
+impl Validator<QueryDraft> for QueryValidator {
+    fn validate(
+        &self,
+        model: &QueryDraft,
+        request: ValidationRequest<'_, QueryDraft>,
+        out: &mut ValidationSink<QueryDraft>,
+    ) {
+        let children = QueryDraft::ROOT.then(FilterGroup::CHILDREN);
+        if request.includes(&children)
+            && !self.context.allow_empty
+            && model.root.children.is_empty()
+        {
+            out.at(children).error(
+                "query-empty",
+                ValidationMessage::key("query-empty"),
+            );
         }
     }
 }
+
+struct SaveQuery(QueryDraft);
+
+impl From<QueryDraft> for SaveQuery {
+    fn from(query: QueryDraft) -> Self {
+        Self(query)
+    }
+}
+
+let context = QueryContext { allow_empty: false };
+let initial_query = QueryDraft {
+    root: FilterGroup {
+        children: vec![FilterNode {
+            kind: FilterNodeKind::Condition(FilterCondition {
+                value: "Rust".to_owned(),
+            }),
+        }],
+    },
+};
+let runtime = Form::try_new_with_validator(initial_query, QueryValidator { context })?;
+let form: Entity<Form<QueryDraft>> = cx.new(|_| runtime);
+
+let prepared = form.update(cx, |form, cx| form.prepare(cx))?;
+let revision: FormRevision = prepared.revision();
+let request = prepared.map(SaveQuery::from);
+// 把 `(revision, request)` 交给应用持有的 persistence task。
+
+fn apply_saved_query(
+    form: &Entity<Form<QueryDraft>>,
+    revision: FormRevision,
+    canonical_saved_model: QueryDraft,
+    cx: &mut App,
+) -> bool {
+    form.update(cx, |form, cx| {
+        form.rebase_if_revision(revision, canonical_saved_model, cx)
+    })
+}
 ```
 
-`prepare_submit` 先执行同步 submit validation，拒绝 blocking issue 或 pending validation，恰好应用
-一次 transform，然后返回：
+`prepare` 校验并冻结已接受的 snapshot。`map` 将该 snapshot 消费为 request。持久化后，
+条件 rebase 会阻止旧 response 覆盖请求飞行期间产生的新编辑。`Validator`、
+`ValidationRequest`、`ValidationSink` 与 error type 由 runtime crate 提供。
 
-```rust,ignore
-let prepared = form.update(cx, |form, cx| form.prepare_submit(cx))?;
-let gpui_form::PreparedSubmit { revision, output } = prepared;
-self.start_save(revision, output, cx);
-```
+## 9. 在声明处获得诊断
 
-页面或 controller 持有 persistence，并在保存成功后用返回的 revision 调用 `rebase_if_revision`。
-form 没有 busy flag、save task、retry state、persistence callback 或 operation runtime。
+macro 应让无效 schema 在声明处就足够明确：
 
-## 编译期诊断
+| 无效声明 | 期望的诊断方向 |
+| --- | --- |
+| 泛型 struct 或 enum | schema 必须是 monomorphic |
+| tuple struct 或 union | 只有支持的 struct/enum shape 能暴露具名 definition |
+| 把 `#[form(items)]` 标在非 `Vec` field 上 | item collection 使用受支持的 `Vec<Item>` 形状 |
+| `#[form(items)]` 的 item 没有 `FormSchema` | structured item 必须暴露 schema |
+| 使用已删除的 `#[form(identity)]` | Form 持有 item identity；删除该属性，只在字段属于业务数据时保留字段 |
+| struct-like 或 multi-payload enum variant | case 必须是 unit 或一个具体 tuple payload |
 
-derive 会在编译期报告不支持的 attribute、无效 validation trigger、不正确 group type、在非 `Vec`
-field 上使用 `array`、缺失 stable ID、无法解析的 adapter type、Garde 上的 custom context，以及
-用于其他 adapter 的 Garde message provider。
-
-它还会拒绝重复 helper attribute/option、带引号的 custom type、空 clause 和所有已移除的
-draft/component/focus option。`store = ...` 是已移除的 type option，diagnostic 应引导调用者使用
-`state = ...`；`FormStore` 是已移除的 derive name，diagnostic 应引导调用者使用 `FormModel`。
-非法配置永不覆盖、忽略或通过 compatibility alias 接受。
-
-## 相关文档
-
-- [gpui-form 使用指南](../../gpui-form/docs/guide.zh-CN.md)
-- [gpui-form-gpui-component 使用指南](../../gpui-form-gpui-component/docs/guide.zh-CN.md)
+diagnostic 应指向出问题的 attribute、field 或 variant，并说明期望的支持 model shape，
+把递归相关的 runtime failure 排除在应用代码之外。

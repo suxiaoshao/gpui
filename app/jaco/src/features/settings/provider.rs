@@ -25,8 +25,11 @@ use gpui_component::{
     tag::Tag,
     v_flex,
 };
-use gpui_form::typed::{FormEvent, FormRevision, SubmitError, ValidationIssue};
-use gpui_form_gpui_component::{FormInput, FormSelect};
+use gpui_form::typed::{
+    FieldDef, Form, FormEvent, FormRevision, FormSchema, PrepareError as SubmitError,
+    ValidationIssue,
+};
+use gpui_form_gpui_component::FormInput;
 use jaco_agent::{ProviderModelFetchError, ProviderModelFetchRequest, fetch_provider_models};
 use jaco_core::{
     ProviderId, ProviderSecretRefs, ProviderSettingValue, ProviderSettingsPayload, new_id,
@@ -46,9 +49,9 @@ use self::{
     catalog::{ProviderFormKind, ProviderKindKey, ProviderSpec, builtin_provider_specs},
     draft::{ManualModelEditor, ProviderEditorMetadata, ProviderFormSeed, ProviderModelDraft},
     forms::{
-        ApiKeyProviderForm, ApiModeChoice, CustomOpenAiProviderForm, OllamaProviderForm,
-        ProviderFormField, ProviderSecretInput, ProviderSettingsForm, ProviderSettingsFormOutput,
-        localized_api_mode_choices,
+        ApiKeyProviderFormInput, ApiModeChoice, CustomOpenAiProviderFormInput,
+        OllamaProviderFormInput, ProviderFormField, ProviderSecretInput, ProviderSettingsForm,
+        ProviderSettingsFormOutput, localized_api_mode_choices,
     },
     list_delegates::{
         ProviderListDelegate, ProviderModelListDelegate, model_list_rows, provider_list_rows,
@@ -89,20 +92,20 @@ enum ProviderFormComponents {
         _name_control: FormInput,
         _api_key_control: ProviderSecretInput,
         _base_url_control: FormInput,
-        _api_mode_control: Box<FormSelect<Vec<ApiModeChoice>>>,
+        _api_mode_subscriptions: Vec<Subscription>,
     },
 }
 
-fn new_provider_input<Form, T>(
-    form: &Entity<Form>,
-    field: gpui_form::typed::FormField<Form, String>,
+fn new_provider_input<M, T>(
+    form: &Entity<Form<M>>,
+    field: FieldDef<M, String>,
     placeholder: String,
     masked: bool,
     window: &mut Window,
     cx: &mut Context<T>,
 ) -> FormInput
 where
-    Form: gpui_form::typed::FormState,
+    M: FormSchema,
     T: 'static,
 {
     FormInput::new(
@@ -127,14 +130,14 @@ impl ProviderFormComponents {
             ProviderSettingsForm::ApiKey(form) => {
                 let api_key_control = ProviderSecretInput::new(
                     form,
-                    ApiKeyProviderForm::API_KEY,
+                    ApiKeyProviderFormInput::API_KEY,
                     cx.global::<I18n>().t("provider-placeholder-api-key"),
                     window,
                     cx,
                 );
                 let base_url_control = new_provider_input(
                     form,
-                    ApiKeyProviderForm::BASE_URL,
+                    ApiKeyProviderFormInput::BASE_URL,
                     cx.global::<I18n>()
                         .t("provider-placeholder-base-url-default"),
                     false,
@@ -151,7 +154,7 @@ impl ProviderFormComponents {
             ProviderSettingsForm::Ollama(form) => {
                 let base_url_control = new_provider_input(
                     form,
-                    OllamaProviderForm::BASE_URL,
+                    OllamaProviderFormInput::BASE_URL,
                     cx.global::<I18n>()
                         .t("provider-placeholder-ollama-base-url"),
                     false,
@@ -160,7 +163,7 @@ impl ProviderFormComponents {
                 );
                 let bearer_token_control = ProviderSecretInput::new(
                     form,
-                    OllamaProviderForm::BEARER_TOKEN,
+                    OllamaProviderFormInput::BEARER_TOKEN,
                     cx.global::<I18n>().t("provider-placeholder-bearer-token"),
                     window,
                     cx,
@@ -175,7 +178,7 @@ impl ProviderFormComponents {
             ProviderSettingsForm::CustomOpenAi(form) => {
                 let name_control = new_provider_input(
                     form,
-                    CustomOpenAiProviderForm::NAME,
+                    CustomOpenAiProviderFormInput::NAME,
                     cx.global::<I18n>().t("provider-placeholder-provider-name"),
                     false,
                     window,
@@ -183,14 +186,14 @@ impl ProviderFormComponents {
                 );
                 let api_key_control = ProviderSecretInput::new(
                     form,
-                    CustomOpenAiProviderForm::API_KEY,
+                    CustomOpenAiProviderFormInput::API_KEY,
                     cx.global::<I18n>().t("provider-placeholder-api-key"),
                     window,
                     cx,
                 );
                 let base_url_control = new_provider_input(
                     form,
-                    CustomOpenAiProviderForm::BASE_URL,
+                    CustomOpenAiProviderFormInput::BASE_URL,
                     cx.global::<I18n>()
                         .t("provider-placeholder-custom-base-url"),
                     false,
@@ -198,34 +201,53 @@ impl ProviderFormComponents {
                     cx,
                 );
                 let choices = localized_api_mode_choices(cx.global::<I18n>());
-                let api_mode_field = CustomOpenAiProviderForm::API_MODE.project_value(
-                    "selection",
-                    |value| Some(Some(*value)),
-                    |value, selection| {
-                        let Some(selection) = selection else {
-                            return false;
+                let api_mode = CustomOpenAiProviderFormInput::API_MODE.value(form, cx);
+                let api_mode_control = cx.new(|cx| SelectState::new(choices, None, window, cx));
+                api_mode_control.update(cx, |state, cx| {
+                    state.set_selected_value(&api_mode, window, cx);
+                });
+                let weak_form = form.downgrade();
+                let weak_control = api_mode_control.downgrade();
+                let form_subscription =
+                    cx.subscribe_in(form, window, move |_, _, _: &FormEvent, window, cx| {
+                        let (Some(form), Some(control)) =
+                            (weak_form.upgrade(), weak_control.upgrade())
+                        else {
+                            return;
                         };
-                        *value = selection;
-                        true
+                        let value = CustomOpenAiProviderFormInput::API_MODE.value(&form, cx);
+                        control.update(cx, |state, cx| {
+                            state.set_selected_value(&value, window, cx);
+                        });
+                    });
+                let weak_form = form.downgrade();
+                let control_subscription = cx.subscribe_in(
+                    &api_mode_control,
+                    window,
+                    move |_,
+                          _,
+                          event: &gpui_component::select::SelectEvent<Vec<ApiModeChoice>>,
+                          _,
+                          cx| {
+                        let gpui_component::select::SelectEvent::Confirm(Some(value)) = event
+                        else {
+                            return;
+                        };
+                        let Some(form) = weak_form.upgrade() else {
+                            return;
+                        };
+                        CustomOpenAiProviderFormInput::API_MODE.set(&form, *value, cx);
                     },
                 );
-                let api_mode_control = FormSelect::try_new(
-                    form,
-                    api_mode_field,
-                    move |window, cx| SelectState::new(choices, None, window, cx),
-                    window,
-                    cx,
-                )
-                .expect("bind custom provider API mode select");
                 Self::CustomOpenAi {
                     name: (*name_control).clone(),
                     api_key: (*api_key_control).clone(),
                     base_url: (*base_url_control).clone(),
-                    api_mode: (*api_mode_control).clone(),
+                    api_mode: api_mode_control,
                     _name_control: name_control,
                     _api_key_control: api_key_control,
                     _base_url_control: base_url_control,
-                    _api_mode_control: Box::new(api_mode_control),
+                    _api_mode_subscriptions: vec![form_subscription, control_subscription],
                 }
             }
         }
@@ -728,6 +750,7 @@ impl ProviderSettingsPage {
             Err(SubmitError::ValidationPending) => {
                 return;
             }
+            Err(_) => return,
         };
         let revision = prepared.revision;
         let output = prepared.output;
@@ -796,13 +819,19 @@ impl ProviderSettingsPage {
                 let models =
                     Self::load_models(metadata.provider_id.as_ref(), cx).unwrap_or_default();
                 self.providers = Self::load_provider_list(cx).unwrap_or_default();
-                if let Some(editor) = self.editors.get_mut(&key) {
+                let rebased = if let Some(editor) = self.editors.get_mut(&key) {
                     editor.metadata = metadata;
                     editor.models = models;
-                    editor
+                    let rebased = editor
                         .form
                         .rebase_if_revision(save.revision, &save.output, cx);
                     editor.validated_revision = Some(editor.form.revision(cx));
+                    rebased
+                } else {
+                    false
+                };
+                if rebased && let Some(editor) = self.editors.get_mut(&key) {
+                    Self::bind_editor_form(editor, window, cx);
                 }
                 self.sync_list_delegates(window, cx);
                 #[cfg(not(test))]
@@ -1325,8 +1354,8 @@ impl ProviderSettingsPage {
                 else {
                     unreachable!("provider API key form and controls must match")
                 };
-                let api_key_errors = ApiKeyProviderForm::API_KEY.errors(form, cx);
-                let base_url_errors = ApiKeyProviderForm::BASE_URL.errors(form, cx);
+                let api_key_errors = ApiKeyProviderFormInput::API_KEY.errors(form, cx);
+                let base_url_errors = ApiKeyProviderFormInput::BASE_URL.errors(form, cx);
                 vec![
                     self.render_secret_input_row(
                         ProviderFormField::ApiKey,
@@ -1355,8 +1384,8 @@ impl ProviderSettingsPage {
                 else {
                     unreachable!("provider Ollama form and controls must match")
                 };
-                let base_url_errors = OllamaProviderForm::BASE_URL.errors(form, cx);
-                let bearer_token_errors = OllamaProviderForm::BEARER_TOKEN.errors(form, cx);
+                let base_url_errors = OllamaProviderFormInput::BASE_URL.errors(form, cx);
+                let bearer_token_errors = OllamaProviderFormInput::BEARER_TOKEN.errors(form, cx);
                 vec![
                     self.render_text_input_row(
                         ProviderFormField::BaseUrl,
@@ -1387,10 +1416,10 @@ impl ProviderSettingsPage {
                 else {
                     unreachable!("provider custom form and controls must match")
                 };
-                let name_errors = CustomOpenAiProviderForm::NAME.errors(form, cx);
-                let api_key_errors = CustomOpenAiProviderForm::API_KEY.errors(form, cx);
-                let base_url_errors = CustomOpenAiProviderForm::BASE_URL.errors(form, cx);
-                let api_mode_errors = CustomOpenAiProviderForm::API_MODE.errors(form, cx);
+                let name_errors = CustomOpenAiProviderFormInput::NAME.errors(form, cx);
+                let api_key_errors = CustomOpenAiProviderFormInput::API_KEY.errors(form, cx);
+                let base_url_errors = CustomOpenAiProviderFormInput::BASE_URL.errors(form, cx);
+                let api_mode_errors = CustomOpenAiProviderFormInput::API_MODE.errors(form, cx);
                 vec![
                     self.render_text_input_row(
                         ProviderFormField::Name,
@@ -1523,7 +1552,7 @@ impl ProviderSettingsPage {
                 .child(Icon::new(IconName::CircleAlert))
                 .child(
                     Label::new(super::form_validation::validation_message(
-                        &error.message,
+                        error.message(),
                         cx,
                     ))
                     .text_sm(),
@@ -1615,7 +1644,7 @@ fn provider_field_error_list(errors: Vec<ValidationIssue>, cx: &mut App) -> AnyE
 }
 
 fn provider_field_error_message(error: &ValidationIssue, cx: &App) -> SharedString {
-    super::form_validation::validation_message(&error.message, cx)
+    super::form_validation::validation_message(error.message(), cx)
 }
 
 fn provider_error_label(message: SharedString, cx: &mut App) -> AnyElement {

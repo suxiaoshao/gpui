@@ -1,0 +1,5 @@
+error: FormSchema does not support generic models
+ --> tests/ui/vnext/fail/generic.rs:2:15
+  |
+2 | struct Generic<T> {
+  |               ^^^

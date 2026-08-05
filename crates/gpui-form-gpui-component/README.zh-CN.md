@@ -2,73 +2,101 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-`gpui-form-gpui-component` 把类型化 `gpui-form` 字段连接到
-`gpui-component` state entity。Form 始终是业务值与提交数据的唯一来源。每个有状态
-bound control 都只是一个小型 Rust handle，只持有原生 entity 与同步 subscriptions，并
-deref 到该 entity：
+```toml
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-form.workspace = true
+gpui-form-gpui-component.workspace = true
+```
+
+## 绑定并渲染 flat input
+
+定义 typed draft，创建唯一 form session，绑定 root field，然后把返回的 handle 作为原生
+input entity 渲染：
 
 ```rust,ignore
-use gpui_component::input::{Input, InputState};
+use gpui::{
+    AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window,
+    div,
+};
+use gpui_component::{form::field, input::{Input, InputState}};
+use gpui_form::{Form, FormSchema};
 use gpui_form_gpui_component::FormInput;
 
-let name_input = FormInput::new(
-    &form,
-    ProviderForm::NAME,
-    |window, cx| InputState::new(window, cx).placeholder("Provider name"),
-    window,
-    cx,
-);
+#[derive(Clone, FormSchema)]
+struct ProviderDraft {
+    #[form(required)]
+    name: String,
+}
 
-let element = Input::new(&name_input);
+struct ProviderEditor {
+    form: Entity<Form<ProviderDraft>>,
+    form_observer: Subscription,
+    name_input: FormInput,
+}
+
+impl ProviderEditor {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> anyhow::Result<Self> {
+        let runtime = Form::try_new(ProviderDraft {
+            name: String::new(),
+        })?;
+        let form = cx.new(|_| runtime);
+
+        // root FieldDef 通过 sealed IntoTotalPath conversion 直接传入。
+        // 这里没有 path resolution Result。
+        let name_input = FormInput::new(
+            &form,
+            ProviderDraft::NAME,
+            |window, cx| InputState::new(window, cx).placeholder("Provider name"),
+            window,
+            cx,
+        );
+        let form_observer = cx.observe(&form, |_, _, cx| cx.notify());
+
+        Ok(Self { form, form_observer, name_input })
+    }
+}
+
+impl Render for ProviderEditor {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let errors = ProviderDraft::NAME.errors(&self.form, cx);
+        let feedback = errors
+            .first()
+            .map(|issue| validation_text(issue, cx))
+            .unwrap_or_default();
+
+        div().child(
+            field()
+                .label("Provider name")
+                .required(ProviderDraft::NAME.schema().is_required())
+                .description(feedback)
+                .child(Input::new(&self.name_input)),
+        )
+    }
+}
 ```
 
-`ProviderForm::NAME` 以 associated `const` descriptor 暴露该字段唯一的 schema-level definition，
-可复用且不产生 allocation：它只提供静态 schema 与 field access，不持有本次 form entity、value 或 subscription。显式传入 `&form`
-才建立所有权边界。静态确定存在的 total field 使用
-`FormInput::new`，直接返回 `Self` 而不是 `Result`；projected 或 identified 的 partial
-field 使用 `FormInput::try_new`，路径已不存在时返回 `FieldAccessError`。
+页面同时保留 `form` 与 `name_input`。输入会更新 typed draft；blur 会请求 form 校验该字段；
+对 form 执行 `set`、`reset` 或 `rebase` 时，可见 input 会被静默更新。`validation_text` 是应用把
+validation issue 本地化为文案的 helper；observer 会在 form state 变化后重新渲染 label、feedback
+与外围按钮。
 
-构造闭包负责配置原生 state。Adapter 不再提供 `Config`，也不保存 delegate 副本、
-binding 字段、focus flag 或 error-visibility state。`FormSelect<D>` 绑定
-`Option<D::Item::Value>`，通过 `SelectEvent::Confirm` 写入；`FormCombobox<D>`
-绑定 `Vec<D::Item::Value>`，通过 `ComboboxEvent::Change` 写入。程序化 form
-变更使用原生 value setter 静默投影到所有已挂载实例。
-
-精确整数使用 `FormIntegerInput<N>` 与 `IntegerInputState<N>`，不会把 `u64`、
-`i64` 或其他整数绕经 `String` 或 `f64`。不完整或无效的编辑文本只保留在原生
-state 中，并产生临时 control issue；它不会覆盖 form 中最后一个合法的类型化值。
-
-Options、delegate、placeholder、disabled state、catalog refresh、dynamic
-validation、focus 选择与持久化都属于应用。配置变化时，应用修改暴露出来的原生 state 后，
-必须立即通过更新后的 items/options 静默重投影当前 form value；原生 API 无法原地完成时，
-直接重建整个 bound handle，不能等待后续 form event。
-
-`Checkbox` 与 `Switch` 没有公开 state entity，因此直接按 controlled element
-使用，不制造假的 bound wrapper：
+提交仍使用同一个 core form session；无需从 controls 另行收集一次值：
 
 ```rust,ignore
-use gpui_component::{checkbox::Checkbox, switch::Switch};
-
-let enabled = ProviderForm::ENABLED.value(&self.form, cx);
-
-let checkbox_field = ProviderForm::ENABLED;
-let checkbox_form = self.form.clone();
-let checkbox = Checkbox::new("provider-enabled-checkbox")
-    .checked(enabled)
-    .on_click(move |checked, _window, cx| {
-        checkbox_field.set(&checkbox_form, *checked, cx);
-    });
-
-let switch_form = self.form.clone();
-let switch_field = ProviderForm::ENABLED;
-let switch = Switch::new("provider-enabled-switch")
-    .checked(enabled)
-    .on_click(move |checked, _window, cx| {
-        switch_field.set(&switch_form, *checked, cx);
-    });
+let prepared = self.form.update(cx, |form, cx| form.prepare(cx))?;
+let revision = prepared.revision();
+let request: ProviderDraft = prepared.map(|draft| draft);
+self.start_save(revision, request, cx);
 ```
 
-total descriptor 在调用者显式提供 `Entity<Form>` 后，同步读写不会失败。只有 partial
-descriptor 使用 `try_value` 与 `try_set`，并按正常 `FieldAccessError` 处理。
+`String` 使用 `FormInput`，整数 primitive 使用 `FormIntegerInput`，单个可选选择使用
+`FormSelect`，多个 typed value 使用 `FormCombobox`。`Checkbox` 与 `Switch` 作为 controlled
+element 渲染。自己的组件既可以使用同样的 controlled pattern，也可以提供一个很小的
+stateful adapter；guide 展示了两种 recipe。
 
-详见[使用指南](docs/guide.zh-CN.md)与[英文指南](docs/guide.md)。
+参见[使用指南](docs/guide.zh-CN.md)或其[英文版本](docs/guide.md)，其中包含
+total/dynamic Input、Integer、Select、Combobox、controlled boolean、options refresh、错误与
+custom adapter recipe。

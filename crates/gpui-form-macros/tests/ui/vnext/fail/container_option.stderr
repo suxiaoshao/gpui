@@ -1,0 +1,5 @@
+error: FormSchema has no container-level #[form(...)] options
+ --> tests/ui/vnext/fail/container_option.rs:2:1
+  |
+2 | #[form(child)]
+  | ^^^^^^^^^^^^^^

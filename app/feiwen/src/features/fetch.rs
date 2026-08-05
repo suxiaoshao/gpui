@@ -1,519 +1,70 @@
 use crate::{
-    fetch::{self, FetchErrorKind, FetchPageError},
+    fetch::{FetchErrorKind, FetchPageError},
     foundation::{I18n, IconName},
-    store::{Db, service::Novel},
+    store::database,
 };
 use async_compat::Compat;
-use duckdb::DuckdbConnectionManager;
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, Sizable, StyledExt,
+    ActiveTheme, Icon, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{
-        Input, InputContentType, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction,
-    },
+    input::{Input, InputContentType, InputState},
     label::Label,
     progress::Progress,
     table::{Column, DataTable, TableDelegate, TableState},
+    v_flex,
 };
-use r2d2::PooledConnection;
-use regex::Regex;
-use reqwest::Client;
-use std::time::Instant;
+use gpui_form::Form;
+use gpui_form_gpui_component::{FormInput, FormIntegerInput, IntegerInput, IntegerInputState};
+use gpui_operation::Transition;
+use gpui_store::Store;
 use tracing::{Instrument, Level, event};
 
-const MAX_PAGE_LOGS: usize = 80;
+mod form;
+mod run;
+mod runner;
+
+pub(crate) use form::FetchRequest;
+pub(crate) use run::{FetchPageLog, FetchProgress, FetchRun};
+
+use form::{FetchDraft, FetchValidator};
+use run::{
+    FetchFailure, FetchMessage, FetchPageLogStatus, FetchStatus, resume_page_after_interrupt,
+    retry_page_after_failure,
+};
+use runner::Runner;
+
 const LOG_PAGE_COLUMN: f32 = 72.;
 const LOG_STATUS_COLUMN: f32 = 120.;
 const LOG_INSERTED_COLUMN: f32 = 96.;
 const LOG_ELAPSED_COLUMN: f32 = 96.;
 const LOG_DETAIL_COLUMN: f32 = 520.;
 
-#[derive(Clone)]
-struct FetchRequest {
-    url: String,
-    start_page: u32,
-    end_page: u32,
-    cookie: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FetchPageLogStatus {
-    Running,
-    Success,
-    Failed,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct FetchPageLog {
-    page: u32,
-    status: FetchPageLogStatus,
-    inserted: Option<usize>,
-    elapsed_ms: Option<u128>,
-    message: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FetchProgress {
-    start_page: u32,
-    end_page: u32,
-    current_page: u32,
-    last_success_page: Option<u32>,
-    total: i64,
-}
-
-impl FetchProgress {
-    fn completed_pages(&self) -> u32 {
-        self.last_success_page
-            .filter(|page| *page >= self.start_page)
-            .map(|page| page - self.start_page + 1)
-            .unwrap_or(0)
-    }
-
-    fn page_count(&self) -> u32 {
-        page_count(self.start_page, self.end_page)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct FetchFailure {
-    progress: FetchProgress,
-    page: u32,
-    kind: FetchErrorKind,
-    message: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-enum FetchStatus {
-    #[default]
-    Idle,
-    Running(FetchProgress),
-    Interrupted(FetchProgress),
-    Failed(FetchFailure),
-    Success(FetchProgress),
-}
-
-pub(crate) struct FetchTaskState {
-    url: String,
-    start_page: u32,
-    end_page: u32,
-    cookie: String,
-    status: FetchStatus,
-    logs: Vec<FetchPageLog>,
-    task: Option<Task<()>>,
-}
-
-impl Default for FetchTaskState {
-    fn default() -> Self {
-        Self {
-            url: String::new(),
-            start_page: 1,
-            end_page: 1,
-            cookie: String::new(),
-            status: FetchStatus::Idle,
-            logs: Vec::new(),
-            task: None,
-        }
-    }
-}
-
-impl FetchTaskState {
-    fn set_url(&mut self, url: String) {
-        self.url = url;
-    }
-
-    fn set_start_page(&mut self, start_page: u32) {
-        self.start_page = start_page.max(1);
-    }
-
-    fn set_end_page(&mut self, end_page: u32) {
-        self.end_page = end_page.max(1);
-    }
-
-    fn set_cookie(&mut self, cookie: String) {
-        self.cookie = cookie;
-    }
-
-    pub(crate) fn is_running(&self) -> bool {
-        matches!(self.status, FetchStatus::Running(_))
-    }
-
-    pub(crate) fn has_visible_summary(&self) -> bool {
-        !matches!(self.status, FetchStatus::Idle | FetchStatus::Success(_))
-    }
-
-    pub(crate) fn summary_text(&self, i18n: &I18n) -> Option<String> {
-        match &self.status {
-            FetchStatus::Idle => None,
-            FetchStatus::Running(progress) => Some(format!(
-                "{} {} / {} · {} {} · {} {}",
-                i18n.t("fetch-state-running-title"),
-                progress.current_page,
-                progress.end_page,
-                i18n.t("fetch-stat-completed-pages"),
-                progress.completed_pages(),
-                i18n.t("fetch-stat-total"),
-                progress.total
-            )),
-            FetchStatus::Interrupted(progress) => Some(format!(
-                "{} · {} {} · {} {}",
-                i18n.t("fetch-state-interrupted-title"),
-                i18n.t("fetch-stat-next-page"),
-                resume_page_after_interrupt(
-                    progress.last_success_page,
-                    progress.start_page,
-                    progress.end_page
-                )
-                .unwrap_or(progress.end_page),
-                i18n.t("fetch-stat-completed-pages"),
-                progress.completed_pages()
-            )),
-            FetchStatus::Failed(failure) => Some(format!(
-                "{} · {} {} · {}",
-                i18n.t("fetch-state-failed-title"),
-                i18n.t("fetch-stat-failed-page"),
-                failure.page,
-                failure.message
-            )),
-            FetchStatus::Success(progress) => Some(format!(
-                "{} · {} {} · {} {}",
-                i18n.t("fetch-state-success"),
-                i18n.t("fetch-stat-completed-pages"),
-                progress.completed_pages(),
-                i18n.t("fetch-stat-total"),
-                progress.total
-            )),
-        }
-    }
-
-    pub(crate) fn titlebar_summary(&self, i18n: &I18n) -> String {
-        self.summary_text(i18n)
-            .unwrap_or_else(|| i18n.t("fetch-state-idle-title"))
-    }
-
-    fn request_from(&self, start_page: u32) -> FetchRequest {
-        FetchRequest {
-            url: self.url.clone(),
-            start_page,
-            end_page: self.end_page,
-            cookie: self.cookie.clone(),
-        }
-    }
-
-    fn begin_run(&mut self, run_start_page: u32, total: i64, clear_logs: bool) {
-        let last_success_page = if clear_logs {
-            None
-        } else {
-            self.last_success_page()
-        };
-        if clear_logs {
-            self.logs.clear();
-        }
-        event!(
-            Level::INFO,
-            start_page = self.start_page,
-            end_page = self.end_page,
-            run_start_page,
-            ?last_success_page,
-            total,
-            clear_logs,
-            "fetch run state started"
-        );
-        self.status = FetchStatus::Running(FetchProgress {
-            start_page: self.start_page,
-            end_page: self.end_page,
-            current_page: run_start_page,
-            last_success_page,
-            total,
-        });
-    }
-
-    fn interrupt(&mut self) {
-        event!(Level::INFO, "interrupting fetch run");
-        self.task = None;
-        if let FetchStatus::Running(progress) = self.status {
-            event!(
-                Level::INFO,
-                current_page = progress.current_page,
-                last_success_page = ?progress.last_success_page,
-                total = progress.total,
-                "fetch run interrupted"
-            );
-            self.status = FetchStatus::Interrupted(progress);
-        }
-    }
-
-    fn mark_page_started(&mut self, page: u32) {
-        event!(Level::INFO, page, "fetch page started");
-        if let FetchStatus::Running(progress) = &mut self.status {
-            progress.current_page = page;
-        }
-        self.upsert_log(FetchPageLog {
-            page,
-            status: FetchPageLogStatus::Running,
-            inserted: None,
-            elapsed_ms: None,
-            message: "fetching".to_string(),
-        });
-    }
-
-    fn mark_page_succeeded(&mut self, page: u32, inserted: usize, total: i64, elapsed_ms: u128) {
-        event!(
-            Level::INFO,
-            page,
-            inserted,
-            total,
-            elapsed_ms,
-            "fetch page succeeded"
-        );
-        if let FetchStatus::Running(progress) = &mut self.status {
-            progress.current_page = page;
-            progress.last_success_page = Some(page);
-            progress.total = total;
-        }
-        self.upsert_log(FetchPageLog {
-            page,
-            status: FetchPageLogStatus::Success,
-            inserted: Some(inserted),
-            elapsed_ms: Some(elapsed_ms),
-            message: "success".to_string(),
-        });
-    }
-
-    fn mark_failed(&mut self, error: FetchPageError, elapsed_ms: Option<u128>) {
-        event!(
-            Level::ERROR,
-            page = error.page,
-            kind = %error.kind,
-            message = %error.message,
-            ?elapsed_ms,
-            "fetch run failed"
-        );
-        let progress = match &self.status {
-            FetchStatus::Running(progress) => *progress,
-            FetchStatus::Interrupted(progress) => *progress,
-            FetchStatus::Failed(failure) => failure.progress,
-            FetchStatus::Success(progress) => *progress,
-            FetchStatus::Idle => FetchProgress {
-                start_page: self.start_page,
-                end_page: self.end_page,
-                current_page: error.page,
-                last_success_page: None,
-                total: 0,
-            },
-        };
-        self.task = None;
-        self.status = FetchStatus::Failed(FetchFailure {
-            progress,
-            page: error.page,
-            kind: error.kind,
-            message: error.message.clone(),
-        });
-        self.upsert_log(FetchPageLog {
-            page: error.page,
-            status: FetchPageLogStatus::Failed,
-            inserted: None,
-            elapsed_ms,
-            message: error.message,
-        });
-    }
-
-    fn mark_succeeded(&mut self) {
-        self.task = None;
-        if let FetchStatus::Running(progress) = self.status {
-            event!(
-                Level::INFO,
-                start_page = progress.start_page,
-                end_page = progress.end_page,
-                completed_pages = progress.completed_pages(),
-                total = progress.total,
-                "fetch run succeeded"
-            );
-            self.status = FetchStatus::Success(progress);
-        }
-    }
-
-    fn upsert_log(&mut self, log: FetchPageLog) {
-        if let Some(existing) = self
-            .logs
-            .iter_mut()
-            .find(|existing| existing.page == log.page)
-        {
-            *existing = log;
-        } else {
-            self.logs.push(log);
-        }
-        if self.logs.len() > MAX_PAGE_LOGS {
-            let overflow = self.logs.len() - MAX_PAGE_LOGS;
-            self.logs.drain(0..overflow);
-        }
-    }
-
-    fn last_success_page(&self) -> Option<u32> {
-        match &self.status {
-            FetchStatus::Running(progress)
-            | FetchStatus::Interrupted(progress)
-            | FetchStatus::Success(progress) => progress.last_success_page,
-            FetchStatus::Failed(failure) => failure.progress.last_success_page,
-            FetchStatus::Idle => None,
-        }
-    }
-
-    fn failed_page(&self) -> Option<u32> {
-        match &self.status {
-            FetchStatus::Failed(failure) => Some(failure.page),
-            _ => None,
-        }
-    }
-}
-
-struct Runner<'a> {
-    request: FetchRequest,
-    task_state: WeakEntity<FetchTaskState>,
-    conn: PooledConnection<DuckdbConnectionManager>,
-    cx: &'a mut AsyncApp,
-}
-
-impl Runner<'_> {
-    async fn run(&mut self) {
-        event!(
-            Level::INFO,
-            start_page = self.request.start_page,
-            end_page = self.request.end_page,
-            has_cookie = !self.request.cookie.is_empty(),
-            "fetch runner started"
-        );
-        let mut total = match Novel::count(&self.conn) {
-            Ok(total) => total,
-            Err(err) => {
-                event!(
-                    Level::ERROR,
-                    error = %err,
-                    "failed to count novels before fetch run"
-                );
-                self.mark_failed(FetchPageError::new(self.request.start_page, err), None);
-                return;
-            }
-        };
-        event!(Level::INFO, total, "initial novel count loaded");
-
-        let start_page = self.request.start_page;
-        self.update_state(|state| state.begin_run(start_page, total, false));
-
-        let client = Client::new();
-        for page in self.request.start_page..=self.request.end_page {
-            self.update_state(|state| state.mark_page_started(page));
-            let started_at = Instant::now();
-            let novels =
-                match fetch::fetch_page(&self.request.url, page, &self.request.cookie, &client)
-                    .await
-                {
-                    Ok(novels) => novels,
-                    Err(err) => {
-                        event!(
-                            Level::ERROR,
-                            page,
-                            error = %err,
-                            elapsed_ms = started_at.elapsed().as_millis(),
-                            "failed to fetch page data"
-                        );
-                        self.mark_failed(
-                            FetchPageError::new(page, err),
-                            Some(started_at.elapsed().as_millis()),
-                        );
-                        return;
-                    }
-                };
-
-            let inserted = novels.len();
-            for novel in novels {
-                if let Err(err) = novel.save(&mut self.conn) {
-                    event!(
-                        Level::ERROR,
-                        page,
-                        error = %err,
-                        elapsed_ms = started_at.elapsed().as_millis(),
-                        "failed to save fetched novel"
-                    );
-                    self.mark_failed(
-                        FetchPageError::new(page, err),
-                        Some(started_at.elapsed().as_millis()),
-                    );
-                    return;
-                }
-            }
-
-            match Novel::count(&self.conn) {
-                Ok(next_total) => total = next_total,
-                Err(err) => {
-                    event!(
-                        Level::ERROR,
-                        page,
-                        error = %err,
-                        elapsed_ms = started_at.elapsed().as_millis(),
-                        "failed to count novels after page fetch"
-                    );
-                    self.mark_failed(
-                        FetchPageError::new(page, err),
-                        Some(started_at.elapsed().as_millis()),
-                    );
-                    return;
-                }
-            }
-            self.update_state(|state| {
-                state.mark_page_succeeded(page, inserted, total, started_at.elapsed().as_millis())
-            });
-        }
-
-        event!(
-            Level::INFO,
-            start_page = self.request.start_page,
-            end_page = self.request.end_page,
-            total,
-            "fetch runner completed"
-        );
-        self.update_state(FetchTaskState::mark_succeeded);
-    }
-
-    fn mark_failed(&mut self, error: FetchPageError, elapsed_ms: Option<u128>) {
-        event!(
-            Level::ERROR,
-            page = error.page,
-            kind = %error.kind,
-            message = %error.message,
-            "Failed to fetch page"
-        );
-        self.update_state(|state| state.mark_failed(error, elapsed_ms));
-    }
-
-    fn update_state(&mut self, update: impl FnOnce(&mut FetchTaskState)) {
-        if let Err(err) = self.task_state.update(self.cx, |state, cx| {
-            update(state);
-            cx.notify();
-        }) {
-            event!(Level::ERROR, "Failed to update fetch task state: {:?}", err);
-        }
-    }
-}
-
 pub(crate) struct FetchView {
-    task_state: Entity<FetchTaskState>,
+    task_state: Store<FetchRun>,
+    form: Entity<Form<FetchDraft>>,
     log_table: Entity<TableState<FetchLogTableDelegate>>,
     url_input: Entity<InputState>,
-    start_page: Entity<InputState>,
-    end_page: Entity<InputState>,
+    start_page: Entity<IntegerInputState<u32>>,
+    end_page: Entity<IntegerInputState<u32>>,
     cookie_input: Entity<InputState>,
+    _form_controls: (
+        FormInput,
+        FormIntegerInput<u32>,
+        FormIntegerInput<u32>,
+        FormInput,
+    ),
     _subscriptions: Vec<Subscription>,
 }
 
 impl FetchView {
     pub(crate) fn new(
         window: &mut Window,
-        task_state: Entity<FetchTaskState>,
+        task_state: Store<FetchRun>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let integer_regex = Regex::new(r"^\d+$").unwrap();
         let (url_placeholder, start_page_placeholder, end_page_placeholder, cookie_placeholder) = {
             let i18n = cx.global::<I18n>();
             (
@@ -523,19 +74,52 @@ impl FetchView {
                 i18n.t("fetch-cookie-placeholder"),
             )
         };
-        let mut _subscriptions = vec![];
-        let url_input = cx.new(|cx| InputState::new(window, cx).placeholder(url_placeholder));
-        let start_page = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(start_page_placeholder)
-                .pattern(integer_regex.clone())
+        let form = cx.new(|_| {
+            Form::try_new_with_validator(FetchDraft::default(), FetchValidator)
+                .expect("build fetch form")
         });
-        let end_page = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(end_page_placeholder)
-                .pattern(integer_regex)
+        let url_control = FormInput::new(
+            &form,
+            FetchDraft::URL,
+            move |window, cx| InputState::new(window, cx).placeholder(url_placeholder),
+            window,
+            cx,
+        );
+        let start_control = FormIntegerInput::new(
+            &form,
+            FetchDraft::START_PAGE,
+            move |window, cx| IntegerInputState::new(window, cx).min(1).step(1),
+            window,
+            cx,
+        )
+        .expect("bind fetch start page");
+        let start_editor = start_control.read(cx).editor().clone();
+        start_editor.update(cx, |input, cx| {
+            input.set_placeholder(start_page_placeholder, window, cx);
         });
-        let cookie_input = cx.new(|cx| InputState::new(window, cx).placeholder(cookie_placeholder));
+        let end_control = FormIntegerInput::new(
+            &form,
+            FetchDraft::END_PAGE,
+            move |window, cx| IntegerInputState::new(window, cx).min(1).step(1),
+            window,
+            cx,
+        )
+        .expect("bind fetch end page");
+        let end_editor = end_control.read(cx).editor().clone();
+        end_editor.update(cx, |input, cx| {
+            input.set_placeholder(end_page_placeholder, window, cx);
+        });
+        let cookie_control = FormInput::new(
+            &form,
+            FetchDraft::COOKIE,
+            move |window, cx| InputState::new(window, cx).placeholder(cookie_placeholder),
+            window,
+            cx,
+        );
+        let url_input = (*url_control).clone();
+        let start_page = (*start_control).clone();
+        let end_page = (*end_control).clone();
+        let cookie_input = (*cookie_control).clone();
         let log_table = cx.new(|cx| {
             TableState::new(
                 FetchLogTableDelegate {
@@ -546,132 +130,28 @@ impl FetchView {
             )
         });
 
-        _subscriptions.push(Self::subscribe_text_input(
-            &url_input,
-            start_page.clone(),
-            FetchTaskState::set_url,
-            window,
-            cx,
-        ));
-        _subscriptions.push(Self::subscribe_page_input(
-            &start_page,
-            end_page.clone(),
-            FetchTaskState::set_start_page,
-            window,
-            cx,
-        ));
-        _subscriptions.push(Self::subscribe_page_step(
-            &start_page,
-            |state| state.start_page,
-            FetchTaskState::set_start_page,
-            window,
-            cx,
-        ));
-        _subscriptions.push(Self::subscribe_page_input(
-            &end_page,
-            cookie_input.clone(),
-            FetchTaskState::set_end_page,
-            window,
-            cx,
-        ));
-        _subscriptions.push(Self::subscribe_page_step(
-            &end_page,
-            |state| state.end_page,
-            FetchTaskState::set_end_page,
-            window,
-            cx,
-        ));
-        _subscriptions.push(Self::subscribe_text_input(
-            &cookie_input,
-            url_input.clone(),
-            FetchTaskState::set_cookie,
-            window,
-            cx,
-        ));
-        _subscriptions.push(cx.observe(&task_state, |view, _, cx| {
-            view.log_table.update(cx, |table, cx| {
-                table.refresh(cx);
+        let _subscriptions = vec![
+            task_state.observe(cx, |view, _, cx| {
+                view.log_table.update(cx, |table, cx| {
+                    table.refresh(cx);
+                    cx.notify();
+                });
                 cx.notify();
-            });
-            cx.notify();
-        }));
+            }),
+            cx.subscribe(&form, |_, _, _: &gpui_form::FormEvent, cx| cx.notify()),
+        ];
 
         Self {
             task_state,
+            form,
             log_table,
             url_input,
             start_page,
             end_page,
             cookie_input,
+            _form_controls: (url_control, start_control, end_control, cookie_control),
             _subscriptions,
         }
-    }
-
-    fn subscribe_text_input(
-        input: &Entity<InputState>,
-        next_focus: Entity<InputState>,
-        set_value: fn(&mut FetchTaskState, String),
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Subscription {
-        cx.subscribe_in(
-            input,
-            window,
-            move |view, state, event, window, cx| match event {
-                InputEvent::Change => {
-                    let text = state.read(cx).value().to_string();
-                    view.task_state.update(cx, |task, _| set_value(task, text));
-                }
-                InputEvent::PressEnter { .. } => {
-                    next_focus.update(cx, |input, cx| {
-                        input.focus(window, cx);
-                    });
-                }
-                _ => {}
-            },
-        )
-    }
-
-    fn subscribe_page_input(
-        input: &Entity<InputState>,
-        next_focus: Entity<InputState>,
-        set_page: fn(&mut FetchTaskState, u32),
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Subscription {
-        cx.subscribe_in(
-            input,
-            window,
-            move |view, state, event, window, cx| match event {
-                InputEvent::Change => {
-                    let page = parse_page_input(&state.read(cx).value());
-                    view.task_state.update(cx, |task, _| set_page(task, page));
-                }
-                InputEvent::PressEnter { .. } => {
-                    next_focus.update(cx, |input, cx| {
-                        input.focus(window, cx);
-                    });
-                }
-                _ => {}
-            },
-        )
-    }
-
-    fn subscribe_page_step(
-        input: &Entity<InputState>,
-        current_page: fn(&FetchTaskState) -> u32,
-        set_page: fn(&mut FetchTaskState, u32),
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Subscription {
-        cx.subscribe_in(input, window, move |view, state, event, window, cx| {
-            let NumberInputEvent::Step(action) = event;
-            let page = step_page(current_page(view.task_state.read(cx)), *action);
-            view.task_state.update(cx, |task, _| set_page(task, page));
-            state.update(cx, |input, cx| {
-                input.set_value(page.to_string(), window, cx);
-            });
-        })
     }
 
     fn start_fetch(&mut self, cx: &mut Context<Self>) {
@@ -683,11 +163,21 @@ impl FetchView {
     }
 
     pub(crate) fn is_running(&self, cx: &App) -> bool {
-        self.task_state.read(cx).is_running()
+        self.task_state.read(cx, FetchRun::is_running)
+    }
+
+    pub(crate) fn can_start(&self, cx: &App) -> bool {
+        let form = self.form.read(cx);
+        let draft = form.value();
+        !self.is_running(cx)
+            && database::is_ready(cx)
+            && !draft.url.trim().is_empty()
+            && draft.start_page <= draft.end_page
     }
 
     pub(crate) fn titlebar_summary(&self, i18n: &I18n, cx: &App) -> String {
-        self.task_state.read(cx).titlebar_summary(i18n)
+        self.task_state
+            .read(cx, |state| state.titlebar_summary(i18n))
     }
 
     fn resume_fetch(&mut self, cx: &mut Context<Self>) {
@@ -699,15 +189,49 @@ impl FetchView {
     }
 
     fn interrupt_fetch(&mut self, cx: &mut Context<Self>) {
-        self.task_state.update(cx, |state, cx| {
-            state.interrupt();
-            cx.notify();
-        });
+        self.task_state
+            .update(cx, |state| state.transition(FetchMessage::Interrupt));
+    }
+
+    fn load_snapshot_into_form(&mut self, cx: &mut Context<Self>) {
+        let snapshot = self
+            .task_state
+            .read(cx, |state| state.snapshot().map(FetchDraft::from));
+        if let Some(snapshot) = snapshot {
+            self.form.update(cx, |form, cx| form.replace(snapshot, cx));
+        }
     }
 
     fn start_fetch_from(&mut self, mode: RunMode, cx: &mut Context<Self>) {
         event!(Level::INFO, mode = mode.label(), "starting fetch request");
-        let conn = match cx.global::<Db>().get() {
+        if self.task_state.read(cx, FetchRun::is_running) {
+            event!(
+                Level::INFO,
+                mode = mode.label(),
+                "ignored fetch request while running"
+            );
+            return;
+        }
+        if !database::is_ready(cx) {
+            event!(
+                Level::INFO,
+                mode = mode.label(),
+                "ignored fetch request while database is unavailable"
+            );
+            return;
+        }
+        let fresh_request = if matches!(mode, RunMode::Fresh) {
+            let Ok(prepared) = self.form.update(cx, |form, cx| form.prepare(cx)) else {
+                return;
+            };
+            Some(FetchRequest::from(prepared.into_parts().1))
+        } else {
+            None
+        };
+        let conn = match database::ready_pool(cx).and_then(|pool| {
+            pool.get()
+                .map_err(super::super::store::database::DatabaseProblem::new)
+        }) {
             Ok(conn) => conn,
             Err(err) => {
                 event!(
@@ -716,61 +240,39 @@ impl FetchView {
                     error = %err,
                     "failed to get database pool for fetch"
                 );
-                self.task_state.update(cx, |state, cx| {
-                    state.mark_failed(
-                        FetchPageError {
-                            page: state.start_page.max(1),
+                self.task_state.update(cx, |state| {
+                    state.transition(FetchMessage::Rejected {
+                        request: fresh_request.clone(),
+                        error: FetchPageError {
+                            page: fresh_request
+                                .as_ref()
+                                .or(state.snapshot())
+                                .map_or(1, |request| request.start_page),
                             kind: FetchErrorKind::Database,
                             message: err.to_string(),
                         },
-                        None,
-                    );
-                    cx.notify();
+                    });
                 });
                 return;
             }
         };
 
         let (request, clear_logs) = {
-            let state = self.task_state.read(cx);
-            if state.is_running() {
-                event!(
-                    Level::INFO,
-                    mode = mode.label(),
-                    "ignored fetch request while running"
-                );
-                return;
-            }
+            let state = self.task_state.read(cx, |state| {
+                (
+                    state.snapshot().cloned(),
+                    state.last_success_page(),
+                    state.failed_page(),
+                )
+            });
             let start_page = match mode {
-                RunMode::Fresh => {
-                    if state.start_page > state.end_page {
-                        let message = cx.global::<I18n>().t("fetch-error-invalid-page-range");
-                        event!(
-                            Level::ERROR,
-                            start_page = state.start_page,
-                            end_page = state.end_page,
-                            "invalid fetch page range"
-                        );
-                        self.task_state.update(cx, |state, cx| {
-                            state.mark_failed(
-                                FetchPageError {
-                                    page: state.start_page,
-                                    kind: FetchErrorKind::Other,
-                                    message,
-                                },
-                                None,
-                            );
-                            cx.notify();
-                        });
-                        return;
-                    }
-                    state.start_page
-                }
+                RunMode::Fresh => fresh_request.as_ref().unwrap().start_page,
                 RunMode::ResumeInterrupted => {
+                    let snapshot = state.0.as_ref().expect("interrupted run has snapshot");
                     match resume_page_after_interrupt(
-                        state.last_success_page(),
-                        state.start_page,
-                        state.end_page,
+                        state.1,
+                        snapshot.start_page,
+                        snapshot.end_page,
                     ) {
                         Some(page) => page,
                         None => {
@@ -784,11 +286,9 @@ impl FetchView {
                     }
                 }
                 RunMode::RetryFailed => {
-                    match retry_page_after_failure(
-                        state.failed_page(),
-                        state.start_page,
-                        state.end_page,
-                    ) {
+                    let snapshot = state.0.as_ref().expect("failed run has snapshot");
+                    match retry_page_after_failure(state.2, snapshot.start_page, snapshot.end_page)
+                    {
                         Some(page) => page,
                         None => {
                             event!(
@@ -801,10 +301,16 @@ impl FetchView {
                     }
                 }
             };
-            (
-                state.request_from(start_page),
-                matches!(mode, RunMode::Fresh),
-            )
+            let request = fresh_request.clone().unwrap_or_else(|| {
+                let snapshot = state.0.as_ref().unwrap();
+                FetchRequest {
+                    url: snapshot.url.clone(),
+                    start_page,
+                    end_page: snapshot.end_page,
+                    cookie: snapshot.cookie.clone(),
+                }
+            });
+            (request, matches!(mode, RunMode::Fresh))
         };
         event!(
             Level::INFO,
@@ -816,32 +322,25 @@ impl FetchView {
             "fetch task scheduled"
         );
 
-        let task_state = self.task_state.downgrade();
-        self.task_state.update(cx, |state, cx| {
-            state.begin_run(request.start_page, 0, clear_logs);
-            cx.notify();
-        });
-
-        let task = cx.spawn(async move |_, cx| {
+        let runner_request = request.clone();
+        let task = cx.spawn(async move |owner, cx| {
             let span = tracing::info_span!(
                 "feiwen_fetch",
-                start_page = request.start_page,
-                end_page = request.end_page,
-                has_cookie = !request.cookie.is_empty()
+                start_page = runner_request.start_page,
+                end_page = runner_request.end_page,
+                has_cookie = !runner_request.cookie.is_empty()
             );
-            let mut runner = Runner {
-                request,
-                task_state,
-                conn,
-                cx,
-            };
+            let mut runner = Runner::new(runner_request, owner, conn, cx);
             Compat::new(async move { runner.run().await })
                 .instrument(span)
                 .await;
         });
-        self.task_state.update(cx, |state, cx| {
-            state.task = Some(task);
-            cx.notify();
+        self.task_state.update(cx, |state| {
+            state.transition(FetchMessage::Start {
+                request,
+                clear_logs,
+                task,
+            });
         });
     }
 }
@@ -865,7 +364,7 @@ impl RunMode {
 
 impl Render for FetchView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_running = self.task_state.read(cx).is_running();
+        let is_running = self.task_state.read(cx, FetchRun::is_running);
         div()
             .h_full()
             .w_full()
@@ -895,7 +394,7 @@ impl Render for FetchView {
 }
 
 impl FetchView {
-    fn render_form_panel(&self, is_running: bool, cx: &mut Context<Self>) -> Div {
+    fn render_form_panel(&self, _is_running: bool, cx: &mut Context<Self>) -> Div {
         let (
             section_config,
             field_url,
@@ -927,11 +426,7 @@ impl FetchView {
             .rounded_lg()
             .child(section_title(IconName::Settings, section_config, cx))
             .child(field_label(IconName::Link, field_url, field_color, cx))
-            .child(
-                Input::new(&self.url_input)
-                    .content_type(InputContentType::Url)
-                    .disabled(is_running),
-            )
+            .child(Input::new(&self.url_input).content_type(InputContentType::Url))
             .child(
                 div()
                     .flex()
@@ -948,7 +443,7 @@ impl FetchView {
                                 field_color,
                                 cx,
                             ))
-                            .child(NumberInput::new(&self.start_page).disabled(is_running)),
+                            .child(IntegerInput::new(&self.start_page)),
                     )
                     .child(
                         div()
@@ -962,11 +457,11 @@ impl FetchView {
                                 field_color,
                                 cx,
                             ))
-                            .child(NumberInput::new(&self.end_page).disabled(is_running)),
+                            .child(IntegerInput::new(&self.end_page)),
                     ),
             )
             .child(field_label(IconName::Cookie, field_cookie, field_color, cx))
-            .child(Input::new(&self.cookie_input).disabled(is_running))
+            .child(Input::new(&self.cookie_input))
             .child(
                 h_flex()
                     .gap_1()
@@ -985,7 +480,9 @@ impl FetchView {
 
     fn render_status_panel(&self, cx: &mut Context<Self>) -> Div {
         let section_status = cx.global::<I18n>().t("fetch-section-status");
-        let status = self.task_state.read(cx).status.clone();
+        let (status, snapshot) = self
+            .task_state
+            .read(cx, |state| (state.status(), state.snapshot().cloned()));
         let status_body = match &status {
             FetchStatus::Idle => self.render_idle_status(cx),
             FetchStatus::Running(progress) => self.render_progress_status(progress, cx),
@@ -1006,7 +503,50 @@ impl FetchView {
             .bg(cx.theme().tokens.background.background)
             .rounded_lg()
             .child(section_title(IconName::Info, section_status, cx))
+            .when_some(snapshot, |this, snapshot| {
+                this.child(self.render_snapshot(&snapshot, cx))
+            })
             .child(status_body)
+    }
+
+    fn render_snapshot(&self, snapshot: &FetchRequest, cx: &mut Context<Self>) -> Div {
+        let i18n = cx.global::<I18n>();
+        v_flex()
+            .gap_1()
+            .p_2()
+            .rounded_md()
+            .bg(cx.theme().muted)
+            .child(
+                Label::new(i18n.t("fetch-snapshot-title"))
+                    .text_sm()
+                    .font_semibold(),
+            )
+            .child(
+                Label::new(format!("{}: {}", i18n.t("fetch-field-url"), snapshot.url))
+                    .text_xs()
+                    .truncate(),
+            )
+            .child(
+                Label::new(format!(
+                    "{}: {}–{}",
+                    i18n.t("fetch-snapshot-pages"),
+                    snapshot.start_page,
+                    snapshot.end_page
+                ))
+                .text_xs(),
+            )
+            .child(
+                Label::new(format!(
+                    "{}: {}",
+                    i18n.t("fetch-field-cookie"),
+                    if snapshot.cookie.is_empty() {
+                        i18n.t("fetch-snapshot-cookie-unset")
+                    } else {
+                        i18n.t("fetch-snapshot-cookie-set")
+                    }
+                ))
+                .text_xs(),
+            )
     }
 
     fn render_idle_status(&self, cx: &mut Context<Self>) -> Div {
@@ -1105,11 +645,22 @@ impl FetchView {
                 ),
             action_panel(
                 IconName::CirclePlay,
-                Button::new("fetch-resume")
-                    .warning()
-                    .icon(IconName::CirclePlay)
-                    .label(resume_label)
-                    .on_click(cx.listener(|this, _, _, cx| this.resume_fetch(cx))),
+                v_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("fetch-resume")
+                            .warning()
+                            .icon(IconName::CirclePlay)
+                            .label(resume_label)
+                            .on_click(cx.listener(|this, _, _, cx| this.resume_fetch(cx))),
+                    )
+                    .child(
+                        Button::new("fetch-load-snapshot")
+                            .label(cx.global::<I18n>().t("fetch-action-load-snapshot"))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.load_snapshot_into_form(cx)),
+                            ),
+                    ),
                 cx,
             ),
         )
@@ -1173,11 +724,22 @@ impl FetchView {
                 ),
             action_panel(
                 IconName::RotateCcw,
-                Button::new("fetch-retry-failed")
-                    .danger()
-                    .icon(IconName::RotateCcw)
-                    .label(retry_label)
-                    .on_click(cx.listener(|this, _, _, cx| this.retry_failed_page(cx))),
+                v_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("fetch-retry-failed")
+                            .danger()
+                            .icon(IconName::RotateCcw)
+                            .label(retry_label)
+                            .on_click(cx.listener(|this, _, _, cx| this.retry_failed_page(cx))),
+                    )
+                    .child(
+                        Button::new("fetch-load-snapshot")
+                            .label(cx.global::<I18n>().t("fetch-action-load-snapshot"))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.load_snapshot_into_form(cx)),
+                            ),
+                    ),
                 cx,
             ),
         )
@@ -1347,16 +909,19 @@ fn metric_card(label: String, value: String, color: Hsla, cx: &mut Context<Fetch
 }
 
 struct FetchLogTableDelegate {
-    task_state: Entity<FetchTaskState>,
+    task_state: Store<FetchRun>,
 }
 
 impl FetchLogTableDelegate {
     fn log_at(&self, row_ix: usize, cx: &App) -> Option<FetchPageLog> {
-        let logs = &self.task_state.read(cx).logs;
-        logs.len()
-            .checked_sub(row_ix + 1)
-            .and_then(|ix| logs.get(ix))
-            .cloned()
+        self.task_state.read(cx, |state| {
+            state
+                .logs()
+                .len()
+                .checked_sub(row_ix + 1)
+                .and_then(|ix| state.logs().get(ix))
+                .cloned()
+        })
     }
 
     fn status_cell(log: &FetchPageLog, cx: &mut Context<TableState<Self>>) -> Div {
@@ -1395,7 +960,7 @@ impl TableDelegate for FetchLogTableDelegate {
     }
 
     fn rows_count(&self, cx: &App) -> usize {
-        self.task_state.read(cx).logs.len()
+        self.task_state.read(cx, |state| state.logs().len())
     }
 
     fn column(&self, col_ix: usize, cx: &App) -> Column {
@@ -1531,72 +1096,9 @@ fn error_kind_label(kind: FetchErrorKind, i18n: &I18n) -> String {
     }
 }
 
-fn parse_page_input(value: &str) -> u32 {
-    value.parse().unwrap_or(1)
-}
-
-fn step_page(current: u32, action: StepAction) -> u32 {
-    match action {
-        StepAction::Decrement => match current {
-            0 | 1 => 1,
-            n => n - 1,
-        },
-        StepAction::Increment => current + 1,
-    }
-}
-
-fn page_count(start_page: u32, end_page: u32) -> u32 {
-    end_page.saturating_sub(start_page).saturating_add(1)
-}
-
-fn resume_page_after_interrupt(
-    last_success_page: Option<u32>,
-    start_page: u32,
-    end_page: u32,
-) -> Option<u32> {
-    let next_page = last_success_page
-        .map(|page| page.saturating_add(1))
-        .unwrap_or(start_page);
-    (next_page <= end_page).then_some(next_page.max(start_page))
-}
-
-fn retry_page_after_failure(
-    failed_page: Option<u32>,
-    start_page: u32,
-    end_page: u32,
-) -> Option<u32> {
-    failed_page
-        .filter(|page| *page >= start_page && *page <= end_page)
-        .or(Some(start_page).filter(|page| *page <= end_page))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        FetchFailure, FetchProgress, FetchStatus, FetchTaskState, progress_percent,
-        resume_page_after_interrupt, retry_page_after_failure,
-    };
-    use crate::{fetch::FetchErrorKind, foundation::i18n::I18n};
-
-    #[test]
-    fn resumes_from_page_after_last_success() {
-        assert_eq!(resume_page_after_interrupt(Some(17), 1, 5201), Some(18));
-    }
-
-    #[test]
-    fn resumes_from_start_without_success_page() {
-        assert_eq!(resume_page_after_interrupt(None, 3, 8), Some(3));
-    }
-
-    #[test]
-    fn resume_returns_none_after_end_page() {
-        assert_eq!(resume_page_after_interrupt(Some(8), 3, 8), None);
-    }
-
-    #[test]
-    fn retries_from_failed_page_inside_range() {
-        assert_eq!(retry_page_after_failure(Some(42), 1, 5201), Some(42));
-    }
+    use super::{FetchProgress, progress_percent};
 
     #[test]
     fn progress_percent_clamps_to_component_range() {
@@ -1611,41 +1113,5 @@ mod tests {
         assert_eq!(progress_percent(&progress(None)), 0.0);
         assert_eq!(progress_percent(&progress(Some(4))), 50.0);
         assert_eq!(progress_percent(&progress(Some(10))), 100.0);
-    }
-
-    #[test]
-    fn retry_falls_back_to_start_when_failed_page_is_out_of_range() {
-        assert_eq!(retry_page_after_failure(Some(9000), 10, 20), Some(10));
-    }
-
-    #[test]
-    fn titlebar_summary_covers_fetch_statuses() {
-        let i18n = I18n::chinese_for_test();
-        let mut state = FetchTaskState::default();
-        assert_eq!(state.titlebar_summary(&i18n), "未开始");
-
-        let progress = FetchProgress {
-            start_page: 1,
-            end_page: 10,
-            current_page: 4,
-            last_success_page: Some(3),
-            total: 120,
-        };
-        state.status = FetchStatus::Running(progress);
-        assert_eq!(
-            state.titlebar_summary(&i18n),
-            "正在抓取 4 / 10 · 已完成 3 · 入库总数 120"
-        );
-
-        state.status = FetchStatus::Failed(FetchFailure {
-            progress,
-            page: 4,
-            kind: FetchErrorKind::Network,
-            message: "timeout".to_owned(),
-        });
-        assert_eq!(
-            state.titlebar_summary(&i18n),
-            "抓取失败 · 失败页 4 · timeout"
-        );
     }
 }

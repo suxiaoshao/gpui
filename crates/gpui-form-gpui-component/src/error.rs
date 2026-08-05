@@ -1,6 +1,6 @@
 use std::fmt;
 
-use gpui_form::FieldAccessError;
+use gpui_form::ResolveError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IntegerInputPolicyError {
@@ -21,14 +21,14 @@ impl std::error::Error for IntegerInputPolicyError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FormIntegerInputBuildError {
-    Field(FieldAccessError),
+    Resolve(ResolveError),
     Policy(IntegerInputPolicyError),
 }
 
 impl fmt::Display for FormIntegerInputBuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Field(error) => error.fmt(f),
+            Self::Resolve(error) => error.fmt(f),
             Self::Policy(error) => error.fmt(f),
         }
     }
@@ -36,9 +36,9 @@ impl fmt::Display for FormIntegerInputBuildError {
 
 impl std::error::Error for FormIntegerInputBuildError {}
 
-impl From<FieldAccessError> for FormIntegerInputBuildError {
-    fn from(error: FieldAccessError) -> Self {
-        Self::Field(error)
+impl From<ResolveError> for FormIntegerInputBuildError {
+    fn from(error: ResolveError) -> Self {
+        Self::Resolve(error)
     }
 }
 

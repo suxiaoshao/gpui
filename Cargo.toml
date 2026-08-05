@@ -36,7 +36,7 @@ jaco-agent = { path = "./crates/jaco-agent" }
 jaco-conversation = { path = "./crates/jaco-conversation" }
 app-assets = { path = "./crates/app-assets" }
 app-theme = { path = "./crates/app-theme", default-features = false }
-gpui-form = { path = "./crates/gpui-form", features = ["garde-adapter", "validify-transform"] }
+gpui-form = { path = "./crates/gpui-form", features = ["garde-adapter"] }
 gpui-form-gpui-component = { path = "./crates/gpui-form-gpui-component" }
 gpui-form-macros = { path = "./crates/gpui-form-macros" }
 gpui-operation = { path = "./crates/gpui-operation" }

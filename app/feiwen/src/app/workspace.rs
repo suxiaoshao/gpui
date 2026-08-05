@@ -1,11 +1,13 @@
 use gpui::*;
 use gpui_component::v_flex;
+use gpui_store::Store;
 use tracing::{Level, event};
 
+use super::resource::{DatabaseResourcePage, notify_backup_completed};
 use super::titlebar::{FeiwenTitleBar, route_title, window_title};
 use crate::{
     features::{
-        fetch::{FetchTaskState, FetchView},
+        fetch::{FetchRun, FetchView},
         query::QueryView,
     },
     foundation::I18n,
@@ -32,7 +34,7 @@ impl EventEmitter<WorkspaceEvent> for Workspace {}
 pub(crate) struct WorkspaceView {
     workspace: Entity<Workspace>,
     focus_handle: FocusHandle,
-    _fetch_task: Entity<FetchTaskState>,
+    _fetch_task: Store<FetchRun>,
     fetch_view: Entity<FetchView>,
     query_view: Entity<QueryView>,
     _subscriptions: Vec<Subscription>,
@@ -42,7 +44,7 @@ impl WorkspaceView {
     pub(crate) fn new(window: &mut Window, workspace_cx: &mut Context<Self>) -> Self {
         event!(Level::INFO, "creating feiwen workspace");
         let workspace = workspace_cx.new(|_cx| Default::default());
-        let fetch_task = workspace_cx.new(|_cx| FetchTaskState::default());
+        let fetch_task = Store::new(workspace_cx, FetchRun::default());
         let fetch_view = workspace_cx.new(|cx| FetchView::new(window, fetch_task.clone(), cx));
         let query_view = workspace_cx
             .new(|cx| QueryView::new(workspace.clone(), fetch_task.clone(), window, cx));
@@ -52,9 +54,21 @@ impl WorkspaceView {
             workspace_cx.observe(&query_view, |_, _, cx| {
                 cx.notify();
             }),
-            workspace_cx.observe(&fetch_task, |_, _, cx| {
-                cx.notify();
-            }),
+            fetch_task.observe(workspace_cx, |_, _, cx| cx.notify()),
+            crate::store::database::store(workspace_cx)
+                .observe(workspace_cx, |_, _, cx| cx.notify()),
+            crate::store::database::store(workspace_cx).observe_select_in(
+                workspace_cx,
+                window,
+                |resource: &crate::store::database::DatabaseResource| resource.completed_backup(),
+                |_, backup, window, cx| {
+                    if let Some(backup) = backup {
+                        notify_backup_completed(backup, window, cx);
+                    }
+                },
+            ),
+            crate::store::catalog::store(workspace_cx)
+                .observe(workspace_cx, |_, _, cx| cx.notify()),
             workspace_cx.observe_window_appearance(window, |_state, window, cx| {
                 apply_current_theme(window, cx);
                 cx.refresh_windows();
@@ -78,12 +92,16 @@ impl WorkspaceView {
         event!(Level::INFO, "feiwen workspace created");
         this
     }
-    fn child_view(&self, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn child_view(&self, cx: &mut Context<Self>) -> AnyElement {
+        if crate::store::database::phase(cx) != crate::store::database::DatabasePhase::Ready {
+            return DatabaseResourcePage::new().into_any_element();
+        }
         match self.workspace.read(cx).router {
             RouterType::Fetch => self.fetch_view.clone().into_any_element(),
             RouterType::Query => self.query_view.clone().into_any_element(),
         }
     }
+
     fn subscribe(
         &mut self,
         subscriber: Entity<Workspace>,

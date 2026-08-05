@@ -1,15 +1,32 @@
-pub(crate) mod transform;
+use crate::FormRevision;
 
-use crate::{form::FormRevision, validation::report::ValidationReport};
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct PreparedSubmit<Output> {
-    pub revision: FormRevision,
-    pub output: Output,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Prepared<T> {
+    revision: FormRevision,
+    value: T,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum SubmitError {
-    Validation(ValidationReport),
-    ValidationPending,
+impl<T> Prepared<T> {
+    pub(crate) fn new(revision: FormRevision, value: T) -> Self {
+        Self { revision, value }
+    }
+
+    pub fn revision(&self) -> FormRevision {
+        self.revision
+    }
+
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub fn map<U>(self, map: impl FnOnce(T) -> U) -> Prepared<U> {
+        Prepared {
+            revision: self.revision,
+            value: map(self.value),
+        }
+    }
+
+    pub fn into_parts(self) -> (FormRevision, T) {
+        (self.revision, self.value)
+    }
 }

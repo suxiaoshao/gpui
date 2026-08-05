@@ -1,0 +1,5 @@
+error: only one of `child` or `items` may be specified
+ --> tests/ui/vnext/fail/conflicting_field_kind.rs:3:19
+  |
+3 |     #[form(child, items)]
+  |                   ^^^^^
