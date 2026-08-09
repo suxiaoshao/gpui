@@ -74,10 +74,7 @@ impl FetchView {
                 i18n.t("fetch-cookie-placeholder"),
             )
         };
-        let form = cx.new(|_| {
-            Form::try_new_with_validator(FetchDraft::default(), FetchValidator)
-                .expect("build fetch form")
-        });
+        let form = cx.new(|_| Form::new(FetchDraft::default()).with_validator(FetchValidator));
         let url_control = FormInput::new(
             &form,
             FetchDraft::URL,
@@ -138,7 +135,7 @@ impl FetchView {
                 });
                 cx.notify();
             }),
-            cx.subscribe(&form, |_, _, _: &gpui_form::FormEvent, cx| cx.notify()),
+            cx.observe(&form, |_, _, cx| cx.notify()),
         ];
 
         Self {
@@ -167,12 +164,13 @@ impl FetchView {
     }
 
     pub(crate) fn can_start(&self, cx: &App) -> bool {
-        let form = self.form.read(cx);
-        let draft = form.value();
+        let draft = FetchDraft::URL.get(&self.form, cx);
+        let start_page = FetchDraft::START_PAGE.get(&self.form, cx);
+        let end_page = FetchDraft::END_PAGE.get(&self.form, cx);
         !self.is_running(cx)
             && database::is_ready(cx)
-            && !draft.url.trim().is_empty()
-            && draft.start_page <= draft.end_page
+            && !draft.trim().is_empty()
+            && start_page <= end_page
     }
 
     pub(crate) fn titlebar_summary(&self, i18n: &I18n, cx: &App) -> String {

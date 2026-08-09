@@ -2,12 +2,12 @@ mod access;
 
 use std::{marker::PhantomData, sync::Arc};
 
-use gpui::{App, Entity};
+use gpui::{App, Context, Entity, Window};
 
 use crate::{
-    CaseDef, ChildDef, FieldDef, FieldSchema, Form, FormSchema, ItemToken, ItemsDef, MutationError,
-    PathKey, ResolveError, RootDef, TopologyError, ValidationIssue, ValidationMessage,
-    ValidationPath, ValidationRequest, ValidationSink, ValidationTrigger,
+    CaseDef, ChildDef, FieldDef, Form, FormSchema, ItemToken, ItemsDef, MutationError, PathKey,
+    ResolveError, RootDef, TopologyError, ValidationIssue, ValidationMessage, ValidationPath,
+    ValidationRequest, ValidationSink, ValidationTrigger,
     topology::{CanonicalAddress, DynamicGuard, SessionId, root_address},
 };
 use access::{Access, CaseAccess, FieldAccess, ItemAccess, OptionalAccess, RootAccess};
@@ -17,6 +17,7 @@ pub(crate) struct PathCore<Root, T> {
     pub(crate) address: CanonicalAddress,
     pub(crate) session: Option<SessionId>,
     pub(crate) guards: Vec<DynamicGuard>,
+    pub(crate) identity: Option<PathKey>,
 }
 
 impl<Root, T> Clone for PathCore<Root, T> {
@@ -26,6 +27,7 @@ impl<Root, T> Clone for PathCore<Root, T> {
             address: self.address.clone(),
             session: self.session,
             guards: self.guards.clone(),
+            identity: self.identity.clone(),
         }
     }
 }
@@ -37,12 +39,13 @@ impl<Root: FormSchema> PathCore<Root, Root> {
             address: root_address(),
             session: None,
             guards: Vec::new(),
+            identity: None,
         }
     }
 }
 
 impl<Root: FormSchema, T: 'static> PathCore<Root, T> {
-    fn then<U: 'static>(
+    pub(crate) fn then<U: 'static>(
         self,
         name: &'static str,
         read: fn(&T) -> &U,
@@ -57,6 +60,7 @@ impl<Root: FormSchema, T: 'static> PathCore<Root, T> {
             address: self.address.field(name),
             session: self.session,
             guards: self.guards,
+            identity: self.identity,
         }
     }
 
@@ -71,11 +75,7 @@ impl<Root: FormSchema, T: 'static> PathCore<Root, T> {
         for guard in &self.guards {
             if form.topology().incarnation(&guard.address) != Some(guard.incarnation) {
                 return Err(ResolveError::Retired {
-                    path: PathKey::new(
-                        self.session.unwrap_or_else(|| form.session()),
-                        &guard.address,
-                        guard.incarnation,
-                    ),
+                    path: guard.key.clone(),
                 });
             }
         }
@@ -83,17 +83,25 @@ impl<Root: FormSchema, T: 'static> PathCore<Root, T> {
     }
 
     fn key_for(&self, form: &Form<Root>) -> PathKey {
-        let session = self.session.unwrap_or_else(|| form.session());
-        let incarnation = self
-            .guards
-            .last()
-            .map(|guard| guard.incarnation)
-            .unwrap_or_else(|| {
-                form.topology()
-                    .ensure_incarnation(&self.address)
-                    .expect("form identity exhausted after construction")
-            });
-        PathKey::new(session, &self.address, incarnation)
+        self.identity
+            .clone()
+            .or_else(|| form.topology().key(&self.address))
+            .expect("form construction or topology edit must materialize every path identity")
+    }
+
+    pub(crate) fn change_address(&self) -> &CanonicalAddress {
+        &self.address
+    }
+
+    pub(crate) fn change_session(&self) -> Option<SessionId> {
+        self.session
+    }
+
+    pub(crate) fn is_active_in(&self, topology: &crate::topology::TopologyIndex) -> bool {
+        self.guards.iter().all(|guard| {
+            topology.incarnation(&guard.address) == Some(guard.incarnation)
+                && topology.key(&guard.address).as_ref() == Some(&guard.key)
+        })
     }
 }
 
@@ -152,6 +160,66 @@ pub struct ItemPath<Root: FormSchema, Item: FormSchema> {
     token: ItemToken,
 }
 
+/// A dynamic path that is valid only for one validation request snapshot.
+///
+/// It can be composed and used to read or report validation issues, but it has
+/// no mutation or control-binding API.
+pub struct ValidationDynamicPath<'a, Root: FormSchema, T: 'static> {
+    pub(crate) core: PathCore<Root, T>,
+    marker: PhantomData<&'a ()>,
+}
+
+impl<Root: FormSchema, T: 'static> Clone for ValidationDynamicPath<'_, Root, T> {
+    fn clone(&self) -> Self {
+        Self {
+            core: self.core.clone(),
+            marker: PhantomData,
+        }
+    }
+}
+
+/// A collection path that is valid only for one validation request snapshot.
+pub struct ValidationDynamicItemsPath<'a, Root: FormSchema, Item: FormSchema> {
+    pub(crate) core: PathCore<Root, Vec<Item>>,
+    marker: PhantomData<&'a ()>,
+}
+
+impl<Root: FormSchema, Item: FormSchema> Clone for ValidationDynamicItemsPath<'_, Root, Item> {
+    fn clone(&self) -> Self {
+        Self {
+            core: self.core.clone(),
+            marker: PhantomData,
+        }
+    }
+}
+
+/// An item occurrence that is valid only for one validation request snapshot.
+pub struct ValidationItemPath<'a, Root: FormSchema, Item: FormSchema> {
+    path: ValidationDynamicPath<'a, Root, Item>,
+}
+
+impl<Root: FormSchema, Item: FormSchema> Clone for ValidationItemPath<'_, Root, Item> {
+    fn clone(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+        }
+    }
+}
+
+pub struct ValidationCaseResolver<'a, Root, Enum, Payload>
+where
+    Root: FormSchema,
+    Enum: FormSchema,
+    Payload: FormSchema,
+{
+    path: ValidationDynamicPath<'a, Root, Enum>,
+    case: CaseDef<Enum, Payload>,
+}
+
+pub struct ValidationOptionalResolver<'a, Root: FormSchema, T: FormSchema> {
+    path: ValidationDynamicPath<'a, Root, Option<T>>,
+}
+
 impl<Root: FormSchema, Item: FormSchema> Clone for ItemPath<Root, Item> {
     fn clone(&self) -> Self {
         Self {
@@ -180,6 +248,13 @@ pub trait PathEdge<Root: FormSchema, Owner: 'static>: sealed::Sealed + Sized {
 
     fn __from_total(self, parent: TotalPath<Root, Owner>) -> Self::TotalOutput;
     fn __from_dynamic(self, parent: DynamicPath<Root, Owner>) -> Self::DynamicOutput;
+}
+
+#[doc(hidden)]
+pub trait ValidationPathEdge<'a, Root: FormSchema, Owner: 'static>: sealed::Sealed + Sized {
+    type Output;
+
+    fn __from_validation(self, parent: ValidationDynamicPath<'a, Root, Owner>) -> Self::Output;
 }
 
 impl<Owner, T> sealed::Sealed for FieldDef<Owner, T> {}
@@ -237,6 +312,45 @@ impl<Root: FormSchema, Owner: 'static, T: FormSchema> PathEdge<Root, Owner> for 
     }
 }
 
+impl<'a, Root: FormSchema, Owner: 'static, T: 'static> ValidationPathEdge<'a, Root, Owner>
+    for FieldDef<Owner, T>
+{
+    type Output = ValidationDynamicPath<'a, Root, T>;
+
+    fn __from_validation(self, parent: ValidationDynamicPath<'a, Root, Owner>) -> Self::Output {
+        ValidationDynamicPath {
+            core: parent.core.then(self.name(), self.read(), self.read_mut()),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<'a, Root: FormSchema, Owner: 'static, T: 'static> ValidationPathEdge<'a, Root, Owner>
+    for ChildDef<Owner, T>
+{
+    type Output = ValidationDynamicPath<'a, Root, T>;
+
+    fn __from_validation(self, parent: ValidationDynamicPath<'a, Root, Owner>) -> Self::Output {
+        ValidationDynamicPath {
+            core: parent.core.then(self.name(), self.read(), self.read_mut()),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<'a, Root: FormSchema, Owner: 'static, T: FormSchema> ValidationPathEdge<'a, Root, Owner>
+    for ItemsDef<Owner, T>
+{
+    type Output = ValidationDynamicItemsPath<'a, Root, T>;
+
+    fn __from_validation(self, parent: ValidationDynamicPath<'a, Root, Owner>) -> Self::Output {
+        ValidationDynamicItemsPath {
+            core: parent.core.then(self.name(), self.read(), self.read_mut()),
+            marker: PhantomData,
+        }
+    }
+}
+
 impl<Root: FormSchema> RootDef<Root> {
     pub fn then<Edge>(self, edge: Edge) -> Edge::TotalOutput
     where
@@ -266,6 +380,69 @@ impl<Root: FormSchema, T: 'static> DynamicPath<Root, T> {
     }
 }
 
+impl<'a, Root: FormSchema, T: 'static> ValidationDynamicPath<'a, Root, T> {
+    pub fn then<Edge>(self, edge: Edge) -> Edge::Output
+    where
+        Edge: ValidationPathEdge<'a, Root, T>,
+    {
+        edge.__from_validation(self)
+    }
+}
+
+impl<'a, Root: FormSchema, Enum: FormSchema> ValidationDynamicPath<'a, Root, Enum> {
+    pub fn case<Payload: FormSchema>(
+        self,
+        case: CaseDef<Enum, Payload>,
+    ) -> ValidationCaseResolver<'a, Root, Enum, Payload> {
+        ValidationCaseResolver { path: self, case }
+    }
+}
+
+impl<'a, Root: FormSchema, T: FormSchema> ValidationDynamicPath<'a, Root, Option<T>> {
+    pub fn some(self) -> ValidationOptionalResolver<'a, Root, T> {
+        ValidationOptionalResolver { path: self }
+    }
+}
+
+impl<'a, Root: FormSchema, Item: FormSchema> ValidationItemPath<'a, Root, Item> {
+    pub fn then<Edge>(self, edge: Edge) -> Edge::Output
+    where
+        Edge: ValidationPathEdge<'a, Root, Item>,
+    {
+        edge.__from_validation(self.path)
+    }
+
+    pub fn case<Payload: FormSchema>(
+        self,
+        case: CaseDef<Item, Payload>,
+    ) -> ValidationCaseResolver<'a, Root, Item, Payload> {
+        self.path.case(case)
+    }
+}
+
+impl<'a, Root, Enum, Payload> ValidationCaseResolver<'a, Root, Enum, Payload>
+where
+    Root: FormSchema,
+    Enum: FormSchema,
+    Payload: FormSchema,
+{
+    pub fn resolve(
+        self,
+        request: &ValidationRequest<'a, Root>,
+    ) -> Result<Option<ValidationDynamicPath<'a, Root, Payload>>, ResolveError> {
+        request.try_case(self.path, self.case)
+    }
+}
+
+impl<'a, Root: FormSchema, T: FormSchema> ValidationOptionalResolver<'a, Root, T> {
+    pub fn resolve(
+        self,
+        request: &ValidationRequest<'a, Root>,
+    ) -> Result<Option<ValidationDynamicPath<'a, Root, T>>, ResolveError> {
+        request.try_some(self.path)
+    }
+}
+
 impl<Root: FormSchema, Item: FormSchema> ItemPath<Root, Item> {
     pub fn then<Edge>(self, edge: Edge) -> Edge::DynamicOutput
     where
@@ -274,25 +451,38 @@ impl<Root: FormSchema, Item: FormSchema> ItemPath<Root, Item> {
         edge.__from_dynamic(self.path)
     }
 
+    pub fn case<Payload: FormSchema>(
+        self,
+        case: CaseDef<Item, Payload>,
+    ) -> CaseResolver<Root, Item, Payload> {
+        self.path.case(case)
+    }
+
     pub fn key(&self) -> PathKey {
-        let guard = self
-            .path
+        self.path
             .core
-            .guards
-            .last()
-            .expect("item paths always have a dynamic guard");
-        PathKey::new(
+            .identity
+            .clone()
+            .expect("item paths always have a materialized dynamic identity")
+    }
+
+    pub(crate) fn change_target_info(&self) -> (&CanonicalAddress, SessionId, &PathKey) {
+        (
+            &self.path.core.address,
             self.path
                 .core
                 .session
                 .expect("item paths are session bound"),
-            &self.path.core.address,
-            guard.incarnation,
+            self.path
+                .core
+                .identity
+                .as_ref()
+                .expect("item paths always have a materialized dynamic identity"),
         )
     }
 
-    pub fn try_value(&self, form: &Entity<Form<Root>>, cx: &App) -> Result<Item, ResolveError> {
-        self.path.try_value(form, cx)
+    pub fn try_get(&self, form: &Entity<Form<Root>>, cx: &App) -> Result<Item, ResolveError> {
+        self.path.try_get(form, cx)
     }
 
     pub fn try_set(
@@ -300,7 +490,7 @@ impl<Root: FormSchema, Item: FormSchema> ItemPath<Root, Item> {
         form: &Entity<Form<Root>>,
         value: Item,
         cx: &mut App,
-    ) -> Result<(), MutationError> {
+    ) -> Result<bool, ResolveError> {
         self.path.try_set(form, value, cx)
     }
 
@@ -342,7 +532,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> TotalPath<Root, T> {
         self.core.key_for(form)
     }
 
-    pub fn value(&self, form: &Entity<Form<Root>>, cx: &App) -> T {
+    pub fn get(&self, form: &Entity<Form<Root>>, cx: &App) -> T {
         let form = form.read(cx);
         self.core
             .access
@@ -351,7 +541,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> TotalPath<Root, T> {
             .clone()
     }
 
-    pub fn set(&self, form: &Entity<Form<Root>>, value: T, cx: &mut App) {
+    pub fn set(&self, form: &Entity<Form<Root>>, value: T, cx: &mut App) -> bool {
         let path = self.clone();
         form.update(cx, move |form, cx| {
             let changed = {
@@ -374,10 +564,11 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> TotalPath<Root, T> {
                 }
             };
             if !changed {
-                return;
+                return false;
             }
             form.commit_value(path.core.address.clone(), cx);
-        });
+            true
+        })
     }
 
     pub fn validate(&self, form: &Entity<Form<Root>>, trigger: ValidationTrigger, cx: &mut App) {
@@ -391,17 +582,24 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> TotalPath<Root, T> {
         form.read(cx).errors_at(&self.core.address)
     }
 
-    pub fn bind_control(
+    pub fn bind_control_in<Owner>(
         &self,
         form: &Entity<Form<Root>>,
+        owner: &Entity<Owner>,
+        project: impl Fn(&mut Owner, crate::ControlProjection<T>, &mut Window, &mut Context<Owner>)
+        + 'static,
+        window: &mut Window,
         cx: &mut App,
-    ) -> crate::ControlBinding<Root, T> {
-        crate::ControlBinding::total(form, self.clone(), cx)
+    ) -> (crate::ControlBinding, crate::ControlWriter<Root, T>)
+    where
+        Owner: 'static,
+    {
+        crate::control::bind_total_in(form, self.clone(), owner, project, window, cx)
     }
 }
 
 impl<Root: FormSchema, T: Clone + PartialEq + 'static> DynamicPath<Root, T> {
-    pub fn try_value(&self, form: &Entity<Form<Root>>, cx: &App) -> Result<T, ResolveError> {
+    pub fn try_get(&self, form: &Entity<Form<Root>>, cx: &App) -> Result<T, ResolveError> {
         let form = form.read(cx);
         self.core.check(form)?;
         Ok(self
@@ -416,7 +614,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> DynamicPath<Root, T> {
         form: &Entity<Form<Root>>,
         value: T,
         cx: &mut App,
-    ) -> Result<(), MutationError> {
+    ) -> Result<bool, ResolveError> {
         let path = self.clone();
         form.update(cx, move |form, cx| {
             path.core.check(form)?;
@@ -432,10 +630,10 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> DynamicPath<Root, T> {
                 }
             };
             if !changed {
-                return Ok(());
+                return Ok(false);
             }
             form.commit_value(path.core.address.clone(), cx);
-            Ok(())
+            Ok(true)
         })
     }
 
@@ -463,47 +661,102 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> DynamicPath<Root, T> {
         Ok(form.errors_at(&self.core.address))
     }
 
-    pub fn try_bind_control(
+    pub fn try_bind_control_in<Owner>(
         &self,
         form: &Entity<Form<Root>>,
+        owner: &Entity<Owner>,
+        project: impl Fn(&mut Owner, crate::ControlProjection<T>, &mut Window, &mut Context<Owner>)
+        + 'static,
+        window: &mut Window,
         cx: &mut App,
-    ) -> Result<crate::ControlBinding<Root, T>, ResolveError> {
-        let _ = self.try_value(form, cx)?;
-        Ok(crate::ControlBinding::dynamic(form, self.clone(), cx))
+    ) -> Result<(crate::ControlBinding, crate::ControlWriter<Root, T>), ResolveError>
+    where
+        Owner: 'static,
+    {
+        crate::control::bind_dynamic_in(form, self.clone(), owner, project, window, cx)
+    }
+}
+
+pub struct CaseResolver<Root: FormSchema, Enum: FormSchema, Payload: FormSchema> {
+    core: PathCore<Root, Enum>,
+    case: CaseDef<Enum, Payload>,
+    dynamic_start: bool,
+}
+
+impl<Root: FormSchema, Enum: FormSchema, Payload: FormSchema> CaseResolver<Root, Enum, Payload> {
+    pub fn resolve(
+        self,
+        form: &Entity<Form<Root>>,
+        cx: &App,
+    ) -> Result<Option<DynamicPath<Root, Payload>>, ResolveError> {
+        let form = form.read(cx);
+        if self.dynamic_start {
+            self.core.check(form)?;
+        }
+        locate_case_in(self.core, form.value(), form.topology(), self.case)
+    }
+}
+
+pub struct OptionalResolver<Root: FormSchema, T: FormSchema> {
+    core: PathCore<Root, Option<T>>,
+    dynamic_start: bool,
+}
+
+impl<Root: FormSchema, T: FormSchema> OptionalResolver<Root, T> {
+    pub fn resolve(
+        self,
+        form: &Entity<Form<Root>>,
+        cx: &App,
+    ) -> Result<Option<DynamicPath<Root, T>>, ResolveError> {
+        let form = form.read(cx);
+        if self.dynamic_start {
+            self.core.check(form)?;
+        }
+        locate_some_in(self.core, form.value(), form.topology())
     }
 }
 
 impl<Root: FormSchema, Enum: FormSchema> TotalPath<Root, Enum> {
-    pub fn try_case<Payload: FormSchema>(
+    pub fn case<Payload: FormSchema>(
         self,
-        form: &Form<Root>,
         case: CaseDef<Enum, Payload>,
-    ) -> Result<DynamicPath<Root, Payload>, ResolveError> {
-        locate_case_in(self.core, form.value(), form.topology(), case)
+    ) -> CaseResolver<Root, Enum, Payload> {
+        CaseResolver {
+            core: self.core,
+            case,
+            dynamic_start: false,
+        }
     }
 }
 
 impl<Root: FormSchema, Enum: FormSchema> DynamicPath<Root, Enum> {
-    pub fn try_case<Payload: FormSchema>(
+    pub fn case<Payload: FormSchema>(
         self,
-        form: &Form<Root>,
         case: CaseDef<Enum, Payload>,
-    ) -> Result<DynamicPath<Root, Payload>, ResolveError> {
-        self.core.check(form)?;
-        locate_case_in(self.core, form.value(), form.topology(), case)
+    ) -> CaseResolver<Root, Enum, Payload> {
+        CaseResolver {
+            core: self.core,
+            case,
+            dynamic_start: true,
+        }
     }
 }
 
 impl<Root: FormSchema, T: FormSchema> TotalPath<Root, Option<T>> {
-    pub fn try_some(self, form: &Form<Root>) -> Result<DynamicPath<Root, T>, ResolveError> {
-        locate_some_in(self.core, form.value(), form.topology())
+    pub fn some(self) -> OptionalResolver<Root, T> {
+        OptionalResolver {
+            core: self.core,
+            dynamic_start: false,
+        }
     }
 }
 
 impl<Root: FormSchema, T: FormSchema> DynamicPath<Root, Option<T>> {
-    pub fn try_some(self, form: &Form<Root>) -> Result<DynamicPath<Root, T>, ResolveError> {
-        self.core.check(form)?;
-        locate_some_in(self.core, form.value(), form.topology())
+    pub fn some(self) -> OptionalResolver<Root, T> {
+        OptionalResolver {
+            core: self.core,
+            dynamic_start: true,
+        }
     }
 }
 
@@ -512,102 +765,139 @@ pub(crate) fn locate_case_in<Root: FormSchema, Enum: FormSchema, Payload: FormSc
     model: &Root,
     topology: &crate::topology::TopologyIndex,
     case: CaseDef<Enum, Payload>,
-) -> Result<DynamicPath<Root, Payload>, ResolveError> {
-    let address = core.address.case(case.name());
-    let provisional = PathKey::total(topology.session(), &address);
-    if (case.read())(core.access.get(model, &topology.snapshot())?).is_none() {
-        return Err(ResolveError::InactiveCase {
-            path: provisional,
-            expected: case.name(),
-        });
+) -> Result<Option<DynamicPath<Root, Payload>>, ResolveError> {
+    let snapshot = topology.snapshot();
+    locate_case_in_snapshot(core, model, &snapshot, case)
+}
+
+fn locate_case_in_snapshot<Root: FormSchema, Enum: FormSchema, Payload: FormSchema>(
+    core: PathCore<Root, Enum>,
+    model: &Root,
+    topology: &crate::topology::TopologySnapshot,
+    case: CaseDef<Enum, Payload>,
+) -> Result<Option<DynamicPath<Root, Payload>>, ResolveError> {
+    if (case.read())(core.access.get(model, topology)?).is_none() {
+        return Ok(None);
     }
-    let incarnation = topology
-        .ensure_incarnation(&address)
-        .expect("form identity exhausted after construction");
-    let key = PathKey::new(topology.session(), &address, incarnation);
+    let occurrence = topology
+        .active_case(&core.address, case.name())
+        .expect("active case topology must be materialized before resolving");
+    let address = core.address.case_occurrence(case.name(), occurrence);
+    let incarnation = address
+        .final_occurrence()
+        .expect("case addresses always end in an occurrence");
+    let key = topology
+        .key(&address)
+        .expect("active case identity must be materialized before resolving a path");
     let mut guards = core.guards;
     guards.push(DynamicGuard {
         address: address.clone(),
         incarnation,
+        key: key.clone(),
     });
-    Ok(DynamicPath {
+    Ok(Some(DynamicPath {
         core: PathCore {
             access: Arc::new(CaseAccess {
                 parent: core.access,
                 case,
-                key,
+                key: key.clone(),
             }),
             address,
             session: Some(topology.session()),
             guards,
+            identity: Some(key),
         },
-    })
+    }))
 }
 
 pub(crate) fn locate_some_in<Root: FormSchema, T: FormSchema>(
     core: PathCore<Root, Option<T>>,
     model: &Root,
     topology: &crate::topology::TopologyIndex,
-) -> Result<DynamicPath<Root, T>, ResolveError> {
-    let address = core.address.some();
-    let provisional = PathKey::total(topology.session(), &address);
-    if core.access.get(model, &topology.snapshot())?.is_none() {
-        return Err(ResolveError::MissingOptional { path: provisional });
+) -> Result<Option<DynamicPath<Root, T>>, ResolveError> {
+    let snapshot = topology.snapshot();
+    locate_some_in_snapshot(core, model, &snapshot)
+}
+
+fn locate_some_in_snapshot<Root: FormSchema, T: FormSchema>(
+    core: PathCore<Root, Option<T>>,
+    model: &Root,
+    topology: &crate::topology::TopologySnapshot,
+) -> Result<Option<DynamicPath<Root, T>>, ResolveError> {
+    if core.access.get(model, topology)?.is_none() {
+        return Ok(None);
     }
-    let incarnation = topology
-        .ensure_incarnation(&address)
-        .expect("form identity exhausted after construction");
-    let key = PathKey::new(topology.session(), &address, incarnation);
+    let occurrence = topology
+        .active_some(&core.address)
+        .expect("active optional topology must be materialized before resolving");
+    let address = core.address.some_occurrence(occurrence);
+    let incarnation = address
+        .final_occurrence()
+        .expect("optional addresses always end in an occurrence");
+    let key = topology
+        .key(&address)
+        .expect("active optional identity must be materialized before resolving a path");
     let mut guards = core.guards;
     guards.push(DynamicGuard {
         address: address.clone(),
         incarnation,
+        key: key.clone(),
     });
-    Ok(DynamicPath {
+    Ok(Some(DynamicPath {
         core: PathCore {
             access: Arc::new(OptionalAccess {
                 parent: core.access,
-                key,
+                key: key.clone(),
             }),
             address,
             session: Some(topology.session()),
             guards,
+            identity: Some(key),
         },
-    })
+    }))
 }
 
 pub(crate) fn item_paths_in<Root: FormSchema, Item: FormSchema>(
     core: &PathCore<Root, Vec<Item>>,
     model: &Root,
     topology: &crate::topology::TopologyIndex,
-) -> Result<Vec<ItemPath<Root, Item>>, MutationError> {
+) -> Result<Vec<ItemPath<Root, Item>>, ResolveError> {
+    let snapshot = topology.snapshot();
+    item_paths_in_snapshot(core, model, &snapshot)
+}
+
+fn item_paths_in_snapshot<Root: FormSchema, Item: FormSchema>(
+    core: &PathCore<Root, Vec<Item>>,
+    model: &Root,
+    topology: &crate::topology::TopologySnapshot,
+) -> Result<Vec<ItemPath<Root, Item>>, ResolveError> {
     if core
         .session
         .is_some_and(|session| session != topology.session())
     {
         return Err(ResolveError::WrongSession {
-            path: PathKey::total(topology.session(), &core.address),
-        }
-        .into());
+            path: core
+                .identity
+                .clone()
+                .or_else(|| topology.key(&core.address))
+                .expect("form construction must materialize total path identities"),
+        });
     }
     for guard in &core.guards {
         if topology.incarnation(&guard.address) != Some(guard.incarnation) {
             return Err(ResolveError::Retired {
-                path: PathKey::new(
-                    core.session.unwrap_or_else(|| topology.session()),
-                    &guard.address,
-                    guard.incarnation,
-                ),
-            }
-            .into());
+                path: guard.key.clone(),
+            });
         }
     }
-    let snapshot = topology.snapshot();
-    let len = core.access.get(model, &snapshot)?.len();
-    let tokens = topology.ensure_items(&core.address, len)?;
+    let len = core.access.get(model, topology)?.len();
+    let tokens = topology
+        .items(&core.address)
+        .expect("form construction must materialize every collection topology");
+    debug_assert_eq!(tokens.len(), len, "topology must match the model snapshot");
     Ok(tokens
         .into_iter()
-        .map(|token| make_item_path_in(core, topology, token))
+        .map(|token| make_item_path_in_snapshot(core, topology, token))
         .collect())
 }
 
@@ -616,15 +906,27 @@ pub(crate) fn make_item_path_in<Root: FormSchema, Item: FormSchema>(
     topology: &crate::topology::TopologyIndex,
     token: ItemToken,
 ) -> ItemPath<Root, Item> {
+    let snapshot = topology.snapshot();
+    make_item_path_in_snapshot(core, &snapshot, token)
+}
+
+fn make_item_path_in_snapshot<Root: FormSchema, Item: FormSchema>(
+    core: &PathCore<Root, Vec<Item>>,
+    topology: &crate::topology::TopologySnapshot,
+    token: ItemToken,
+) -> ItemPath<Root, Item> {
     let address = core.address.item(token);
-    let incarnation = topology
-        .ensure_incarnation(&address)
-        .expect("form identity exhausted after construction");
-    let key = PathKey::new(topology.session(), &address, incarnation);
+    let incarnation = address
+        .final_occurrence()
+        .expect("item addresses always end in an occurrence");
+    let key = topology
+        .key(&address)
+        .expect("item identity must be materialized before reading items");
     let mut guards = core.guards.clone();
     guards.push(DynamicGuard {
         address: address.clone(),
         incarnation,
+        key: key.clone(),
     });
     ItemPath {
         path: DynamicPath {
@@ -633,11 +935,12 @@ pub(crate) fn make_item_path_in<Root: FormSchema, Item: FormSchema>(
                     collection: core.access.clone(),
                     collection_address: core.address.clone(),
                     token,
-                    key,
+                    key: key.clone(),
                 }),
                 address,
                 session: Some(topology.session()),
                 guards,
+                identity: Some(key),
             },
         },
         collection: core.address.clone(),
@@ -646,18 +949,76 @@ pub(crate) fn make_item_path_in<Root: FormSchema, Item: FormSchema>(
     }
 }
 
-macro_rules! impl_items_path {
-    ($path:ident, $items_method:ident) => {
-        impl<Root: FormSchema, Item: FormSchema> $path<Root, Item> {
-            pub fn $items_method(
-                &self,
-                form: &Entity<Form<Root>>,
-                cx: &mut App,
-            ) -> Result<Vec<ItemPath<Root, Item>>, MutationError> {
-                let form = form.read(cx);
-                item_paths_in(&self.core, form.value(), form.topology())
-            }
+pub(crate) fn validation_item_paths_in<'a, Root: FormSchema, Item: FormSchema>(
+    core: &PathCore<Root, Vec<Item>>,
+    model: &'a Root,
+    topology: &crate::topology::TopologySnapshot,
+) -> Result<Vec<ValidationItemPath<'a, Root, Item>>, ResolveError> {
+    Ok(item_paths_in_snapshot(core, model, topology)?
+        .into_iter()
+        .map(|item| ValidationItemPath {
+            path: ValidationDynamicPath {
+                core: item.path.core,
+                marker: PhantomData,
+            },
+        })
+        .collect())
+}
 
+pub(crate) fn validation_case_in<'a, Root, Enum, Payload>(
+    core: PathCore<Root, Enum>,
+    model: &'a Root,
+    topology: &crate::topology::TopologySnapshot,
+    case: CaseDef<Enum, Payload>,
+) -> Result<Option<ValidationDynamicPath<'a, Root, Payload>>, ResolveError>
+where
+    Root: FormSchema,
+    Enum: FormSchema,
+    Payload: FormSchema,
+{
+    Ok(
+        locate_case_in_snapshot(core, model, topology, case)?.map(|path| ValidationDynamicPath {
+            core: path.core,
+            marker: PhantomData,
+        }),
+    )
+}
+
+pub(crate) fn validation_some_in<'a, Root: FormSchema, T: FormSchema>(
+    core: PathCore<Root, Option<T>>,
+    model: &'a Root,
+    topology: &crate::topology::TopologySnapshot,
+) -> Result<Option<ValidationDynamicPath<'a, Root, T>>, ResolveError> {
+    Ok(
+        locate_some_in_snapshot(core, model, topology)?.map(|path| ValidationDynamicPath {
+            core: path.core,
+            marker: PhantomData,
+        }),
+    )
+}
+
+impl<Root: FormSchema, Item: FormSchema> TotalItemsPath<Root, Item> {
+    pub fn items(&self, form: &Entity<Form<Root>>, cx: &App) -> Vec<ItemPath<Root, Item>> {
+        let form = form.read(cx);
+        item_paths_in(&self.core, form.value(), form.topology())
+            .expect("a total collection path must always resolve")
+    }
+}
+
+impl<Root: FormSchema, Item: FormSchema> DynamicItemsPath<Root, Item> {
+    pub fn try_items(
+        &self,
+        form: &Entity<Form<Root>>,
+        cx: &App,
+    ) -> Result<Vec<ItemPath<Root, Item>>, ResolveError> {
+        let form = form.read(cx);
+        item_paths_in(&self.core, form.value(), form.topology())
+    }
+}
+
+macro_rules! impl_items_path {
+    ($path:ident) => {
+        impl<Root: FormSchema, Item: FormSchema> $path<Root, Item> {
             pub fn append(
                 &self,
                 form: &Entity<Form<Root>>,
@@ -672,7 +1033,7 @@ macro_rules! impl_items_path {
                         let snapshot = topology.snapshot();
                         let len = path.core.access.get(model, &snapshot)?.len();
                         let mut edit = topology.edit();
-                        edit.ensure_items(&path.core.address, len)?;
+                        edit.ensure_items(&path.core.address, len);
                         let token = edit.insert_item(&path.core.address, len)?;
                         path.core.access.get_mut(model, &snapshot)?.push(value);
                         topology.commit(edit);
@@ -703,7 +1064,7 @@ macro_rules! impl_items_path {
                         let snapshot = topology.snapshot();
                         let len = path.core.access.get(model, &snapshot)?.len();
                         let mut edit = topology.edit();
-                        edit.ensure_items(&path.core.address, len)?;
+                        edit.ensure_items(&path.core.address, len);
                         let index = edit
                             .item_index(&path.core.address, anchor.token)
                             .ok_or_else(|| ResolveError::MissingItem { path: anchor.key() })?;
@@ -744,7 +1105,7 @@ macro_rules! impl_items_path {
                         let snapshot = topology.snapshot();
                         let len = path.core.access.get(model, &snapshot)?.len();
                         let mut edit = topology.edit();
-                        edit.ensure_items(&path.core.address, len)?;
+                        edit.ensure_items(&path.core.address, len);
                         let source = edit
                             .item_index(&path.core.address, item.token)
                             .ok_or_else(|| ResolveError::MissingItem { path: item.key() })?;
@@ -784,12 +1145,13 @@ macro_rules! impl_items_path {
                     if item.collection != path.core.address {
                         return Err(TopologyError::WrongCollection { path: item.key() }.into());
                     }
+                    let retired = item.path.core.address.clone();
                     let value = {
                         let (model, topology) = form.model_and_topology();
                         let snapshot = topology.snapshot();
                         let len = path.core.access.get(model, &snapshot)?.len();
                         let mut edit = topology.edit();
-                        edit.ensure_items(&path.core.address, len)?;
+                        edit.ensure_items(&path.core.address, len);
                         let index = edit
                             .item_index(&path.core.address, item.token)
                             .ok_or_else(|| ResolveError::MissingItem { path: item.key() })?;
@@ -798,7 +1160,7 @@ macro_rules! impl_items_path {
                         topology.commit(edit);
                         value
                     };
-                    form.commit_topology(path.core.address.clone(), cx);
+                    form.commit_topology_retiring(path.core.address.clone(), vec![retired], cx);
                     Ok(value)
                 })
             }
@@ -812,25 +1174,32 @@ macro_rules! impl_items_path {
                 let path = self.clone();
                 form.update(cx, move |form, cx| {
                     path.core.check(form)?;
+                    let retired = form
+                        .topology()
+                        .items(&path.core.address)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|token| path.core.address.item(token))
+                        .collect();
                     {
                         let (model, topology) = form.model_and_topology();
                         let snapshot = topology.snapshot();
                         let mut edit = topology.edit();
                         edit.retire_descendants(&path.core.address);
-                        edit.ensure_items(&path.core.address, values.len())?;
+                        edit.ensure_items(&path.core.address, values.len());
                         *path.core.access.get_mut(model, &snapshot)? = values;
                         topology.commit(edit);
                     }
-                    form.commit_topology(path.core.address.clone(), cx);
-                    item_paths_in(&path.core, form.value(), form.topology())
+                    form.commit_topology_retiring(path.core.address.clone(), retired, cx);
+                    Ok(item_paths_in(&path.core, form.value(), form.topology())?)
                 })
             }
         }
     };
 }
 
-impl_items_path!(TotalItemsPath, items);
-impl_items_path!(DynamicItemsPath, try_items);
+impl_items_path!(TotalItemsPath);
+impl_items_path!(DynamicItemsPath);
 
 fn move_between<Root: FormSchema, Item: FormSchema>(
     form: &Entity<Form<Root>>,
@@ -848,15 +1217,16 @@ fn move_between<Root: FormSchema, Item: FormSchema>(
         if source.collection == destination.address {
             return Err(TopologyError::WrongCollection { path: source.key() }.into());
         }
-        let (token, previous_topology, source_index, destination_index, moved) = {
-            let (model, topology) = form.model_and_topology();
+        let (staged_model, edit, token) = {
+            let topology = form.topology();
             let snapshot = topology.snapshot();
+            let mut staged_model = form.value().clone();
             let mut edit = topology.edit();
             let source_index = edit
                 .item_index(&source.collection, source.token)
                 .ok_or_else(|| ResolveError::MissingItem { path: source.key() })?;
-            let destination_len = destination.access.get(model, &snapshot)?.len();
-            edit.ensure_items(&destination.address, destination_len)?;
+            let destination_len = destination.access.get(&staged_model, &snapshot)?.len();
+            edit.ensure_items(&destination.address, destination_len);
             let destination_index = match position {
                 Position::Start => 0,
                 Position::End => destination_len,
@@ -865,45 +1235,24 @@ fn move_between<Root: FormSchema, Item: FormSchema>(
             edit.remove_item(&source.collection, source_index)?;
             let moved = source
                 .collection_access
-                .get_mut(model, &snapshot)?
+                .get_mut(&mut staged_model, &snapshot)?
                 .remove(source_index);
-            let previous_topology = topology.replace_with(edit);
-            (
-                token,
-                previous_topology,
-                source_index,
-                destination_index,
-                moved,
-            )
+            let staged_snapshot = edit.snapshot();
+            destination
+                .access
+                .get_mut(&mut staged_model, &staged_snapshot)?
+                .insert(destination_index, moved);
+            (staged_model, edit, token)
         };
-        let mut moved = Some(moved);
-        let insert_result = {
+        {
             let (model, topology) = form.model_and_topology();
-            let snapshot = topology.snapshot();
-            destination.access.get_mut(model, &snapshot).map(|values| {
-                values.insert(
-                    destination_index,
-                    moved.take().expect("moved value is inserted once"),
-                );
-            })
-        };
-        if let Err(error) = insert_result {
-            let (model, topology) = form.model_and_topology();
-            topology.commit(previous_topology);
-            let snapshot = topology.snapshot();
-            source
-                .collection_access
-                .get_mut(model, &snapshot)
-                .expect("preflighted source collection must remain reachable")
-                .insert(
-                    source_index,
-                    moved.take().expect("failed insertion retains moved value"),
-                );
-            return Err(error.into());
+            *model = staged_model;
+            topology.commit(edit);
         }
-        form.commit_topology_scopes(
+        form.commit_topology_scopes_retiring(
             destination.address.clone(),
             vec![source.collection.clone(), destination.address.clone()],
+            vec![source.path.core.address.clone()],
             cx,
         );
         Ok(make_item_path_in(&destination, form.topology(), token))
@@ -920,6 +1269,14 @@ impl<Root: FormSchema, T: 'static> IntoTotalPath<Root, T> for TotalPath<Root, T>
     }
 }
 
+impl<Root: FormSchema> IntoTotalPath<Root, Root> for RootDef<Root> {
+    fn into_total_path(self) -> TotalPath<Root, Root> {
+        TotalPath {
+            core: PathCore::root(),
+        }
+    }
+}
+
 impl<Root: FormSchema, T: 'static> IntoTotalPath<Root, T> for FieldDef<Root, T> {
     fn into_total_path(self) -> TotalPath<Root, T> {
         RootDef::<Root>::__new().then(self)
@@ -933,12 +1290,12 @@ impl<Root: FormSchema, T: 'static> IntoTotalPath<Root, T> for ChildDef<Root, T> 
 }
 
 impl<Root: FormSchema, T: Clone + PartialEq + 'static> FieldDef<Root, T> {
-    pub fn value(&self, form: &Entity<Form<Root>>, cx: &App) -> T {
-        (*self).into_total_path().value(form, cx)
+    pub fn get(&self, form: &Entity<Form<Root>>, cx: &App) -> T {
+        (*self).into_total_path().get(form, cx)
     }
 
-    pub fn set(&self, form: &Entity<Form<Root>>, value: T, cx: &mut App) {
-        (*self).into_total_path().set(form, value, cx);
+    pub fn set(&self, form: &Entity<Form<Root>>, value: T, cx: &mut App) -> bool {
+        (*self).into_total_path().set(form, value, cx)
     }
 
     pub fn validate(&self, form: &Entity<Form<Root>>, trigger: ValidationTrigger, cx: &mut App) {
@@ -949,36 +1306,72 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> FieldDef<Root, T> {
         (*self).into_total_path().errors(form, cx)
     }
 
-    pub fn bind_control(
+    pub fn bind_control_in<Owner>(
         &self,
         form: &Entity<Form<Root>>,
+        owner: &Entity<Owner>,
+        project: impl Fn(&mut Owner, crate::ControlProjection<T>, &mut Window, &mut Context<Owner>)
+        + 'static,
+        window: &mut Window,
         cx: &mut App,
-    ) -> crate::ControlBinding<Root, T> {
-        (*self).into_total_path().bind_control(form, cx)
+    ) -> (crate::ControlBinding, crate::ControlWriter<Root, T>)
+    where
+        Owner: 'static,
+    {
+        (*self)
+            .into_total_path()
+            .bind_control_in(form, owner, project, window, cx)
+    }
+}
+
+impl<Root: FormSchema> RootDef<Root> {
+    pub fn get(&self, form: &Entity<Form<Root>>, cx: &App) -> Root {
+        (*self).into_total_path().get(form, cx)
     }
 
-    pub fn schema_info(&self) -> FieldSchema {
-        self.schema()
+    pub fn set(&self, form: &Entity<Form<Root>>, value: Root, cx: &mut App) -> bool {
+        (*self).into_total_path().set(form, value, cx)
+    }
+
+    pub fn validate(&self, form: &Entity<Form<Root>>, trigger: ValidationTrigger, cx: &mut App) {
+        (*self).into_total_path().validate(form, trigger, cx);
+    }
+
+    pub fn errors(&self, form: &Entity<Form<Root>>, cx: &App) -> Vec<ValidationIssue> {
+        (*self).into_total_path().errors(form, cx)
+    }
+
+    pub fn bind_control_in<Owner>(
+        &self,
+        form: &Entity<Form<Root>>,
+        owner: &Entity<Owner>,
+        project: impl Fn(&mut Owner, crate::ControlProjection<Root>, &mut Window, &mut Context<Owner>)
+        + 'static,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (crate::ControlBinding, crate::ControlWriter<Root, Root>)
+    where
+        Owner: 'static,
+    {
+        (*self)
+            .into_total_path()
+            .bind_control_in(form, owner, project, window, cx)
     }
 }
 
 impl<Root: FormSchema, T: FormSchema> ItemsDef<Root, T> {
-    pub fn items(
-        &self,
-        form: &Entity<Form<Root>>,
-        cx: &mut App,
-    ) -> Result<Vec<ItemPath<Root, T>>, MutationError> {
+    pub fn items(&self, form: &Entity<Form<Root>>, cx: &App) -> Vec<ItemPath<Root, T>> {
         RootDef::<Root>::__new().then(*self).items(form, cx)
     }
 }
 
 impl<Root: FormSchema, T: Clone + PartialEq + 'static> ChildDef<Root, T> {
-    pub fn value(&self, form: &Entity<Form<Root>>, cx: &App) -> T {
-        (*self).into_total_path().value(form, cx)
+    pub fn get(&self, form: &Entity<Form<Root>>, cx: &App) -> T {
+        (*self).into_total_path().get(form, cx)
     }
 
-    pub fn set(&self, form: &Entity<Form<Root>>, value: T, cx: &mut App) {
-        (*self).into_total_path().set(form, value, cx);
+    pub fn set(&self, form: &Entity<Form<Root>>, value: T, cx: &mut App) -> bool {
+        (*self).into_total_path().set(form, value, cx)
     }
 
     pub fn validate(&self, form: &Entity<Form<Root>>, trigger: ValidationTrigger, cx: &mut App) {
@@ -990,11 +1383,43 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> ChildDef<Root, T> {
     }
 }
 
+macro_rules! impl_definition_resolvers {
+    ($definition:ident) => {
+        impl<Root: FormSchema, Enum: FormSchema> $definition<Root, Enum> {
+            pub fn case<Payload: FormSchema>(
+                self,
+                case: CaseDef<Enum, Payload>,
+            ) -> CaseResolver<Root, Enum, Payload> {
+                self.into_total_path().case(case)
+            }
+        }
+
+        impl<Root: FormSchema, T: FormSchema> $definition<Root, Option<T>> {
+            pub fn some(self) -> OptionalResolver<Root, T> {
+                self.into_total_path().some()
+            }
+        }
+    };
+}
+
+impl_definition_resolvers!(FieldDef);
+impl_definition_resolvers!(ChildDef);
+
 impl<Root: FormSchema, T> crate::validation::sealed::Sealed for FieldDef<Root, T> {}
 impl<Root: FormSchema, T> crate::validation::sealed::Sealed for ChildDef<Root, T> {}
 impl<Root: FormSchema, T: 'static> crate::validation::sealed::Sealed for TotalPath<Root, T> {}
-impl<Root: FormSchema, T: 'static> crate::validation::sealed::Sealed for DynamicPath<Root, T> {}
-impl<Root: FormSchema, T: FormSchema> crate::validation::sealed::Sealed for ItemPath<Root, T> {}
+impl<Root: FormSchema, T: 'static> crate::validation::sealed::Sealed
+    for ValidationDynamicPath<'_, Root, T>
+{
+}
+impl<Root: FormSchema, T: FormSchema> crate::validation::sealed::Sealed
+    for ValidationDynamicItemsPath<'_, Root, T>
+{
+}
+impl<Root: FormSchema, T: FormSchema> crate::validation::sealed::Sealed
+    for ValidationItemPath<'_, Root, T>
+{
+}
 
 macro_rules! impl_definition_validation_path {
     ($definition:ident) => {
@@ -1033,7 +1458,7 @@ impl<Root: FormSchema, T: 'static> ValidationPath<Root> for TotalPath<Root, T> {
     }
 }
 
-impl<Root: FormSchema, T: 'static> ValidationPath<Root> for DynamicPath<Root, T> {
+impl<Root: FormSchema, T: 'static> ValidationPath<Root> for ValidationDynamicPath<'_, Root, T> {
     fn __included(&self, request: &ValidationRequest<'_, Root>) -> bool {
         request.includes_dynamic(self.core.session, &self.core.guards, &self.core.address)
     }
@@ -1048,7 +1473,24 @@ impl<Root: FormSchema, T: 'static> ValidationPath<Root> for DynamicPath<Root, T>
     }
 }
 
-impl<Root: FormSchema, T: FormSchema> ValidationPath<Root> for ItemPath<Root, T> {
+impl<Root: FormSchema, T: FormSchema> ValidationPath<Root>
+    for ValidationDynamicItemsPath<'_, Root, T>
+{
+    fn __included(&self, request: &ValidationRequest<'_, Root>) -> bool {
+        request.includes_dynamic(self.core.session, &self.core.guards, &self.core.address)
+    }
+
+    fn __push(
+        self,
+        sink: &mut ValidationSink<'_, Root>,
+        code: std::borrow::Cow<'static, str>,
+        message: ValidationMessage,
+    ) {
+        sink.push(self.core.address, code, message);
+    }
+}
+
+impl<Root: FormSchema, T: FormSchema> ValidationPath<Root> for ValidationItemPath<'_, Root, T> {
     fn __included(&self, request: &ValidationRequest<'_, Root>) -> bool {
         request.includes_dynamic(
             self.path.core.session,

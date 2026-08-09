@@ -1,8 +1,8 @@
-# gpui-form-gpui-component：显式表单与最小绑定控件
+# Issue #199：gpui-form-gpui-component 子任务跟踪
 
 ## 根计划与所有权
 
-- 状态：`Done`（`WP-300`–`WP-304` 已实施并通过 adapter/残留门禁）
+- 状态：历史 `WP-300`–`WP-304` 保持 `Done`；本轮 adapter 更新计划为 `Done`
 - 跟踪 issue：[#199](https://github.com/suxiaoshao/gpui/issues/199)
 - 计划 ID：`issue-199`
 - 根计划：[docs/dev/issue-199/README.md](../../../../../docs/dev/issue-199/README.md)
@@ -14,6 +14,19 @@
 - 分配的 WP：`WP-300`–`WP-304`。
 - 负责：把 core 提供的 total/partial descriptor 与 `ControlBinding` 契约落实为 gpui-component 的输入、选择、组合框和精确整数 owning controls，并删除 adapter 旧表单句柄 API。
 - 不负责：descriptor/runtime/validation/submit 的定义（root 与 core）、宏生成（`C-01`）、Jaco 调用点迁移（`C-04`）、页面选项/焦点/保存策略（`S-12`），以及根计划、索引和历史 `docs/dev/issue-175/README.md` 的改写。
+
+## 本轮新计划
+
+- [Form binding adapter 更新实施计划](form-binding-adapter-update-plan.md)：消费 core `C-900`–`C-904`，
+  使用 `E/D/F/L/ST/ERR/R/T-1100..1199` 与 `WP-1100..1109`；状态 `Done`。
+- 本轮允许 breaking 且不保留兼容层；只规划 GPUI 自动化测试与 Cargo 门禁，不安排实际 UI 操作测试。
+- 下文 `WP-300`–`WP-304` 及其证据是上一轮原始实施记录，不作为本轮执行计划。
+
+## 本轮实施结果（2026-08-09）
+
+- `WP-1100`–`WP-1103` 已完成；四个 adapter 已统一接入 binding/writer/projector 生命周期。
+- 2 个 unit 与 15 个 adapter integration tests、Clippy、workspace check 和残留扫描通过。
+- 实际 UI 操作测试未执行；完整证据见[本轮实施计划](form-binding-adapter-update-plan.md#实施证据)。
 
 ## 实施结果（2026-08-02）
 

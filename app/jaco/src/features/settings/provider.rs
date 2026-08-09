@@ -25,11 +25,10 @@ use gpui_component::{
     tag::Tag,
     v_flex,
 };
-use gpui_form::typed::{
-    FieldDef, Form, FormEvent, FormRevision, FormSchema, PrepareError as SubmitError,
-    ValidationIssue,
+use gpui_form::{
+    FieldDef, Form, FormRevision, FormSchema, PrepareError as SubmitError, ValidationIssue,
 };
-use gpui_form_gpui_component::FormInput;
+use gpui_form_gpui_component::{FormInput, FormSelect};
 use jaco_agent::{ProviderModelFetchError, ProviderModelFetchRequest, fetch_provider_models};
 use jaco_core::{
     ProviderId, ProviderSecretRefs, ProviderSettingValue, ProviderSettingsPayload, new_id,
@@ -84,16 +83,18 @@ enum ProviderFormComponents {
         _base_url_control: FormInput,
         _bearer_token_control: ProviderSecretInput,
     },
-    CustomOpenAi {
-        name: Entity<gpui_component::input::InputState>,
-        api_key: Entity<gpui_component::input::InputState>,
-        base_url: Entity<gpui_component::input::InputState>,
-        api_mode: Entity<SelectState<Vec<ApiModeChoice>>>,
-        _name_control: FormInput,
-        _api_key_control: ProviderSecretInput,
-        _base_url_control: FormInput,
-        _api_mode_subscriptions: Vec<Subscription>,
-    },
+    CustomOpenAi(Box<CustomOpenAiFormComponents>),
+}
+
+struct CustomOpenAiFormComponents {
+    name: Entity<gpui_component::input::InputState>,
+    api_key: Entity<gpui_component::input::InputState>,
+    base_url: Entity<gpui_component::input::InputState>,
+    api_mode: Entity<SelectState<Vec<ApiModeChoice>>>,
+    _name_control: FormInput,
+    _api_key_control: ProviderSecretInput,
+    _base_url_control: FormInput,
+    _api_mode_control: FormSelect<Vec<ApiModeChoice>>,
 }
 
 fn new_provider_input<M, T>(
@@ -201,54 +202,23 @@ impl ProviderFormComponents {
                     cx,
                 );
                 let choices = localized_api_mode_choices(cx.global::<I18n>());
-                let api_mode = CustomOpenAiProviderFormInput::API_MODE.value(form, cx);
-                let api_mode_control = cx.new(|cx| SelectState::new(choices, None, window, cx));
-                api_mode_control.update(cx, |state, cx| {
-                    state.set_selected_value(&api_mode, window, cx);
-                });
-                let weak_form = form.downgrade();
-                let weak_control = api_mode_control.downgrade();
-                let form_subscription =
-                    cx.subscribe_in(form, window, move |_, _, _: &FormEvent, window, cx| {
-                        let (Some(form), Some(control)) =
-                            (weak_form.upgrade(), weak_control.upgrade())
-                        else {
-                            return;
-                        };
-                        let value = CustomOpenAiProviderFormInput::API_MODE.value(&form, cx);
-                        control.update(cx, |state, cx| {
-                            state.set_selected_value(&value, window, cx);
-                        });
-                    });
-                let weak_form = form.downgrade();
-                let control_subscription = cx.subscribe_in(
-                    &api_mode_control,
+                let api_mode_control = FormSelect::new(
+                    form,
+                    CustomOpenAiProviderFormInput::API_MODE,
+                    move |window, cx| SelectState::new(choices, None, window, cx),
                     window,
-                    move |_,
-                          _,
-                          event: &gpui_component::select::SelectEvent<Vec<ApiModeChoice>>,
-                          _,
-                          cx| {
-                        let gpui_component::select::SelectEvent::Confirm(Some(value)) = event
-                        else {
-                            return;
-                        };
-                        let Some(form) = weak_form.upgrade() else {
-                            return;
-                        };
-                        CustomOpenAiProviderFormInput::API_MODE.set(&form, *value, cx);
-                    },
+                    cx,
                 );
-                Self::CustomOpenAi {
+                Self::CustomOpenAi(Box::new(CustomOpenAiFormComponents {
                     name: (*name_control).clone(),
                     api_key: (*api_key_control).clone(),
                     base_url: (*base_url_control).clone(),
-                    api_mode: api_mode_control,
+                    api_mode: (*api_mode_control).clone(),
                     _name_control: name_control,
                     _api_key_control: api_key_control,
                     _base_url_control: base_url_control,
-                    _api_mode_subscriptions: vec![form_subscription, control_subscription],
-                }
+                    _api_mode_control: api_mode_control,
+                }))
             }
         }
     }
@@ -331,7 +301,7 @@ enum ProviderFetchPrecondition {
 
 #[derive(Debug, Clone)]
 struct ProviderSaveRequest {
-    revision: FormRevision,
+    version: gpui_form::FormVersion,
     output: ProviderSettingsFormOutput,
     provider_id: Option<ProviderId>,
     new_provider_id: Option<ProviderId>,
@@ -520,33 +490,27 @@ impl ProviderSettingsPage {
         match &editor.form {
             ProviderSettingsForm::ApiKey(form) => {
                 let form_id = form.entity_id();
-                subscriptions.push(cx.subscribe_in(
-                    form,
-                    window,
-                    move |page, _form, _event: &FormEvent, _window, cx| {
+                subscriptions.push(
+                    cx.observe_in(form, window, move |page, _form, _window, cx| {
                         page.on_provider_form_changed(form_id, cx);
-                    },
-                ));
+                    }),
+                );
             }
             ProviderSettingsForm::Ollama(form) => {
                 let form_id = form.entity_id();
-                subscriptions.push(cx.subscribe_in(
-                    form,
-                    window,
-                    move |page, _form, _event: &FormEvent, _window, cx| {
+                subscriptions.push(
+                    cx.observe_in(form, window, move |page, _form, _window, cx| {
                         page.on_provider_form_changed(form_id, cx);
-                    },
-                ));
+                    }),
+                );
             }
             ProviderSettingsForm::CustomOpenAi(form) => {
                 let form_id = form.entity_id();
-                subscriptions.push(cx.subscribe_in(
-                    form,
-                    window,
-                    move |page, _form, _event: &FormEvent, _window, cx| {
+                subscriptions.push(
+                    cx.observe_in(form, window, move |page, _form, _window, cx| {
                         page.on_provider_form_changed(form_id, cx);
-                    },
-                ));
+                    }),
+                );
             }
         }
         editor._form_subscriptions = subscriptions;
@@ -752,7 +716,7 @@ impl ProviderSettingsPage {
             }
             Err(_) => return,
         };
-        let revision = prepared.revision;
+        let version = prepared.version;
         let output = prepared.output;
         let writes = Self::secret_writes_for_output(&output);
         let secret_refs = Self::secret_refs_for_output(
@@ -762,7 +726,7 @@ impl ProviderSettingsPage {
             &output,
         );
         let save = ProviderSaveRequest {
-            revision,
+            version,
             output: output.clone(),
             provider_id,
             new_provider_id,
@@ -819,19 +783,15 @@ impl ProviderSettingsPage {
                 let models =
                     Self::load_models(metadata.provider_id.as_ref(), cx).unwrap_or_default();
                 self.providers = Self::load_provider_list(cx).unwrap_or_default();
-                let rebased = if let Some(editor) = self.editors.get_mut(&key) {
+                if let Some(editor) = self.editors.get_mut(&key) {
                     editor.metadata = metadata;
                     editor.models = models;
                     let rebased = editor
                         .form
-                        .rebase_if_revision(save.revision, &save.output, cx);
-                    editor.validated_revision = Some(editor.form.revision(cx));
-                    rebased
-                } else {
-                    false
-                };
-                if rebased && let Some(editor) = self.editors.get_mut(&key) {
-                    Self::bind_editor_form(editor, window, cx);
+                        .rebase_if_current(save.version, &save.output, cx);
+                    if rebased {
+                        editor.validated_revision = Some(editor.form.revision(cx));
+                    }
                 }
                 self.sync_list_delegates(window, cx);
                 #[cfg(not(test))]
@@ -1406,16 +1366,16 @@ impl ProviderSettingsPage {
                 ]
             }
             ProviderSettingsForm::CustomOpenAi(form) => {
-                let ProviderFormComponents::CustomOpenAi {
+                let ProviderFormComponents::CustomOpenAi(components) = components else {
+                    unreachable!("provider custom form and controls must match")
+                };
+                let CustomOpenAiFormComponents {
                     name,
                     api_key,
                     base_url,
                     api_mode,
                     ..
-                } = components
-                else {
-                    unreachable!("provider custom form and controls must match")
-                };
+                } = components.as_ref();
                 let name_errors = CustomOpenAiProviderFormInput::NAME.errors(form, cx);
                 let api_key_errors = CustomOpenAiProviderFormInput::API_KEY.errors(form, cx);
                 let base_url_errors = CustomOpenAiProviderFormInput::BASE_URL.errors(form, cx);
@@ -2990,14 +2950,14 @@ mod tests {
                 ProviderFormComponents::Ollama { bearer_token, .. },
                 ProviderFormField::BearerToken,
             ) => Some(bearer_token.clone()),
-            (ProviderFormComponents::CustomOpenAi { name, .. }, ProviderFormField::Name) => {
-                Some(name.clone())
+            (ProviderFormComponents::CustomOpenAi(components), ProviderFormField::Name) => {
+                Some(components.name.clone())
             }
-            (ProviderFormComponents::CustomOpenAi { api_key, .. }, ProviderFormField::ApiKey) => {
-                Some(api_key.clone())
+            (ProviderFormComponents::CustomOpenAi(components), ProviderFormField::ApiKey) => {
+                Some(components.api_key.clone())
             }
-            (ProviderFormComponents::CustomOpenAi { base_url, .. }, ProviderFormField::BaseUrl) => {
-                Some(base_url.clone())
+            (ProviderFormComponents::CustomOpenAi(components), ProviderFormField::BaseUrl) => {
+                Some(components.base_url.clone())
             }
             _ => None,
         }

@@ -6,15 +6,11 @@ use crate::{
 };
 
 pub(crate) trait Access<Root, T>: 'static {
-    fn get<'a>(
-        &self,
-        root: &'a Root,
-        topology: &TopologySnapshot<'_>,
-    ) -> Result<&'a T, ResolveError>;
+    fn get<'a>(&self, root: &'a Root, topology: &TopologySnapshot) -> Result<&'a T, ResolveError>;
     fn get_mut<'a>(
         &self,
         root: &'a mut Root,
-        topology: &TopologySnapshot<'_>,
+        topology: &TopologySnapshot,
     ) -> Result<&'a mut T, ResolveError>;
 }
 
@@ -24,17 +20,15 @@ impl<Root: 'static> Access<Root, Root> for RootAccess<Root> {
     fn get<'a>(
         &self,
         root: &'a Root,
-        topology: &TopologySnapshot<'_>,
+        _topology: &TopologySnapshot,
     ) -> Result<&'a Root, ResolveError> {
-        topology.assert_current();
         Ok(root)
     }
     fn get_mut<'a>(
         &self,
         root: &'a mut Root,
-        topology: &TopologySnapshot<'_>,
+        _topology: &TopologySnapshot,
     ) -> Result<&'a mut Root, ResolveError> {
-        topology.assert_current();
         Ok(root)
     }
 }
@@ -46,17 +40,13 @@ pub(super) struct FieldAccess<Root, Owner, T> {
 }
 
 impl<Root: 'static, Owner: 'static, T: 'static> Access<Root, T> for FieldAccess<Root, Owner, T> {
-    fn get<'a>(
-        &self,
-        root: &'a Root,
-        topology: &TopologySnapshot<'_>,
-    ) -> Result<&'a T, ResolveError> {
+    fn get<'a>(&self, root: &'a Root, topology: &TopologySnapshot) -> Result<&'a T, ResolveError> {
         Ok((self.read)(self.parent.get(root, topology)?))
     }
     fn get_mut<'a>(
         &self,
         root: &'a mut Root,
-        topology: &TopologySnapshot<'_>,
+        topology: &TopologySnapshot,
     ) -> Result<&'a mut T, ResolveError> {
         Ok((self.read_mut)(self.parent.get_mut(root, topology)?))
     }
@@ -68,11 +58,7 @@ pub(super) struct OptionalAccess<Root, T> {
 }
 
 impl<Root: 'static, T: 'static> Access<Root, T> for OptionalAccess<Root, T> {
-    fn get<'a>(
-        &self,
-        root: &'a Root,
-        topology: &TopologySnapshot<'_>,
-    ) -> Result<&'a T, ResolveError> {
+    fn get<'a>(&self, root: &'a Root, topology: &TopologySnapshot) -> Result<&'a T, ResolveError> {
         self.parent
             .get(root, topology)?
             .as_ref()
@@ -83,7 +69,7 @@ impl<Root: 'static, T: 'static> Access<Root, T> for OptionalAccess<Root, T> {
     fn get_mut<'a>(
         &self,
         root: &'a mut Root,
-        topology: &TopologySnapshot<'_>,
+        topology: &TopologySnapshot,
     ) -> Result<&'a mut T, ResolveError> {
         self.parent
             .get_mut(root, topology)?
@@ -106,7 +92,7 @@ impl<Root: 'static, Enum: 'static, Payload: 'static> Access<Root, Payload>
     fn get<'a>(
         &self,
         root: &'a Root,
-        topology: &TopologySnapshot<'_>,
+        topology: &TopologySnapshot,
     ) -> Result<&'a Payload, ResolveError> {
         (self.case.read())(self.parent.get(root, topology)?).ok_or_else(|| {
             ResolveError::InactiveCase {
@@ -118,7 +104,7 @@ impl<Root: 'static, Enum: 'static, Payload: 'static> Access<Root, Payload>
     fn get_mut<'a>(
         &self,
         root: &'a mut Root,
-        topology: &TopologySnapshot<'_>,
+        topology: &TopologySnapshot,
     ) -> Result<&'a mut Payload, ResolveError> {
         (self.case.read_mut())(self.parent.get_mut(root, topology)?).ok_or_else(|| {
             ResolveError::InactiveCase {
@@ -140,11 +126,9 @@ impl<Root: 'static, Item: 'static> Access<Root, Item> for ItemAccess<Root, Item>
     fn get<'a>(
         &self,
         root: &'a Root,
-        topology: &TopologySnapshot<'_>,
+        topology: &TopologySnapshot,
     ) -> Result<&'a Item, ResolveError> {
-        topology.assert_current();
         let index = topology
-            .index
             .item_index(&self.collection_address, self.token)
             .ok_or_else(|| ResolveError::MissingItem {
                 path: self.key.clone(),
@@ -159,11 +143,9 @@ impl<Root: 'static, Item: 'static> Access<Root, Item> for ItemAccess<Root, Item>
     fn get_mut<'a>(
         &self,
         root: &'a mut Root,
-        topology: &TopologySnapshot<'_>,
+        topology: &TopologySnapshot,
     ) -> Result<&'a mut Item, ResolveError> {
-        topology.assert_current();
         let index = topology
-            .index
             .item_index(&self.collection_address, self.token)
             .ok_or_else(|| ResolveError::MissingItem {
                 path: self.key.clone(),

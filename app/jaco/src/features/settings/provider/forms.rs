@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use gpui::{App, AppContext as _, Context, Entity, EntityId, Window};
-use gpui_form::typed::{
-    ErrorParamValue, Form, FormRevision, GardeValidator, PrepareError as SubmitError,
+use gpui_form::{
+    ErrorParamValue, Form, FormRevision, FormVersion, GardeValidator, PrepareError as SubmitError,
     ValidationReport, ValidationTrigger,
 };
 use jaco_core::{
@@ -129,7 +129,7 @@ pub(super) enum ProviderSettingsFormOutput {
 }
 
 pub(super) struct ProviderPreparedSubmit {
-    pub(super) revision: FormRevision,
+    pub(super) version: FormVersion,
     pub(super) output: ProviderSettingsFormOutput,
 }
 
@@ -218,31 +218,25 @@ impl ProviderSettingsForm {
     {
         match form_kind {
             ProviderFormKind::ApiKey => Self::ApiKey(cx.new(|_| {
-                Form::try_new_with_validator(
-                    ApiKeyProviderFormInput::from_seed(seed),
+                Form::new(ApiKeyProviderFormInput::from_seed(seed)).with_validator(
                     GardeValidator::<ApiKeyProviderFormInput, JacoGardeMessageProvider>::new(
                         provider_validation_context(seed.existing_secret_refs.clone()),
                     ),
                 )
-                .expect("build API key provider form")
             })),
             ProviderFormKind::Ollama => Self::Ollama(cx.new(|_| {
-                Form::try_new_with_validator(
-                    OllamaProviderFormInput::from_seed(seed),
+                Form::new(OllamaProviderFormInput::from_seed(seed)).with_validator(
                     GardeValidator::<OllamaProviderFormInput, JacoGardeMessageProvider>::new(
                         provider_validation_context(seed.existing_secret_refs.clone()),
                     ),
                 )
-                .expect("build Ollama provider form")
             })),
             ProviderFormKind::CustomOpenAiCompatible => Self::CustomOpenAi(cx.new(|_| {
-                Form::try_new_with_validator(
-                    CustomOpenAiProviderFormInput::from_seed(seed),
+                Form::new(CustomOpenAiProviderFormInput::from_seed(seed)).with_validator(
                     GardeValidator::<CustomOpenAiProviderFormInput, JacoGardeMessageProvider>::new(
                         provider_validation_context(seed.existing_secret_refs.clone()),
                     ),
                 )
-                .expect("build custom OpenAI provider form")
             })),
         }
     }
@@ -257,9 +251,9 @@ impl ProviderSettingsForm {
 
     pub(super) fn enabled(&self, cx: &App) -> bool {
         match self {
-            Self::ApiKey(form) => ApiKeyProviderFormInput::ENABLED.value(form, cx),
-            Self::Ollama(form) => OllamaProviderFormInput::ENABLED.value(form, cx),
-            Self::CustomOpenAi(form) => CustomOpenAiProviderFormInput::ENABLED.value(form, cx),
+            Self::ApiKey(form) => ApiKeyProviderFormInput::ENABLED.get(form, cx),
+            Self::Ollama(form) => OllamaProviderFormInput::ENABLED.get(form, cx),
+            Self::CustomOpenAi(form) => CustomOpenAiProviderFormInput::ENABLED.get(form, cx),
         }
     }
 
@@ -271,9 +265,9 @@ impl ProviderSettingsForm {
         }
     }
 
-    pub(super) fn rebase_if_revision(
+    pub(super) fn rebase_if_current(
         &self,
-        revision: FormRevision,
+        version: FormVersion,
         output: &ProviderSettingsFormOutput,
         cx: &mut App,
     ) -> bool {
@@ -284,8 +278,8 @@ impl ProviderSettingsForm {
                     enabled, base_url, ..
                 },
             ) => form.update(cx, |form, cx| {
-                form.rebase_if_revision(
-                    revision,
+                form.rebase_if_current(
+                    version,
                     ApiKeyProviderFormInput {
                         enabled: *enabled,
                         api_key: ProviderSecretValue::new(
@@ -304,8 +298,8 @@ impl ProviderSettingsForm {
                     enabled, base_url, ..
                 },
             ) => form.update(cx, |form, cx| {
-                form.rebase_if_revision(
-                    revision,
+                form.rebase_if_current(
+                    version,
                     OllamaProviderFormInput {
                         enabled: *enabled,
                         base_url: base_url.clone(),
@@ -328,8 +322,8 @@ impl ProviderSettingsForm {
                     ..
                 },
             ) => form.update(cx, |form, cx| {
-                form.rebase_if_revision(
-                    revision,
+                form.rebase_if_current(
+                    version,
                     CustomOpenAiProviderFormInput {
                         enabled: *enabled,
                         name: name.clone(),
@@ -339,7 +333,7 @@ impl ProviderSettingsForm {
                             false,
                         ),
                         base_url: base_url.clone(),
-                        api_mode: *api_mode,
+                        api_mode: Some(*api_mode),
                     },
                     cx,
                 )
@@ -364,14 +358,14 @@ impl ProviderSettingsForm {
                     );
                     form.prepare(cx)
                 })?;
-                let (revision, output) = prepared
+                let (version, output) = prepared
                     .map(|output| ProviderSettingsFormOutput::ApiKey {
                         enabled: output.enabled,
                         api_key: output.api_key,
                         base_url: output.base_url.trim().to_string(),
                     })
                     .into_parts();
-                Ok(ProviderPreparedSubmit { revision, output })
+                Ok(ProviderPreparedSubmit { version, output })
             }
             Self::Ollama(form) => {
                 let prepared = form.update(cx, |form, cx| {
@@ -383,14 +377,14 @@ impl ProviderSettingsForm {
                     );
                     form.prepare(cx)
                 })?;
-                let (revision, output) = prepared
+                let (version, output) = prepared
                     .map(|output| ProviderSettingsFormOutput::Ollama {
                         enabled: output.enabled,
                         base_url: output.base_url.trim().to_string(),
                         bearer_token: output.bearer_token,
                     })
                     .into_parts();
-                Ok(ProviderPreparedSubmit { revision, output })
+                Ok(ProviderPreparedSubmit { version, output })
             }
             Self::CustomOpenAi(form) => {
                 let prepared = form.update(cx, |form, cx| {
@@ -403,16 +397,16 @@ impl ProviderSettingsForm {
                     );
                     form.prepare(cx)
                 })?;
-                let (revision, output) = prepared
+                let (version, output) = prepared
                     .map(|output| ProviderSettingsFormOutput::CustomOpenAi {
                         enabled: output.enabled,
                         name: output.name.trim().to_string(),
                         api_key: output.api_key,
                         base_url: output.base_url.trim().to_string(),
-                        api_mode: output.api_mode,
+                        api_mode: output.api_mode.unwrap_or_default(),
                     })
                     .into_parts();
-                Ok(ProviderPreparedSubmit { revision, output })
+                Ok(ProviderPreparedSubmit { version, output })
             }
         }
     }
@@ -451,21 +445,23 @@ impl ProviderSettingsForm {
     pub(super) fn current_output(&self, cx: &App) -> ProviderSettingsFormOutput {
         match self {
             Self::ApiKey(form) => ProviderSettingsFormOutput::ApiKey {
-                enabled: ApiKeyProviderFormInput::ENABLED.value(form, cx),
-                api_key: ApiKeyProviderFormInput::API_KEY.value(form, cx),
-                base_url: ApiKeyProviderFormInput::BASE_URL.value(form, cx),
+                enabled: ApiKeyProviderFormInput::ENABLED.get(form, cx),
+                api_key: ApiKeyProviderFormInput::API_KEY.get(form, cx),
+                base_url: ApiKeyProviderFormInput::BASE_URL.get(form, cx),
             },
             Self::Ollama(form) => ProviderSettingsFormOutput::Ollama {
-                enabled: OllamaProviderFormInput::ENABLED.value(form, cx),
-                base_url: OllamaProviderFormInput::BASE_URL.value(form, cx),
-                bearer_token: OllamaProviderFormInput::BEARER_TOKEN.value(form, cx),
+                enabled: OllamaProviderFormInput::ENABLED.get(form, cx),
+                base_url: OllamaProviderFormInput::BASE_URL.get(form, cx),
+                bearer_token: OllamaProviderFormInput::BEARER_TOKEN.get(form, cx),
             },
             Self::CustomOpenAi(form) => ProviderSettingsFormOutput::CustomOpenAi {
-                enabled: CustomOpenAiProviderFormInput::ENABLED.value(form, cx),
-                name: CustomOpenAiProviderFormInput::NAME.value(form, cx),
-                api_key: CustomOpenAiProviderFormInput::API_KEY.value(form, cx),
-                base_url: CustomOpenAiProviderFormInput::BASE_URL.value(form, cx),
-                api_mode: CustomOpenAiProviderFormInput::API_MODE.value(form, cx),
+                enabled: CustomOpenAiProviderFormInput::ENABLED.get(form, cx),
+                name: CustomOpenAiProviderFormInput::NAME.get(form, cx),
+                api_key: CustomOpenAiProviderFormInput::API_KEY.get(form, cx),
+                base_url: CustomOpenAiProviderFormInput::BASE_URL.get(form, cx),
+                api_mode: CustomOpenAiProviderFormInput::API_MODE
+                    .get(form, cx)
+                    .unwrap_or_default(),
             },
         }
     }
@@ -547,7 +543,9 @@ impl CustomOpenAiProviderFormInput {
             name: seed.field_string(FIELD_NAME),
             api_key: ProviderSecretValue::new(ProviderFormField::ApiKey, String::new(), false),
             base_url: seed.field_string(FIELD_BASE_URL),
-            api_mode: ProviderApiMode::from_key(&seed.field_string(FIELD_API_MODE)),
+            api_mode: Some(ProviderApiMode::from_key(
+                &seed.field_string(FIELD_API_MODE),
+            )),
         }
     }
 }

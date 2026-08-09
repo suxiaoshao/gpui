@@ -7,16 +7,21 @@ use std::{
 };
 
 use crate::{
-    CaseDef, DynamicItemsPath, DynamicPath, FieldSchema, FormSchema, ItemPath, MutationError,
-    PathKey, ResolveError, TotalItemsPath,
-    path::{item_paths_in, locate_case_in, locate_some_in},
+    CaseDef, FieldSchema, FormSchema, IntoTotalPath, PathKey, ResolveError, TotalItemsPath,
+    ValidationDynamicItemsPath, ValidationDynamicPath, ValidationItemPath,
+    path::{validation_case_in, validation_item_paths_in, validation_some_in},
     schema::SchemaVisitor,
-    topology::{CanonicalAddress, SessionId, TopologyIndex},
+    submit::FormVersion,
+    topology::{CanonicalAddress, SessionId, TopologyIndex, TopologySnapshot},
 };
 
 mod report;
+mod transition;
 mod trigger;
 
+pub(crate) use transition::{
+    AsyncValidationRuntime, Effect as AsyncValidationEffect, Message as AsyncValidationMessage,
+};
 pub use trigger::ValidationTrigger;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -110,15 +115,12 @@ impl From<String> for ValidationMessage {
 pub enum ValidationSource {
     Required,
     Validator(Cow<'static, str>),
-    Control(u64),
-    Async {
-        source: Cow<'static, str>,
-        generation: u64,
-    },
+    Control,
+    Async(Cow<'static, str>),
     Internal,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ValidationIssue {
     pub(crate) path: PathKey,
     pub(crate) address: CanonicalAddress,
@@ -126,7 +128,22 @@ pub struct ValidationIssue {
     pub(crate) trigger: ValidationTrigger,
     pub(crate) code: Cow<'static, str>,
     pub(crate) message: ValidationMessage,
+    pub(crate) control: Option<u64>,
+    pub(crate) async_generation: Option<u64>,
     pub(crate) control_active: Option<Weak<AtomicBool>>,
+}
+
+impl fmt::Debug for ValidationIssue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ValidationIssue")
+            .field("path", &self.path)
+            .field("source", &self.source)
+            .field("trigger", &self.trigger)
+            .field("code", &self.code)
+            .field("message", &self.message)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PartialEq for ValidationIssue {
@@ -137,6 +154,8 @@ impl PartialEq for ValidationIssue {
             && self.trigger == other.trigger
             && self.code == other.code
             && self.message == other.message
+            && self.control == other.control
+            && self.async_generation == other.async_generation
     }
 }
 
@@ -207,14 +226,17 @@ impl ValidationReport {
             }
             if matches!(
                 issue.source,
-                ValidationSource::Control(_) | ValidationSource::Async { .. }
+                ValidationSource::Control | ValidationSource::Async(_)
             ) {
                 return true;
             }
             let same_bucket = issue.trigger == trigger
                 && scope.is_none_or(|scope| intersects(scope, &issue.address));
-            let superseded = replacements.iter().any(|(address, source, code)| {
-                address == &issue.address && source == &issue.source && code == &issue.code
+            let superseded = replacements.iter().any(|(address, source, code, trigger)| {
+                address == &issue.address
+                    && source == &issue.source
+                    && code == &issue.code
+                    && *trigger == issue.trigger
             });
             !same_bucket && !superseded
         });
@@ -226,28 +248,30 @@ impl ValidationReport {
             issue.is_active()
                 && (matches!(
                     issue.source,
-                    ValidationSource::Control(_) | ValidationSource::Async { .. }
+                    ValidationSource::Control | ValidationSource::Async(_)
                 ) || !scopes.iter().any(|scope| intersects(scope, &issue.address)))
         });
     }
 
+    pub(crate) fn remove_control_intersecting(&mut self, address: &CanonicalAddress) -> bool {
+        let before = self.issues.len();
+        self.issues.retain(|issue| {
+            !matches!(issue.source, ValidationSource::Control)
+                || !intersects(address, &issue.address)
+        });
+        self.issues.len() != before
+    }
+
     pub(crate) fn retain_current(&mut self, topology: &TopologyIndex) {
         self.issues.retain(|issue| {
-            issue.is_active()
-                && topology
-                    .incarnation(&issue.address)
-                    .is_some_and(|incarnation| {
-                        issue
-                            .path
-                            .matches(topology.session(), &issue.address, incarnation)
-                    })
+            issue.is_active() && topology.key(&issue.address).as_ref() == Some(&issue.path)
         });
     }
 
     pub(crate) fn replace_control(&mut self, control: u64, issue: Option<ValidationIssue>) -> bool {
         let before = self.issues.len();
         self.issues
-            .retain(|candidate| candidate.source != ValidationSource::Control(control));
+            .retain(|candidate| candidate.control != Some(control));
         let adding = issue.is_some();
         if let Some(issue) = issue {
             self.issues.push(issue);
@@ -261,15 +285,8 @@ impl ValidationReport {
         issue: Option<ValidationIssue>,
     ) -> bool {
         let before = self.issues.len();
-        self.issues.retain(|candidate| {
-            !matches!(
-                candidate.source,
-                ValidationSource::Async {
-                    generation: candidate_generation,
-                    ..
-                } if candidate_generation == generation
-            )
-        });
+        self.issues
+            .retain(|candidate| candidate.async_generation != Some(generation));
         let adding = issue.is_some();
         if let Some(issue) = issue {
             self.issues.push(issue);
@@ -282,17 +299,15 @@ impl ValidationReport {
         generations: &std::collections::HashSet<u64>,
     ) {
         self.issues.retain(|candidate| {
-            !matches!(
-                candidate.source,
-                ValidationSource::Async { generation, .. }
-                    if generations.contains(&generation)
-            )
+            candidate
+                .async_generation
+                .is_none_or(|generation| !generations.contains(&generation))
         });
     }
 
     pub(crate) fn remove_async_intersecting(&mut self, address: &CanonicalAddress) {
         self.issues.retain(|candidate| {
-            !matches!(candidate.source, ValidationSource::Async { .. })
+            !matches!(candidate.source, ValidationSource::Async(_))
                 || !intersects(address, &candidate.address)
         });
     }
@@ -302,46 +317,55 @@ pub(crate) fn intersects(left: &CanonicalAddress, right: &CanonicalAddress) -> b
     left.is_prefix_of(right) || right.is_prefix_of(left)
 }
 
+fn snapshot_key(topology: &TopologySnapshot, address: &CanonicalAddress) -> PathKey {
+    topology
+        .key(address)
+        .expect("validation topology must be materialized before snapshot")
+}
+
 pub trait Validator<M: FormSchema>: 'static {
-    fn validate(
-        &self,
-        model: &M,
-        request: ValidationRequest<'_, M>,
-        out: &mut ValidationSink<'_, M>,
-    );
+    fn validate(&self, request: ValidationRequest<'_, M>, out: &mut ValidationSink<'_, M>);
 }
 
 impl<M: FormSchema, F> Validator<M> for F
 where
-    F: for<'a, 'b> Fn(&M, ValidationRequest<'a, M>, &mut ValidationSink<'b, M>) + 'static,
+    F: for<'a, 'b> Fn(ValidationRequest<'a, M>, &mut ValidationSink<'b, M>) + 'static,
 {
-    fn validate(
-        &self,
-        model: &M,
-        request: ValidationRequest<'_, M>,
-        out: &mut ValidationSink<'_, M>,
-    ) {
-        self(model, request, out);
+    fn validate(&self, request: ValidationRequest<'_, M>, out: &mut ValidationSink<'_, M>) {
+        self(request, out);
     }
 }
 
 pub struct ValidationRequest<'a, M: FormSchema> {
+    model: &'a M,
+    version: FormVersion,
     trigger: ValidationTrigger,
     scope: Option<&'a CanonicalAddress>,
     session: SessionId,
-    pub(crate) topology: &'a TopologyIndex,
+    pub(crate) topology: TopologySnapshot,
     marker: PhantomData<fn() -> M>,
 }
 
-impl<M: FormSchema> Copy for ValidationRequest<'_, M> {}
-
 impl<M: FormSchema> Clone for ValidationRequest<'_, M> {
     fn clone(&self) -> Self {
-        *self
+        Self {
+            model: self.model,
+            version: self.version,
+            trigger: self.trigger,
+            scope: self.scope,
+            session: self.session,
+            topology: self.topology.clone(),
+            marker: PhantomData,
+        }
     }
 }
 
 impl<'a, M: FormSchema> ValidationRequest<'a, M> {
+    /// Returns the immutable model belonging to this validation snapshot.
+    pub fn model(&self) -> &'a M {
+        self.model
+    }
+
     pub fn trigger(&self) -> ValidationTrigger {
         self.trigger
     }
@@ -353,74 +377,106 @@ impl<'a, M: FormSchema> ValidationRequest<'a, M> {
     /// Enumerates a statically located collection against this validation snapshot.
     pub fn items<Item: FormSchema>(
         &self,
-        model: &M,
         path: &TotalItemsPath<M, Item>,
-    ) -> Result<Vec<ItemPath<M, Item>>, MutationError> {
-        item_paths_in(&path.core, model, self.topology)
+    ) -> Vec<ValidationItemPath<'a, M, Item>> {
+        validation_item_paths_in(&path.core, self.model, &self.topology)
+            .expect("a total validation collection must always resolve")
     }
 
     /// Enumerates a dynamically located collection against this validation snapshot.
-    pub fn dynamic_items<Item: FormSchema>(
+    pub fn try_items<Item: FormSchema>(
         &self,
-        model: &M,
-        path: &DynamicItemsPath<M, Item>,
-    ) -> Result<Vec<ItemPath<M, Item>>, MutationError> {
-        item_paths_in(&path.core, model, self.topology)
+        path: &ValidationDynamicItemsPath<'a, M, Item>,
+    ) -> Result<Vec<ValidationItemPath<'a, M, Item>>, ResolveError> {
+        self.check_dynamic_core(&path.core)?;
+        validation_item_paths_in(&path.core, self.model, &self.topology)
     }
 
     /// Resolves a dynamic value without consulting a newer live Form session.
-    pub fn value<'m, T: 'static>(
+    pub fn get<T: 'static>(&self, path: &crate::TotalPath<M, T>) -> &'a T {
+        path.core
+            .access
+            .get(self.model, &self.topology)
+            .expect("a total validation path must always resolve")
+    }
+
+    pub fn try_get<T: 'static>(
         &self,
-        model: &'m M,
-        path: &DynamicPath<M, T>,
-    ) -> Result<&'m T, ResolveError> {
-        self.check_dynamic(path)?;
-        path.core.access.get(model, &self.topology.snapshot())
+        path: &ValidationDynamicPath<'a, M, T>,
+    ) -> Result<&'a T, ResolveError> {
+        self.check_dynamic_core(&path.core)?;
+        path.core.access.get(self.model, &self.topology)
     }
 
     /// Resolves an enum payload and binds the returned path to this snapshot's incarnation.
-    pub fn try_case<Enum: FormSchema, Payload: FormSchema>(
+    pub(crate) fn try_case<Enum: FormSchema, Payload: FormSchema>(
         &self,
-        model: &M,
-        path: DynamicPath<M, Enum>,
+        path: ValidationDynamicPath<'a, M, Enum>,
         case: CaseDef<Enum, Payload>,
-    ) -> Result<DynamicPath<M, Payload>, ResolveError> {
-        self.check_dynamic(&path)?;
-        locate_case_in(path.core, model, self.topology, case)
+    ) -> Result<Option<ValidationDynamicPath<'a, M, Payload>>, ResolveError> {
+        self.check_dynamic_core(&path.core)?;
+        validation_case_in(path.core, self.model, &self.topology, case)
+    }
+
+    /// Resolves an enum payload from a total path in this snapshot.
+    pub fn case<Enum, Payload, Path>(
+        &self,
+        path: Path,
+        case: CaseDef<Enum, Payload>,
+    ) -> Option<ValidationDynamicPath<'a, M, Payload>>
+    where
+        Enum: FormSchema,
+        Payload: FormSchema,
+        Path: IntoTotalPath<M, Enum>,
+    {
+        validation_case_in(
+            path.into_total_path().core,
+            self.model,
+            &self.topology,
+            case,
+        )
+        .expect("a total validation path must always resolve")
     }
 
     /// Resolves an optional payload and binds the returned path to this snapshot's incarnation.
-    pub fn try_some<T: FormSchema>(
+    pub(crate) fn try_some<T: FormSchema>(
         &self,
-        model: &M,
-        path: DynamicPath<M, Option<T>>,
-    ) -> Result<DynamicPath<M, T>, ResolveError> {
-        self.check_dynamic(&path)?;
-        locate_some_in(path.core, model, self.topology)
+        path: ValidationDynamicPath<'a, M, Option<T>>,
+    ) -> Result<Option<ValidationDynamicPath<'a, M, T>>, ResolveError> {
+        self.check_dynamic_core(&path.core)?;
+        validation_some_in(path.core, self.model, &self.topology)
     }
 
-    fn check_dynamic<T: 'static>(&self, path: &DynamicPath<M, T>) -> Result<(), ResolveError> {
-        if path
-            .core
-            .session
-            .is_some_and(|session| session != self.session)
-        {
+    /// Resolves an optional payload from a total path in this snapshot.
+    pub fn some<T, Path>(&self, path: Path) -> Option<ValidationDynamicPath<'a, M, T>>
+    where
+        T: FormSchema,
+        Path: IntoTotalPath<M, Option<T>>,
+    {
+        validation_some_in(path.into_total_path().core, self.model, &self.topology)
+            .expect("a total validation path must always resolve")
+    }
+
+    fn check_dynamic_core<T: 'static>(
+        &self,
+        core: &crate::PathCore<M, T>,
+    ) -> Result<(), ResolveError> {
+        if core.session.is_some_and(|session| session != self.session) {
             return Err(ResolveError::WrongSession {
-                path: PathKey::total(self.session, &path.core.address),
+                path: core
+                    .identity
+                    .clone()
+                    .or_else(|| self.topology.key(&core.address))
+                    .expect("validation paths must have a materialized identity"),
             });
         }
-        if let Some(guard) = path
-            .core
+        if let Some(guard) = core
             .guards
             .iter()
             .find(|guard| self.topology.incarnation(&guard.address) != Some(guard.incarnation))
         {
             return Err(ResolveError::Retired {
-                path: PathKey::new(
-                    path.core.session.unwrap_or(self.session),
-                    &guard.address,
-                    guard.incarnation,
-                ),
+                path: guard.key.clone(),
             });
         }
         Ok(())
@@ -428,6 +484,10 @@ impl<'a, M: FormSchema> ValidationRequest<'a, M> {
 
     pub(crate) fn includes_address(&self, address: &CanonicalAddress) -> bool {
         self.scope.is_none_or(|scope| intersects(scope, address))
+    }
+
+    pub(crate) fn version(&self) -> FormVersion {
+        self.version
     }
 
     pub(crate) fn includes_dynamic(
@@ -450,12 +510,11 @@ impl<'a, M: FormSchema> ValidationRequest<'a, M> {
 }
 
 pub struct ValidationSink<'a, M: FormSchema> {
-    session: SessionId,
-    topology: &'a TopologyIndex,
+    topology: TopologySnapshot,
     trigger: ValidationTrigger,
     source: ValidationSource,
     issues: Vec<ValidationIssue>,
-    marker: PhantomData<fn() -> M>,
+    marker: PhantomData<&'a M>,
 }
 
 impl<'a, M: FormSchema> ValidationSink<'a, M> {
@@ -474,17 +533,16 @@ impl<'a, M: FormSchema> ValidationSink<'a, M> {
         code: Cow<'static, str>,
         message: ValidationMessage,
     ) {
-        let incarnation = self
-            .topology
-            .ensure_incarnation(&address)
-            .expect("form identity exhausted after construction");
+        let path = snapshot_key(&self.topology, &address);
         self.issues.push(ValidationIssue {
-            path: PathKey::new(self.session, &address, incarnation),
+            path,
             address,
             source: self.source.clone(),
             trigger: self.trigger,
             code,
             message,
+            control: None,
+            async_generation: None,
             control_active: None,
         });
     }
@@ -496,17 +554,16 @@ impl<'a, M: FormSchema> ValidationSink<'a, M> {
         code: impl Into<Cow<'static, str>>,
         message: ValidationMessage,
     ) {
-        let incarnation = self
-            .topology
-            .ensure_incarnation(&address)
-            .expect("form identity exhausted after construction");
+        let path = snapshot_key(&self.topology, &address);
         self.issues.push(ValidationIssue {
-            path: PathKey::new(self.session, &address, incarnation),
+            path,
             address,
             source,
             trigger: self.trigger,
             code: code.into(),
             message,
+            control: None,
+            async_generation: None,
             control_active: None,
         });
     }
@@ -540,40 +597,51 @@ pub(crate) mod sealed {
     pub trait Sealed {}
 }
 
-pub(crate) fn validate<M: FormSchema>(
-    model: &M,
-    topology: &TopologyIndex,
+pub(crate) fn validate<'a, M: FormSchema>(
+    model: &'a M,
+    topology: &'a TopologyIndex,
+    version: FormVersion,
     trigger: ValidationTrigger,
     scope: Option<&CanonicalAddress>,
     validator: Option<&dyn Validator<M>>,
 ) -> Vec<ValidationIssue> {
+    let model = model.clone();
+    let model = &model;
+    let snapshot = topology.snapshot();
     let mut required = RequiredVisitor {
-        topology,
+        topology: &snapshot,
         trigger,
         scope,
         address: CanonicalAddress::default(),
         issues: Vec::new(),
+        validator_enabled: false,
     };
     model.__visit(&mut required);
+    let validator_enabled = matches!(
+        trigger,
+        ValidationTrigger::Submit | ValidationTrigger::External
+    ) || required.validator_enabled;
     let mut issues = required.issues;
 
-    if let Some(validator) = validator {
+    if validator_enabled && let Some(validator) = validator {
         let request = ValidationRequest {
+            model,
+            version,
             trigger,
             scope,
             session: topology.session(),
-            topology,
+            topology: snapshot.clone(),
             marker: PhantomData,
         };
+        debug_assert_eq!(request.version(), version);
         let mut sink = ValidationSink {
-            session: topology.session(),
-            topology,
+            topology: snapshot.clone(),
             trigger,
             source: ValidationSource::Validator(Cow::Borrowed("validator")),
             issues: Vec::new(),
             marker: PhantomData,
         };
-        validator.validate(model, request, &mut sink);
+        validator.validate(request, &mut sink);
         issues.extend(sink.issues);
     }
 
@@ -581,11 +649,12 @@ pub(crate) fn validate<M: FormSchema>(
 }
 
 struct RequiredVisitor<'a> {
-    topology: &'a TopologyIndex,
+    topology: &'a TopologySnapshot,
     trigger: ValidationTrigger,
     scope: Option<&'a CanonicalAddress>,
     address: CanonicalAddress,
     issues: Vec<ValidationIssue>,
+    validator_enabled: bool,
 }
 
 impl RequiredVisitor<'_> {
@@ -596,17 +665,24 @@ impl RequiredVisitor<'_> {
             scope: self.scope,
             address,
             issues: Vec::new(),
+            validator_enabled: false,
         }
     }
 
     fn absorb(&mut self, nested: Self) {
         self.issues.extend(nested.issues);
+        self.validator_enabled |= nested.validator_enabled;
     }
 }
 
 impl SchemaVisitor for RequiredVisitor<'_> {
     fn field(&mut self, schema: FieldSchema, missing: bool) {
         let address = self.address.field(schema.name());
+        if schema.triggers().includes(self.trigger)
+            && self.scope.is_none_or(|scope| intersects(scope, &address))
+        {
+            self.validator_enabled = true;
+        }
         if !missing
             || !schema.is_required()
             || !schema.triggers().includes(self.trigger)
@@ -614,17 +690,16 @@ impl SchemaVisitor for RequiredVisitor<'_> {
         {
             return;
         }
-        let incarnation = self
-            .topology
-            .ensure_incarnation(&address)
-            .expect("form identity exhausted after construction");
+        let path = snapshot_key(self.topology, &address);
         self.issues.push(ValidationIssue {
-            path: PathKey::new(self.topology.session(), &address, incarnation),
+            path,
             address,
             source: ValidationSource::Required,
             trigger: self.trigger,
             code: Cow::Borrowed("required"),
             message: ValidationMessage::key("gpui-form-error-required"),
+            control: None,
+            async_generation: None,
             control_active: None,
         });
     }
@@ -644,10 +719,13 @@ impl SchemaVisitor for RequiredVisitor<'_> {
         if !present {
             return;
         }
-        let address = self.address.field(name).some();
-        self.topology
-            .ensure_incarnation(&address)
-            .expect("form identity exhausted after construction");
+        let parent = self.address.field(name);
+        let occurrence = self
+            .topology
+            .active_some(&parent)
+            .expect("present optional topology must be materialized");
+        let address = parent.some_occurrence(occurrence);
+        snapshot_key(self.topology, &address);
         let mut nested = self.nested(address);
         visit(&mut nested);
         self.absorb(nested);
@@ -662,13 +740,12 @@ impl SchemaVisitor for RequiredVisitor<'_> {
         let collection = self.address.field(name);
         let tokens = self
             .topology
-            .ensure_items(&collection, len)
-            .expect("form identity exhausted after construction");
+            .items(&collection)
+            .expect("validation topology must be materialized before snapshot");
+        debug_assert_eq!(tokens.len(), len);
         for (index, token) in tokens.into_iter().enumerate() {
             let address = collection.item(token);
-            self.topology
-                .ensure_incarnation(&address)
-                .expect("form identity exhausted after construction");
+            snapshot_key(self.topology, &address);
             let mut nested = self.nested(address);
             visit(index, &mut nested);
             self.absorb(nested);
@@ -676,19 +753,26 @@ impl SchemaVisitor for RequiredVisitor<'_> {
     }
 
     fn case(&mut self, name: &'static str, visit: &mut dyn FnMut(&mut dyn SchemaVisitor)) {
-        let address = self.address.case(name);
-        self.topology
-            .ensure_incarnation(&address)
-            .expect("form identity exhausted after construction");
+        let occurrence = self
+            .topology
+            .active_case(&self.address, name)
+            .expect("active case topology must be materialized");
+        let address = self.address.case_occurrence(name, occurrence);
+        snapshot_key(self.topology, &address);
         let mut nested = self.nested(address);
         visit(&mut nested);
         self.absorb(nested);
     }
 
     fn unit_case(&mut self, name: &'static str) {
-        self.topology
-            .ensure_incarnation(&self.address.case(name))
-            .expect("form identity exhausted after construction");
+        let occurrence = self
+            .topology
+            .active_case(&self.address, name)
+            .expect("active unit case topology must be materialized");
+        snapshot_key(
+            self.topology,
+            &self.address.case_occurrence(name, occurrence),
+        );
     }
 }
 

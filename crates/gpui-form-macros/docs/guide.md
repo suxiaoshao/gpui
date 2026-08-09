@@ -2,10 +2,9 @@
 
 [English](guide.md) | [简体中文](guide.zh-CN.md)
 
-This guide teaches the confirmed greenfield derive design from a model
-declaration to a prepared submission. It is intentionally task-oriented:
-derive static definitions first, then use those definitions against one
-`Form<M>` session.
+`FormSchema` describes an editable Rust model at compile time. The generated
+definitions are static and typed; `gpui-form` supplies the one explicit
+`Entity<Form<M>>` session that they operate on. This guide uses the current public API.
 
 Applications normally consume the derive through `gpui-form`:
 
@@ -15,10 +14,11 @@ gpui.workspace = true
 gpui-form.workspace = true
 ```
 
-## 1. Derive a flat `FormSchema`
+## 1. Derive fields and create one form session
 
-Begin with a model that has only leaf fields. `FormSchema` gives each field a
-typed root definition.
+Every supported named field receives one static descriptor. The descriptor is
+not a field instance and does not retain a form. A page or view owns the form
+entity and passes it explicitly to descriptors and composed paths.
 
 ```rust,ignore
 use gpui::Entity;
@@ -30,39 +30,30 @@ struct AccountDraft {
     max_projects: u32,
 }
 
-let runtime = Form::try_new(AccountDraft {
-    email: "owner@example.com".to_owned(),
-    max_projects: 5,
-})?;
-let form: Entity<Form<AccountDraft>> = cx.new(|_| runtime);
+let form: Entity<Form<AccountDraft>> = cx.new(|_| {
+    Form::new(AccountDraft {
+        email: "owner@example.com".to_owned(),
+        max_projects: 5,
+    })
+});
 
-let email = AccountDraft::EMAIL;
-let current = email.value(&form, cx);
-email.set(&form, "team@example.com".to_owned(), cx);
+let email: String = AccountDraft::EMAIL.get(&form, cx);
+let changed: bool = AccountDraft::EMAIL.set(
+    &form,
+    "team@example.com".to_owned(),
+    cx,
+);
 ```
 
-`AccountDraft::EMAIL` is a `FieldDef<AccountDraft, String>`. A root field is a
-total path: it has no item, optional-value, or case boundary to resolve.
+`AccountDraft::EMAIL` is `FieldDef<AccountDraft, String>`. It is a total path:
+there is always exactly one `email` value in this form session. Total paths use
+`get` and `set`, never `Result`; an equal `set` returns `false`.
 
-## 2. Helper attribute grammar
+## 2. Mark nested children and collections
 
-| Attribute | Accepted target shape | Derive output |
-| --- | --- | --- |
-| `#[form(child)]` | a field whose type implements `FormSchema`, including `Option<Child>` | `ChildDef<Parent, Child>` |
-| `#[form(items)]` | `Vec<Item>`, where `Item` implements `FormSchema` | `ItemsDef<Parent, Item>` |
-| `#[form(required)]` | a leaf field | required metadata |
-| `#[form(validate(...))]` | a leaf field | mount/change/blur/dynamic/submit trigger metadata |
-
-`child` and `items` are about shape. Item identity is not macro input: Form
-generates an opaque session-local identity for each item occurrence and returns
-it only through a typed `ItemPath`. A model does not implement a key trait or
-declare an ID field for form navigation.
-
-## 3. Compose a total static child path
-
-A required nested child remains total. `then` joins the parent-child edge with
-one of the child schema's definitions, so the result can read and write without
-runtime selection.
+Use `#[form(child)]` for a nested schema and `#[form(items)]` for a collection
+of nested schemas. A required child is statically present, so composing through
+it keeps a total path.
 
 ```rust,ignore
 #[derive(Clone, FormSchema)]
@@ -76,24 +67,50 @@ struct ProfileDraft {
     address: AddressDraft,
 }
 
-let runtime = Form::try_new(ProfileDraft {
+let profile_form = cx.new(|_| Form::new(ProfileDraft {
     address: AddressDraft { city: String::new() },
-})?;
-let form: Entity<Form<ProfileDraft>> = cx.new(|_| runtime);
-
+}));
 let city = ProfileDraft::ADDRESS.then(AddressDraft::CITY);
-let current = city.value(&form, cx);
-city.set(&form, "Shanghai".to_owned(), cx);
+let value: String = city.get(&profile_form, cx);
+city.set(&profile_form, "Shanghai".to_owned(), cx);
 ```
 
-The composed type is a `TotalPath<ProfileDraft, String>`: `ADDRESS` always
-exists, so `CITY` always has one target below it.
+The derive creates `ChildDef<ProfileDraft, AddressDraft>` for `ADDRESS`. The
+composed `city` path remains `TotalPath<ProfileDraft, String>` because it did
+not cross a runtime-selected boundary.
 
-## 4. Enter an optional child with `try_some`
+For a collection, declare only business data. Do not add an ID field or a key
+trait for Form navigation:
 
-An optional child has no target while its value is `None`. Set the total option
-field when the application wants to create the child; `try_some(&Form)` locates
-the payload in the current session and therefore yields a dynamic path.
+```rust,ignore
+#[derive(Clone, FormSchema)]
+struct RuleDraft {
+    label: String,
+}
+
+#[derive(Clone, FormSchema)]
+struct PolicyDraft {
+    #[form(items)]
+    rules: Vec<RuleDraft>,
+}
+```
+
+The Form runtime creates the opaque occurrence identity for every active item.
+Applications receive its typed `ItemPath` from `items`, `try_items`, or a
+collection mutation; they do not reconstruct it from an array index, a business
+ID, or a serialized token.
+
+## 3. Resolve optional children and enum cases
+
+An optional payload or an enum case is not always active. First build a typed
+resolver, then resolve it against the explicit form. Both kinds return
+`Result<Option<_>, ResolveError>`:
+
+- `Ok(Some(path))` means the requested payload is active now;
+- `Ok(None)` means the optional is `None` or the enum currently has another
+  case; and
+- `Err(_)` means the resolver's dynamic starting point belongs to another
+  session or has retired.
 
 ```rust,ignore
 #[derive(Clone, Default, FormSchema)]
@@ -107,53 +124,52 @@ struct ConnectionDraft {
     credentials: Option<CredentialsDraft>,
 }
 
-let runtime = Form::try_new(ConnectionDraft { credentials: None })?;
-let form: Entity<Form<ConnectionDraft>> = cx.new(|_| runtime);
-
+let connection_form = cx.new(|_| Form::new(ConnectionDraft {
+    credentials: None,
+}));
 ConnectionDraft::CREDENTIALS.set(
-    &form,
+    &connection_form,
     Some(CredentialsDraft::default()),
     cx,
 );
 
-let token: DynamicPath<ConnectionDraft, String> = ConnectionDraft::CREDENTIALS
-    .try_some(form.read(cx))?
-    .then(CredentialsDraft::TOKEN);
+let credentials = ConnectionDraft::CREDENTIALS
+    .some()
+    .resolve(&connection_form, cx)?;
 
-let current = token.try_value(&form, cx)?;
-token.try_set(&form, "secret".to_owned(), cx)?;
+if let Some(credentials) = credentials {
+    let token = credentials.then(CredentialsDraft::TOKEN);
+    let value: String = token.try_get(&connection_form, cx)?;
+    token.try_set(&connection_form, "secret".to_owned(), cx)?;
+}
 ```
 
-The detailed option-replacement error fields remain API-design work. The
-resolver contract is fixed: `try_some` explicitly receives the current
-`&Form<ConnectionDraft>`, captures the active `Some` incarnation without
-storing the form entity, and returns a dynamic path. Once a path crosses this
-boundary, it and every descendant remain dynamic.
+Once a path crosses an item, optional, or case boundary it is dynamic. Use
+`try_get` and `try_set`; their error reports that this particular runtime
+location is no longer usable. It does not expose a session, token, or topology
+implementation detail.
 
-## 5. Model recursive items and enum cases
+## 4. Build recursive typed trees
 
-This self-contained example has a recursive group and an enum whose concrete
-payload is selected with `case`. The item model contains no form-only ID.
+Recursive forms use the same Rust types as the business model. The collection
+and resolver APIs carry the exact payload type through every level.
 
 ```rust,ignore
-use gpui::Entity;
-use gpui_form::{DynamicPath, Form, FormSchema};
-
 #[derive(Clone, FormSchema)]
 struct FilterCondition {
     value: String,
 }
 
 #[derive(Clone, FormSchema)]
-struct QueryDraft {
-    #[form(child)]
-    root: FilterGroup,
-}
-
-#[derive(Clone, FormSchema)]
 struct FilterGroup {
     #[form(items)]
     children: Vec<FilterNode>,
+}
+
+#[derive(Clone, FormSchema)]
+struct QueryDraft {
+    #[form(child)]
+    filters: FilterGroup,
 }
 
 #[derive(Clone, FormSchema)]
@@ -168,243 +184,174 @@ enum FilterNodeKind {
     Group(FilterGroup),
 }
 
-let runtime = Form::try_new(QueryDraft {
-    root: FilterGroup {
+let query_form = cx.new(|_| Form::new(QueryDraft {
+    filters: FilterGroup {
         children: vec![FilterNode {
-            kind: FilterNodeKind::Group(FilterGroup {
-                children: vec![FilterNode {
-                    kind: FilterNodeKind::Condition(FilterCondition {
-                        value: String::new(),
-                    }),
-                }],
+            kind: FilterNodeKind::Condition(FilterCondition {
+                value: String::new(),
             }),
         }],
     },
-})?;
-let form: Entity<Form<QueryDraft>> = cx.new(|_| runtime);
-
-let children = QueryDraft::ROOT.then(FilterGroup::CHILDREN);
-let group_node = children
-    .items(&form, cx)?
-    .into_iter()
-    .next()
-    .expect("the example contains one root node");
-let nested_children = group_node
-    .then(FilterNode::KIND)
-    .try_case(form.read(cx), FilterNodeKind::GROUP)?
+}));
+let children = QueryDraft::ROOT
+    .then(QueryDraft::FILTERS)
     .then(FilterGroup::CHILDREN);
-let condition_node = nested_children
-    .try_items(&form, cx)?
-    .into_iter()
-    .next()
-    .expect("the example contains one nested node");
 
-let value: DynamicPath<QueryDraft, String> = condition_node
-    .then(FilterNode::KIND)
-    .try_case(form.read(cx), FilterNodeKind::CONDITION)?
-    .then(FilterCondition::VALUE);
+for node in children.items(&query_form, cx) {
+    let condition = node
+        .then(FilterNode::KIND)
+        .case(FilterNodeKind::CONDITION)
+        .resolve(&query_form, cx)?;
 
-let current = value.try_value(&form, cx)?;
-value.try_set(&form, "Rust".to_owned(), cx)?;
+    if let Some(condition) = condition {
+        let value = condition.then(FilterCondition::VALUE);
+        let current: String = value.try_get(&query_form, cx)?;
+        value.try_set(&query_form, current.trim().to_owned(), cx)?;
+    }
+}
 ```
 
-Form generates and owns the opaque identity for each item occurrence. `items`
-and `try_items` return typed `ItemPath` values selected from the current runtime
-topology; the caller cannot construct or recover one from a model value. An item
-path is already dynamic; `try_case(&Form, CaseDef)` resolves the active case and
-captures its current incarnation. A retired item or inactive case is a
-recoverable path-resolution error, not a silent fallback.
+`FilterNodeKind::CONDITION` is a generated `CaseDef<FilterNodeKind,
+FilterCondition>`. The resolver preserves that payload type, so writing a value
+of the wrong Rust type is rejected at compile time. Calling `case(...).resolve`
+on an inactive case returns `Ok(None)`, not a stale-path error.
 
-Supported enum variants are unit variants and variants with one concrete tuple
-payload that implements `FormSchema`. Generic schema models, struct-like
-variants, and variants with multiple payload fields are compile-time errors.
+The runtime gives every item, active case, and active optional payload a fresh
+occurrence. Same-parent reordering preserves an item's occurrence. Removing
+and re-inserting an item, changing away from and back to a case, or recreating
+an optional payload creates a new occurrence; old dynamic paths stay retired.
 
-## 6. Use generated definitions as building blocks
+## 5. Change collections with paths, not IDs
 
-The derive exposes static definitions; applications compose them rather than
-constructing field names or paths from strings.
-
-```rust,ignore
-ProfileDraft::DISPLAY_NAME; // FieldDef<ProfileDraft, String>
-ProfileDraft::ADDRESS;      // ChildDef<ProfileDraft, AddressDraft>
-FilterGroup::CHILDREN;      // ItemsDef<FilterGroup, FilterNode>
-FilterNodeKind::GROUP;      // CaseDef<FilterNodeKind, FilterGroup>
-```
-
-The important generated families are `FieldDef`, `ChildDef`, `ItemsDef`, and
-`CaseDef`. The runtime, not the derive output, creates typed `ItemPath` values.
-Concrete module paths and non-resolver helper details remain subject to the
-runtime API decision. The resolver shape is fixed: paths call
-`try_case(&Form, CaseDef)` or `try_some(&Form)`; neither generated definitions
-nor located paths retain a form entity.
-
-## 7. Change items through topology methods
-
-Collections are a topology boundary, not a mutable `Vec` borrowed from the
-model. The form session owns item creation, deletion, ordering, opaque identity,
-and movement so it can preserve revision tracking and validation scope.
+Use collection methods to create, order, remove, and replace items. They accept
+and return typed item paths rather than indexes or application IDs.
 
 ```rust,ignore
-use gpui_form::Position;
-
-let children = QueryDraft::ROOT.then(FilterGroup::CHILDREN);
-let anchor = children.items(&form, cx)?.into_iter().next().unwrap();
-let appended = children.append(
-    &form,
+let children = QueryDraft::ROOT
+    .then(QueryDraft::FILTERS)
+    .then(FilterGroup::CHILDREN);
+let node = children.append(
+    &query_form,
     FilterNode {
-        kind: FilterNodeKind::Condition(FilterCondition { value: String::new() }),
+        kind: FilterNodeKind::Condition(FilterCondition {
+            value: String::new(),
+        }),
     },
     cx,
 )?;
-let inserted = children.insert_before(
-    &form,
-    &anchor,
-    FilterNode {
-        kind: FilterNodeKind::Condition(FilterCondition { value: String::new() }),
-    },
-    cx,
-)?;
-children.move_before(&form, &appended, &anchor, cx)?;
-children.remove(&form, inserted, cx)?;
 
-let fresh = children.replace_all(
-    &form,
-    vec![
-        FilterNode {
-            kind: FilterNodeKind::Group(FilterGroup { children: Vec::new() }),
-        },
-        FilterNode {
-            kind: FilterNodeKind::Condition(FilterCondition { value: String::new() }),
-        },
-    ],
-    cx,
-)?;
+let first = children.items(&query_form, cx).into_iter().next();
+if let Some(first) = first {
+    children.move_before(&query_form, &node, &first, cx)?;
+}
+
+children.remove(&query_form, node, cx)?;
 ```
 
-Moving between different parents is explicit because it changes ownership and
-retires the source path:
+`append`, `insert_before`, `move_before`, `remove`, and `replace_all` form the
+collection vocabulary. `ItemPath::move_to` performs an explicit cross-parent
+move and returns the new destination path. A deleted or otherwise retired path
+cannot be reused.
+
+## 6. Add validation metadata and a validator
+
+Leaf fields may use `#[form(required)]` and `#[form(validate(...))]`.
+`validate` selects `on_mount`, `on_change`, `on_blur`, `on_external`, and
+`on_submit`. `on_external` is for application-owned facts such as a refreshed
+catalog. It is deliberately separate from the meaning of `DynamicPath`.
+
+Without an explicitly selected non-submit trigger, business validation runs at
+submit. A validator receives one consistent snapshot through
+`ValidationRequest`; read the model with `request.model()` rather than taking a
+second model parameter or rereading the live Form.
 
 ```rust,ignore
-let parent = fresh[0].clone();
-let source = fresh[1].clone();
-let destination_children = parent
-    .then(FilterNode::KIND)
-    .try_case(form.read(cx), FilterNodeKind::GROUP)?
-    .then(FilterGroup::CHILDREN);
-
-let moved = source.move_to(
-    &form,
-    destination_children,
-    Position::End,
-    cx,
-)?;
-```
-
-`items`, `append`, `insert_before`, `move_before`, `remove`, and `replace_all`
-are the topology vocabulary. They exchange typed item paths, never raw
-IDs. The runtime rejects stale or wrong-session source, destination, and anchor
-paths, as well as an attempted move cycle. `TopologyIndex` is private runtime
-state: callers pass neither it nor a topology snapshot to these APIs.
-
-## 8. Close the session with a validator, prepare, and rebase
-
-Validation belongs to the `Form<M>` session, not to a separate model state. A
-validator receives the requested scope and reports into a sink; it can validate
-a leaf, a subtree, or the whole model as the runtime defines.
-
-```rust,ignore
-use gpui::{App, Entity};
 use gpui_form::{
-    Form, FormRevision, ValidationMessage, ValidationRequest, ValidationSink,
-    Validator,
+    ValidationMessage, ValidationRequest, ValidationSink, Validator,
 };
 
-#[derive(Clone)]
-struct QueryContext {
-    allow_empty: bool,
+#[derive(Clone, FormSchema)]
+struct ProviderDraft {
+    #[form(required, validate(on_submit, on_external))]
+    name: String,
 }
 
-struct QueryValidator {
-    context: QueryContext,
-}
+struct ProviderValidator;
 
-impl Validator<QueryDraft> for QueryValidator {
+impl Validator<ProviderDraft> for ProviderValidator {
     fn validate(
         &self,
-        model: &QueryDraft,
-        request: ValidationRequest<'_, QueryDraft>,
-        out: &mut ValidationSink<QueryDraft>,
+        request: ValidationRequest<'_, ProviderDraft>,
+        out: &mut ValidationSink<'_, ProviderDraft>,
     ) {
-        let children = QueryDraft::ROOT.then(FilterGroup::CHILDREN);
-        if request.includes(&children)
-            && !self.context.allow_empty
-            && model.root.children.is_empty()
+        if request.includes(&ProviderDraft::NAME)
+            && request.model().name.trim().is_empty()
         {
-            out.at(children).error(
-                "query-empty",
-                ValidationMessage::key("query-empty"),
+            out.at(ProviderDraft::NAME).error(
+                "provider-name-empty",
+                ValidationMessage::key("provider-name-empty"),
             );
         }
     }
 }
 
-struct SaveQuery(QueryDraft);
+let form = cx.new(|_| {
+    Form::new(ProviderDraft { name: String::new() })
+        .with_validator(ProviderValidator)
+});
+```
 
-impl From<QueryDraft> for SaveQuery {
-    fn from(query: QueryDraft) -> Self {
-        Self(query)
-    }
-}
+The application may explicitly request `ValidationTrigger::External` after an
+external dependency changes. Form stores validation facts; the page still owns
+when and where to show them.
 
-let context = QueryContext { allow_empty: false };
-let initial_query = QueryDraft {
-    root: FilterGroup {
-        children: vec![FilterNode {
-            kind: FilterNodeKind::Condition(FilterCondition {
-                value: "Rust".to_owned(),
-            }),
-        }],
-    },
-};
-let runtime = Form::try_new_with_validator(initial_query, QueryValidator { context })?;
-let form: Entity<Form<QueryDraft>> = cx.new(|_| runtime);
+## 7. Prepare, save, and conditionally rebase
 
-let prepared = form.update(cx, |form, cx| form.prepare(cx))?;
-let revision: FormRevision = prepared.revision();
-let request = prepared.map(SaveQuery::from);
-// Give `(revision, request)` to the application's persistence task.
+`prepare` runs submit validation and returns an accepted `Prepared<M>` value.
+It contains an opaque `FormVersion` bound to this editing session. `map` keeps
+that version when the application converts the draft into a request.
 
-fn apply_saved_query(
-    form: &Entity<Form<QueryDraft>>,
-    revision: FormRevision,
-    canonical_saved_model: QueryDraft,
+```rust,ignore
+use gpui::{App, Entity};
+use gpui_form::{Form, FormVersion, Prepared};
+
+struct SaveProvider(ProviderDraft);
+
+let prepared: Prepared<ProviderDraft> =
+    form.update(cx, |form, cx| form.prepare(cx))?;
+let request: Prepared<SaveProvider> = prepared.map(SaveProvider);
+let version: FormVersion = request.version();
+
+// Run application-owned I/O with `request.into_parts().1`.
+
+fn apply_saved_provider(
+    form: &Entity<Form<ProviderDraft>>,
+    version: FormVersion,
+    canonical: ProviderDraft,
     cx: &mut App,
 ) -> bool {
     form.update(cx, |form, cx| {
-        form.rebase_if_revision(revision, canonical_saved_model, cx)
+        form.rebase_if_current(version, canonical, cx)
     })
 }
 ```
 
-`prepare` validates and freezes an accepted snapshot. `map` consumes that
-snapshot into a request. After persistence, a conditional rebase prevents an
-older response from overwriting edits made while the request was in flight.
-`Validator`, `ValidationRequest`, `ValidationSink`, and the error types are
-provided by the runtime crate.
+`rebase_if_current` returns `false` without changing the form if the user has
+edited it since preparation, or if the version came from another session.
 
-## 9. Expect diagnostics at the declaration site
+## 8. Expect declaration-site diagnostics
 
-The macro should make invalid schemas obvious where they are declared:
+The derive diagnoses unsupported schema shapes at the declaration:
 
-| Invalid declaration | Expected diagnostic direction |
+| Invalid declaration | Expected direction |
 | --- | --- |
-| generic struct or enum | schemas must be monomorphic |
-| tuple struct or union | only supported struct/enum shapes can expose named definitions |
-| `#[form(items)]` on a non-`Vec` field | item collections use the supported `Vec<Item>` shape |
-| `#[form(items)]` item without `FormSchema` | structured items must expose a schema |
-| removed `#[form(identity)]` attribute | Form owns item identity; remove the attribute and keep the field only if it is business data |
-| struct-like or multi-payload enum variant | a case must be unit or one concrete tuple payload |
+| generic struct or enum | schemas are monomorphic |
+| tuple struct or union | only supported named struct and enum shapes expose definitions |
+| `#[form(items)]` on a non-`Vec` field | collections use supported `Vec<Item>` items |
+| item without `FormSchema` | structured items expose a schema |
+| `#[form(identity)]` | removed; Form owns occurrence identity |
+| struct-like or multi-payload enum variant | a variant is unit or has one concrete tuple payload |
 
-Diagnostics should point to the offending attribute, field, or variant and say
-which supported model shape is expected. This keeps recursive runtime failures
-out of application code.
+The macro keeps unsupported shapes out of application runtime code. Runtime
+resolution errors remain limited to dynamic paths that once referred to an
+active item, case, or optional payload.

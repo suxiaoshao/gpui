@@ -2,11 +2,13 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-`gpui-form` lets a GPUI page edit one typed Rust draft, validate it, prepare one
-snapshot for saving, and safely apply the canonical saved result. Start with one
-ordinary page; recursive trees use the same session and path rules later.
+`gpui-form` gives a GPUI editing page one typed Rust draft, validation, and a
+snapshot that can safely be saved. A `Form<M>` is an editing session, not a
+second application store: the page owns persistence, loading, and presentation;
+the form owns the current draft, baseline, validation facts, and session-local
+locations for dynamic fields.
 
-## Add dependencies and imports
+## Add the crates
 
 ```toml
 [dependencies]
@@ -17,55 +19,72 @@ gpui-form.workspace = true
 gpui-form-gpui-component.workspace = true
 ```
 
-The complete example below uses this prelude; application-owned save types and
-I/O methods are introduced where they are called.
+The component crate is optional, but is the usual way to connect standard
+`gpui-component` inputs. The examples below use these imports:
 
 ```rust,ignore
 use std::{collections::HashSet, sync::Arc};
 
 use gpui::{AppContext as _, Context, Entity, Subscription, Window};
 use gpui_component::{
+    checkbox::Checkbox,
     form::field,
     input::{Input, InputState},
 };
 use gpui_form::{
-    Form, FormRevision, FormSchema, PrepareError, Prepared, ValidationMessage,
-    ValidationRequest, ValidationSink, Validator,
+    Form, FormEvent, FormSchema, Prepared, ValidationMessage,
+    ValidationItemPath, ValidationRequest, ValidationSink, ValidationTrigger, Validator,
 };
-use gpui_form_gpui_component::{
-    FormInput, FormIntegerInput, IntegerInputState,
-};
+use gpui_form_gpui_component::{FormInput, FormIntegerInput, IntegerInputState};
 ```
 
-## A complete provider form
+## A complete small form
 
-### 1. Describe the draft
+### Describe the draft
 
 ```rust,ignore
 #[derive(Clone, Debug, PartialEq, FormSchema)]
 struct ProviderDraft {
-    #[form(required, validate(on_change, on_blur, on_submit))]
+    #[form(required, validate(on_blur, on_submit))]
     name: String,
 
-    #[form(validate(on_change, on_submit))]
+    #[form(validate(on_submit))]
     retry_limit: u32,
 
     enabled: bool,
 }
 ```
 
-`FormSchema` creates reusable static definitions such as
-`ProviderDraft::NAME: FieldDef<ProviderDraft, String>`. A definition contains
-schema metadata and typed access only; it never holds a value, form entity,
-subscription, or control state.
+`FormSchema` creates reusable static descriptors such as
+`ProviderDraft::NAME`. A descriptor contains schema metadata and typed access;
+it never retains a form entity, value, subscription, or native control. The
+root descriptor is also a total path, so its `get` and `set` operations cannot
+fail.
 
-`required` and `validate(...)` configure the generated leaf schema and its
-validation triggers.
+### Create an editing session
 
-### 2. Inject validation into one editing session
+The constructors are infallible. Give the form an initial draft, then optionally
+attach a validator for this editing session:
 
-The validator belongs to the session, so the same model can be edited with
-different application dependencies in different pages.
+```rust,ignore
+let form: Entity<Form<ProviderDraft>> = cx.new(|_| {
+    Form::new(ProviderDraft {
+        name: String::new(),
+        retry_limit: 3,
+        enabled: true,
+    })
+    .with_validator(ProviderValidator::new(reserved_names))
+});
+```
+
+The same schema can have multiple independent sessions with different validator
+data. Updating an application catalog does not rewrite the form; the catalog
+owner explicitly asks for validation when that external fact matters.
+
+### Write a validator
+
+Validation receives one self-consistent snapshot. Read the model through the
+request, and attach an issue to its precise typed path:
 
 ```rust,ignore
 struct ProviderValidator {
@@ -81,10 +100,11 @@ impl ProviderValidator {
 impl Validator<ProviderDraft> for ProviderValidator {
     fn validate(
         &self,
-        model: &ProviderDraft,
         request: ValidationRequest<'_, ProviderDraft>,
-        out: &mut ValidationSink<ProviderDraft>,
+        out: &mut ValidationSink<'_, ProviderDraft>,
     ) {
+        let model = request.model();
+
         if request.includes(&ProviderDraft::NAME)
             && self.reserved_names.contains(model.name.trim())
         {
@@ -93,34 +113,19 @@ impl Validator<ProviderDraft> for ProviderValidator {
                 ValidationMessage::key("provider-name-reserved"),
             );
         }
-
-        if request.includes(&ProviderDraft::RETRY_LIMIT) && model.retry_limit > 10 {
-            out.at(ProviderDraft::RETRY_LIMIT).error(
-                "retry-limit-too-large",
-                ValidationMessage::key("retry-limit-too-large"),
-            );
-        }
     }
 }
-
-let reserved_names = Arc::new(HashSet::from(["default".to_owned()]));
-let runtime = Form::try_new_with_validator(
-    ProviderDraft {
-        name: String::new(),
-        retry_limit: 3,
-        enabled: true,
-    },
-    ProviderValidator::new(reserved_names),
-)?;
-let form: Entity<Form<ProviderDraft>> = cx.new(|_| runtime);
 ```
 
-`Form<M>` owns the current draft, baseline, revision, validation report, and
-form-owned async validation work for this one editing session.
-`#[form(required)]` handles the missing-name rule; the injected validator adds
-business rules that depend on this page's catalog.
+Business validation runs on `Submit` by default. Schema-declared `Mount`,
+`Change`, and `Blur` rules opt into their corresponding triggers. Use
+`ValidationTrigger::External` when a catalog or another external dependency
+changes; it is not related to a `DynamicPath`.
 
-### 3. Let the page own controls and one observation
+### Connect controls and redraw the page
+
+Use the built-in adapters for ordinary controls. They subscribe to the form and
+handle both directions of synchronization themselves:
 
 ```rust,ignore
 struct ProviderPage {
@@ -131,16 +136,12 @@ struct ProviderPage {
 }
 
 impl ProviderPage {
-    fn new(
-        reserved_names: Arc<HashSet<String>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> anyhow::Result<Self> {
-        let runtime = Form::try_new_with_validator(
-            ProviderDraft { name: String::new(), retry_limit: 3, enabled: true },
-            ProviderValidator::new(reserved_names),
-        )?;
-        let form = cx.new(|_| runtime);
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> anyhow::Result<Self> {
+        let form = cx.new(|_| Form::new(ProviderDraft {
+            name: String::new(),
+            retry_limit: 3,
+            enabled: true,
+        }));
 
         let name_input = FormInput::new(
             &form,
@@ -152,11 +153,12 @@ impl ProviderPage {
         let retry_limit_input = FormIntegerInput::new(
             &form,
             ProviderDraft::RETRY_LIMIT,
-            |window, cx| IntegerInputState::new(window, cx)
-                .min(0u32).max(10u32).step(1u32),
+            |window, cx| IntegerInputState::new(window, cx).min(0u32).max(10u32),
             window,
             cx,
         )?;
+
+        // This redraws this page. It is not required to keep controls in sync.
         let form_observer = cx.observe(&form, |_, _, cx| cx.notify());
 
         Ok(Self { form, form_observer, name_input, retry_limit_input })
@@ -164,141 +166,172 @@ impl ProviderPage {
 }
 ```
 
-`FieldDef` at the root is the intended total-path shorthand, so `FormInput::new`
-does not need a path-resolution result. Stateful-control construction and native
-event synchronization are covered in the
-[component adapter guide](../gpui-form-gpui-component/docs/guide.md).
+`FormInput`, `FormIntegerInput`, `FormSelect`, and `FormCombobox` own their
+binding and native subscriptions. A page observer is only for rendering page
+state such as errors, dirty status, or button availability.
 
-### 4. Render schema metadata and live form status
+For a non-stateful callback, use the same descriptor explicitly with the form:
 
 ```rust,ignore
-let name = ProviderDraft::NAME;
-let errors = name.errors(&self.form, cx);
-let is_pending = self.form.read(cx).is_validating();
-let feedback = errors
-    .first()
-    .map(|issue| validation_text(issue, cx))
-    .unwrap_or_else(|| if is_pending { "Checking…".into() } else { String::new() });
+let enabled = ProviderDraft::ENABLED;
+let checked = enabled.get(&self.form, cx);
+let form = self.form.clone();
 
-field()
-    .label("Provider name")
-    .required(name.schema().is_required())
-    .description(feedback)
-    .child(Input::new(&self.name_input));
+Checkbox::new("provider-enabled")
+    .checked(checked)
+    .on_click(move |checked, _, cx| {
+        enabled.set(&form, *checked, cx);
+    });
 ```
 
-The page also reads form-level dirty, valid, pending, report, and revision state
-to render buttons and summaries. The form does not decide when an error becomes
-visible or which control receives focus after a failed submit; the active page
-does.
+## Validate, save, and conditionally rebase
 
-### 5. Prepare, save, and conditionally rebase
-
-`Prepared<M>::map` consumes the prepared snapshot, so capture its revision
-before mapping it into a request:
+`prepare` runs submit validation for one snapshot. On success it returns a
+`Prepared<M>` that carries both the value and a session-bound `FormVersion`:
 
 ```rust,ignore
-struct SaveProvider {
-    name: String,
-    retry_limit: u32,
-    enabled: bool,
-}
+struct SaveProvider(ProviderDraft);
 
 impl From<ProviderDraft> for SaveProvider {
     fn from(draft: ProviderDraft) -> Self {
-        Self {
-            name: draft.name,
-            retry_limit: draft.retry_limit,
-            enabled: draft.enabled,
-        }
+        Self(draft)
     }
 }
 
-fn save(&mut self, cx: &mut Context<Self>) -> Result<(), PrepareError> {
-    let prepared: Prepared<ProviderDraft> = self.form.update(cx, |form, cx| {
-        form.prepare(cx)
-    })?;
+let prepared: Prepared<ProviderDraft> = self.form.update(cx, |form, cx| {
+    form.prepare(cx)
+})?;
 
-    let revision = prepared.revision();
-    let request = prepared.map(SaveProvider::from);
-    self.start_save(revision, request, cx); // page-owned async operation
-    Ok(())
-}
+let (version, request) = prepared
+    .map(SaveProvider::from)
+    .into_parts();
+self.start_save(version, request, cx);
 
-fn save_finished(
-    &mut self,
-    submitted_revision: FormRevision,
-    saved: ProviderDraft,
-    cx: &mut Context<Self>,
-) {
-    let applied = self.form.update(cx, |form, cx| {
-        form.rebase_if_revision(submitted_revision, saved, cx)
-    });
-    if !applied {
-        self.show_saved_while_editing_notice(cx);
-    }
+// In the page-owned async completion callback:
+let applied = self.form.update(cx, |form, cx| {
+    form.rebase_if_current(version, canonical_saved_model, cx)
+});
+if !applied {
+    self.show_saved_while_editing_notice(cx);
 }
 ```
 
-`prepare` validates one snapshot, rejects blocking data/control issues and
-pending async validation, then captures that snapshot with its revision. Saving,
-loading, retry, and notifications remain page or controller work. A failed CAS
-never overwrites edits made while saving.
+`Prepared::map` preserves the same version. `rebase_if_current` changes nothing
+when the user has edited this session since preparation, or when the version
+belongs to another session. Saving, retries, notifications, and error display
+remain application responsibilities.
 
-## Dynamic items do not need model IDs
+## Nested and dynamic data
 
-Mark a structured collection with `#[form(items)]`, but keep form navigation
-identity out of the business draft:
+Mark nested schemas with `#[form(child)]` and structured collections with
+`#[form(items)]`. This complete recursive model contains no Form-only ID:
 
 ```rust,ignore
 #[derive(Clone, FormSchema)]
-struct HeaderDraft {
-    name: String,
+struct QueryDraft {
+    #[form(child)]
+    filters: FilterGroup,
 }
 
 #[derive(Clone, FormSchema)]
-struct RequestDraft {
+struct FilterGroup {
+    title: String,
     #[form(items)]
-    headers: Vec<HeaderDraft>,
+    children: Vec<FilterNode>,
 }
 
-let headers = RequestDraft::HEADERS;
-let header = headers.append(
-    &request_form,
-    HeaderDraft { name: String::new() },
+#[derive(Clone, FormSchema)]
+enum FilterNode {
+    Condition(FilterCondition),
+    Group(FilterGroup),
+}
+
+#[derive(Clone, FormSchema)]
+struct FilterCondition {
+    value: String,
+}
+
+let query_form = cx.new(|_| Form::new(QueryDraft {
+    filters: FilterGroup {
+        title: "All articles".into(),
+        children: Vec::new(),
+    },
+}));
+
+let title = QueryDraft::ROOT
+    .then(QueryDraft::FILTERS)
+    .then(FilterGroup::TITLE);
+let value: String = title.get(&query_form, cx);
+title.set(&query_form, "Recent articles".into(), cx);
+```
+
+Items, enum cases, and `Option::Some` locations are dynamic. Form creates their
+identity; callers neither create IDs nor navigate by array index. Resolve a case
+or optional payload against the current form. An inactive case/option is
+`Ok(None)`; a retired starting location is `Err(ResolveError)`:
+
+```rust,ignore
+let children = QueryDraft::ROOT
+    .then(QueryDraft::FILTERS)
+    .then(FilterGroup::CHILDREN);
+let node = children.append(
+    &query_form,
+    FilterNode::Condition(FilterCondition { value: String::new() }),
     cx,
 )?;
-let name = header.then(HeaderDraft::NAME);
-name.try_set(&request_form, "Authorization".to_owned(), cx)?;
+let key = node.key(); // stable UI identity while this item remains active
+
+let condition = node
+    .case(FilterNode::CONDITION)
+    .resolve(&query_form, cx)?;
+
+if let Some(condition) = condition {
+    let value = condition.then(FilterCondition::VALUE);
+    let current: String = value.try_get(&query_form, cx)?;
+    value.try_set(&query_form, "Rust".into(), cx)?;
+}
 ```
 
-Form generates the item's stable session-local identity and returns it inside a
-typed `ItemPath`. `items`, `append`, `insert_before`, and `replace_all` produce
-these paths; remove and move operations consume or compare them. Callers never
-declare `#[form(identity)]`, construct a raw item ID, or persist form identity
-in `RequestDraft`.
+Enumerate existing items with `children.items(&query_form, cx)`. Every returned
+`ItemPath` is typed and carries its current Form-owned location.
 
-Dynamic enum and optional locations are resolved against the current session:
+Same-parent reordering preserves an item path. Removal, replacement,
+case/optional reconstruction, whole-form replacement, and cross-parent moves
+retire the affected dynamic paths; they never revive at a matching-looking
+location.
+
+## Observe semantic changes when needed
+
+Most pages only need `cx.observe` for rendering. A tree reconciler or another
+cross-field owner can subscribe to semantic form events and ask whether its
+typed target was affected:
 
 ```rust,ignore
-let payload = enum_path.try_case(form_entity.read(cx), EnumDraft::PAYLOAD)?;
-let child = optional_path.try_some(form_entity.read(cx))?;
+let subscription = cx.subscribe(&form, |_, _, event, cx| {
+    if let FormEvent::ModelChanged(change) = event {
+        let children = QueryDraft::ROOT
+            .then(QueryDraft::FILTERS)
+            .then(FilterGroup::CHILDREN);
+        let impact = change.impact(&children);
+
+        if impact.structure_changed() {
+            cx.notify(); // re-enumerate rows
+        } else if impact.value_changed() {
+            cx.notify(); // reread an existing value
+        }
+    }
+});
 ```
 
-`try_case` and `try_some` capture the active incarnation without storing the
-form entity in the returned `DynamicPath`. Static `.then(...)` composition does
-not require a form. If a case changes `A -> B -> A`, or an option changes
-`Some -> None -> Some`, the old dynamic path remains retired. Callers never see
-or pass `TopologyIndex`; Form uses one private topology snapshot for each
-resolve, validation, or mutation transaction.
+`PathImpact` also reports retirement. Validation-only changes arrive separately
+as `FormEvent::ValidationChanged`; they do not mean that a native control value
+must be set again.
 
-## What comes next
+## Learn more
 
-- [User guide](docs/guide.md): validation workflow, lifecycle replacement,
-  optional and recursive paths, runtime-located collection topology, and
-  lifetime rules.
-- [Macro guide](../gpui-form-macros/docs/guide.md): `FormSchema`, schema
-  fragments, enum cases, runtime item paths, and compile-time diagnostics.
-- [Component adapter guide](../gpui-form-gpui-component/docs/guide.md): native
-  controls, deferred bindings, integer/select/combobox behavior, and custom
-  adapters.
+- [User guide](docs/guide.md): lifecycle operations, validation, submission,
+  recursive collections, and event handling.
+- [Macro guide](../gpui-form-macros/docs/guide.md): schema declarations, enum
+  cases, and compile-time diagnostics.
+- [Component adapter guide](../gpui-form-gpui-component/docs/guide.md):
+  built-in controls and the custom-control binding API.

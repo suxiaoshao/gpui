@@ -2,25 +2,26 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+`gpui-form-gpui-component` connects a typed `gpui_form::Form<M>` session to
+stateful controls from `gpui-component`. It supplies adapters for text,
+integers, single selection, and multiple selection; the Form remains the only
+authority for business values.
+
 ```toml
 [dependencies]
-anyhow.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 gpui-form.workspace = true
 gpui-form-gpui-component.workspace = true
 ```
 
-## Bind and render a flat input
+## Bind a field
 
-Define a typed draft, create one form session, bind the root field, and render
-the returned handle as the native input entity:
+Define a schema, create one form for one editing session, then retain both the
+form and the adapter in the page:
 
 ```rust,ignore
-use gpui::{
-    AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window,
-    div,
-};
+use gpui::{Context, Entity, IntoElement, Render, Subscription, Window, div};
 use gpui_component::{form::field, input::{Input, InputState}};
 use gpui_form::{Form, FormSchema};
 use gpui_form_gpui_component::FormInput;
@@ -38,14 +39,11 @@ struct ProviderEditor {
 }
 
 impl ProviderEditor {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> anyhow::Result<Self> {
-        let runtime = Form::try_new(ProviderDraft {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let form = cx.new(|_| Form::new(ProviderDraft {
             name: String::new(),
-        })?;
-        let form = cx.new(|_| runtime);
+        }));
 
-        // A root FieldDef is accepted directly through the sealed
-        // IntoTotalPath conversion. There is no path-resolution Result here.
         let name_input = FormInput::new(
             &form,
             ProviderDraft::NAME,
@@ -53,16 +51,19 @@ impl ProviderEditor {
             window,
             cx,
         );
+
+        // This redraws page-owned labels, errors, and buttons. It is not
+        // required to keep FormInput synchronized with the Form.
         let form_observer = cx.observe(&form, |_, _, cx| cx.notify());
 
-        Ok(Self { form, form_observer, name_input })
+        Self { form, form_observer, name_input }
     }
 }
 
 impl Render for ProviderEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let errors = ProviderDraft::NAME.errors(&self.form, cx);
-        let feedback = errors
+        let feedback = ProviderDraft::NAME
+            .errors(&self.form, cx)
             .first()
             .map(|issue| validation_text(issue, cx))
             .unwrap_or_default();
@@ -70,7 +71,7 @@ impl Render for ProviderEditor {
         div().child(
             field()
                 .label("Provider name")
-                .required(ProviderDraft::NAME.schema().is_required())
+                .required(true)
                 .description(feedback)
                 .child(Input::new(&self.name_input)),
         )
@@ -78,29 +79,48 @@ impl Render for ProviderEditor {
 }
 ```
 
-Keep both `form` and `name_input` in the page. Typing updates the typed draft;
-blur asks the form to validate that field; `set`, `reset`, or `rebase` on the
-form silently updates the visible input. `validation_text` is the application's
-localization helper for a validation issue; the observer rerenders the label,
-feedback, and surrounding buttons whenever form state changes.
+`FormInput` defers native edits into the Form, silently projects relevant Form
+value changes back to the native input, and owns that synchronization for its
+entire lifetime. A write from this input is not immediately projected back to
+the same input, while another control bound to the same path does receive the
+new value.
 
-Submission still uses the same core form session; controls do not need a
-separate collection step:
+## Submit the same session
+
+Controls do not collect a second copy of the draft. Prepare the existing Form,
+perform application-owned I/O, then only rebase if the saved version is still
+current:
 
 ```rust,ignore
 let prepared = self.form.update(cx, |form, cx| form.prepare(cx))?;
-let revision = prepared.revision();
-let request: ProviderDraft = prepared.map(|draft| draft);
-self.start_save(revision, request, cx);
+let (version, request): (_, ProviderDraft) = prepared.into_parts();
+
+let canonical_model = self.save_provider(request).await?;
+self.form.update(cx, |form, cx| {
+    form.rebase_if_current(version, canonical_model, cx);
+});
 ```
 
-Use `FormInput` for `String`, `FormIntegerInput` for integer primitives,
-`FormSelect` for one optional selection, and `FormCombobox` for multiple typed
-values. Render `Checkbox` and `Switch` as controlled elements. Your own
-component can either use the same controlled pattern or expose a small stateful
-adapter; both recipes are shown in the guide.
+## Choose the right adapter
 
-See the [user guide](docs/guide.md) or its
-[Chinese version](docs/guide.zh-CN.md) for total and dynamic Input, Integer,
-Select, Combobox, controlled boolean, options-refresh, error, and custom-adapter
-recipes.
+- `FormInput` binds `String`.
+- `FormIntegerInput` binds integer primitives while keeping incomplete text in
+  the native editor.
+- `FormSelect` binds `Option<D::Item::Value>`.
+- `FormCombobox` binds `Vec<D::Item::Value>`.
+- `Checkbox` and `Switch` are rendered as controlled elements because they do
+  not expose a state entity.
+
+Pass a total path to `new`. A path through a collection item, enum case, or
+`Option::Some` is dynamic: resolve it first and pass the resulting path to
+`try_new`. A dynamic adapter is retired with its location; create a fresh one
+for a new location instead of retargeting the old control.
+
+The page observer is for page rendering only. Built-in adapters synchronize
+without a page-level `FormEvent` subscription. For catalogs and delegates,
+the application owns option refreshes; refreshing options never changes Form
+values or selects a fallback implicitly.
+
+See the [user guide](docs/guide.md) or its [Chinese version](docs/guide.zh-CN.md)
+for total and dynamic paths, all adapters, validation, option refreshes, and a
+custom stateful-adapter recipe.

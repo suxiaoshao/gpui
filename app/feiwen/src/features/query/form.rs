@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use gpui_form::{
-    DynamicItemsPath, DynamicPath, FormSchema, MutationError, ValidationMessage, ValidationRequest,
-    ValidationSink, Validator,
+    FormSchema, ValidationDynamicItemsPath, ValidationDynamicPath, ValidationMessage,
+    ValidationRequest, ValidationSink, Validator,
 };
 
 use super::advanced::options::{
@@ -100,7 +100,7 @@ pub(crate) struct AuthorConditionDraft {
 #[derive(Clone, Debug, PartialEq, FormSchema)]
 pub(crate) struct SortDraft {
     pub(crate) field: Option<SortField>,
-    pub(crate) direction: SortDirection,
+    pub(crate) direction: Option<SortDirection>,
 }
 
 impl Default for QueryDraft {
@@ -180,71 +180,68 @@ pub(crate) struct QueryDraftValidator;
 impl Validator<QueryDraft> for QueryDraftValidator {
     fn validate(
         &self,
-        model: &QueryDraft,
         request: ValidationRequest<'_, QueryDraft>,
         out: &mut ValidationSink<'_, QueryDraft>,
     ) {
         let root_children = QueryDraft::ROOT
             .then(QueryDraft::FILTERS)
             .then(FilterGroupDraft::CHILDREN);
-        validate_nodes(model, request, request.items(model, &root_children), out);
+        let root_nodes = request.items(&root_children);
+        validate_nodes(request.clone(), root_nodes, out);
 
         let sort_items = QueryDraft::ROOT.then(QueryDraft::SORTS);
-        if let Ok(sorts) = request.items(model, &sort_items) {
-            for sort in sorts {
-                let field = sort.then(SortDraft::FIELD);
-                if request.value(model, &field).is_ok_and(Option::is_none) {
-                    out.at(field).error(
-                        "sort_field_required",
-                        ValidationMessage::key("query-validation-sort-field"),
-                    );
-                }
+        for sort in request.items(&sort_items) {
+            let field = sort.then(SortDraft::FIELD);
+            if request.try_get(&field).is_ok_and(Option::is_none) {
+                out.at(field).error(
+                    "sort_field_required",
+                    ValidationMessage::key("query-validation-sort-field"),
+                );
             }
         }
     }
 }
 
 fn validate_nodes(
-    model: &QueryDraft,
     request: ValidationRequest<'_, QueryDraft>,
-    nodes: Result<Vec<gpui_form::ItemPath<QueryDraft, FilterNodeDraft>>, MutationError>,
+    nodes: Vec<gpui_form::ValidationItemPath<'_, QueryDraft, FilterNodeDraft>>,
     out: &mut ValidationSink<'_, QueryDraft>,
 ) {
-    let Ok(nodes) = nodes else {
-        return;
-    };
     for node in nodes {
         let kind = node.then(FilterNodeDraft::KIND);
-        let Ok(value) = request.value(model, &kind) else {
+        let Ok(value) = request.try_get(&kind) else {
             continue;
         };
         match value {
             FilterNodeKind::Condition(_) => {
-                let Ok(condition) = request.try_case(model, kind, FilterNodeKind::CONDITION) else {
+                let Ok(Some(condition)) = kind.case(FilterNodeKind::CONDITION).resolve(&request)
+                else {
                     continue;
                 };
-                validate_condition(model, request, condition, out);
+                validate_condition(request.clone(), condition, out);
             }
             FilterNodeKind::Group(_) => {
-                let Ok(group) = request.try_case(model, kind, FilterNodeKind::GROUP) else {
+                let Ok(Some(group)) = kind.case(FilterNodeKind::GROUP).resolve(&request) else {
                     continue;
                 };
-                let children: DynamicItemsPath<QueryDraft, FilterNodeDraft> =
+                let children: ValidationDynamicItemsPath<'_, QueryDraft, FilterNodeDraft> =
                     group.then(FilterGroupDraft::CHILDREN);
-                validate_nodes(model, request, request.dynamic_items(model, &children), out);
+                let Ok(children) = request.try_items(&children) else {
+                    continue;
+                };
+                validate_nodes(request.clone(), children, out);
             }
         }
     }
 }
 
 fn validate_condition(
-    model: &QueryDraft,
     request: ValidationRequest<'_, QueryDraft>,
-    condition: DynamicPath<QueryDraft, FilterConditionDraft>,
+    condition: ValidationDynamicPath<'_, QueryDraft, FilterConditionDraft>,
     out: &mut ValidationSink<'_, QueryDraft>,
 ) {
     let field = condition.then(FilterConditionDraft::FIELD);
-    let Ok(value) = request.value(model, &field) else {
+    let Ok(value) = request.try_get(&field) else {
         return;
     };
     match value {
@@ -253,7 +250,7 @@ fn validate_condition(
             ValidationMessage::key("query-validation-field"),
         ),
         ConditionField::Text(value) => {
-            let Ok(path) = request.try_case(model, field, ConditionField::TEXT) else {
+            let Ok(Some(path)) = field.case(ConditionField::TEXT).resolve(&request) else {
                 return;
             };
             if value.relation.is_none() {
@@ -272,7 +269,7 @@ fn validate_condition(
             }
         }
         ConditionField::Number(value) => {
-            let Ok(path) = request.try_case(model, field, ConditionField::NUMBER) else {
+            let Ok(Some(path)) = field.case(ConditionField::NUMBER).resolve(&request) else {
                 return;
             };
             let Some(relation) = value.relation else {
@@ -308,7 +305,7 @@ fn validate_condition(
             }
         }
         ConditionField::Bool(value) => {
-            let Ok(path) = request.try_case(model, field, ConditionField::BOOL) else {
+            let Ok(Some(path)) = field.case(ConditionField::BOOL).resolve(&request) else {
                 return;
             };
             if value.relation.is_none() {
@@ -327,7 +324,7 @@ fn validate_condition(
             }
         }
         ConditionField::Tags(value) => {
-            let Ok(path) = request.try_case(model, field, ConditionField::TAGS) else {
+            let Ok(Some(path)) = field.case(ConditionField::TAGS).resolve(&request) else {
                 return;
             };
             let Some(relation) = value.relation else {
@@ -345,7 +342,7 @@ fn validate_condition(
             }
         }
         ConditionField::Author(value) => {
-            let Ok(path) = request.try_case(model, field, ConditionField::AUTHOR) else {
+            let Ok(Some(path)) = field.case(ConditionField::AUTHOR).resolve(&request) else {
                 return;
             };
             let Some(relation) = value.relation else {
@@ -387,7 +384,7 @@ fn validate_condition(
 
 fn validate_number(
     value: &str,
-    path: DynamicPath<QueryDraft, String>,
+    path: ValidationDynamicPath<'_, QueryDraft, String>,
     out: &mut ValidationSink<'_, QueryDraft>,
 ) {
     if value.trim().parse::<i32>().is_err() {
@@ -805,7 +802,7 @@ impl SortDraft {
                 .field
                 .ok_or_else(|| "请选择排序字段".to_owned())?
                 .sort_expr(),
-            direction: self.direction,
+            direction: self.direction.ok_or_else(|| "请选择排序方向".to_owned())?,
         })
     }
 
@@ -835,7 +832,7 @@ impl SortDraft {
                 SortExpr::Number(crate::store::query::NumberField::AuthorId) => SortField::AuthorId,
                 SortExpr::Bool(BoolField::IsLimit) => SortField::IsLimit,
             }),
-            direction: spec.direction,
+            direction: Some(spec.direction),
         }
     }
 }
@@ -887,7 +884,7 @@ mod tests {
             },
             sorts: vec![SortDraft {
                 field: Some(SortField::Title),
-                direction: SortDirection::Desc,
+                direction: Some(SortDirection::Desc),
             }],
         };
         let spec = draft.to_spec().unwrap();
@@ -923,7 +920,7 @@ mod tests {
     fn relation_changes_preserve_all_number_operands(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let form = cx.new(|_| {
-                Form::try_new(QueryDraft {
+                Form::new(QueryDraft {
                     filters: FilterGroupDraft {
                         relation: GroupRelation::All,
                         negated: false,
@@ -942,19 +939,22 @@ mod tests {
                     },
                     sorts: Vec::new(),
                 })
-                .unwrap()
             });
             let children = QueryDraft::ROOT
                 .then(QueryDraft::FILTERS)
                 .then(FilterGroupDraft::CHILDREN);
-            let item = children.items(&form, cx).unwrap().remove(0);
+            let item = children.items(&form, cx).remove(0);
             let condition = item
                 .then(FilterNodeDraft::KIND)
-                .try_case(form.read(cx), FilterNodeKind::CONDITION)
+                .case(FilterNodeKind::CONDITION)
+                .resolve(&form, cx)
+                .unwrap()
                 .unwrap();
             let number = condition
                 .then(FilterConditionDraft::FIELD)
-                .try_case(form.read(cx), ConditionField::NUMBER)
+                .case(ConditionField::NUMBER)
+                .resolve(&form, cx)
+                .unwrap()
                 .unwrap();
 
             number
@@ -966,7 +966,7 @@ mod tests {
                 number
                     .clone()
                     .then(NumberConditionDraft::SINGLE)
-                    .try_value(&form, cx)
+                    .try_get(&form, cx)
                     .unwrap(),
                 "100"
             );
@@ -974,14 +974,14 @@ mod tests {
                 number
                     .clone()
                     .then(NumberConditionDraft::MIN)
-                    .try_value(&form, cx)
+                    .try_get(&form, cx)
                     .unwrap(),
                 "10"
             );
             assert_eq!(
                 number
                     .then(NumberConditionDraft::MAX)
-                    .try_value(&form, cx)
+                    .try_get(&form, cx)
                     .unwrap(),
                 "200"
             );
@@ -994,7 +994,7 @@ mod tests {
     ) {
         cx.update(|cx| {
             let form = cx.new(|_| {
-                Form::try_new(QueryDraft {
+                Form::new(QueryDraft {
                     filters: FilterGroupDraft {
                         relation: GroupRelation::All,
                         negated: false,
@@ -1013,22 +1013,24 @@ mod tests {
                     },
                     sorts: Vec::new(),
                 })
-                .unwrap()
             });
             let item = QueryDraft::ROOT
                 .then(QueryDraft::FILTERS)
                 .then(FilterGroupDraft::CHILDREN)
                 .items(&form, cx)
-                .unwrap()
                 .remove(0);
             let condition = item
                 .then(FilterNodeDraft::KIND)
-                .try_case(form.read(cx), FilterNodeKind::CONDITION)
+                .case(FilterNodeKind::CONDITION)
+                .resolve(&form, cx)
+                .unwrap()
                 .unwrap();
             let field = condition.then(FilterConditionDraft::FIELD);
             let old_single = field
                 .clone()
-                .try_case(form.read(cx), ConditionField::NUMBER)
+                .case(ConditionField::NUMBER)
+                .resolve(&form, cx)
+                .unwrap()
                 .unwrap()
                 .then(NumberConditionDraft::SINGLE);
 
@@ -1037,20 +1039,24 @@ mod tests {
                 .try_set(&form, ConditionField::for_field(FieldKind::Title), cx)
                 .unwrap();
             assert!(matches!(
-                old_single.try_value(&form, cx),
+                old_single.try_get(&form, cx),
                 Err(ResolveError::Retired { .. })
             ));
-            let text = field.try_case(form.read(cx), ConditionField::TEXT).unwrap();
+            let text = field
+                .case(ConditionField::TEXT)
+                .resolve(&form, cx)
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 text.clone()
                     .then(TextConditionDraft::RELATION)
-                    .try_value(&form, cx)
+                    .try_get(&form, cx)
                     .unwrap(),
                 None
             );
             assert_eq!(
                 text.then(TextConditionDraft::VALUE)
-                    .try_value(&form, cx)
+                    .try_get(&form, cx)
                     .unwrap(),
                 ""
             );
@@ -1062,7 +1068,7 @@ mod tests {
         cx.update(|cx| {
             let nested_children = vec![FilterNodeDraft::condition(), FilterNodeDraft::condition()];
             let form = cx.new(|_| {
-                Form::try_new(QueryDraft {
+                Form::new(QueryDraft {
                     filters: FilterGroupDraft {
                         relation: GroupRelation::All,
                         negated: false,
@@ -1076,17 +1082,17 @@ mod tests {
                     },
                     sorts: Vec::new(),
                 })
-                .unwrap()
             });
             let group_item = QueryDraft::ROOT
                 .then(QueryDraft::FILTERS)
                 .then(FilterGroupDraft::CHILDREN)
                 .items(&form, cx)
-                .unwrap()
                 .remove(0);
             let group = group_item
                 .then(FilterNodeDraft::KIND)
-                .try_case(form.read(cx), FilterNodeKind::GROUP)
+                .case(FilterNodeKind::GROUP)
+                .resolve(&form, cx)
+                .unwrap()
                 .unwrap();
             let children = group.then(FilterGroupDraft::CHILDREN);
             let items = children.try_items(&form, cx).unwrap();
@@ -1102,7 +1108,7 @@ mod tests {
 
             children.remove(&form, first.clone(), cx).unwrap();
             assert!(matches!(
-                first.try_value(&form, cx),
+                first.try_get(&form, cx),
                 Err(ResolveError::Retired { .. })
             ));
             assert_eq!(children.try_items(&form, cx).unwrap()[0].key(), second_key);
@@ -1115,40 +1121,40 @@ mod tests {
     ) {
         cx.update(|cx| {
             let form = cx.new(|_| {
-                Form::try_new_with_validator(
-                    QueryDraft {
-                        filters: FilterGroupDraft {
-                            relation: GroupRelation::All,
-                            negated: false,
-                            children: vec![FilterNodeDraft {
-                                kind: FilterNodeKind::Condition(FilterConditionDraft {
-                                    negated: false,
-                                    field: ConditionField::Text(TextConditionDraft {
-                                        field: FieldKind::Title,
-                                        relation: None,
-                                        value: String::new(),
-                                    }),
+                Form::new(QueryDraft {
+                    filters: FilterGroupDraft {
+                        relation: GroupRelation::All,
+                        negated: false,
+                        children: vec![FilterNodeDraft {
+                            kind: FilterNodeKind::Condition(FilterConditionDraft {
+                                negated: false,
+                                field: ConditionField::Text(TextConditionDraft {
+                                    field: FieldKind::Title,
+                                    relation: None,
+                                    value: String::new(),
                                 }),
-                            }],
-                        },
-                        sorts: Vec::new(),
+                            }),
+                        }],
                     },
-                    QueryDraftValidator,
-                )
-                .unwrap()
+                    sorts: Vec::new(),
+                })
+                .with_validator(QueryDraftValidator)
             });
             let item = QueryDraft::ROOT
                 .then(QueryDraft::FILTERS)
                 .then(FilterGroupDraft::CHILDREN)
                 .items(&form, cx)
-                .unwrap()
                 .remove(0);
             let text = item
                 .then(FilterNodeDraft::KIND)
-                .try_case(form.read(cx), FilterNodeKind::CONDITION)
+                .case(FilterNodeKind::CONDITION)
+                .resolve(&form, cx)
+                .unwrap()
                 .unwrap()
                 .then(FilterConditionDraft::FIELD)
-                .try_case(form.read(cx), ConditionField::TEXT)
+                .case(ConditionField::TEXT)
+                .resolve(&form, cx)
+                .unwrap()
                 .unwrap();
             let relation = text.clone().then(TextConditionDraft::RELATION);
             let value = text.then(TextConditionDraft::VALUE);

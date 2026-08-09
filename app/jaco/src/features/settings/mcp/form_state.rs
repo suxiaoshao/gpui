@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
 };
 
@@ -8,7 +8,7 @@ use crate::state::config::{McpOAuthTomlConfig, McpServerTomlConfig, McpTransport
 use gpui::{App, AppContext as _, Context, Entity, Window};
 use gpui_component::input::InputState;
 use gpui_form::{
-    DynamicPath, Form, FormSchema, GardeValidator, ItemPath, MutationError, PathKey, ResolveError,
+    Form, FormSchema, GardeValidator, ItemPath, MutationError, PathKey, ResolveError,
     TotalItemsPath,
 };
 use gpui_form_gpui_component::FormInput;
@@ -146,12 +146,52 @@ pub(super) struct McpServerFormDraft {
     pub(super) form: Entity<Form<McpServerFormInput>>,
 }
 
-type McpTextItem<Row> = (ItemPath<McpServerFormInput, Row>, Entity<InputState>);
-type McpKeyValueItem<Row> = (
-    ItemPath<McpServerFormInput, Row>,
-    Entity<InputState>,
-    Entity<InputState>,
-);
+pub(super) struct McpTextRow<Row: FormSchema> {
+    pub(super) item: ItemPath<McpServerFormInput, Row>,
+    pub(super) input: Entity<InputState>,
+    _control: FormInput,
+}
+
+pub(super) struct McpKeyValueRow<Row: FormSchema> {
+    pub(super) item: ItemPath<McpServerFormInput, Row>,
+    pub(super) key: Entity<InputState>,
+    pub(super) value: Entity<InputState>,
+    _key_control: FormInput,
+    _value_control: FormInput,
+}
+
+struct McpFixedFormControls {
+    _server_id: FormInput,
+    _command: FormInput,
+    _cwd: FormInput,
+    _url: FormInput,
+    _bearer_token_env_var: FormInput,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct McpCollectionImpact {
+    pub(super) args: bool,
+    pub(super) env: bool,
+    pub(super) env_vars: bool,
+    pub(super) headers: bool,
+    pub(super) env_headers: bool,
+}
+
+impl McpCollectionImpact {
+    pub(super) const fn all() -> Self {
+        Self {
+            args: true,
+            env: true,
+            env_vars: true,
+            headers: true,
+            env_headers: true,
+        }
+    }
+
+    pub(super) const fn is_empty(self) -> bool {
+        !self.args && !self.env && !self.env_vars && !self.headers && !self.env_headers
+    }
+}
 
 pub(super) struct McpServerFormComponents {
     pub(super) server_id: Entity<InputState>,
@@ -159,12 +199,12 @@ pub(super) struct McpServerFormComponents {
     pub(super) cwd: Entity<InputState>,
     pub(super) url: Entity<InputState>,
     pub(super) bearer_token_env_var: Entity<InputState>,
-    pub(super) args: HashMap<PathKey, McpTextItem<McpArgRowInput>>,
-    pub(super) env: HashMap<PathKey, McpKeyValueItem<McpEnvRowInput>>,
-    pub(super) env_vars: HashMap<PathKey, McpTextItem<McpEnvVarRowInput>>,
-    pub(super) headers: HashMap<PathKey, McpKeyValueItem<McpHeaderRowInput>>,
-    pub(super) env_headers: HashMap<PathKey, McpKeyValueItem<McpEnvHeaderRowInput>>,
-    _controls: Vec<FormInput>,
+    pub(super) args: HashMap<PathKey, McpTextRow<McpArgRowInput>>,
+    pub(super) env: HashMap<PathKey, McpKeyValueRow<McpEnvRowInput>>,
+    pub(super) env_vars: HashMap<PathKey, McpTextRow<McpEnvVarRowInput>>,
+    pub(super) headers: HashMap<PathKey, McpKeyValueRow<McpHeaderRowInput>>,
+    pub(super) env_headers: HashMap<PathKey, McpKeyValueRow<McpEnvHeaderRowInput>>,
+    _fixed_controls: McpFixedFormControls,
 }
 
 impl McpServerFormComponents {
@@ -180,10 +220,9 @@ impl McpServerFormComponents {
             form: &Entity<Form<McpServerFormInput>>,
             field: gpui_form::FieldDef<McpServerFormInput, String>,
             placeholder: String,
-            controls: &mut Vec<FormInput>,
             window: &mut Window,
             cx: &mut Context<T>,
-        ) -> Entity<InputState>
+        ) -> (Entity<InputState>, FormInput)
         where
             T: 'static,
         {
@@ -195,180 +234,297 @@ impl McpServerFormComponents {
                 cx,
             );
             let input = (*control).clone();
-            controls.push(control);
-            input
-        }
-
-        fn try_bind_field<T>(
-            form: &Entity<Form<McpServerFormInput>>,
-            field: DynamicPath<McpServerFormInput, String>,
-            placeholder: String,
-            controls: &mut Vec<FormInput>,
-            window: &mut Window,
-            cx: &mut Context<T>,
-        ) -> Result<Entity<InputState>, gpui_form::ResolveError>
-        where
-            T: 'static,
-        {
-            let control = FormInput::try_new(
-                form,
-                field,
-                move |window, cx| InputState::new(window, cx).placeholder(placeholder),
-                window,
-                cx,
-            )?;
-            let input = (*control).clone();
-            controls.push(control);
-            Ok(input)
+            (input, control)
         }
 
         let i18n = cx.global::<I18n>().clone();
-        let mut controls = Vec::new();
-        let server_id = bind_field(
+        let (server_id, server_id_control) = bind_field(
             form,
             McpServerFormInput::SERVER_ID,
             i18n.t("mcp-placeholder-server-id"),
-            &mut controls,
             window,
             cx,
         );
-        let command = bind_field(
+        let (command, command_control) = bind_field(
             form,
             McpServerFormInput::COMMAND,
             i18n.t("mcp-placeholder-command"),
-            &mut controls,
             window,
             cx,
         );
-        let cwd = bind_field(
+        let (cwd, cwd_control) = bind_field(
             form,
             McpServerFormInput::CWD,
             i18n.t("mcp-placeholder-cwd"),
-            &mut controls,
             window,
             cx,
         );
-        let url = bind_field(
+        let (url, url_control) = bind_field(
             form,
             McpServerFormInput::URL,
             i18n.t("mcp-placeholder-url"),
-            &mut controls,
             window,
             cx,
         );
-        let bearer_token_env_var = bind_field(
+        let (bearer_token_env_var, bearer_token_env_var_control) = bind_field(
             form,
             McpServerFormInput::BEARER_TOKEN_ENV_VAR,
             i18n.t("mcp-placeholder-bearer-token-env-var"),
-            &mut controls,
             window,
             cx,
         );
 
-        let mut args = HashMap::new();
-        for item in McpServerFormInput::ARGS.items(form, cx)? {
-            let key = item.key();
-            let input = try_bind_field(
-                form,
-                item.clone().then(McpArgRowInput::VALUE),
-                i18n.t("mcp-placeholder-arg"),
-                &mut controls,
-                window,
-                cx,
-            )?;
-            args.insert(key, (item, input));
-        }
-        let mut env = HashMap::new();
-        for item in McpServerFormInput::ENV.items(form, cx)? {
-            let item_key = item.key();
-            let key = try_bind_field(
-                form,
-                item.clone().then(McpEnvRowInput::KEY),
-                i18n.t("mcp-placeholder-env-key"),
-                &mut controls,
-                window,
-                cx,
-            )?;
-            let value = try_bind_field(
-                form,
-                item.clone().then(McpEnvRowInput::VALUE),
-                i18n.t("mcp-placeholder-env-value"),
-                &mut controls,
-                window,
-                cx,
-            )?;
-            env.insert(item_key, (item, key, value));
-        }
-        let mut env_vars = HashMap::new();
-        for item in McpServerFormInput::ENV_VARS.items(form, cx)? {
-            let key = item.key();
-            let input = try_bind_field(
-                form,
-                item.clone().then(McpEnvVarRowInput::VALUE),
-                i18n.t("mcp-placeholder-env-var"),
-                &mut controls,
-                window,
-                cx,
-            )?;
-            env_vars.insert(key, (item, input));
-        }
-        let mut headers = HashMap::new();
-        for item in McpServerFormInput::HEADERS.items(form, cx)? {
-            let key = item.key();
-            let name = try_bind_field(
-                form,
-                item.clone().then(McpHeaderRowInput::NAME),
-                i18n.t("mcp-placeholder-header-name"),
-                &mut controls,
-                window,
-                cx,
-            )?;
-            let value = try_bind_field(
-                form,
-                item.clone().then(McpHeaderRowInput::VALUE),
-                i18n.t("mcp-placeholder-header-value"),
-                &mut controls,
-                window,
-                cx,
-            )?;
-            headers.insert(key, (item, name, value));
-        }
-        let mut env_headers = HashMap::new();
-        for item in McpServerFormInput::ENV_HEADERS.items(form, cx)? {
-            let key = item.key();
-            let name = try_bind_field(
-                form,
-                item.clone().then(McpEnvHeaderRowInput::NAME),
-                i18n.t("mcp-placeholder-header-name"),
-                &mut controls,
-                window,
-                cx,
-            )?;
-            let env_var = try_bind_field(
-                form,
-                item.clone().then(McpEnvHeaderRowInput::ENV_VAR),
-                i18n.t("mcp-placeholder-env-header-var"),
-                &mut controls,
-                window,
-                cx,
-            )?;
-            env_headers.insert(key, (item, name, env_var));
-        }
-
-        Ok(Self {
+        let mut components = Self {
             server_id,
             command,
             cwd,
             url,
             bearer_token_env_var,
-            args,
-            env,
-            env_vars,
-            headers,
-            env_headers,
-            _controls: controls,
-        })
+            args: HashMap::new(),
+            env: HashMap::new(),
+            env_vars: HashMap::new(),
+            headers: HashMap::new(),
+            env_headers: HashMap::new(),
+            _fixed_controls: McpFixedFormControls {
+                _server_id: server_id_control,
+                _command: command_control,
+                _cwd: cwd_control,
+                _url: url_control,
+                _bearer_token_env_var: bearer_token_env_var_control,
+            },
+        };
+        components.reconcile(form, McpCollectionImpact::all(), window, cx)?;
+        Ok(components)
     }
+
+    pub(super) fn reconcile<T>(
+        &mut self,
+        form: &Entity<Form<McpServerFormInput>>,
+        impact: McpCollectionImpact,
+        window: &mut Window,
+        cx: &mut Context<T>,
+    ) -> Result<(), MutationError>
+    where
+        T: 'static,
+    {
+        let i18n = cx.global::<I18n>().clone();
+        let args = impact
+            .args
+            .then(|| {
+                prepare_text_rows(
+                    &self.args,
+                    McpServerFormInput::ARGS.items(form, cx),
+                    McpArgRowInput::VALUE,
+                    i18n.t("mcp-placeholder-arg"),
+                    form,
+                    window,
+                    cx,
+                )
+            })
+            .transpose()?;
+        let env = impact
+            .env
+            .then(|| {
+                prepare_key_value_rows(
+                    &self.env,
+                    KeyValueRowSpec {
+                        items: McpServerFormInput::ENV.items(form, cx),
+                        key_field: McpEnvRowInput::KEY,
+                        value_field: McpEnvRowInput::VALUE,
+                        key_placeholder: i18n.t("mcp-placeholder-env-key"),
+                        value_placeholder: i18n.t("mcp-placeholder-env-value"),
+                    },
+                    form,
+                    window,
+                    cx,
+                )
+            })
+            .transpose()?;
+        let env_vars = impact
+            .env_vars
+            .then(|| {
+                prepare_text_rows(
+                    &self.env_vars,
+                    McpServerFormInput::ENV_VARS.items(form, cx),
+                    McpEnvVarRowInput::VALUE,
+                    i18n.t("mcp-placeholder-env-var"),
+                    form,
+                    window,
+                    cx,
+                )
+            })
+            .transpose()?;
+        let headers = impact
+            .headers
+            .then(|| {
+                prepare_key_value_rows(
+                    &self.headers,
+                    KeyValueRowSpec {
+                        items: McpServerFormInput::HEADERS.items(form, cx),
+                        key_field: McpHeaderRowInput::NAME,
+                        value_field: McpHeaderRowInput::VALUE,
+                        key_placeholder: i18n.t("mcp-placeholder-header-name"),
+                        value_placeholder: i18n.t("mcp-placeholder-header-value"),
+                    },
+                    form,
+                    window,
+                    cx,
+                )
+            })
+            .transpose()?;
+        let env_headers = impact
+            .env_headers
+            .then(|| {
+                prepare_key_value_rows(
+                    &self.env_headers,
+                    KeyValueRowSpec {
+                        items: McpServerFormInput::ENV_HEADERS.items(form, cx),
+                        key_field: McpEnvHeaderRowInput::NAME,
+                        value_field: McpEnvHeaderRowInput::ENV_VAR,
+                        key_placeholder: i18n.t("mcp-placeholder-header-name"),
+                        value_placeholder: i18n.t("mcp-placeholder-env-header-var"),
+                    },
+                    form,
+                    window,
+                    cx,
+                )
+            })
+            .transpose()?;
+
+        if let Some(plan) = args {
+            plan.apply(&mut self.args);
+        }
+        if let Some(plan) = env {
+            plan.apply(&mut self.env);
+        }
+        if let Some(plan) = env_vars {
+            plan.apply(&mut self.env_vars);
+        }
+        if let Some(plan) = headers {
+            plan.apply(&mut self.headers);
+        }
+        if let Some(plan) = env_headers {
+            plan.apply(&mut self.env_headers);
+        }
+        Ok(())
+    }
+}
+
+struct RowReconcilePlan<Row> {
+    active: HashSet<PathKey>,
+    additions: Vec<(PathKey, Row)>,
+}
+
+impl<Row> RowReconcilePlan<Row> {
+    fn apply(self, rows: &mut HashMap<PathKey, Row>) {
+        rows.retain(|key, _| self.active.contains(key));
+        rows.extend(self.additions);
+    }
+}
+
+fn prepare_text_rows<T, Row>(
+    existing: &HashMap<PathKey, McpTextRow<Row>>,
+    items: Vec<ItemPath<McpServerFormInput, Row>>,
+    field: gpui_form::FieldDef<Row, String>,
+    placeholder: String,
+    form: &Entity<Form<McpServerFormInput>>,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) -> Result<RowReconcilePlan<McpTextRow<Row>>, ResolveError>
+where
+    T: 'static,
+    Row: FormSchema,
+{
+    let active = items.iter().map(ItemPath::key).collect::<HashSet<_>>();
+    let mut additions = Vec::new();
+    for item in items {
+        let key = item.key();
+        if existing.contains_key(&key) {
+            continue;
+        }
+        let control = FormInput::try_new(
+            form,
+            item.clone().then(field),
+            {
+                let placeholder = placeholder.clone();
+                move |window, cx| InputState::new(window, cx).placeholder(placeholder)
+            },
+            window,
+            cx,
+        )?;
+        let input = (*control).clone();
+        additions.push((
+            key,
+            McpTextRow {
+                item,
+                input,
+                _control: control,
+            },
+        ));
+    }
+    Ok(RowReconcilePlan { active, additions })
+}
+
+struct KeyValueRowSpec<Row: FormSchema> {
+    items: Vec<ItemPath<McpServerFormInput, Row>>,
+    key_field: gpui_form::FieldDef<Row, String>,
+    value_field: gpui_form::FieldDef<Row, String>,
+    key_placeholder: String,
+    value_placeholder: String,
+}
+
+fn prepare_key_value_rows<T, Row>(
+    existing: &HashMap<PathKey, McpKeyValueRow<Row>>,
+    spec: KeyValueRowSpec<Row>,
+    form: &Entity<Form<McpServerFormInput>>,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) -> Result<RowReconcilePlan<McpKeyValueRow<Row>>, ResolveError>
+where
+    T: 'static,
+    Row: FormSchema,
+{
+    let active = spec.items.iter().map(ItemPath::key).collect::<HashSet<_>>();
+    let mut additions = Vec::new();
+    for item in spec.items {
+        let item_key = item.key();
+        if existing.contains_key(&item_key) {
+            continue;
+        }
+        let key_control = FormInput::try_new(
+            form,
+            item.clone().then(spec.key_field),
+            {
+                let placeholder = spec.key_placeholder.clone();
+                move |window, cx| InputState::new(window, cx).placeholder(placeholder)
+            },
+            window,
+            cx,
+        )?;
+        let value_control = FormInput::try_new(
+            form,
+            item.clone().then(spec.value_field),
+            {
+                let placeholder = spec.value_placeholder.clone();
+                move |window, cx| InputState::new(window, cx).placeholder(placeholder)
+            },
+            window,
+            cx,
+        )?;
+        let key = (*key_control).clone();
+        let value = (*value_control).clone();
+        additions.push((
+            item_key,
+            McpKeyValueRow {
+                item,
+                key,
+                value,
+                _key_control: key_control,
+                _value_control: value_control,
+            },
+        ));
+    }
+    Ok(RowReconcilePlan { active, additions })
 }
 
 impl McpServerFormDraft {
@@ -414,14 +570,12 @@ impl McpServerFormDraft {
             oauth_enabled: server.oauth.is_some(),
         };
         let form = cx.new(|_| {
-            Form::try_new_with_validator(
-                input,
-                GardeValidator::<
-                    McpServerFormInput,
-                    crate::features::settings::form_validation::JacoGardeMessageProvider,
-                >::new(super::validation::mcp_validation_context(None, Vec::new())),
-            )
-            .expect("MCP form topology must be constructible")
+            Form::new(input).with_validator(GardeValidator::<
+                McpServerFormInput,
+                crate::features::settings::form_validation::JacoGardeMessageProvider,
+            >::new(
+                super::validation::mcp_validation_context(None, Vec::new()),
+            ))
         });
         Self { form }
     }
@@ -431,7 +585,7 @@ impl McpServerFormDraft {
     }
 
     pub(super) fn input(&self, cx: &App) -> McpServerFormInput {
-        self.form.read(cx).value().clone()
+        McpServerFormInput::ROOT.get(&self.form, cx)
     }
 
     pub(super) fn set_transport(
@@ -769,7 +923,6 @@ mod tests {
         let arg_handle = cx.update(|_, cx| {
             McpServerFormInput::ARGS
                 .items(&draft.form, cx)
-                .unwrap()
                 .remove(0)
                 .then(McpArgRowInput::VALUE)
         });
@@ -878,10 +1031,7 @@ mod tests {
             draft.set_oauth_enabled(false, window, cx);
         });
         let (header_name, header_value) = cx.update(|_, cx| {
-            let row = McpServerFormInput::HEADERS
-                .items(&draft.form, cx)
-                .unwrap()
-                .remove(0);
+            let row = McpServerFormInput::HEADERS.items(&draft.form, cx).remove(0);
             (
                 row.clone().then(McpHeaderRowInput::NAME),
                 row.then(McpHeaderRowInput::VALUE),
@@ -933,10 +1083,7 @@ mod tests {
             )
         });
         let (name, value) = cx.update(|_, cx| {
-            let row = McpServerFormInput::HEADERS
-                .items(&draft.form, cx)
-                .unwrap()
-                .remove(0);
+            let row = McpServerFormInput::HEADERS.items(&draft.form, cx).remove(0);
             (
                 row.clone().then(McpHeaderRowInput::NAME),
                 row.then(McpHeaderRowInput::VALUE),
@@ -1006,20 +1153,19 @@ mod tests {
             };
             McpServerFormDraft::from_config("server".to_string(), &original, window, cx)
         });
-        let row = cx.update(|_, cx| {
-            McpServerFormInput::ARGS
-                .items(&draft.form, cx)
-                .unwrap()
-                .remove(0)
-        });
+        let row = cx.update(|_, cx| McpServerFormInput::ARGS.items(&draft.form, cx).remove(0));
 
         cx.update(|window, cx| {
             assert!(draft.remove_arg_row(row, window, cx).unwrap());
         });
 
         cx.update(|_, cx| {
-            let form = draft.form.read(cx);
-            assert!(form.value().args.is_empty());
+            assert!(
+                McpServerFormInput::ROOT
+                    .get(&draft.form, cx)
+                    .args
+                    .is_empty()
+            );
         });
     }
 
@@ -1041,12 +1187,7 @@ mod tests {
                 cx,
             )
         });
-        let old_row = cx.update(|_, cx| {
-            McpServerFormInput::ARGS
-                .items(&draft.form, cx)
-                .unwrap()
-                .remove(0)
-        });
+        let old_row = cx.update(|_, cx| McpServerFormInput::ARGS.items(&draft.form, cx).remove(0));
         let old_key = old_row.key();
 
         cx.update(|window, cx| {
@@ -1055,12 +1196,7 @@ mod tests {
             draft.add_arg_row(window, cx).unwrap();
         });
 
-        let new_row = cx.update(|_, cx| {
-            McpServerFormInput::ARGS
-                .items(&draft.form, cx)
-                .unwrap()
-                .remove(0)
-        });
+        let new_row = cx.update(|_, cx| McpServerFormInput::ARGS.items(&draft.form, cx).remove(0));
         assert_ne!(old_key, new_row.key());
     }
 
@@ -1086,7 +1222,7 @@ mod tests {
                 cx,
             )
         });
-        let rows = cx.update(|_, cx| McpServerFormInput::ARGS.items(&draft.form, cx).unwrap());
+        let rows = cx.update(|_, cx| McpServerFormInput::ARGS.items(&draft.form, cx));
         let original_keys = rows.iter().map(|row| row.key()).collect::<Vec<_>>();
 
         cx.update(|window, cx| {
@@ -1104,7 +1240,7 @@ mod tests {
         });
 
         cx.update(|_, cx| {
-            let reordered = McpServerFormInput::ARGS.items(&draft.form, cx).unwrap();
+            let reordered = McpServerFormInput::ARGS.items(&draft.form, cx);
             assert_eq!(
                 reordered.iter().map(|row| row.key()).collect::<Vec<_>>(),
                 vec![
@@ -1114,10 +1250,8 @@ mod tests {
                 ]
             );
             assert_eq!(
-                draft
-                    .form
-                    .read(cx)
-                    .value()
+                McpServerFormInput::ROOT
+                    .get(&draft.form, cx)
                     .args
                     .iter()
                     .map(|row| row.value.as_str())
@@ -1144,12 +1278,8 @@ mod tests {
                 McpServerFormDraft::from_config("other".to_string(), &server, window, cx),
             )
         });
-        let other_row = cx.update(|_, cx| {
-            McpServerFormInput::ARGS
-                .items(&other.form, cx)
-                .unwrap()
-                .remove(0)
-        });
+        let other_row =
+            cx.update(|_, cx| McpServerFormInput::ARGS.items(&other.form, cx).remove(0));
         let before = cx.update(|_, cx| draft.input(cx));
 
         cx.update(|window, cx| {

@@ -1,9 +1,7 @@
 # gpui-form-gpui-component documentation
 
-> **Breaking vNext proposal — not implemented.** These task-oriented guides
-> describe the intended `Form<M>` and typed-path adapter API, not the API
-> currently exported by the crate. Unsettled helper and error names are marked
-> as proposed sketches.
+These task-oriented guides describe the current `Form<M>` and typed-path
+adapter API exported by the crate.
 
 ## Tutorials
 

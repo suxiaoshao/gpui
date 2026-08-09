@@ -2,11 +2,11 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-`gpui-form-macros` 提供 `#[derive(FormSchema)]`：它是 greenfield
-`gpui-form` API 的编译期部分。把 derive 标在可编辑模型上，再创建一个统一的
-`Form<M>` session，由它拥有草稿、拓扑、校验和提交边界。
+`gpui-form-macros` 提供 `#[derive(FormSchema)]`，它是 `gpui-form` 的 schema
+声明层。为可编辑的 Rust model 使用该 derive；随后 runtime crate 会为该 model 创建一个
+`Entity<Form<M>>` 编辑 session。
 
-应用通常依赖会 re-export `FormSchema` 的 `gpui-form`：
+应用通常依赖会 re-export 该 derive 的 `gpui-form`：
 
 ```toml
 [dependencies]
@@ -14,14 +14,15 @@ gpui.workspace = true
 gpui-form.workspace = true
 ```
 
-## 从 flat model 开始
+## 静态 descriptor 与显式 Form 所有权
 
-普通 struct 会生成 total 的根字段。创建一个 form session，把它保存为
-`Entity<Form<M>>`，再通过生成的根定义读取或更新字段。
+derive 为每个字段生成一份静态、带类型的 descriptor。descriptor 只保存 schema 数据：它永远
+不持有 `Form`、weak form reference、值或控件。每次读取或修改 path 时，都显式传入当前强
+`Entity<Form<M>>`。
 
 ```rust,ignore
-use gpui::{App, Entity};
-use gpui_form::{Form, FormRevision, FormSchema, Prepared};
+use gpui::Entity;
+use gpui_form::{Form, FormSchema};
 
 #[derive(Clone, FormSchema)]
 struct ProviderDraft {
@@ -29,105 +30,72 @@ struct ProviderDraft {
     retry_limit: u32,
 }
 
-struct SaveProvider {
-    name: String,
-    retry_limit: u32,
-}
-
-impl From<ProviderDraft> for SaveProvider {
-    fn from(draft: ProviderDraft) -> Self {
-        Self { name: draft.name, retry_limit: draft.retry_limit }
-    }
-}
-
-let runtime = Form::try_new(ProviderDraft {
-    name: "primary".to_owned(),
-    retry_limit: 3,
-})?;
-let form: Entity<Form<ProviderDraft>> = cx.new(|_| runtime);
-
-let name = ProviderDraft::NAME;
-let current: String = name.value(&form, cx);
-name.set(&form, "backup".to_owned(), cx);
-
-let prepared: Prepared<ProviderDraft> =
-    form.update(cx, |form, cx| form.prepare(cx))?;
-let revision: FormRevision = prepared.revision();
-let request = prepared.map(SaveProvider::from);
-// 把 `(revision, request)` 交给应用持有的 persistence task。
-
-fn apply_saved_provider(
-    form: &Entity<Form<ProviderDraft>>,
-    revision: FormRevision,
-    saved_provider: ProviderDraft,
-    cx: &mut App,
-) -> bool {
-    form.update(cx, |form, cx| {
-        form.rebase_if_revision(revision, saved_provider, cx)
+let form: Entity<Form<ProviderDraft>> = cx.new(|_| {
+    Form::new(ProviderDraft {
+        name: "primary".to_owned(),
+        retry_limit: 3,
     })
-}
+});
+
+let name: String = ProviderDraft::NAME.get(&form, cx);
+let changed: bool = ProviderDraft::NAME.set(&form, "backup".to_owned(), cx);
 ```
 
-`ProviderDraft::NAME` 是生成的 `FieldDef<ProviderDraft, String>`。根与 `name`
-之间没有拓扑边界，因此它的路径是 total，`value` 和 `set` 可以直接作用于该
-form session。
+`ProviderDraft::NAME` 是 `FieldDef<ProviderDraft, String>`，同时也是 total path。total
+path 不经过依赖 runtime 的边界，因此 `get` 和 `set` 不会失败。`set` 返回 model 是否真的发生变化。
 
-`prepare` 是从可编辑 session 交给可提交快照的显式边界：它运行 session 的校验
-策略并捕获 revision；随后 `map` 在不重新开放修改的前提下转换已接受的快照。应在
-`map` 前保存 revision；持久化完成后，只通过 `rebase_if_revision` 应用 canonical
-`ProviderDraft`，避免旧 response 覆盖较新的编辑。
+## 声明嵌套形状
 
-## 用属性加入结构
+只在字段引入结构时使用属性：
 
-`FormSchema` 从 Rust 字段和 variant 推导静态定义：
-
-| 属性 | 目标模型形状 | 生成的定义 |
+| 属性 | model 形状 | 生成的 descriptor |
 | --- | --- | --- |
-| `#[form(child)]` | 嵌套 schema，允许 `Option<Child>` | `ChildDef` |
-| `#[form(items)]` | item 拥有 form schema 的 `Vec<Item>` | `ItemsDef` |
+| `#[form(child)]` | 嵌套 `FormSchema`，包括 `Option<Child>` | `ChildDef` |
+| `#[form(items)]` | `Vec<Item>`，其中 `Item: FormSchema` | `ItemsDef` |
+| `#[form(required)]` | leaf field | required validation metadata |
+| `#[form(validate(...))]` | leaf field | validation trigger metadata |
 
-定义从根到叶组合。例如，集合中 item 的属性使用
-Form runtime 返回的 `ItemPath` 开始，再通过 `item_path.then(...)` 继续组合。经过 item、可选值或
-enum case 后，路径变为 dynamic；读写时必须使用 `try_value` / `try_set`。model 永不声明或保存
-form-only item ID。
+必需 child 通过 `then` 组合后仍是 total path。集合 item、活跃 enum case 与活跃 optional child
+会形成 dynamic path。dynamic path 使用 `try_get` 和 `try_set`，因为 runtime 位置可能退休。
 
-完整教程包括 total child path、`try_some(&Form)`、递归数组、
-`try_case(&Form, CaseDef)`、拓扑修改、validator 和提交/rebase：
+```rust,ignore
+let city = ProfileDraft::ADDRESS.then(AddressDraft::CITY);
+let city: String = city.get(&form, cx);
+```
+
+完整指南说明 optional 与 enum resolver、递归 collection、validation 和提交：
 
 - [English guide](docs/guide.md)
 - [中文指南](docs/guide.zh-CN.md)
 
-## 生成的名称就是契约
+## runtime 持有的 item identity
 
-derive 展开的是 schema metadata，不是编辑 runtime。runtime crate 提供 `Form<M>`、
-path、validator、拓扑操作和 prepared snapshot；macro 提供带类型的静态入口，例如：
+model 不保存 form 导航 ID，也不需要为该 derive 实现 identity trait。每当 item、enum case 或
+optional payload 变为 active，Form session 都会创建一个不透明 occurrence。应用只能通过枚举
+collection 或调用 collection mutation method 获得 typed item path。
 
-```rust,ignore
-ProfileDraft::DISPLAY_NAME; // FieldDef<ProfileDraft, String>
-ProfileDraft::ADDRESS;      // ChildDef<ProfileDraft, AddressDraft>
-ProfileDraft::RULES;        // ItemsDef<ProfileDraft, RuleDraft>
-ModeDraft::REMOTE;          // CaseDef<ModeDraft, RemoteDraft>
-```
+这使递归 typed tree 不需要字符串 path 或应用计数器。item 在同一 parent 内重排会保留 identity；
+删除后重新插入、重新激活 case 或 optional payload，以及跨 parent 移动都会创建新的 occurrence。
+已经退休的 dynamic path 会返回 resolution error，而不会静默指向之后的值。
 
-definition type 由 `gpui-form` re-export；上面的名称就是 derive output contract。
+## validation 与已接受的 snapshot
 
-## 校验属性
+`#[form(validate(...))]` 可以让字段选择 `on_mount`、`on_change`、`on_blur`、`on_external`
+或 `on_submit`。`on_external` 用于 catalog 或其他 application-owned dependency 变化；它与 dynamic
+path 无关。若未声明 trigger，普通业务 validation 会在 submit 时运行。
 
-`child` 与 `items` 描述结构。leaf field 还接受 validation metadata：
-
-| Attribute | 含义 |
-| --- | --- |
-| `#[form(required)]` | 标记字段必填；没有显式 trigger list 时启用 mount/change/blur/submit |
-| `#[form(validate(...))]` | 启用 `on_mount`、`on_change`、`on_blur`、`on_dynamic`、`on_submit` 中的任意组合 |
-
-required value 通过 `RequiredValue` 判断：string 会 trim，option 与受支持 collection 不能为空，bool 必须为
-true。
+validator 接收一个 snapshot-bound request，并通过 `request.model()` 读取其 model。prepared
+submission 携带不透明、session-bound 的 `FormVersion`。application-owned I/O 完成后，用该 version
+调用 `rebase_if_current`；此时旧 response 就无法覆盖较新的编辑或另一个 form session。
 
 ## 编译期诊断
 
-derive 应在模型声明附近拒绝不支持的 schema 形状：泛型 schema type、tuple struct、
-union、struct-like enum variant，以及含有多个 payload field 的 enum variant。`items`
-字段必须是受支持的 collection，其 item 需要提供 form schema。已经删除的
-`#[form(identity)]` 会报错：item identity 由 Form runtime 生成并持有，不属于 model field。
+derive 会在 model 定义附近拒绝不支持的声明：
 
-支持的递归形状与 diagnostics 请见指南。
+- generic struct 或 enum、tuple struct 和 union；
+- 把 `#[form(items)]` 标在受支持 `Vec<Item>` schema 之外的类型上；
+- struct-like enum variant 或具有多个 payload field 的 variant；以及
+- 已删除的 `#[form(identity)]` 属性。
+
+支持的 enum variant 是 unit variant，或携带一个实现 `FormSchema` 的具体 tuple payload 的
+variant。完整示例请见指南。

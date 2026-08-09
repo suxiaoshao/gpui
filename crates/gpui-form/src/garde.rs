@@ -11,7 +11,7 @@ use crate::{
     FieldSchema, FormSchema, ValidationMessage, ValidationRequest, ValidationSink,
     ValidationSource, Validator,
     schema::SchemaVisitor,
-    topology::{CanonicalAddress, TopologyIndex},
+    topology::{CanonicalAddress, TopologySnapshot},
 };
 
 pub enum GardeRule {
@@ -241,18 +241,13 @@ where
     T::Context: 'static,
     P: GardeMessageProvider,
 {
-    fn validate(
-        &self,
-        model: &T,
-        request: ValidationRequest<'_, T>,
-        out: &mut ValidationSink<'_, T>,
-    ) {
+    fn validate(&self, request: ValidationRequest<'_, T>, out: &mut ValidationSink<'_, T>) {
         let result = garde::i18n::with_i18n(MessageI18n::<P>::default(), || {
-            garde::Validate::validate_with(model, &self.context)
+            garde::Validate::validate_with(request.model(), &self.context)
         });
         let Err(report) = result else { return };
 
-        let paths = schema_paths(model, request.topology);
+        let paths = schema_paths(&request);
         for (path, error) in report.into_inner() {
             let external = path.to_string();
             let message = match take_message(error.message()) {
@@ -301,22 +296,21 @@ where
 }
 
 fn schema_paths<M: FormSchema>(
-    model: &M,
-    topology: &TopologyIndex,
+    request: &ValidationRequest<'_, M>,
 ) -> HashMap<String, (CanonicalAddress, FieldSchema)> {
     let mut visitor = PathVisitor {
-        topology,
+        topology: &request.topology,
         address: CanonicalAddress::default(),
         external: String::new(),
         aliases: Vec::new(),
         paths: HashMap::new(),
     };
-    model.__visit(&mut visitor);
+    request.model().__visit(&mut visitor);
     visitor.paths
 }
 
 struct PathVisitor<'a> {
-    topology: &'a TopologyIndex,
+    topology: &'a TopologySnapshot,
     address: CanonicalAddress,
     external: String,
     aliases: Vec<String>,
@@ -377,8 +371,13 @@ impl SchemaVisitor for PathVisitor<'_> {
         if !present {
             return;
         }
+        let parent = self.address.field(name);
+        let occurrence = self
+            .topology
+            .active_some(&parent)
+            .expect("present optional topology must be materialized");
         let mut nested = self.nested(
-            self.address.field(name).some(),
+            parent.some_occurrence(occurrence),
             Self::field_name(&self.external, name),
         );
         visit(&mut nested);
@@ -394,8 +393,9 @@ impl SchemaVisitor for PathVisitor<'_> {
         let collection = self.address.field(name);
         let tokens = self
             .topology
-            .ensure_items(&collection, len)
-            .expect("form identity exhausted after construction");
+            .items(&collection)
+            .expect("validation topology must be materialized before snapshot");
+        debug_assert_eq!(tokens.len(), len);
         let prefix = Self::field_name(&self.external, name);
         for (index, token) in tokens.into_iter().enumerate() {
             let mut nested = self.nested(collection.item(token), format!("{prefix}[{index}]"));
@@ -405,7 +405,14 @@ impl SchemaVisitor for PathVisitor<'_> {
     }
 
     fn case(&mut self, name: &'static str, visit: &mut dyn FnMut(&mut dyn SchemaVisitor)) {
-        let mut nested = self.nested(self.address.case(name), self.external.clone());
+        let occurrence = self
+            .topology
+            .active_case(&self.address, name)
+            .expect("active case topology must be materialized");
+        let mut nested = self.nested(
+            self.address.case_occurrence(name, occurrence),
+            self.external.clone(),
+        );
         nested.aliases.push(format!("{}[0]", self.external));
         visit(&mut nested);
         self.absorb(nested);

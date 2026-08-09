@@ -1,5 +1,6 @@
 //! Typed editing sessions for GPUI applications.
 
+mod change;
 mod control;
 mod error;
 mod form;
@@ -18,8 +19,9 @@ pub mod __private {
     pub use gpui;
 }
 
-pub use control::{ControlBinding, ControlLease};
-pub use error::{FormBuildError, MutationError, PrepareError, ResolveError, TopologyError};
+pub use change::{ChangeTarget, ModelChange, ModelChangeKind, PathImpact};
+pub use control::{ControlBinding, ControlProjection, ControlWriter};
+pub use error::{MutationError, PrepareError, ResolveError, TopologyError};
 pub use form::{AsyncValidationIssue, Form, FormEvent, FormRevision};
 #[cfg(feature = "garde-adapter")]
 pub use garde::{
@@ -27,14 +29,16 @@ pub use garde::{
 };
 pub use gpui_form_macros::FormSchema;
 pub use path::{
-    DynamicItemsPath, DynamicPath, IntoItemsPath, IntoTotalPath, ItemPath, PathEdge, Position,
-    TotalItemsPath, TotalPath,
+    CaseResolver, DynamicItemsPath, DynamicPath, IntoItemsPath, IntoTotalPath, ItemPath,
+    OptionalResolver, PathEdge, Position, TotalItemsPath, TotalPath, ValidationCaseResolver,
+    ValidationDynamicItemsPath, ValidationDynamicPath, ValidationItemPath,
+    ValidationOptionalResolver, ValidationPathEdge,
 };
 pub use schema::{
     CaseDef, ChildDef, FieldDef, FieldSchema, FormSchema, ItemsDef, RequiredValue, RootDef,
     ValidationTriggers,
 };
-pub use submit::Prepared;
+pub use submit::{FormVersion, Prepared};
 pub use topology::PathKey;
 pub use validation::{
     ErrorParamValue, ErrorParams, ValidationIssue, ValidationMessage, ValidationPath,

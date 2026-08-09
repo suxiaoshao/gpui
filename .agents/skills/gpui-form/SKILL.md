@@ -1,214 +1,242 @@
 ---
 name: gpui-form
-description: Use when implementing, reviewing, debugging, documenting, or integrating crates/gpui-form, gpui-form-macros, gpui-form-gpui-component, Jaco forms, or Feiwen forms. Covers the implemented FormSchema/Form<M> API, explicit form ownership, typed total and dynamic paths, session-bound case and optional resolution, runtime-owned item identity, private gpui-operation transitions, component adapters, validation, prepare/rebase, and breaking consumer migration.
+description: Use when implementing, reviewing, debugging, documenting, or integrating crates/gpui-form, gpui-form-macros, gpui-form-gpui-component, Jaco forms, or Feiwen forms. Covers the current breaking FormSchema/Form API, explicit Form ownership, typed total and dynamic paths, runtime-owned occurrence identity, precise change impact, source-aware control bindings, snapshot validation, private gpui-operation transitions, prepare/rebase, and consumer migration.
 ---
 
 # GPUI Form
 
-Use this repo-owned skill for the three Form crates and their application
-consumers. The old `FormModel`/generated `FormState` contract has been removed;
-active code must use the implemented `FormSchema` + `Form<M>` API.
+Use this repo-owned skill for the three Form crates and their application consumers.
 
-## Read the applicable contract
+## Choose the source of truth
 
-For public API or examples, read the relevant current document:
+For Issue #199 breaking work, read these contracts in order:
 
-1. `crates/gpui-form/README.md`
-2. `crates/gpui-form/docs/guide.md`
-3. `crates/gpui-form-macros/docs/guide.md`
-4. `crates/gpui-form-gpui-component/docs/guide.md`
+1. `crates/gpui-form/docs/dev/issue-199/design-draft.md`
+2. `crates/gpui-form/README.md`
+3. `crates/gpui-form/docs/guide.md`
+4. `crates/gpui-form-macros/docs/guide.md`
+5. `crates/gpui-form-gpui-component/docs/guide.md`
 
-For Issue #199 implementation decisions, read:
+The confirmed design draft records the architecture contract. The current Rust source and public
+documents are the implemented authority for that contract; do not reintroduce removed compatibility
+surfaces such as `ControlLease`, address-hash `PathKey`, naked-revision CAS, old resolvers, or
+adapter-owned event routing.
 
-- `crates/gpui-form/docs/dev/issue-199/form-vnext-refactor-plan.md`
-- `app/jaco/docs/dev/issue-199/form-vnext-migration.md`
-- `app/feiwen/docs/dev/issue-199/form-operation-store-migration.md`
+Read the affected application plan before migrating a consumer:
 
-Keep public README and guide changes mirrored in English and Chinese. Newly
-created development documents are Chinese only. Preserve historical documents
-unless the task explicitly changes them.
+- `app/jaco/docs/dev/issue-199/form-breaking-api-remigration-plan.md`
+- `app/feiwen/docs/dev/issue-199/form-breaking-api-remigration-plan.md`
 
-## Ownership model
+Keep every public README and guide change mirrored in English and Chinese. Newly created
+development documents are Chinese only. Preserve historical documents unless the user explicitly
+changes them.
 
-Classify each mutable fact before editing:
+## Ownership
 
-1. One `Entity<Form<M>>` owns the current typed model, baseline, revision,
-   validation report, topology, async validation tasks, and private transition
-   runtime for one editing session.
-2. `FieldDef`, `ChildDef`, `ItemsDef`, `CaseDef`, and located paths contain
-   schema/access/location data only. They never retain form entities, values,
-   subscriptions, or native controls.
-3. Native entities own focus, IME, selection, popup state, incomplete editor
-   text, and component subscriptions. Their adapter handles own a
-   `ControlLease`.
-4. Options, delegates, catalogs, capabilities, resource phase, and nonblocking
-   hints remain in application state or `gpui-store`.
-5. Save, fetch, query, loading, retry, database, and provider operations remain
-   application-owned. Form only prepares accepted typed snapshots.
+Classify every mutable fact before editing:
 
-Do not create child form entities, a second page-owned business draft, a form
-copy in Store, form-owned persistence, or form-to-database access.
+1. One `Entity<Form<M>>` owns current model, baseline, model revision, validation facts, topology,
+   async validation work, control registrations/projection routing facts, and private transition
+   runtimes for one editing session.
+2. `FieldDef`, `ChildDef`, `ItemsDef`, `CaseDef`, `TotalPath`, and located paths contain only schema,
+   typed access, and location data. They never retain a Form entity, value, subscription, or native
+   control.
+3. Native entities own focus, IME, selection, popup state, incomplete editor text, and native event
+   subscriptions. A stateful adapter owns one non-clone `ControlBinding`.
+4. Options, delegates, catalogs, capabilities, resource phases, and nonblocking hints remain in the
+   application or `gpui-store`.
+5. Save, fetch, query, retry, database, and provider operations remain application-owned. Form only
+   validates and prepares an accepted typed snapshot.
 
-## Schema and typed paths
+Do not create child Form entities, a second page-owned business draft, a Form copy in Store,
+Form-owned persistence, or Form-to-database access.
 
-- Derive `FormSchema` on monomorphic named-field structs and supported enums.
-- Use `#[form(child)]` for nested schemas and `Option<Child>`;
-  `#[form(items)]` for `Vec<Item>`; `#[form(required)]` and
-  `#[form(validate(...))]` for leaf validation metadata.
-- Use root definitions directly or compose root-first with `.then(...)`.
-  Static composition is pure and does not receive a form.
-- A total path exposes infallible `value`, `set`, `validate`, `errors`, and
-  `bind_control` operations that receive the explicit strong form entity.
-- A dynamic path exposes `try_value`, `try_set`, `try_validate`, `try_errors`,
-  and `try_bind_control` because its item/case/optional boundary may retire.
-- Resolve enum and optional boundaries against the current borrowed form:
+## Public schema and typed paths
 
-  ```rust,ignore
-  let payload = enum_path.try_case(form.read(cx), Enum::CASE)?;
-  let child = optional_path.try_some(form.read(cx))?;
-  ```
+- Derive `FormSchema` on supported monomorphic structs and enums.
+- Use `#[form(child)]` for a nested schema or `Option<Child>`, `#[form(items)]` for
+  `Vec<Item>`, and leaf attributes for required/validation metadata.
+- Generate one reusable static descriptor per field. It never stores an entity and every operation
+  receives the explicit strong Form entity.
+- Make `Form::new` and `with_validator` the infallible main construction path. Identity exhaustion
+  is an internal invariant failure, not a recoverable build error.
+- Compose root-first with `.then(...)`; static composition is pure and needs no Form.
+- Treat `RootDef<M>` as the total path for the whole draft. Use `M::ROOT.get(&form, cx)` when a
+  caller intentionally needs a typed whole-model snapshot.
+- A total path exposes infallible `get`, `set`, validation/error queries, and binding. `set` returns
+  whether the model changed.
+- A dynamic path exposes `try_get`, `try_set`, fallible validation/error queries, and fallible
+  binding because its item/case/optional occurrence may retire.
+- Resolve enum and optional activation explicitly. An inactive case or `None` returns `Ok(None)`;
+  a wrong-session or retired starting path returns `Err(ResolveError)`.
+- Once a path crosses an item, case, or optional activation boundary, it and every descendant remain
+  dynamic. Rust determines the final value type and rejects a wrong `set` type at compile time.
 
-  The returned `DynamicPath` captures session, address, and incarnation without
-  retaining an entity.
+Do not unify total and dynamic operations behind an always-fallible API, retain weak Form ownership
+inside a descriptor, or navigate with string paths.
 
-## Runtime-owned collection identity
+## Runtime-owned identity and topology
 
 - Obtain `ItemPath` only from `items`/`try_items` or collection mutations.
 - Use `append`, `insert_before`, `move_before`, `remove`, `replace_all`, and
-  `ItemPath::move_to`; never navigate by index, business ID, serde token, or an
-  application registry.
-- Use opaque `PathKey` for UI identity and maps. It converts to a GPUI
-  `ElementId`; do not expose raw session/token/incarnation values.
-- Same-parent reorder keeps identity. Removal/reinsertion, whole-model
-  lifecycle replacement, case/optional reconstruction, and cross-parent move
-  retire old paths as defined by the runtime.
-- Stage topology changes before mutating the model. Allocation or anchor
-  failures must leave both model and topology unchanged. A successful
-  cross-parent move is one logical mutation: one revision/event/notification,
-  with validation invalidation and triggers covering both source and
-  destination paths.
-- Never expose `TopologyIndex`, canonical addresses, session IDs, item tokens,
-  epochs, or topology snapshots.
+  `ItemPath::move_to`; never navigate by index, business ID, serde token, or an application registry.
+- Allocate a monotonically increasing, never-reused occurrence for every item, active enum case, and
+  active `Some`.
+- Preserve an item occurrence on same-parent reorder. Retire it on removal/reinsertion, case or Some
+  reconstruction, whole-model lifecycle replacement, and cross-parent move. A cross-parent move
+  returns a fresh destination `ItemPath`.
+- Keep total identity stable for the whole Form session. Whole-model replace/reset/rebase retires all
+  old dynamic occurrences but keeps total paths and total bindings active.
+- Back public opaque `PathKey` with a session-local unique path ID plus a private real canonical
+  address. Use the unique ID for `Eq`/`Hash`/`ElementId` and the address for internal path relations.
+  Expose neither representation, serialization, nor stable display.
+- Build identity during initial topology construction or staged topology edits. Reads, snapshots,
+  validation, and `PathKey` queries must not allocate through `ensure_*` behavior.
+- Complete all fallible resolution, anchor checks, and allocation before mutating model or topology.
+  Failure changes nothing.
 
-## Mutation, lifecycle, and private transitions
+Never expose topology indexes, canonical addresses, sessions, occurrences, generations, or snapshots.
 
-- Public callers use domain methods: `set`, collection mutations, `validate`,
-  `replace`, `reset`, `rebase`, `rebase_if_revision`, async-validation methods,
-  and `prepare`.
-- Core mutations are reduced by private owned messages through
-  `gpui_operation::Transition`. Do not expose Form messages, dispatch, or the
-  transition module to macros, adapters, or applications.
-- An equal field write is a no-op. A successful logical mutation advances the
-  revision once, emits at most one `FormEvent`, and notifies at most once.
-- `replace`, `reset`, and `rebase` retire old topology and async work.
-  `rebase_if_revision` is the only async-save CAS merge primitive; failure
-  changes nothing.
-- Bindings capture the topology epoch that created them. Deferred callbacks
-  from an older topology or lifecycle must become no-ops even if their address
-  would happen to resolve again.
+## Mutation and events
+
+Keep value, structure, and retirement impact separate internally:
+
+- A leaf/composite replacement affects that path, its ancestors, and still-active descendants.
+- A collection append/insert/reorder changes the collection aggregate and structure, not existing
+  item field values.
+- Removal and replacement additionally retire the removed dynamic subtrees.
+- Whole-model replace/reset/rebase affects all values and structure and retires all old dynamic
+  paths.
+- Validation impact is separate from value projection impact.
+
+Publish business facts through typed `FormEvent<M>` and `ModelChange<M>`. Provide a sealed
+`ChangeTarget<M>` implemented for definitions, typed paths, item paths, and `PathKey`; let callers
+query a `PathImpact` with `value_changed`, `structure_changed`, `retired`, and `is_affected`.
+
+Do not expose control origin, internal change routes, or a misleading mutually exclusive
+`TopologyChanged` event. One successful logical model mutation advances revision once, emits at most
+one model event, and notifies at most once. An equal ordinary model write is a model no-op.
+
+## Stateful control binding
+
+Use `FormInput`, `FormIntegerInput`, `FormSelect`, and `FormCombobox` for gpui-component controls.
+`new` accepts a total path; `try_new` accepts a resolved dynamic path.
+
+For a custom stateful adapter:
+
+1. Read the initial typed value and create the native entity.
+2. Call `bind_control_in` or `try_bind_control_in` with a silent projector.
+3. Store the returned non-clone, non-generic `ControlBinding` as the sole lifecycle owner.
+4. Capture the cloneable typed `ControlWriter<Root, T>` in native event subscriptions.
+5. Handle exhaustive `ControlProjection::Value(T)` and `ControlProjection::Retired` in the projector.
+6. Use `defer_set`, `defer_blur`, `defer_set_issue`, and `defer_clear_issue` through the writer.
+
+The core binding owns Form subscription, impact filtering, source suppression, and projection
+lifecycle. An adapter never manually subscribes to `FormEvent`, clones a binding, keeps a
+`ControlLease`, parses path impact, or implements a direction boolean.
+
+Required behavior:
+
+- A control write updates Form but is not immediately projected back to its source control.
+- Another binding to the same path receives the latest authoritative value.
+- Unrelated, validation-only, and structure-only changes do not call native value setters.
+- Programmatic value changes project to every affected control.
+- Multiple external changes coalesce to the latest Form value; an older queued projection cannot
+  overwrite a newer native edit.
+- Dynamic retirement supersedes queued values and projects `Retired` once. Owner/Form disappearance
+  drops silently.
+- Whole-model lifecycle changes keep total bindings active and retire dynamic bindings.
+- A valid equal writer set may clear that control's issue and publish validation-only change without
+  a model event.
+
+Keep invalid or incomplete integer text native. Publish a scoped control issue; never route typed
+numeric values through application-side `f64` or ad-hoc parsing.
 
 ## Validation and submission
 
-- `Validator<M>` receives the model plus a snapshot-bound
-  `ValidationRequest`; emit typed issues through `ValidationSink`.
-- Validation supports mount, change, blur, dynamic, and submit triggers.
-  Preserve independent source/path/trigger buckets and replace only the bucket
-  targeted by the current validation pass. Mutations invalidate every
-  intersecting stale bucket before running the applicable triggers. Attach
-  issues to the precise field.
-- Snapshot resolvers enumerate runtime item paths and resolve enum/optional
-  payloads against that same snapshot; validators never reconstruct paths from
-  indexes or reread the live form.
-- Garde positional reports must map through the same topology snapshot.
-  Invalid or inactive adapter paths become blocking internal issues rather than
-  being dropped or attached elsewhere.
-- Start remote checks with `start_async_validation` for total paths or
-  `start_dynamic_async_validation` for a located dynamic path. Intersecting
-  writes and topology/lifecycle changes cancel stale work; pending validation
-  blocks `prepare`.
-- A `ControlLease` is a weak live marker, not a second owner. Whole-model and
-  subtree lifecycle retirement revoke affected leases immediately; stale
-  reports and queued callbacks cannot republish their issues.
-- `prepare` runs submit validation and returns `Prepared<M>`. Capture the
-  revision before `Prepared::map`; let the application own I/O and apply the
-  canonical saved model with `rebase_if_revision`.
+- Give `Validator<M>` one snapshot-bound `ValidationRequest`; expose `request.model()` and use that
+  same request for item, case, optional, and value resolution. Do not separately pass a potentially
+  mismatched model.
+- Use `ValidationTrigger::External` for catalog/dependency changes; do not use the old `Dynamic`
+  name.
+- Run submit validation by default. Run mount/change/blur only when schema metadata explicitly
+  selects them, and run external validation only when the owner requests it.
+- Preserve independent source/path/trigger buckets and invalidate completed facts only at
+  intersecting scopes. Because pending async work is bound to the global `FormVersion`, cancel all
+  pending work before any model revision is published.
+  Attach issues to the precise typed field. Form owns facts; the page owns visibility and focus.
+- Keep async validation bound to snapshot version, path occurrence, and validation generation.
+  Any model revision cancels pending work because it advances the global version; completed issues
+  are invalidated only at intersecting scopes. Pending work blocks `prepare`.
+- Keep control identity and async generations private. Validation-only changes never project values.
+- Let `prepare` return `Prepared<M>` carrying an opaque session-bound `FormVersion` and the accepted
+  snapshot. `Prepared::map` preserves the version.
+- Apply a canonical saved model with `rebase_if_current(version, model)`. A wrong session or stale
+  version changes nothing. Do not use naked `FormRevision` as an async-save CAS token.
 
-## Component adapters and custom controls
+Persistence, retry, loading, and user notifications remain application work.
 
-- Use `FormInput`, `FormIntegerInput`, `FormSelect`, and `FormCombobox` for
-  gpui-component controls. `new` accepts a total path; `try_new` accepts a
-  resolved dynamic path.
-- Keep a stateful adapter as a plain Rust handle containing subscriptions, a
-  `ControlLease`, and the native entity. Dropping it must retire queued binding
-  callbacks and control issues.
-- Create a binding with `bind_control`/`try_bind_control`, immediately retain
-  `binding.lease()`, and capture binding clones only in deferred native event
-  callbacks.
-- Use `defer_set`, `defer_blur`, `defer_set_issue`, and `defer_clear_issue`.
-  Silently project Form events back to the native entity; a dynamic projection
-  that no longer resolves is ignored and its control is torn down.
-- Adapter projection reacts only to model events. Validation-only notifications
-  must not overwrite native editor state or clear that adapter's leased control
-  issue.
-- Stateless controlled elements may read `value` and call `set` directly when
-  the callback is not inside another entity's active update.
-- Keep invalid/incomplete integer text native and publish a leased control
-  issue. Never route typed numeric values through application-side `f64` or
-  ad-hoc parsing.
+## Private transitions and transaction order
+
+Use `gpui_operation::Transition` only for private Form revision/lifecycle/effect reduction, binding
+`Active`/`Retired`/`Dropped` plus projection mailbox, and validation runtimes that genuinely need a
+state machine. Do not use the predefined refresh/repair families and do not expose Form messages.
+
+For each typed mutation:
+
+1. Resolve against an immutable model/topology snapshot.
+2. Stage the model edit, topology edit, identities, change impact, and validation impact.
+3. Commit model and topology only after no recoverable failure remains.
+4. Update validation/control issues and configured validation work.
+5. Transition the private runtime once.
+6. Route each binding to suppress, project, retire, or ignore.
+7. Publish one logical event/notification and drain native projection after releasing the Form borrow.
+
+Use lifecycle/occurrence as deferred-write freshness barriers. Use revision only for projection
+ordering/coalescing; rejecting writes merely because revision advanced would reject legitimate
+consecutive user input.
 
 ## Application integration
 
-- Jaco forms use local `Entity<Form<M>>` sessions. Provider, Prompt, Shortcut,
-  ChatInput, RunSettings, and MCP settings consume the new API without importing
-  Form's private transitions. MCP runtime is outside this migration.
-- Feiwen Query uses a recursive typed tree and runtime `PathKey`; no business or
-  UI counter is a form identity. Fetch uses a flat Form; Query/Fetch run state
-  belongs to their private application transitions.
-- Catalog changes update their owner Store and native option projection without
-  rewriting Form values. The application explicitly requests dynamic
-  validation when product rules require it.
-- Preserve selected catalog values that are absent from the current catalog as
-  explicit disabled projections with a nonblocking hint; never silently erase
-  them. Reconcile recursive native rows by `PathKey` so unaffected controls keep
-  their native identity.
-- Feiwen Query keeps the exact prepared `QueryDraft` snapshot for display and
-  recovery while the runner owns the compiled `QuerySpec`. Do not reconstruct a
-  draft from an executable spec because dormant variant operands would be lost.
-- Never update an entity from inside its active update scope. Defer
-  component-to-form writes and recheck weak/dynamic lifetime in queued work.
+- Jaco uses local `Entity<Form<M>>` sessions. Provider, Prompt, Shortcut, ChatInput, RunSettings, and
+  MCP settings consume the public API without importing private transitions. MCP runtime remains out
+  of scope.
+- Feiwen Query uses a recursive typed tree and `PathKey`; no business/UI counter is Form identity.
+  Reconcile rows on structural impact so unaffected native controls retain identity.
+- Feiwen Fetch remains a flat Form. Query/Fetch operation state belongs to application transitions.
+- Catalog changes update their owner Store/native options and explicitly request external validation
+  when product rules require it. They do not silently rewrite Form values.
+- Keep the exact prepared query draft snapshot for display/recovery while the runner owns compiled
+  execution data. Do not reconstruct dormant form variants from an executable spec.
+- Never update an entity from inside its active update scope. Defer native-to-Form writes and recheck
+  weak owner plus dynamic lifetime in queued work.
 
 ## Removed surfaces
 
 Do not add compatibility wrappers or active-source uses of:
 
-- `FormModel`, generated `*Form`/`FormState`, `FormField`,
-  `PartialFormField`, `FormItemId`, `#[form(array(...))]`, or child-first
-  `within`;
-- writable `project_value`, core `SubmitTransform`/`prepare_submit`/
-  `PreparedSubmit`, or `validify-transform`/`form-pipeline` features;
-  application-owned domain helpers may still use similar names;
-- descriptor-owned form entities, `FormReleased`, public control IDs, public
-  Form messages, or application-visible topology tokens;
-- form-owned focus/touched/error visibility, save task, resource/catalog state,
-  persistence callback, or database access.
+- `FormModel`, generated `*Form`/`FormState`, `FormField`, `PartialFormField`, `FormItemId`,
+  `#[form(array(...))]`, child-first `within`, or user-provided Form identity;
+- `Form::try_new`, `try_new_with_validator`, raw `Form::value`/`Form::baseline`, total-path `value`,
+  dynamic `try_value`, old fallible case/optional resolver semantics, or naked-revision
+  `rebase_if_revision`;
+- address-hash-only `PathKey`, public topology tokens, public Form messages, or public control origin;
+- public `ControlLease`, cloneable generic `ControlBinding`, adapter-owned Form event routing, or
+  local direction guards;
+- writable projection APIs, core submit transforms, Form-owned focus/touched/error visibility,
+  persistence callbacks, resource/catalog state, database access, or application operation tasks.
 
-Intentional compile-fail fixtures and historical Issue #175/#199 documents may
-mention removed APIs; classify them rather than rewriting history.
+Intentional compile-fail fixtures and historical Issue #175/#199 documents may mention removed APIs;
+classify them rather than rewriting history.
 
-## Validation commands
+## Documentation and validation
 
-Run only the checks required by the touched owners, format Rust changes once,
-and finish with `git diff --check`:
+Keep public documents task-oriented: show how to construct a Form, bind/render controls, validate,
+submit, use nested paths, and implement a custom adapter. Keep internal identity, change routing,
+mailbox, and Transition mechanics in development documents.
 
-```sh
-cargo fmt --all
-cargo test -p gpui-form --all-features --locked
-cargo test -p gpui-form-macros --locked
-cargo test -p gpui-form-gpui-component --all-features --locked
-cargo clippy -p gpui-form -p gpui-form-macros -p gpui-form-gpui-component --all-targets --all-features --locked -- -D warnings
-git diff --check
-```
-
-For consumer migrations, add the directly affected Jaco or Feiwen tests and
-clippy scope. Run a workspace aggregate check for breaking cross-crate changes.
-Run Computer Use only when actual UI verification is authorized.
+For documentation/skill-only changes, check English/Chinese semantic parity, links, removed terms,
+skill structure, and `git diff --check`; crate tests are not required. For implementation, run the
+direct crate tests, clippy, and affected Jaco/Feiwen consumer checks. Run workspace aggregate checks
+for the breaking cross-crate migration. Run Computer Use only when actual UI verification is
+authorized.

@@ -8,7 +8,7 @@ pub(super) fn field_schema(
     mount: bool,
     change: bool,
     blur: bool,
-    dynamic: bool,
+    external: bool,
     submit: bool,
 ) -> TokenStream {
     quote! {
@@ -19,7 +19,7 @@ pub(super) fn field_schema(
                 mount: #mount,
                 change: #change,
                 blur: #blur,
-                dynamic: #dynamic,
+                external: #external,
                 submit: #submit,
             },
         )

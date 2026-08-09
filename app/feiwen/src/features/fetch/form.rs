@@ -66,10 +66,10 @@ pub(super) struct FetchValidator;
 impl Validator<FetchDraft> for FetchValidator {
     fn validate(
         &self,
-        model: &FetchDraft,
         request: ValidationRequest<'_, FetchDraft>,
         out: &mut ValidationSink<'_, FetchDraft>,
     ) {
+        let model = request.model();
         if request.includes(&FetchDraft::END_PAGE) && model.start_page > model.end_page {
             out.at(FetchDraft::END_PAGE).error(
                 "page_range",

@@ -1,8 +1,6 @@
 use fluent_bundle::FluentArgs;
 use gpui::{App, SharedString};
-use gpui_form::typed::{
-    ErrorParamValue, GardeMessageProvider, GardeRule, ValidationMessage, garde_error,
-};
+use gpui_form::{ErrorParamValue, GardeMessageProvider, GardeRule, ValidationMessage, garde_error};
 
 use crate::foundation::I18n;
 

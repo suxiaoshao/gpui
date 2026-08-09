@@ -6,7 +6,7 @@ use gpui_component::{
     searchable_list::{SearchableListDelegate, SearchableListItem},
 };
 use gpui_form::{
-    ControlLease, DynamicPath, Form, FormEvent, FormSchema, IntoTotalPath, ResolveError, TotalPath,
+    ControlBinding, ControlProjection, DynamicPath, Form, FormSchema, IntoTotalPath, ResolveError,
 };
 
 type ComboboxValue<D> = <<D as SearchableListDelegate>::Item as SearchableListItem>::Value;
@@ -16,8 +16,9 @@ where
     D: SearchableListDelegate + 'static,
     D::Item: SearchableListItem,
 {
+    #[allow(dead_code)]
     subscriptions: Vec<Subscription>,
-    _lease: ControlLease,
+    _binding: ControlBinding,
     state: Entity<ComboboxState<D>>,
 }
 
@@ -41,25 +42,33 @@ where
         Build: FnOnce(&mut Window, &mut Context<ComboboxState<D>>) -> ComboboxState<D>,
     {
         let path = path.into_total_path();
-        let values = path.value(form, cx);
+        let values = path.get(form, cx);
         let state = cx.new(|cx| build(window, cx));
         sync_selected_values(&state, &values, window, cx);
-        let binding = path.bind_control(form, cx);
-        let lease = binding.lease();
-        let subscription = subscribe_total(form, path, &state, window, cx);
-        let event_binding = binding.clone();
+        let (binding, writer) = path.bind_control_in(
+            form,
+            &state,
+            |state, projection, window, cx| match projection {
+                ControlProjection::Value(values) => {
+                    sync_selected_values_state(state, &values, window, cx)
+                }
+                ControlProjection::Retired => {}
+            },
+            window,
+            cx,
+        );
         let event_subscription = cx.subscribe_in(
             &state,
             window,
             move |_, _, event: &ComboboxEvent<D>, window, cx| {
                 if let ComboboxEvent::Change(values) = event {
-                    event_binding.defer_set(values.clone(), window, cx);
+                    writer.defer_set(values.clone(), window, cx);
                 }
             },
         );
         Self {
-            subscriptions: vec![subscription, event_subscription],
-            _lease: lease,
+            subscriptions: vec![event_subscription],
+            _binding: binding,
             state,
         }
     }
@@ -77,95 +86,36 @@ where
         ComboboxValue<D>: Clone + PartialEq + 'static,
         Build: FnOnce(&mut Window, &mut Context<ComboboxState<D>>) -> ComboboxState<D>,
     {
-        let values = path.try_value(form, cx)?;
+        let values = path.try_get(form, cx)?;
         let state = cx.new(|cx| build(window, cx));
         sync_selected_values(&state, &values, window, cx);
-        let binding = path.try_bind_control(form, cx)?;
-        let lease = binding.lease();
-        let subscription = subscribe_dynamic(form, path, &state, window, cx);
-        let event_binding = binding.clone();
+        let (binding, writer) = path.try_bind_control_in(
+            form,
+            &state,
+            |state, projection, window, cx| match projection {
+                ControlProjection::Value(values) => {
+                    sync_selected_values_state(state, &values, window, cx)
+                }
+                ControlProjection::Retired => {}
+            },
+            window,
+            cx,
+        )?;
         let event_subscription = cx.subscribe_in(
             &state,
             window,
             move |_, _, event: &ComboboxEvent<D>, window, cx| {
                 if let ComboboxEvent::Change(values) = event {
-                    event_binding.defer_set(values.clone(), window, cx);
+                    writer.defer_set(values.clone(), window, cx);
                 }
             },
         );
         Ok(Self {
-            subscriptions: vec![subscription, event_subscription],
-            _lease: lease,
+            subscriptions: vec![event_subscription],
+            _binding: binding,
             state,
         })
     }
-}
-
-fn subscribe_total<Root, Owner, D>(
-    form: &Entity<Form<Root>>,
-    path: TotalPath<Root, Vec<ComboboxValue<D>>>,
-    state: &Entity<ComboboxState<D>>,
-    window: &Window,
-    cx: &mut Context<Owner>,
-) -> Subscription
-where
-    Root: FormSchema,
-    Owner: 'static,
-    D: SearchableListDelegate + 'static,
-    D::Item: SearchableListItem,
-    ComboboxValue<D>: Clone + PartialEq + 'static,
-{
-    let weak_form = form.downgrade();
-    let weak_state = state.downgrade();
-    cx.subscribe_in(form, window, move |_, _, event: &FormEvent, window, cx| {
-        if matches!(event, FormEvent::ValidationChanged { .. }) {
-            return;
-        }
-        let weak_form = weak_form.clone();
-        let weak_state = weak_state.clone();
-        let path = path.clone();
-        cx.defer_in(window, move |_, window, cx| {
-            let (Some(form), Some(state)) = (weak_form.upgrade(), weak_state.upgrade()) else {
-                return;
-            };
-            sync_selected_values(&state, &path.value(&form, cx), window, cx);
-        });
-    })
-}
-
-fn subscribe_dynamic<Root, Owner, D>(
-    form: &Entity<Form<Root>>,
-    path: DynamicPath<Root, Vec<ComboboxValue<D>>>,
-    state: &Entity<ComboboxState<D>>,
-    window: &Window,
-    cx: &mut Context<Owner>,
-) -> Subscription
-where
-    Root: FormSchema,
-    Owner: 'static,
-    D: SearchableListDelegate + 'static,
-    D::Item: SearchableListItem,
-    ComboboxValue<D>: Clone + PartialEq + 'static,
-{
-    let weak_form = form.downgrade();
-    let weak_state = state.downgrade();
-    cx.subscribe_in(form, window, move |_, _, event: &FormEvent, window, cx| {
-        if matches!(event, FormEvent::ValidationChanged { .. }) {
-            return;
-        }
-        let weak_form = weak_form.clone();
-        let weak_state = weak_state.clone();
-        let path = path.clone();
-        cx.defer_in(window, move |_, window, cx| {
-            let (Some(form), Some(state)) = (weak_form.upgrade(), weak_state.upgrade()) else {
-                return;
-            };
-            let Ok(values) = path.try_value(&form, cx) else {
-                return;
-            };
-            sync_selected_values(&state, &values, window, cx);
-        });
-    })
 }
 
 fn sync_selected_values<D>(
@@ -178,8 +128,20 @@ fn sync_selected_values<D>(
     D::Item: SearchableListItem,
 {
     state.update(cx, |state, cx| {
-        state.set_selected_values(values, window, cx)
+        sync_selected_values_state(state, values, window, cx)
     });
+}
+
+fn sync_selected_values_state<D>(
+    state: &mut ComboboxState<D>,
+    values: &[ComboboxValue<D>],
+    window: &mut Window,
+    cx: &mut Context<ComboboxState<D>>,
+) where
+    D: SearchableListDelegate + 'static,
+    D::Item: SearchableListItem,
+{
+    state.set_selected_values(values, window, cx);
 }
 
 impl<D> Deref for FormCombobox<D>
@@ -191,15 +153,5 @@ where
 
     fn deref(&self) -> &Self::Target {
         &self.state
-    }
-}
-
-impl<D> Drop for FormCombobox<D>
-where
-    D: SearchableListDelegate + 'static,
-    D::Item: SearchableListItem,
-{
-    fn drop(&mut self) {
-        self.subscriptions.clear();
     }
 }

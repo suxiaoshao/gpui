@@ -1,8 +1,7 @@
 # gpui-form documentation
 
-> **Breaking proposal — not implemented.** These public documents teach the
-> Greenfield vNext workflow under review, not the API exported by the current
-> crates. Exact Rust signatures remain subject to implementation review.
+These documents describe the current typed schema, path, validation, control
+binding, and submission API exported by `gpui-form`.
 
 ## Start here
 
@@ -12,7 +11,7 @@
   recursive topology, and lifetime rules.
 - [使用指南（中文）](guide.zh-CN.md)
 
-## Related proposal documentation
+## Related documentation
 
 - [gpui-form-macros guide](../../gpui-form-macros/docs/guide.md)
 - [gpui-form-gpui-component guide](../../gpui-form-gpui-component/docs/guide.md)

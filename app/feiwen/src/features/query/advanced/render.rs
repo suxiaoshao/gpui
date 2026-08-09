@@ -23,7 +23,7 @@ use gpui_form::{ErrorParamValue, PathKey, ValidationIssue, ValidationMessage};
 use super::{
     controller::{
         AdvancedQueryController, AuthorConditionControls, ConditionEditor, ConditionRow,
-        FilterGroup, FilterNode, NumberConditionControls, QueryPath, SortRow,
+        DynamicFilterGroup, FilterNode, NumberConditionControls, RootFilterGroup, SortRow,
         TagsConditionControls,
     },
     options::{AuthorRelation, GroupRelation, NumberRelation},
@@ -83,7 +83,7 @@ impl AdvancedQueryController {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scrollbar()
-                    .child(render_group(
+                    .child(render_root_group(
                         &self.root,
                         &self.form,
                         &self.options,
@@ -146,18 +146,66 @@ impl AdvancedQueryController {
     }
 }
 
-fn render_group(
-    group: &FilterGroup,
+fn render_root_group(
+    group: &RootFilterGroup,
     form: &Entity<gpui_form::Form<super::super::form::QueryDraft>>,
     options: &super::options::QueryOptions,
     depth: usize,
     catalog_disabled: bool,
     cx: &mut Context<QueryView>,
 ) -> AnyElement {
-    let group_id = group.id.clone();
-    let relation = group.relation.value(form, cx).unwrap_or(GroupRelation::All);
-    let negated = group.negated.value(form, cx).unwrap_or(false);
-    let can_remove = depth > 0;
+    render_group(
+        group.id.clone(),
+        &group.items,
+        group.relation.get(form, cx),
+        group.negated.get(form, cx),
+        form,
+        options,
+        depth,
+        false,
+        catalog_disabled,
+        cx,
+    )
+}
+
+fn render_dynamic_group(
+    group: &DynamicFilterGroup,
+    form: &Entity<gpui_form::Form<super::super::form::QueryDraft>>,
+    options: &super::options::QueryOptions,
+    depth: usize,
+    catalog_disabled: bool,
+    cx: &mut Context<QueryView>,
+) -> AnyElement {
+    render_group(
+        group.id.clone(),
+        &group.items,
+        group
+            .relation
+            .try_get(form, cx)
+            .unwrap_or(GroupRelation::All),
+        group.negated.try_get(form, cx).unwrap_or(false),
+        form,
+        options,
+        depth,
+        true,
+        catalog_disabled,
+        cx,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_group(
+    group_id: PathKey,
+    items: &[FilterNode],
+    relation: GroupRelation,
+    negated: bool,
+    form: &Entity<gpui_form::Form<super::super::form::QueryDraft>>,
+    options: &super::options::QueryOptions,
+    depth: usize,
+    can_remove: bool,
+    catalog_disabled: bool,
+    cx: &mut Context<QueryView>,
+) -> AnyElement {
     let indent = px((depth as f32) * 16.);
     let negated_id = group_id.clone();
     let add_condition_id = group_id.clone();
@@ -239,7 +287,7 @@ fn render_group(
                         }),
                 ),
         )
-        .when(group.items.is_empty(), |this| {
+        .when(items.is_empty(), |this| {
             this.child(
                 div()
                     .py_4()
@@ -249,7 +297,7 @@ fn render_group(
             )
         })
         .child(render_conditions_table(
-            group,
+            items,
             form,
             options,
             depth,
@@ -260,7 +308,7 @@ fn render_group(
 }
 
 fn render_conditions_table(
-    group: &FilterGroup,
+    items: &[FilterNode],
     form: &Entity<gpui_form::Form<super::super::form::QueryDraft>>,
     options: &super::options::QueryOptions,
     depth: usize,
@@ -284,12 +332,12 @@ fn render_conditions_table(
             ),
         )
         .child(
-            TableBody::new().children(group.items.iter().map(|item| match item {
+            TableBody::new().children(items.iter().map(|item| match item {
                 FilterNode::Condition(condition) => {
                     render_condition_row(condition, form, options, catalog_disabled, cx)
                 }
                 FilterNode::Group(group) => TableRow::new().child(condition_span_cell(
-                    render_group(group, form, options, depth + 1, catalog_disabled, cx),
+                    render_dynamic_group(group, form, options, depth + 1, catalog_disabled, cx),
                 )),
             })),
         )
@@ -337,8 +385,8 @@ fn render_condition_row(
     let condition_id = condition.id.clone();
     let negated_id = condition_id.clone();
     let remove_id = condition_id.clone();
-    let negated = condition.negated.value(form, cx).unwrap_or(false);
-    let field_errors = path_error_messages(&condition.field, form, cx);
+    let negated = condition.negated.try_get(form, cx).unwrap_or(false);
+    let field_errors = dynamic_path_error_messages(&condition.field, form, cx);
     let editor_disabled = catalog_disabled
         && matches!(
             condition.editor,
@@ -409,27 +457,27 @@ fn render_relation_editor(
         ConditionEditor::Unselected => placeholder_control("请选择字段", true, cx),
         ConditionEditor::Text(controls) => control_with_errors(
             Select::new(&*controls.relation).disabled(disabled).w_full(),
-            path_error_messages(&controls.relation_path, form, cx),
+            dynamic_path_error_messages(&controls.relation_path, form, cx),
             cx,
         ),
         ConditionEditor::Number(controls) => control_with_errors(
             Select::new(&*controls.relation).disabled(disabled).w_full(),
-            path_error_messages(&controls.relation_path, form, cx),
+            dynamic_path_error_messages(&controls.relation_path, form, cx),
             cx,
         ),
         ConditionEditor::Bool(controls) => control_with_errors(
             Select::new(&*controls.relation).disabled(disabled).w_full(),
-            path_error_messages(&controls.relation_path, form, cx),
+            dynamic_path_error_messages(&controls.relation_path, form, cx),
             cx,
         ),
         ConditionEditor::Tags(controls) => control_with_errors(
             Select::new(&*controls.relation).disabled(disabled).w_full(),
-            path_error_messages(&controls.relation_path, form, cx),
+            dynamic_path_error_messages(&controls.relation_path, form, cx),
             cx,
         ),
         ConditionEditor::Author(controls) => control_with_errors(
             Select::new(&*controls.relation).disabled(disabled).w_full(),
-            path_error_messages(&controls.relation_path, form, cx),
+            dynamic_path_error_messages(&controls.relation_path, form, cx),
             cx,
         ),
     }
@@ -446,13 +494,13 @@ fn render_value_editor(
         ConditionEditor::Unselected => placeholder_control("请选择字段", true, cx),
         ConditionEditor::Text(controls) => control_with_errors(
             Input::new(&controls.value).disabled(disabled).w_full(),
-            path_error_messages(&controls.value_path, form, cx),
+            dynamic_path_error_messages(&controls.value_path, form, cx),
             cx,
         ),
         ConditionEditor::Number(controls) => render_number_value(controls, form, disabled, cx),
         ConditionEditor::Bool(controls) => control_with_errors(
             Select::new(&*controls.value).disabled(disabled).w_full(),
-            path_error_messages(&controls.value_path, form, cx),
+            dynamic_path_error_messages(&controls.value_path, form, cx),
             cx,
         ),
         ConditionEditor::Tags(controls) => render_tags_value(controls, form, options, disabled, cx),
@@ -468,19 +516,19 @@ fn render_number_value(
     disabled: bool,
     cx: &mut Context<QueryView>,
 ) -> AnyElement {
-    let relation = controls.relation_path.value(form, cx).ok().flatten();
+    let relation = controls.relation_path.try_get(form, cx).ok().flatten();
     if relation == Some(NumberRelation::Between) {
         return h_flex()
             .w_full()
             .gap_2()
             .child(control_with_errors(
                 NumberInput::new(&controls.min).disabled(disabled).w_full(),
-                path_error_messages(&controls.min_path, form, cx),
+                dynamic_path_error_messages(&controls.min_path, form, cx),
                 cx,
             ))
             .child(control_with_errors(
                 NumberInput::new(&controls.max).disabled(disabled).w_full(),
-                path_error_messages(&controls.max_path, form, cx),
+                dynamic_path_error_messages(&controls.max_path, form, cx),
                 cx,
             ))
             .into_any_element();
@@ -489,7 +537,7 @@ fn render_number_value(
         NumberInput::new(&controls.single)
             .disabled(disabled)
             .w_full(),
-        path_error_messages(&controls.single_path, form, cx),
+        dynamic_path_error_messages(&controls.single_path, form, cx),
         cx,
     )
 }
@@ -501,13 +549,13 @@ fn render_tags_value(
     disabled: bool,
     cx: &mut Context<QueryView>,
 ) -> AnyElement {
-    let relation = controls.relation_path.value(form, cx).ok().flatten();
+    let relation = controls.relation_path.try_get(form, cx).ok().flatten();
     if relation.is_some_and(|relation| !relation.needs_value()) {
         return placeholder_control("无需填写", false, cx);
     }
-    let errors = path_error_messages(&controls.values_path, form, cx);
+    let errors = dynamic_path_error_messages(&controls.values_path, form, cx);
     let mut hints = Vec::new();
-    if let Ok(values) = controls.values_path.value(form, cx) {
+    if let Ok(values) = controls.values_path.try_get(form, cx) {
         let missing = values
             .iter()
             .filter(|value| !options.tags.iter().any(|option| &option.name == *value))
@@ -531,7 +579,7 @@ fn render_author_value(
     disabled: bool,
     cx: &mut Context<QueryView>,
 ) -> AnyElement {
-    match controls.relation_path.value(form, cx).ok().flatten() {
+    match controls.relation_path.try_get(form, cx).ok().flatten() {
         Some(
             AuthorRelation::NameContains
             | AuthorRelation::NameStartsWith
@@ -539,13 +587,13 @@ fn render_author_value(
             | AuthorRelation::NameEquals,
         ) => control_with_errors(
             Input::new(&controls.text).disabled(disabled).w_full(),
-            path_error_messages(&controls.text_path, form, cx),
+            dynamic_path_error_messages(&controls.text_path, form, cx),
             cx,
         ),
         Some(AuthorRelation::Is | AuthorRelation::IsNot) => {
-            let errors = path_error_messages(&controls.single_path, form, cx);
+            let errors = dynamic_path_error_messages(&controls.single_path, form, cx);
             let mut hints = Vec::new();
-            if let Ok(Some(value)) = controls.single_path.value(form, cx)
+            if let Ok(Some(value)) = controls.single_path.try_get(form, cx)
                 && !options.authors.iter().any(|option| option.author == value)
             {
                 hints.push("已选作者当前不在目录中".to_owned());
@@ -563,9 +611,9 @@ fn render_author_value(
             )
         }
         Some(AuthorRelation::In | AuthorRelation::NotIn) => {
-            let errors = path_error_messages(&controls.multiple_path, form, cx);
+            let errors = dynamic_path_error_messages(&controls.multiple_path, form, cx);
             let mut hints = Vec::new();
-            if let Ok(values) = controls.multiple_path.value(form, cx) {
+            if let Ok(values) = controls.multiple_path.try_get(form, cx) {
                 let missing = values
                     .iter()
                     .filter(|value| {
@@ -698,12 +746,13 @@ fn render_sort_item(
     let drag_over_id = sort_id.clone();
     let drop_id = sort_id.clone();
     let remove_id = sort_id.clone();
-    let field = sort.field_path.value(form, cx).ok().flatten();
+    let field = sort.field_path.try_get(form, cx).ok().flatten();
     let direction = sort
         .direction_path
-        .value(form, cx)
+        .try_get(form, cx)
+        .unwrap_or(Some(SortDirection::Asc))
         .unwrap_or(SortDirection::Asc);
-    let errors = path_error_messages(&sort.field_path, form, cx);
+    let errors = dynamic_path_error_messages(&sort.field_path, form, cx);
     let has_error = !errors.is_empty();
     let field_label = field.map(|field| field.label()).unwrap_or("未选择排序字段");
     let direction_label = sort_direction_label(direction);
@@ -839,12 +888,12 @@ fn control_with_feedback(
         .into_any_element()
 }
 
-fn path_error_messages<T: Clone + PartialEq + 'static>(
-    path: &QueryPath<T>,
+fn dynamic_path_error_messages<T: Clone + PartialEq + 'static>(
+    path: &gpui_form::DynamicPath<super::super::form::QueryDraft, T>,
     form: &Entity<gpui_form::Form<super::super::form::QueryDraft>>,
     cx: &Context<QueryView>,
 ) -> Vec<String> {
-    path.errors(form, cx)
+    path.try_errors(form, cx)
         .unwrap_or_default()
         .iter()
         .map(|issue| validation_issue_message(issue, cx))

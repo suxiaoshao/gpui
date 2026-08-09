@@ -1,7 +1,7 @@
 use crate::foundation::assets::IconName;
 use gpui::{
-    Action as _, AnyElement, App, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, Styled as _, Window, prelude::FluentBuilder as _, px,
+    Action as _, AnyElement, App, ElementId, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, SharedString, Styled as _, Window, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme, StyledExt,
@@ -13,7 +13,7 @@ use gpui_component::{
 };
 use gpui_form::PathKey;
 use serde::Deserialize;
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub(super) enum McpRowList {
@@ -132,7 +132,7 @@ fn move_buttons(
     let mut buttons = Vec::with_capacity(2);
     if let Some(move_up) = moves.up {
         buttons.push(
-            Button::new(format!("{field_id}-move-up-{row_id:?}"))
+            Button::new(row_element_id(field_id, row_id, "move-up"))
                 .icon(IconName::ChevronUp)
                 .ghost()
                 .tooltip(cx.global::<crate::foundation::I18n>().t("button-move-up"))
@@ -141,7 +141,7 @@ fn move_buttons(
     }
     if let Some(move_down) = moves.down {
         buttons.push(
-            Button::new(format!("{field_id}-move-down-{row_id:?}"))
+            Button::new(row_element_id(field_id, row_id, "move-down"))
                 .icon(IconName::ChevronDown)
                 .ghost()
                 .tooltip(cx.global::<crate::foundation::I18n>().t("button-move-down"))
@@ -186,7 +186,7 @@ fn add_button(field_id: &'static str, list: McpRowList, add_label: SharedString)
 
 fn row_shell(field_id: &'static str, row_id: &PathKey) -> gpui::Stateful<gpui::Div> {
     h_flex()
-        .id(format!("{field_id}-row-{row_id:?}"))
+        .id(row_element_id(field_id, row_id, "row"))
         .w_full()
         .items_center()
         .gap_2()
@@ -213,11 +213,18 @@ fn remove_button(
     remove_label: SharedString,
     remove: RemoveRowHandler,
 ) -> Button {
-    Button::new(format!("{field_id}-remove-{row_id:?}"))
+    Button::new(row_element_id(field_id, &row_id, "remove"))
         .icon(IconName::Trash)
         .ghost()
         .tooltip(remove_label)
         .on_click(move |_, window, cx| remove(window, cx))
+}
+
+fn row_element_id(field_id: &'static str, row_id: &PathKey, role: &'static str) -> ElementId {
+    ElementId::NamedChild(
+        Arc::new(ElementId::from(row_id)),
+        format!("{field_id}-{role}").into(),
+    )
 }
 
 pub(super) fn validation_error_list(messages: Vec<SharedString>, cx: &mut App) -> AnyElement {

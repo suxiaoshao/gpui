@@ -3,6 +3,6 @@ pub enum ValidationTrigger {
     Mount,
     Change,
     Blur,
-    Dynamic,
+    External,
     Submit,
 }

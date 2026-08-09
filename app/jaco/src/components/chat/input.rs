@@ -36,7 +36,7 @@ use gpui_component::{
     notification::{Notification, NotificationType},
     v_flex,
 };
-use gpui_form::typed::{Form, FormEvent};
+use gpui_form::{Form, FormEvent};
 use gpui_operation::{Complete, Load, Transition};
 use jaco_core::{ReasoningSelectionSnapshot, ToolApprovalMode};
 use std::{path::Path, rc::Rc};
@@ -216,7 +216,7 @@ impl ChatInputController {
         let mut subscriptions = vec![composer_subscription];
 
         let form = cx.new(|cx| {
-            Form::try_new(ChatInputInput::new(
+            Form::new(ChatInputInput::new(
                 composer.read(cx).snapshot(),
                 Vec::new(),
                 RunSettingsInput::new(
@@ -225,7 +225,6 @@ impl ChatInputController {
                     selected_approval_mode,
                 ),
             ))
-            .expect("build chat input form")
         });
         let run_settings_field = ChatInputInput::ROOT.then(ChatInputInput::RUN_SETTINGS);
         let run_settings = cx.new(|cx| {
@@ -302,9 +301,11 @@ impl ChatInputController {
         subscriptions.push(cx.subscribe_in(
             &form,
             window,
-            move |form, _, event: &FormEvent, window, cx| {
-                if matches!(event, FormEvent::ModelReplaced { .. })
-                    || matches!(event, FormEvent::Committed { path, .. } if settings_keys.contains(path))
+            move |form, _, event: &FormEvent<ChatInputInput>, window, cx| {
+                if let FormEvent::ModelChanged(change) = event
+                    && settings_keys
+                        .iter()
+                        .any(|key| change.impact(key).value_changed())
                 {
                     form.save_chat_form_config(window, cx);
                 }
@@ -316,13 +317,14 @@ impl ChatInputController {
         subscriptions.push(cx.subscribe_in(&form, window, {
             let form = form.clone();
             let attachments_state = attachments_state.clone();
-            move |_, _, event: &FormEvent, _window, cx| {
-                if !matches!(event, FormEvent::ModelReplaced { .. })
-                    && !matches!(event, FormEvent::Committed { path, .. } if path == &attachments_key)
-                {
+            move |_, _, event: &FormEvent<ChatInputInput>, _window, cx| {
+                let FormEvent::ModelChanged(change) = event else {
+                    return;
+                };
+                if !change.impact(&attachments_key).value_changed() {
                     return;
                 }
-                let attachments = ChatInputInput::ATTACHMENTS.value(&form, cx);
+                let attachments = ChatInputInput::ATTACHMENTS.get(&form, cx);
                 attachments_state.update(cx, |state, cx| {
                     state.attachments = attachments;
                     cx.notify();
@@ -492,7 +494,7 @@ impl ChatInputController {
     fn save_chat_form_config(&self, window: &mut Window, cx: &mut Context<Self>) {
         let settings = ChatInputInput::ROOT
             .then(ChatInputInput::RUN_SETTINGS)
-            .value(&self.form, cx);
+            .get(&self.form, cx);
         let model = settings.model.as_ref().map(|key| ChatFormModelConfig {
             provider_id: key.provider_id.clone(),
             model_id: key.model_id.clone(),
@@ -523,7 +525,7 @@ impl ChatInputController {
         if self.submission_problem.is_some() || send_resource_problem(cx).is_some() {
             return false;
         }
-        let draft = self.form.read(cx).value().clone();
+        let draft = ChatInputInput::ROOT.get(&self.form, cx);
         let choices = load_model_choices(cx);
         build_chat_input_submit(draft, &choices).is_ok()
     }

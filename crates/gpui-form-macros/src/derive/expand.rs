@@ -1,10 +1,10 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Data, DataEnum, DataStruct, DeriveInput, Fields, Ident, parse2};
+use syn::{DeriveInput, Ident, parse2};
 
-use super::{
-    attributes::{FieldKind, parse_field_options, reject_container_attributes},
-    model::{screaming_snake, snake_case, type_argument},
+use super::model::{
+    ChildKind, DeriveModel, ModelKind, SchemaField, SchemaFieldKind, SchemaVariant, VariantKind,
+    screaming_snake, snake_case,
 };
 
 mod definition;
@@ -13,59 +13,40 @@ mod validation;
 
 pub(crate) fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     let input: DeriveInput = parse2(input)?;
-    if !input.generics.params.is_empty() {
-        return Err(syn::Error::new_spanned(
-            &input.generics,
-            "FormSchema does not support generic models",
-        ));
-    }
-    reject_container_attributes(&input.attrs)?;
-    match &input.data {
-        Data::Struct(data) => expand_struct(&input.ident, data),
-        Data::Enum(data) => expand_enum(&input.ident, data),
-        Data::Union(data) => Err(syn::Error::new_spanned(
-            data.union_token,
-            "FormSchema cannot be derived for unions",
-        )),
+    let model = DeriveModel::parse(input)?;
+    match model.kind {
+        ModelKind::Struct { fields } => expand_struct(&model.ident, &fields),
+        ModelKind::Enum { variants } => expand_enum(&model.ident, &variants),
     }
 }
 
-fn expand_struct(name: &Ident, data: &DataStruct) -> syn::Result<TokenStream> {
-    let Fields::Named(fields) = &data.fields else {
-        return Err(syn::Error::new_spanned(
-            &data.fields,
-            "FormSchema structs must use named fields",
-        ));
-    };
-
+fn expand_struct(name: &Ident, fields: &[SchemaField]) -> syn::Result<TokenStream> {
     let mut functions = Vec::new();
     let mut constants = Vec::new();
     let mut visits = Vec::new();
 
-    for field in &fields.named {
-        let field_name = field.ident.as_ref().expect("named field");
+    for field in fields {
+        let field_name = &field.ident;
         let field_type = &field.ty;
         let constant = format_ident!("{}", screaming_snake(&field_name.to_string()));
         let read = format_ident!("__form_read_{}", field_name);
         let read_mut = format_ident!("__form_read_{}_mut", field_name);
         let literal = field_name.to_string();
-        let options = parse_field_options(&field.attrs)?;
-
         functions.push(quote! {
             fn #read(value: &Self) -> &#field_type { &value.#field_name }
             fn #read_mut(value: &mut Self) -> &mut #field_type { &mut value.#field_name }
         });
 
-        match options.kind.unwrap_or(FieldKind::Leaf) {
-            FieldKind::Leaf => {
-                let required = options.required;
-                let mount = options.mount;
-                let change = options.change;
-                let blur = options.blur;
-                let dynamic = options.dynamic;
-                let submit = options.submit;
+        match &field.kind {
+            SchemaFieldKind::Leaf => {
+                let required = field.validation.required;
+                let mount = field.validation.triggers.mount;
+                let change = field.validation.triggers.change;
+                let blur = field.validation.triggers.blur;
+                let external = field.validation.triggers.external;
+                let submit = field.validation.triggers.submit;
                 let schema = validation::field_schema(
-                    &literal, required, mount, change, blur, dynamic, submit,
+                    &literal, required, mount, change, blur, external, submit,
                 );
                 constants.push(quote! {
                     pub const #constant: ::gpui_form::FieldDef<Self, #field_type> =
@@ -84,13 +65,13 @@ fn expand_struct(name: &Ident, data: &DataStruct) -> syn::Result<TokenStream> {
                     visitor.field(Self::#constant.schema(), #missing);
                 });
             }
-            FieldKind::Child => {
+            SchemaFieldKind::Child(child) => {
                 constants.push(quote! {
                     pub const #constant: ::gpui_form::ChildDef<Self, #field_type> =
                         ::gpui_form::ChildDef::__new(#literal, Self::#read, Self::#read_mut);
                 });
-                if let Some(inner) = type_argument(field_type, "Option") {
-                    visits.push(quote! {
+                match child {
+                    ChildKind::Optional { inner } => visits.push(quote! {
                         visitor.optional(
                             #literal,
                             self.#field_name.is_some(),
@@ -100,25 +81,18 @@ fn expand_struct(name: &Ident, data: &DataStruct) -> syn::Result<TokenStream> {
                                 }
                             },
                         );
-                    });
-                } else {
-                    visits.push(quote! {
+                    }),
+                    ChildKind::Direct => visits.push(quote! {
                         visitor.child(#literal, &mut |visitor| {
                             <#field_type as ::gpui_form::FormSchema>::__visit(
                                 &self.#field_name,
                                 visitor,
                             );
                         });
-                    });
+                    }),
                 }
             }
-            FieldKind::Items => {
-                let Some(item) = type_argument(field_type, "Vec") else {
-                    return Err(syn::Error::new_spanned(
-                        field_type,
-                        "#[form(items)] requires Vec<Item>",
-                    ));
-                };
+            SchemaFieldKind::Items { item } => {
                 constants.push(quote! {
                     pub const #constant: ::gpui_form::ItemsDef<Self, #item> =
                         ::gpui_form::ItemsDef::__new(#literal, Self::#read, Self::#read_mut);
@@ -144,32 +118,21 @@ fn expand_struct(name: &Ident, data: &DataStruct) -> syn::Result<TokenStream> {
     Ok(quote! { #definition #driver })
 }
 
-fn expand_enum(name: &Ident, data: &DataEnum) -> syn::Result<TokenStream> {
+fn expand_enum(name: &Ident, variants: &[SchemaVariant]) -> syn::Result<TokenStream> {
     let mut functions = Vec::new();
     let mut constants = Vec::new();
     let mut arms = Vec::new();
 
-    for variant in &data.variants {
-        if let Some(attribute) = variant
-            .attrs
-            .iter()
-            .find(|attribute| attribute.path().is_ident("form"))
-        {
-            return Err(syn::Error::new_spanned(
-                attribute,
-                "FormSchema enum variants have no #[form(...)] options",
-            ));
-        }
+    for variant in variants {
         let variant_name = &variant.ident;
         let literal = snake_case(&variant_name.to_string());
-        match &variant.fields {
-            Fields::Unit => {
+        match &variant.kind {
+            VariantKind::Unit => {
                 arms.push(quote! {
                     Self::#variant_name => visitor.unit_case(#literal),
                 });
             }
-            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                let payload = &fields.unnamed.first().expect("one field").ty;
+            VariantKind::Payload(payload) => {
                 let constant = format_ident!("{}", screaming_snake(&variant_name.to_string()));
                 let read = format_ident!("__form_case_{}", literal);
                 let read_mut = format_ident!("__form_case_{}_mut", literal);
@@ -196,12 +159,6 @@ fn expand_enum(name: &Ident, data: &DataEnum) -> syn::Result<TokenStream> {
                         <#payload as ::gpui_form::FormSchema>::__visit(payload, visitor);
                     }),
                 });
-            }
-            _ => {
-                return Err(syn::Error::new_spanned(
-                    &variant.fields,
-                    "FormSchema enums support only unit and single-payload tuple variants",
-                ));
             }
         }
     }

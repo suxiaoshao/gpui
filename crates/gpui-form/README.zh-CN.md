@@ -2,10 +2,11 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-`gpui-form` 让 GPUI 页面编辑一份类型化 Rust draft、验证它、为保存准备一个 snapshot，并安全地应用
-canonical saved result。先从一张普通页面表单开始；递归树后续使用同一套 session 与 path 规则。
+`gpui-form` 为一个 GPUI 编辑页面提供一份类型化 Rust draft、校验，以及可安全保存的 snapshot。`Form<M>`
+是一次编辑 session，而不是第二份应用 store：页面持有持久化、加载和展示；Form 持有 current draft、baseline、
+validation fact 与动态字段的 session-local 位置。
 
-## 添加依赖与 imports
+## 添加 crate
 
 ```toml
 [dependencies]
@@ -16,51 +17,66 @@ gpui-form.workspace = true
 gpui-form-gpui-component.workspace = true
 ```
 
-下方完整示例使用这个 prelude；应用持有的 save type 与 I/O method 会在调用处说明。
+component crate 是可选的，但通常用它连接标准 `gpui-component` input。以下示例使用这些 import：
 
 ```rust,ignore
 use std::{collections::HashSet, sync::Arc};
 
 use gpui::{AppContext as _, Context, Entity, Subscription, Window};
 use gpui_component::{
+    checkbox::Checkbox,
     form::field,
     input::{Input, InputState},
 };
 use gpui_form::{
-    Form, FormRevision, FormSchema, PrepareError, Prepared, ValidationMessage,
-    ValidationRequest, ValidationSink, Validator,
+    Form, FormEvent, FormSchema, Prepared, ValidationMessage,
+    ValidationItemPath, ValidationRequest, ValidationSink, ValidationTrigger, Validator,
 };
-use gpui_form_gpui_component::{
-    FormInput, FormIntegerInput, IntegerInputState,
-};
+use gpui_form_gpui_component::{FormInput, FormIntegerInput, IntegerInputState};
 ```
 
-## 一张完整的 Provider 表单
+## 一张完整的小表单
 
-### 1. 描述 draft
+### 描述 draft
 
 ```rust,ignore
 #[derive(Clone, Debug, PartialEq, FormSchema)]
 struct ProviderDraft {
-    #[form(required, validate(on_change, on_blur, on_submit))]
+    #[form(required, validate(on_blur, on_submit))]
     name: String,
 
-    #[form(validate(on_change, on_submit))]
+    #[form(validate(on_submit))]
     retry_limit: u32,
 
     enabled: bool,
 }
 ```
 
-`FormSchema` 会创建可复用的静态 definition，例如
-`ProviderDraft::NAME: FieldDef<ProviderDraft, String>`。definition 只包含 schema metadata 与 typed
-access；它绝不持有 value、form entity、subscription 或 control state。
+`FormSchema` 会创建可复用的静态 descriptor，例如 `ProviderDraft::NAME`。descriptor 只包含 schema
+metadata 与 typed access；它不会保留 form entity、value、subscription 或 native control。root descriptor
+也是 total path，所以它的 `get` 与 `set` 操作不会失败。
 
-`required` 与 `validate(...)` 配置生成的 leaf schema 及其校验触发时机。
+### 创建编辑 session
 
-### 2. 向一次编辑 session 注入 validation
+构造函数是 infallible。先提供初始 draft，再按需为本次编辑 session 附加 validator：
 
-validator 属于 session，因此同一 model 可以在不同页面中配合不同的 application dependency 编辑。
+```rust,ignore
+let form: Entity<Form<ProviderDraft>> = cx.new(|_| {
+    Form::new(ProviderDraft {
+        name: String::new(),
+        retry_limit: 3,
+        enabled: true,
+    })
+    .with_validator(ProviderValidator::new(reserved_names))
+});
+```
+
+同一份 schema 可以创建多个独立 session，并拥有不同 validator data。更新应用 catalog 不会改写 Form；当
+外部事实会影响规则时，catalog owner 显式请求校验。
+
+### 编写 validator
+
+校验会收到一个自洽的 snapshot。通过 request 读取 model，并把 issue 附着到精确的 typed path：
 
 ```rust,ignore
 struct ProviderValidator {
@@ -76,10 +92,11 @@ impl ProviderValidator {
 impl Validator<ProviderDraft> for ProviderValidator {
     fn validate(
         &self,
-        model: &ProviderDraft,
         request: ValidationRequest<'_, ProviderDraft>,
-        out: &mut ValidationSink<ProviderDraft>,
+        out: &mut ValidationSink<'_, ProviderDraft>,
     ) {
+        let model = request.model();
+
         if request.includes(&ProviderDraft::NAME)
             && self.reserved_names.contains(model.name.trim())
         {
@@ -88,34 +105,16 @@ impl Validator<ProviderDraft> for ProviderValidator {
                 ValidationMessage::key("provider-name-reserved"),
             );
         }
-
-        if request.includes(&ProviderDraft::RETRY_LIMIT) && model.retry_limit > 10 {
-            out.at(ProviderDraft::RETRY_LIMIT).error(
-                "retry-limit-too-large",
-                ValidationMessage::key("retry-limit-too-large"),
-            );
-        }
     }
 }
-
-let reserved_names = Arc::new(HashSet::from(["default".to_owned()]));
-let runtime = Form::try_new_with_validator(
-    ProviderDraft {
-        name: String::new(),
-        retry_limit: 3,
-        enabled: true,
-    },
-    ProviderValidator::new(reserved_names),
-)?;
-let form: Entity<Form<ProviderDraft>> = cx.new(|_| runtime);
 ```
 
-`Form<M>` 持有这一次编辑 session 的 current draft、baseline、revision、validation report 与
-form-owned async validation work。
-`#[form(required)]` 负责 name 的缺失值规则；注入的 validator 则加入依赖本页面 catalog 的
-业务规则。
+业务校验默认在 `Submit` 时运行。schema 声明 `Mount`、`Change` 或 `Blur` 规则后，才会启用相应 trigger。
+catalog 或其他外部依赖变化时使用 `ValidationTrigger::External`；它和 `DynamicPath` 没有关系。
 
-### 3. 让页面持有 control 与一条 observation
+### 连接控件并重绘页面
+
+普通控件直接使用内置 adapter。它们自行订阅 Form，并处理两个方向的同步：
 
 ```rust,ignore
 struct ProviderPage {
@@ -126,16 +125,12 @@ struct ProviderPage {
 }
 
 impl ProviderPage {
-    fn new(
-        reserved_names: Arc<HashSet<String>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> anyhow::Result<Self> {
-        let runtime = Form::try_new_with_validator(
-            ProviderDraft { name: String::new(), retry_limit: 3, enabled: true },
-            ProviderValidator::new(reserved_names),
-        )?;
-        let form = cx.new(|_| runtime);
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> anyhow::Result<Self> {
+        let form = cx.new(|_| Form::new(ProviderDraft {
+            name: String::new(),
+            retry_limit: 3,
+            enabled: true,
+        }));
 
         let name_input = FormInput::new(
             &form,
@@ -147,11 +142,12 @@ impl ProviderPage {
         let retry_limit_input = FormIntegerInput::new(
             &form,
             ProviderDraft::RETRY_LIMIT,
-            |window, cx| IntegerInputState::new(window, cx)
-                .min(0u32).max(10u32).step(1u32),
+            |window, cx| IntegerInputState::new(window, cx).min(0u32).max(10u32),
             window,
             cx,
         )?;
+
+        // 这里只负责重绘页面，不是让控件保持同步所必需的订阅。
         let form_observer = cx.observe(&form, |_, _, cx| cx.notify());
 
         Ok(Self { form, form_observer, name_input, retry_limit_input })
@@ -159,130 +155,164 @@ impl ProviderPage {
 }
 ```
 
-root 上的 `FieldDef` 是目标 total-path 简写，因此 `FormInput::new` 不需要返回 path-resolution
-result。有状态 control 的构造与 native event 同步见
-[component adapter guide](../gpui-form-gpui-component/docs/guide.zh-CN.md)。
+`FormInput`、`FormIntegerInput`、`FormSelect` 和 `FormCombobox` 自己持有 binding 与 native subscription。
+页面 observer 只用于渲染 error、dirty state 或按钮可用性等页面状态。
 
-### 4. 渲染 schema metadata 与实时 form status
+无状态 callback 也显式把 Form 传给同一个 descriptor：
 
 ```rust,ignore
-let name = ProviderDraft::NAME;
-let errors = name.errors(&self.form, cx);
-let is_pending = self.form.read(cx).is_validating();
-let feedback = errors
-    .first()
-    .map(|issue| validation_text(issue, cx))
-    .unwrap_or_else(|| if is_pending { "Checking…".into() } else { String::new() });
+let enabled = ProviderDraft::ENABLED;
+let checked = enabled.get(&self.form, cx);
+let form = self.form.clone();
 
-field()
-    .label("Provider name")
-    .required(name.schema().is_required())
-    .description(feedback)
-    .child(Input::new(&self.name_input));
+Checkbox::new("provider-enabled")
+    .checked(checked)
+    .on_click(move |checked, _, cx| {
+        enabled.set(&form, *checked, cx);
+    });
 ```
 
-页面还会读取 form-level dirty、valid、pending、report 与 revision state，用于渲染按钮和摘要。form
-不决定何时显示 error，也不决定 submit 失败后 focus 哪个 control；active page 决定。
+## 校验、保存并有条件地 rebase
 
-### 5. Prepare、保存并有条件地 rebase
-
-`Prepared<M>::map` 会消费 prepared snapshot，因此在把它映射为 request 前先捕获 revision：
+`prepare` 会对一个 snapshot 运行 submit validation。成功时返回 `Prepared<M>`，其中同时包含值和
+session-bound `FormVersion`：
 
 ```rust,ignore
-struct SaveProvider {
-    name: String,
-    retry_limit: u32,
-    enabled: bool,
-}
+struct SaveProvider(ProviderDraft);
 
 impl From<ProviderDraft> for SaveProvider {
     fn from(draft: ProviderDraft) -> Self {
-        Self {
-            name: draft.name,
-            retry_limit: draft.retry_limit,
-            enabled: draft.enabled,
-        }
+        Self(draft)
     }
 }
 
-fn save(&mut self, cx: &mut Context<Self>) -> Result<(), PrepareError> {
-    let prepared: Prepared<ProviderDraft> = self.form.update(cx, |form, cx| {
-        form.prepare(cx)
-    })?;
+let prepared: Prepared<ProviderDraft> = self.form.update(cx, |form, cx| {
+    form.prepare(cx)
+})?;
 
-    let revision = prepared.revision();
-    let request = prepared.map(SaveProvider::from);
-    self.start_save(revision, request, cx); // 页面持有的 async operation
-    Ok(())
-}
+let (version, request) = prepared
+    .map(SaveProvider::from)
+    .into_parts();
+self.start_save(version, request, cx);
 
-fn save_finished(
-    &mut self,
-    submitted_revision: FormRevision,
-    saved: ProviderDraft,
-    cx: &mut Context<Self>,
-) {
-    let applied = self.form.update(cx, |form, cx| {
-        form.rebase_if_revision(submitted_revision, saved, cx)
-    });
-    if !applied {
-        self.show_saved_while_editing_notice(cx);
-    }
+// 页面持有的 async completion callback 中：
+let applied = self.form.update(cx, |form, cx| {
+    form.rebase_if_current(version, canonical_saved_model, cx)
+});
+if !applied {
+    self.show_saved_while_editing_notice(cx);
 }
 ```
 
-`prepare` 验证同一个 snapshot，拒绝 blocking data/control issue 与 pending async validation，再连同
-revision 捕获该 snapshot。保存、加载、retry 与 notification 仍属于 page 或 controller。CAS 失败绝不
-覆盖保存期间产生的新编辑。
+`Prepared::map` 会保留同一个 version。用户在 prepare 后继续编辑，或 version 属于另一个 session 时，
+`rebase_if_current` 不会改变任何内容。保存、retry、notification 和错误展示仍由应用负责。
 
-## Dynamic item 不需要 model ID
+## 嵌套与动态数据
 
-用 `#[form(items)]` 标记结构化 collection，但不要把 form 导航 identity 放进业务 draft：
+嵌套 schema 使用 `#[form(child)]`，结构化 collection 使用 `#[form(items)]`。下面这个完整的递归
+model 不包含 Form 专用 ID：
 
 ```rust,ignore
 #[derive(Clone, FormSchema)]
-struct HeaderDraft {
-    name: String,
+struct QueryDraft {
+    #[form(child)]
+    filters: FilterGroup,
 }
 
 #[derive(Clone, FormSchema)]
-struct RequestDraft {
+struct FilterGroup {
+    title: String,
     #[form(items)]
-    headers: Vec<HeaderDraft>,
+    children: Vec<FilterNode>,
 }
 
-let headers = RequestDraft::HEADERS;
-let header = headers.append(
-    &request_form,
-    HeaderDraft { name: String::new() },
+#[derive(Clone, FormSchema)]
+enum FilterNode {
+    Condition(FilterCondition),
+    Group(FilterGroup),
+}
+
+#[derive(Clone, FormSchema)]
+struct FilterCondition {
+    value: String,
+}
+
+let query_form = cx.new(|_| Form::new(QueryDraft {
+    filters: FilterGroup {
+        title: "All articles".into(),
+        children: Vec::new(),
+    },
+}));
+
+let title = QueryDraft::ROOT
+    .then(QueryDraft::FILTERS)
+    .then(FilterGroup::TITLE);
+let value: String = title.get(&query_form, cx);
+title.set(&query_form, "Recent articles".into(), cx);
+```
+
+item、enum case 和 `Option::Some` 位置是 dynamic。Form 生成它们的 identity；调用方不生成 ID，也不按数组
+下标导航。针对当前 Form resolve case 或 optional payload。未激活的 case/option 返回 `Ok(None)`；起点已
+retire 则返回 `Err(ResolveError)`：
+
+```rust,ignore
+let children = QueryDraft::ROOT
+    .then(QueryDraft::FILTERS)
+    .then(FilterGroup::CHILDREN);
+let node = children.append(
+    &query_form,
+    FilterNode::Condition(FilterCondition { value: String::new() }),
     cx,
 )?;
-let name = header.then(HeaderDraft::NAME);
-name.try_set(&request_form, "Authorization".to_owned(), cx)?;
+let key = node.key(); // item 仍 active 时稳定的 UI identity
+
+let condition = node
+    .case(FilterNode::CONDITION)
+    .resolve(&query_form, cx)?;
+
+if let Some(condition) = condition {
+    let value = condition.then(FilterCondition::VALUE);
+    let current: String = value.try_get(&query_form, cx)?;
+    value.try_set(&query_form, "Rust".into(), cx)?;
+}
 ```
 
-Form 生成 item 稳定的 session-local identity，并把它放在返回的 typed `ItemPath` 内。`items`、
-`append`、`insert_before` 与 `replace_all` 产生这些 path；remove 与 move operation 消费或比较它们。
-调用方不声明 `#[form(identity)]`、不构造 raw item ID，也不在 `RequestDraft` 中持久化 form identity。
+使用 `children.items(&query_form, cx)` 枚举已有 item。每个返回的 `ItemPath` 都是类型化的，并携带
+Form 持有的当前位置。
 
-dynamic enum 与 optional 位置必须在当前 session 中定位：
+同父级重排保留 item path。删除、替换、case/optional 重建、whole-form replacement 与 cross-parent move 会使
+受影响的 dynamic path retire；它们不会在看起来相同的位置复活。
+
+## 需要时观察语义变化
+
+大多数页面只需 `cx.observe` 来重绘。tree reconciler 或其他 cross-field owner 可以订阅语义化 Form event，
+并查询自身的 typed target 是否受影响：
 
 ```rust,ignore
-let payload = enum_path.try_case(form_entity.read(cx), EnumDraft::PAYLOAD)?;
-let child = optional_path.try_some(form_entity.read(cx))?;
+let subscription = cx.subscribe(&form, |_, _, event, cx| {
+    if let FormEvent::ModelChanged(change) = event {
+        let children = QueryDraft::ROOT
+            .then(QueryDraft::FILTERS)
+            .then(FilterGroup::CHILDREN);
+        let impact = change.impact(&children);
+
+        if impact.structure_changed() {
+            cx.notify(); // 重新枚举 row
+        } else if impact.value_changed() {
+            cx.notify(); // 重新读取已有 value
+        }
+    }
+});
 ```
 
-`try_case` 与 `try_some` 捕获当前 active incarnation，但返回的 `DynamicPath` 不保存 form entity。
-纯静态 `.then(...)` 组合不需要 Form。case 经历 `A -> B -> A`，或 option 经历
-`Some -> None -> Some` 后，旧 dynamic path 仍保持 retired。调用方不会看到或传递
-`TopologyIndex`；每次 resolve、validation 或 mutation transaction 都由 Form 内部使用同一份私有
-topology snapshot。
+`PathImpact` 也会报告 retirement。仅 validation 的变化以 `FormEvent::ValidationChanged` 单独到达；它不表示
+必须重新设置 native control value。
 
-## 下一步
+## 继续阅读
 
-- [使用指南](docs/guide.zh-CN.md)：validation workflow、lifecycle replacement、optional/recursive
-  path、由 runtime 定位的 collection topology 与 lifetime rule。
-- [宏使用指南](../gpui-form-macros/docs/guide.zh-CN.md)：`FormSchema`、schema fragment、enum case、
-  runtime item path 与编译期 diagnostic。
-- [Component adapter 使用指南](../gpui-form-gpui-component/docs/guide.zh-CN.md)：native control、
-  deferred binding、integer/select/combobox 行为与 custom adapter。
+- [使用指南](docs/guide.zh-CN.md)：lifecycle operation、validation、submission、recursive collection 与
+  event handling。
+- [宏使用指南](../gpui-form-macros/docs/guide.zh-CN.md)：schema declaration、enum case 与编译期
+  diagnostic。
+- [Component adapter 使用指南](../gpui-form-gpui-component/docs/guide.zh-CN.md)：内置控件及 custom
+  control binding API。

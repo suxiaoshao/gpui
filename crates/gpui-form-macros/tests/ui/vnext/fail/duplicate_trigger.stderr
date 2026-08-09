@@ -1,0 +1,5 @@
+error: duplicate `on_external` trigger
+ --> tests/ui/vnext/fail/duplicate_trigger.rs:3:34
+  |
+3 |     #[form(validate(on_external, on_external))]
+  |                                  ^^^^^^^^^^^

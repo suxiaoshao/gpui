@@ -1,4 +1,4 @@
 interface:
   display_name: "GPUI Form"
-  short_description: "Work with typed FormSchema and Form sessions"
-  default_prompt: "Use $gpui-form to implement or review this typed GPUI form flow against the current FormSchema and Form contract."
+  short_description: "Build typed FormSchema sessions and bindings"
+  default_prompt: "Use $gpui-form to implement or review this typed GPUI form flow against the current Issue #199 contract."

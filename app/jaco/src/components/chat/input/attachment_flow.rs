@@ -93,7 +93,7 @@ impl ChatInputController {
         cx: &mut Context<Self>,
     ) {
         let field = super::ChatInputInput::ATTACHMENTS;
-        let mut attachments = field.value(&self.form, cx);
+        let mut attachments = field.get(&self.form, cx);
         attachments.extend(result.attachments);
         field.set(&self.form, attachments, cx);
         for rejected in result.rejected {
@@ -115,7 +115,7 @@ impl ChatInputController {
         cx: &mut Context<Self>,
     ) {
         let field = super::ChatInputInput::ATTACHMENTS;
-        let mut attachments = field.value(&self.form, cx);
+        let mut attachments = field.get(&self.form, cx);
         attachments.retain(|attachment| attachment.local_id != local_id);
         field.set(&self.form, attachments, cx);
         cx.notify();

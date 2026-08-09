@@ -17,7 +17,7 @@ use crate::{
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, Disableable, IndexPath, StyledExt, WindowExt as NotificationWindowExt,
+    ActiveTheme, Disableable, StyledExt, WindowExt as NotificationWindowExt,
     button::{Button, ButtonVariants, Toggle, ToggleGroup, ToggleVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
     form::field as component_form_field,
@@ -25,11 +25,12 @@ use gpui_component::{
     label::Label,
     notification::{Notification, NotificationType},
     scroll::ScrollableElement,
-    select::{Select, SelectEvent, SelectState},
+    select::Select,
     switch::Switch,
     v_flex,
 };
-use gpui_form::typed::{Form, FormEvent, GardeValidator};
+use gpui_form::{ControlBinding, ControlProjection, Form, GardeValidator};
+use gpui_form_gpui_component::FormSelect;
 use jaco_core::{ShortcutId, ShortcutInputSource};
 use jaco_db::ShortcutRecord;
 use std::rc::Rc;
@@ -67,9 +68,9 @@ pub(super) struct ShortcutEditDialogState {
     shortcut_id: Option<ShortcutId>,
     form: Entity<Form<ShortcutEditFormInput>>,
     hotkey_input: Entity<HotkeyInputState>,
-    prompt_select: Entity<SelectState<Vec<PromptChoice>>>,
+    prompt_select: FormSelect<Vec<PromptChoice>>,
     _subscriptions: Vec<Subscription>,
-    _control_leases: [gpui_form::ControlLease; 2],
+    _hotkey_binding: ControlBinding,
     _run_settings: Entity<RunSettingsController<ShortcutEditFormInput>>,
     chat_form: Entity<ChatFormState>,
     chat_form_controls: ChatFormControls,
@@ -101,67 +102,42 @@ impl ShortcutEditDialogState {
                 existing_shortcuts: existing_shortcuts.clone(),
                 temporary_hotkey: temporary_hotkey.clone(),
             });
-        let selected_prompt = form_input.prompt.clone();
-        let selected_prompt_index = prompt_choices
-            .iter()
-            .position(|choice| choice.value() == &selected_prompt)
-            .map(IndexPath::new);
         let form = cx.new(|_| {
-            Form::try_new_with_validator(
-                form_input,
-                GardeValidator::<ShortcutEditFormInput, JacoGardeMessageProvider>::new(
-                    validation_context,
-                ),
-            )
-            .expect("build shortcut edit form")
+            Form::new(form_input).with_validator(GardeValidator::<
+                ShortcutEditFormInput,
+                JacoGardeMessageProvider,
+            >::new(validation_context))
         });
         let hotkey_input = cx.new(|cx| HotkeyInputState::new(window, cx));
-        let prompt_select =
-            cx.new(|cx| SelectState::new(prompt_choices, selected_prompt_index, window, cx));
-        let mut subscriptions = Vec::new();
-        let prompt_binding = ShortcutEditFormInput::PROMPT.bind_control(&form, cx);
-        let prompt_lease = prompt_binding.lease();
-        subscriptions.push(cx.subscribe_in(
-            &prompt_select,
-            window,
-            move |_owner, _, event: &SelectEvent<Vec<PromptChoice>>, window, cx| {
-                let SelectEvent::Confirm(value) = event;
-                prompt_binding.defer_set(value.clone().flatten(), window, cx);
-            },
-        ));
-        let weak_form = form.downgrade();
-        let weak_prompt_select = prompt_select.downgrade();
-        subscriptions.push(cx.subscribe_in(
+        let prompt_select = FormSelect::new(
             &form,
-            window,
-            move |_owner, _, _: &FormEvent, window, cx| {
-                let (Some(form), Some(prompt_select)) =
-                    (weak_form.upgrade(), weak_prompt_select.upgrade())
-                else {
-                    return;
-                };
-                let selected = ShortcutEditFormInput::PROMPT.value(&form, cx);
-                prompt_select.update(cx, |state, cx| {
-                    state.set_selected_value(&selected, window, cx);
-                });
+            ShortcutEditFormInput::PROMPT,
+            move |window, cx| {
+                gpui_component::select::SelectState::new(prompt_choices, None, window, cx)
             },
-        ));
+            window,
+            cx,
+        );
+        let mut subscriptions = Vec::new();
         let hotkey_field = ShortcutEditFormInput::HOTKEY;
-        let hotkey_binding = hotkey_field.bind_control(&form, cx);
-        let hotkey_lease = hotkey_binding.lease();
+        let (hotkey_binding, hotkey_writer) = hotkey_field.bind_control_in(
+            &form,
+            &hotkey_input,
+            |_, projection, _, cx| match projection {
+                ControlProjection::Value(_) | ControlProjection::Retired => cx.notify(),
+            },
+            window,
+            cx,
+        );
         subscriptions.push(cx.subscribe_in(
             &hotkey_input,
             window,
             move |_owner, _state, event: &HotkeyInputEvent, window, cx| {
                 let HotkeyInputEvent::Change(value) = event;
-                hotkey_binding.defer_set(value.clone(), window, cx);
+                hotkey_writer.defer_set(value.clone(), window, cx);
             },
         ));
-        subscriptions.push(cx.subscribe_in(
-            &form,
-            window,
-            |_owner, _, _: &FormEvent, _window, cx| cx.notify(),
-        ));
+        subscriptions.push(cx.observe(&form, |_, _, cx| cx.notify()));
         let run_settings_field =
             ShortcutEditFormInput::ROOT.then(ShortcutEditFormInput::RUN_SETTINGS);
         let run_settings =
@@ -192,7 +168,7 @@ impl ShortcutEditDialogState {
             hotkey_input,
             prompt_select,
             _subscriptions: subscriptions,
-            _control_leases: [prompt_lease, hotkey_lease],
+            _hotkey_binding: hotkey_binding,
             _run_settings: run_settings,
             chat_form,
             chat_form_controls,
@@ -226,7 +202,7 @@ impl ShortcutEditDialogState {
         let Ok(prepared) = result else {
             return false;
         };
-        let (revision, draft) = prepared
+        let (version, draft) = prepared
             .map(|draft| normalize_shortcut_input(&draft))
             .into_parts();
         let Some(hotkey) = draft.hotkey.clone() else {
@@ -304,9 +280,9 @@ impl ShortcutEditDialogState {
                 dialog.save_task = None;
                 match result {
                     Ok(_) => {
-                        dialog
+                        let rebased = dialog
                             .form
-                            .update(cx, |form, cx| form.rebase_if_revision(revision, draft, cx));
+                            .update(cx, |form, cx| form.rebase_if_current(version, draft, cx));
                         window.push_notification(
                             Notification::new()
                                 .title(cx.global::<I18n>().t(match mode {
@@ -316,7 +292,11 @@ impl ShortcutEditDialogState {
                                 .with_type(NotificationType::Success),
                             cx,
                         );
-                        window.close_dialog(cx);
+                        if rebased {
+                            window.close_dialog(cx);
+                        } else {
+                            cx.notify();
+                        }
                     }
                     Err(error) => {
                         let title = cx.global::<I18n>().t("notify-save-shortcut-failed");
@@ -352,7 +332,7 @@ impl ShortcutEditDialogState {
                     .h(px(40.))
             }))
             .on_click(cx.listener(|this, states: &Vec<bool>, _window, cx| {
-                let current = ShortcutEditFormInput::INPUT_SOURCE.value(&this.form, cx);
+                let current = ShortcutEditFormInput::INPUT_SOURCE.get(&this.form, cx);
                 let input_source = input_source_from_toggle_states(current, states);
                 ShortcutEditFormInput::INPUT_SOURCE.set(&this.form, input_source, cx);
             }))
@@ -378,15 +358,13 @@ impl Render for ShortcutEditDialogState {
             .then(RunSettingsInput::MODEL);
         let hotkey_error = field_error_message(hotkey_field.errors(&self.form, cx), cx);
         let model_error = field_error_message(model_field.errors(&self.form, cx), cx);
-        let (hotkey, prompt_select, input_source, enabled) = {
-            let form = self.form.read(cx);
-            (
-                form.value().hotkey.clone(),
-                self.prompt_select.clone(),
-                form.value().input_source,
-                form.value().enabled,
-            )
-        };
+        let draft = ShortcutEditFormInput::ROOT.get(&self.form, cx);
+        let (hotkey, prompt_select, input_source, enabled) = (
+            draft.hotkey,
+            (*self.prompt_select).clone(),
+            draft.input_source,
+            draft.enabled,
+        );
         v_flex()
             .w_full()
             .gap_4()
@@ -404,6 +382,7 @@ impl Render for ShortcutEditDialogState {
                 field_prompt.clone(),
                 Select::new(&prompt_select)
                     .placeholder(field_prompt)
+                    .cleanable(true)
                     .w_full()
                     .into_any_element(),
                 None,
@@ -765,10 +744,7 @@ fn form_field(
         .into_any_element()
 }
 
-fn field_error_message(
-    errors: Vec<gpui_form::typed::ValidationIssue>,
-    cx: &App,
-) -> Option<SharedString> {
+fn field_error_message(errors: Vec<gpui_form::ValidationIssue>, cx: &App) -> Option<SharedString> {
     errors.first().map(|error| {
         crate::features::settings::form_validation::validation_message(error.message(), cx)
     })
@@ -878,7 +854,7 @@ mod tests {
         let form = window.root(&mut cx).expect("shortcut dialog root");
 
         assert!(form.read_with(&cx, |dialog, cx| {
-            let run_settings = ShortcutEditFormInput::RUN_SETTINGS.value(&dialog.form, cx);
+            let run_settings = ShortcutEditFormInput::RUN_SETTINGS.get(&dialog.form, cx);
             run_settings.model.is_none()
         }));
     }

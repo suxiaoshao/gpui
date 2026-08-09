@@ -90,12 +90,6 @@ pub(crate) enum SortField {
     IsLimit,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SortDirectionChoice {
-    Asc,
-    Desc,
-}
-
 #[derive(Clone)]
 pub(super) struct SelectChoice<T: Copy + Eq + 'static> {
     label: &'static str,
@@ -435,10 +429,10 @@ pub(super) fn sort_field_items() -> Vec<SelectChoice<SortField>> {
     ]
 }
 
-pub(super) fn sort_direction_items() -> Vec<SelectChoice<SortDirectionChoice>> {
+pub(super) fn sort_direction_items() -> Vec<SelectChoice<crate::store::query::SortDirection>> {
     vec![
-        SelectChoice::new("升序", SortDirectionChoice::Asc),
-        SelectChoice::new("降序", SortDirectionChoice::Desc),
+        SelectChoice::new("升序", crate::store::query::SortDirection::Asc),
+        SelectChoice::new("降序", crate::store::query::SortDirection::Desc),
     ]
 }
 

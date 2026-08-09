@@ -17,7 +17,7 @@ use gpui_component::{
     scroll::ScrollableElement,
     v_flex,
 };
-use gpui_form::typed::{Form, GardeValidator, PrepareError as SubmitError};
+use gpui_form::{Form, FormVersion, GardeValidator, PrepareError as SubmitError};
 use gpui_form_gpui_component::FormInput;
 use jaco_core::PromptId;
 use jaco_db::PromptRecord;
@@ -76,13 +76,10 @@ impl PromptEditDialogState {
                     PromptEditValidationContext::new(PromptValidationDependencies::default())
                 });
         let form = cx.new(|_| {
-            Form::try_new_with_validator(
-                form_input,
-                GardeValidator::<PromptEditFormInput, JacoGardeMessageProvider>::new(
-                    validation_context,
-                ),
-            )
-            .expect("build prompt edit form")
+            Form::new(form_input).with_validator(GardeValidator::<
+                PromptEditFormInput,
+                JacoGardeMessageProvider,
+            >::new(validation_context))
         });
         let name_input = FormInput::new(
             &form,
@@ -138,7 +135,7 @@ impl PromptEditDialogState {
             );
             form.prepare(cx)
         });
-        let (revision, draft) = match prepared {
+        let (version, draft) = match prepared {
             Ok(prepared) => prepared
                 .map(|draft| normalize_prompt_input(&draft))
                 .into_parts(),
@@ -172,16 +169,7 @@ impl PromptEditDialogState {
                 dialog.save_task = None;
                 match result {
                     Ok(_) => {
-                        dialog
-                            .form
-                            .update(cx, |form, cx| form.rebase_if_revision(revision, draft, cx));
-                        window.push_notification(
-                            Notification::new()
-                                .title(cx.global::<I18n>().t("notify-prompt-saved"))
-                                .with_type(NotificationType::Success),
-                            cx,
-                        );
-                        window.close_dialog(cx);
+                        dialog.finish_successful_save(version, draft, window, cx);
                     }
                     Err(error) => {
                         let title = cx.global::<I18n>().t("notify-save-prompt-failed");
@@ -192,6 +180,38 @@ impl PromptEditDialogState {
             });
         }));
         false
+    }
+
+    fn finish_successful_save(
+        &mut self,
+        version: FormVersion,
+        draft: PromptEditFormInput,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let rebased = self.rebase_saved_prompt_if_current(version, draft, cx);
+        window.push_notification(
+            Notification::new()
+                .title(cx.global::<I18n>().t("notify-prompt-saved"))
+                .with_type(NotificationType::Success),
+            cx,
+        );
+        if rebased {
+            window.close_dialog(cx);
+        } else {
+            cx.notify();
+        }
+        rebased
+    }
+
+    fn rebase_saved_prompt_if_current(
+        &mut self,
+        version: FormVersion,
+        draft: PromptEditFormInput,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.form
+            .update(cx, |form, cx| form.rebase_if_current(version, draft, cx))
     }
 
     fn focus_name(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -558,6 +578,44 @@ mod tests {
     }
 
     #[gpui::test]
+    fn stale_save_completion_keeps_newer_prompt_edit(cx: &mut TestAppContext) {
+        let _dir = init_prompt_dialog_test(cx);
+        let window = open_test_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let dialog = cx.update(|window, cx| {
+            cx.new(|cx| PromptEditDialogState::new(PromptEditMode::Create, None, window, cx))
+        });
+
+        let (version, saved) = cx.update(|_, cx| {
+            let form = dialog.read(cx).form.clone();
+            PromptEditFormInput::NAME.set(&form, "Saved name".to_string(), cx);
+            PromptEditFormInput::CONTENT.set(&form, "Saved content".to_string(), cx);
+            form.update(cx, |form, cx| form.prepare(cx))
+                .expect("valid prompt snapshot")
+                .into_parts()
+        });
+        cx.update(|_, cx| {
+            let form = dialog.read(cx).form.clone();
+            PromptEditFormInput::CONTENT.set(&form, "Newer content".to_string(), cx);
+        });
+
+        let rebased = cx.update(|_, cx| {
+            dialog.update(cx, |dialog, cx| {
+                dialog.rebase_saved_prompt_if_current(version, saved, cx)
+            })
+        });
+
+        assert!(!rebased);
+        assert_eq!(
+            dialog.read_with(&cx, |dialog, cx| {
+                PromptEditFormInput::CONTENT.get(&dialog.form, cx)
+            }),
+            "Newer content"
+        );
+        assert!(dialog.read_with(&cx, |dialog, cx| dialog.form.read(cx).is_dirty()));
+    }
+
+    #[gpui::test]
     fn duplicate_name_confirm_keeps_prompt_dialog_open(cx: &mut TestAppContext) {
         let _dir = init_prompt_dialog_test(cx);
         cx.update(|cx| cx.set_global(foundation::I18n::for_locale_tag("en-US")));
@@ -657,11 +715,8 @@ mod tests {
 
     fn open_test_window(cx: &mut TestAppContext) -> WindowHandle<TestView> {
         cx.update(|cx| {
-            cx.open_window(Default::default(), |window, cx| {
-                let _ = window;
-                cx.new(|_| TestView)
-            })
-            .expect("open prompt dialog test window")
+            cx.open_window(Default::default(), |_window, cx| cx.new(|_| TestView))
+                .expect("open prompt dialog test window")
         })
     }
 

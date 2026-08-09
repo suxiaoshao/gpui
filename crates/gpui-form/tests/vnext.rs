@@ -1,4 +1,7 @@
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use gpui::{AppContext as _, TestAppContext};
 use gpui_form::{Form, FormSchema, PrepareError, ResolveError, ValidationMessage, Validator};
@@ -61,20 +64,22 @@ fn initial_root() -> Root {
 #[gpui::test]
 fn typed_recursive_paths_preserve_leaf_types_and_retire_cases(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        let form = cx.new(|_| Form::try_new(initial_root()).unwrap());
+        let form = cx.new(|_| Form::new(initial_root()));
         let children = Root::ROOT.then(Root::GROUP).then(Group::CHILDREN);
-        let item = children.items(&form, cx).unwrap().remove(0);
+        let item = children.items(&form, cx).remove(0);
         let kind = item.clone().then(Node::KIND);
         let value = kind
             .clone()
-            .try_case(form.read(cx), NodeKind::LEAF)
+            .case(NodeKind::LEAF)
+            .resolve(&form, cx)
             .unwrap()
+            .expect("initial node is a leaf")
             .then(Leaf::VALUE);
 
-        let current: String = value.try_value(&form, cx).unwrap();
+        let current: String = value.try_get(&form, cx).unwrap();
         assert_eq!(current, "first");
-        value.try_set(&form, "changed".into(), cx).unwrap();
-        assert_eq!(value.try_value(&form, cx).unwrap(), "changed");
+        assert!(value.try_set(&form, "changed".into(), cx).unwrap());
+        assert_eq!(value.try_get(&form, cx).unwrap(), "changed");
 
         kind.try_set(
             &form,
@@ -93,24 +98,26 @@ fn typed_recursive_paths_preserve_leaf_types_and_retire_cases(cx: &mut TestAppCo
         )
         .unwrap();
         assert!(matches!(
-            value.try_value(&form, cx),
+            value.try_get(&form, cx),
             Err(ResolveError::Retired { .. })
         ));
 
         let fresh = kind
-            .try_case(form.read(cx), NodeKind::LEAF)
+            .case(NodeKind::LEAF)
+            .resolve(&form, cx)
             .unwrap()
+            .expect("replacement node is a leaf")
             .then(Leaf::VALUE);
-        assert_eq!(fresh.try_value(&form, cx).unwrap(), "new");
+        assert_eq!(fresh.try_get(&form, cx).unwrap(), "new");
     });
 }
 
 #[gpui::test]
 fn item_identity_survives_reorder_and_not_replacement(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        let form = cx.new(|_| Form::try_new(initial_root()).unwrap());
+        let form = cx.new(|_| Form::new(initial_root()));
         let children = Root::ROOT.then(Root::GROUP).then(Group::CHILDREN);
-        let items = children.items(&form, cx).unwrap();
+        let items = children.items(&form, cx);
         let first = items[0].clone();
         let second = items[1].clone();
         let first_key = first.key();
@@ -120,10 +127,12 @@ fn item_identity_survives_reorder_and_not_replacement(cx: &mut TestAppContext) {
         let first_value = first
             .clone()
             .then(Node::KIND)
-            .try_case(form.read(cx), NodeKind::LEAF)
+            .case(NodeKind::LEAF)
+            .resolve(&form, cx)
             .unwrap()
+            .expect("first node remains a leaf")
             .then(Leaf::VALUE);
-        assert_eq!(first_value.try_value(&form, cx).unwrap(), "first");
+        assert_eq!(first_value.try_get(&form, cx).unwrap(), "first");
 
         children
             .replace_all(
@@ -137,7 +146,7 @@ fn item_identity_survives_reorder_and_not_replacement(cx: &mut TestAppContext) {
             )
             .unwrap();
         assert!(matches!(
-            first.try_value(&form, cx),
+            first.try_get(&form, cx),
             Err(ResolveError::Retired { .. })
         ));
     });
@@ -146,12 +155,11 @@ fn item_identity_survives_reorder_and_not_replacement(cx: &mut TestAppContext) {
 #[gpui::test]
 fn path_key_converts_to_stable_gpui_element_identity(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        let form = cx.new(|_| Form::try_new(initial_root()).unwrap());
+        let form = cx.new(|_| Form::new(initial_root()));
         let item = Root::ROOT
             .then(Root::GROUP)
             .then(Group::CHILDREN)
             .items(&form, cx)
-            .unwrap()
             .remove(0);
         let first: gpui::ElementId = item.key().into();
         let second: gpui::ElementId = (&item.key()).into();
@@ -162,12 +170,14 @@ fn path_key_converts_to_stable_gpui_element_identity(cx: &mut TestAppContext) {
 #[gpui::test]
 fn optional_incarnation_and_prepared_cas_are_session_bound(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        let form = cx.new(|_| Form::try_new(initial_root()).unwrap());
+        let form = cx.new(|_| Form::new(initial_root()));
         let optional = Root::ROOT.then(Root::OPTIONAL);
         let value = optional
             .clone()
-            .try_some(form.read(cx))
+            .some()
+            .resolve(&form, cx)
             .unwrap()
+            .expect("initial optional payload is present")
             .then(Leaf::VALUE);
         optional.set(&form, None, cx);
         optional.set(
@@ -178,12 +188,12 @@ fn optional_incarnation_and_prepared_cas_are_session_bound(cx: &mut TestAppConte
             cx,
         );
         assert!(matches!(
-            value.try_value(&form, cx),
+            value.try_get(&form, cx),
             Err(ResolveError::Retired { .. })
         ));
 
         let prepared = form.update(cx, |form, cx| form.prepare(cx)).unwrap();
-        let revision = prepared.revision();
+        let version = prepared.version();
         Root::ROOT
             .then(Root::GROUP)
             .then(Group::CHILDREN)
@@ -196,7 +206,7 @@ fn optional_incarnation_and_prepared_cas_are_session_bound(cx: &mut TestAppConte
             )
             .unwrap();
         assert!(!form.update(cx, |form, cx| {
-            form.rebase_if_revision(revision, initial_root(), cx)
+            form.rebase_if_current(version, initial_root(), cx)
         }));
     });
 }
@@ -206,11 +216,10 @@ struct RejectForbidden;
 impl Validator<Leaf> for RejectForbidden {
     fn validate(
         &self,
-        model: &Leaf,
         request: gpui_form::ValidationRequest<'_, Leaf>,
         out: &mut gpui_form::ValidationSink<'_, Leaf>,
     ) {
-        if request.includes(&Leaf::VALUE) && model.value == "forbidden" {
+        if request.includes(&Leaf::VALUE) && request.model().value == "forbidden" {
             out.at(Leaf::VALUE)
                 .error("forbidden", ValidationMessage::key("value-forbidden"));
         }
@@ -221,13 +230,10 @@ impl Validator<Leaf> for RejectForbidden {
 fn validation_is_field_scoped_and_prepare_uses_the_same_snapshot(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let form = cx.new(|_| {
-            Form::try_new_with_validator(
-                Leaf {
-                    value: String::new(),
-                },
-                RejectForbidden,
-            )
-            .unwrap()
+            Form::new(Leaf {
+                value: String::new(),
+            })
+            .with_validator(RejectForbidden)
         });
         assert_eq!(Leaf::VALUE.errors(&form, cx).len(), 1);
         assert!(matches!(
@@ -251,27 +257,20 @@ struct RejectSecondLeaf;
 impl gpui_form::Validator<Root> for RejectSecondLeaf {
     fn validate(
         &self,
-        model: &Root,
         request: gpui_form::ValidationRequest<'_, Root>,
         out: &mut gpui_form::ValidationSink<'_, Root>,
     ) {
         let children = Root::ROOT.then(Root::GROUP).then(Group::CHILDREN);
-        let Ok(items) = request.items(model, &children) else {
-            return;
-        };
-        for item in items {
+        for item in request.items(&children) {
             let kind = item.then(Node::KIND);
-            let Ok(NodeKind::Leaf(_)) = request.value(model, &kind) else {
+            let Ok(NodeKind::Leaf(_)) = request.try_get(&kind) else {
                 continue;
             };
-            let Ok(leaf) = request.try_case(model, kind, NodeKind::LEAF) else {
+            let Ok(Some(leaf)) = kind.case(NodeKind::LEAF).resolve(&request) else {
                 continue;
             };
             let value = leaf.then(Leaf::VALUE);
-            if request
-                .value(model, &value)
-                .is_ok_and(|value| value == "second")
-            {
+            if request.try_get(&value).is_ok_and(|value| value == "second") {
                 out.at(value)
                     .error("second", ValidationMessage::key("second-not-allowed"));
             }
@@ -282,23 +281,34 @@ impl gpui_form::Validator<Root> for RejectSecondLeaf {
 #[gpui::test]
 fn validation_resolver_enumerates_recursive_items_on_one_snapshot(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        let form =
-            cx.new(|_| Form::try_new_with_validator(initial_root(), RejectSecondLeaf).unwrap());
+        let form = cx.new(|_| Form::new(initial_root()).with_validator(RejectSecondLeaf));
         let children = Root::ROOT.then(Root::GROUP).then(Group::CHILDREN);
-        let items = children.items(&form, cx).unwrap();
+        let items = children.items(&form, cx);
         let second = items[1]
             .clone()
             .then(Node::KIND)
-            .try_case(form.read(cx), NodeKind::LEAF)
+            .case(NodeKind::LEAF)
+            .resolve(&form, cx)
             .unwrap()
+            .expect("second node is a leaf")
             .then(Leaf::VALUE);
 
         form.update(cx, |form, cx| {
             form.validate(gpui_form::ValidationTrigger::Submit, cx)
         });
         let errors = second.try_errors(&form, cx).unwrap();
-        assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].code(), "second");
+        assert_eq!(errors.len(), 2);
+        assert!(errors.iter().all(|error| error.code() == "second"));
+        assert!(
+            errors
+                .iter()
+                .any(|error| { error.trigger() == gpui_form::ValidationTrigger::Mount })
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| { error.trigger() == gpui_form::ValidationTrigger::Submit })
+        );
     });
 }
 
@@ -319,14 +329,16 @@ fn topology_handles_deep_and_large_recursive_trees(cx: &mut TestAppContext) {
         }
         let mut root = initial_root();
         root.group.children = vec![nested];
-        let form = cx.new(|_| Form::try_new(root).unwrap());
+        let form = cx.new(|_| Form::new(root));
         let root_children = Root::ROOT.then(Root::GROUP).then(Group::CHILDREN);
-        let mut node = root_children.items(&form, cx).unwrap().remove(0);
+        let mut node = root_children.items(&form, cx).remove(0);
         for _ in 0..128 {
             let group = node
                 .then(Node::KIND)
-                .try_case(form.read(cx), NodeKind::GROUP)
-                .unwrap();
+                .case(NodeKind::GROUP)
+                .resolve(&form, cx)
+                .unwrap()
+                .expect("nested node is a group");
             node = group
                 .then(Group::CHILDREN)
                 .try_items(&form, cx)
@@ -335,10 +347,12 @@ fn topology_handles_deep_and_large_recursive_trees(cx: &mut TestAppContext) {
         }
         let value = node
             .then(Node::KIND)
-            .try_case(form.read(cx), NodeKind::LEAF)
+            .case(NodeKind::LEAF)
+            .resolve(&form, cx)
             .unwrap()
+            .expect("last nested node is a leaf")
             .then(Leaf::VALUE)
-            .try_value(&form, cx)
+            .try_get(&form, cx)
             .unwrap();
         assert_eq!(value, "bottom");
 
@@ -355,12 +369,14 @@ fn topology_handles_deep_and_large_recursive_trees(cx: &mut TestAppContext) {
                 cx,
             )
             .unwrap();
-        assert_eq!(root_children.items(&form, cx).unwrap().len(), 10_000);
+        assert_eq!(root_children.items(&form, cx).len(), 10_000);
     });
 }
 
 #[gpui::test]
 fn dynamic_paths_reject_wrong_sessions_and_parent_cycles(cx: &mut TestAppContext) {
+    let events = Rc::new(Cell::new(0));
+    let notifications = Rc::new(Cell::new(0));
     cx.update(|cx| {
         let mut root = initial_root();
         root.group.children = vec![Node {
@@ -368,20 +384,43 @@ fn dynamic_paths_reject_wrong_sessions_and_parent_cycles(cx: &mut TestAppContext
                 children: Vec::new(),
             }),
         }];
-        let form = cx.new(|_| Form::try_new(root.clone()).unwrap());
-        let other = cx.new(|_| Form::try_new(root).unwrap());
+        let form = cx.new(|_| Form::new(root.clone()));
+        let other = cx.new(|_| Form::new(root));
+        let event_count = events.clone();
+        cx.subscribe(&form, move |_, _: &gpui_form::FormEvent<Root>, _| {
+            event_count.set(event_count.get() + 1);
+        })
+        .detach();
+        let notification_count = notifications.clone();
+        cx.observe(&form, move |_, _| {
+            notification_count.set(notification_count.get() + 1);
+        })
+        .detach();
         let children = Root::ROOT.then(Root::GROUP).then(Group::CHILDREN);
-        let group_item = children.items(&form, cx).unwrap().remove(0);
+        let group_item = children.items(&form, cx).remove(0);
+        let before = (
+            Root::ROOT.get(&form, cx),
+            form.read(cx).revision(),
+            form.read(cx).validation_report(),
+            form.read(cx).is_validating(),
+            children
+                .items(&form, cx)
+                .iter()
+                .map(|item| item.key())
+                .collect::<Vec<_>>(),
+        );
         assert!(matches!(
-            group_item.try_value(&other, cx),
+            group_item.try_get(&other, cx),
             Err(ResolveError::WrongSession { .. })
         ));
 
         let nested_children = group_item
             .clone()
             .then(Node::KIND)
-            .try_case(form.read(cx), NodeKind::GROUP)
+            .case(NodeKind::GROUP)
+            .resolve(&form, cx)
             .unwrap()
+            .expect("node is a group")
             .then(Group::CHILDREN);
         assert!(matches!(
             group_item.move_to(&form, nested_children, gpui_form::Position::End, cx,),
@@ -389,18 +428,32 @@ fn dynamic_paths_reject_wrong_sessions_and_parent_cycles(cx: &mut TestAppContext
                 gpui_form::TopologyError::MoveIntoDescendant { .. }
             ))
         ));
-        assert_eq!(children.items(&form, cx).unwrap().len(), 1);
+        assert_eq!(children.items(&form, cx).len(), 1);
+        let after = (
+            Root::ROOT.get(&form, cx),
+            form.read(cx).revision(),
+            form.read(cx).validation_report(),
+            form.read(cx).is_validating(),
+            children
+                .items(&form, cx)
+                .iter()
+                .map(|item| item.key())
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(after, before);
     });
+    cx.run_until_parked();
+    assert_eq!(events.get(), 0);
+    assert_eq!(notifications.get(), 0);
 }
 
 #[gpui::test]
 fn async_validation_blocks_prepare_and_discards_intersecting_work(cx: &mut TestAppContext) {
     let form = cx.update(|cx| {
         cx.new(|_| {
-            Form::try_new(Leaf {
+            Form::new(Leaf {
                 value: "remote".into(),
             })
-            .unwrap()
         })
     });
     cx.update(|cx| {
@@ -436,12 +489,40 @@ fn async_validation_blocks_prepare_and_discards_intersecting_work(cx: &mut TestA
     });
 }
 
+#[derive(Clone, Debug, PartialEq, FormSchema)]
+struct AsyncPair {
+    left: String,
+    right: String,
+}
+
+#[gpui::test]
+fn any_model_revision_cancels_pending_version_bound_validation(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        let form = cx.new(|_| {
+            Form::new(AsyncPair {
+                left: "left".into(),
+                right: "right".into(),
+            })
+        });
+        form.update(cx, |form, cx| {
+            form.start_async_validation(AsyncPair::LEFT, "pending", |_| std::future::pending(), cx)
+                .unwrap();
+        });
+        assert!(form.read(cx).is_validating());
+
+        assert!(AsyncPair::RIGHT.set(&form, "changed".into(), cx));
+        assert!(
+            !form.read(cx).is_validating(),
+            "a pending result cannot remain current after the global FormVersion advances"
+        );
+    });
+}
+
 struct SubmitOnly;
 
 impl Validator<Leaf> for SubmitOnly {
     fn validate(
         &self,
-        _model: &Leaf,
         request: gpui_form::ValidationRequest<'_, Leaf>,
         out: &mut gpui_form::ValidationSink<'_, Leaf>,
     ) {
@@ -456,13 +537,10 @@ impl Validator<Leaf> for SubmitOnly {
 fn validation_keeps_independent_trigger_buckets(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let form = cx.new(|_| {
-            Form::try_new_with_validator(
-                Leaf {
-                    value: "value".into(),
-                },
-                SubmitOnly,
-            )
-            .unwrap()
+            Form::new(Leaf {
+                value: "value".into(),
+            })
+            .with_validator(SubmitOnly)
         });
         assert!(form.update(cx, |form, cx| form.prepare(cx)).is_err());
         Leaf::VALUE.validate(&form, gpui_form::ValidationTrigger::Blur, cx);
@@ -486,7 +564,7 @@ fn cross_parent_move_revalidates_source_and_destination_once(cx: &mut TestAppCon
     let observed = Rc::new(Cell::new(0));
     let (form, events, observed) = cx.update(|cx| {
         let form = cx.new(|_| {
-            Form::try_new(MoveRoot {
+            Form::new(MoveRoot {
                 source: Group {
                     children: vec![Node {
                         kind: NodeKind::Leaf(Leaf {
@@ -496,10 +574,9 @@ fn cross_parent_move_revalidates_source_and_destination_once(cx: &mut TestAppCon
                 },
                 destination: Group { children: vec![] },
             })
-            .unwrap()
         });
         let event_count = events.clone();
-        cx.subscribe(&form, move |_, _: &gpui_form::FormEvent, _| {
+        cx.subscribe(&form, move |_, _: &gpui_form::FormEvent<MoveRoot>, _| {
             event_count.set(event_count.get() + 1);
         })
         .detach();
@@ -515,27 +592,90 @@ fn cross_parent_move_revalidates_source_and_destination_once(cx: &mut TestAppCon
         let destination = MoveRoot::ROOT
             .then(MoveRoot::DESTINATION)
             .then(Group::CHILDREN);
-        let old = source.items(&form, cx).unwrap().remove(0);
+        let old = source.items(&form, cx).remove(0);
         let moved = old
             .clone()
             .move_to(&form, destination.clone(), gpui_form::Position::End, cx)
             .unwrap();
         assert!(matches!(
-            old.try_value(&form, cx),
+            old.try_get(&form, cx),
             Err(ResolveError::Retired { .. })
         ));
         let value = moved
             .then(Node::KIND)
-            .try_case(form.read(cx), NodeKind::LEAF)
+            .case(NodeKind::LEAF)
+            .resolve(&form, cx)
             .unwrap()
+            .expect("moved node remains a leaf")
             .then(Leaf::VALUE);
         assert_eq!(value.try_errors(&form, cx).unwrap().len(), 1);
-        assert!(source.items(&form, cx).unwrap().is_empty());
-        assert_eq!(destination.items(&form, cx).unwrap().len(), 1);
+        assert!(source.items(&form, cx).is_empty());
+        assert_eq!(destination.items(&form, cx).len(), 1);
     });
     cx.run_until_parked();
     assert_eq!(events.get(), 1);
     assert_eq!(observed.get(), 1);
+}
+
+#[gpui::test]
+fn nested_cross_parent_move_keeps_both_collection_impacts(cx: &mut TestAppContext) {
+    let (form, changes) = cx.update(|cx| {
+        let form = cx.new(|_| {
+            Form::new(Root {
+                group: Group {
+                    children: vec![
+                        Node {
+                            kind: NodeKind::Leaf(Leaf {
+                                value: "source".into(),
+                            }),
+                        },
+                        Node {
+                            kind: NodeKind::Group(Group {
+                                children: Vec::new(),
+                            }),
+                        },
+                    ],
+                },
+                optional: None,
+            })
+        });
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let recorded = changes.clone();
+        cx.subscribe(&form, move |_, event: &gpui_form::FormEvent<Root>, _| {
+            if let gpui_form::FormEvent::ModelChanged(change) = event {
+                recorded.borrow_mut().push(change.clone());
+            }
+        })
+        .detach();
+        (form, changes)
+    });
+
+    let (source, destination, old) = cx.update(|cx| {
+        let source = Root::ROOT.then(Root::GROUP).then(Group::CHILDREN);
+        let mut items = source.items(&form, cx);
+        let old = items.remove(0);
+        let destination = items
+            .remove(0)
+            .then(Node::KIND)
+            .case(NodeKind::GROUP)
+            .resolve(&form, cx)
+            .unwrap()
+            .expect("destination node is a group")
+            .then(Group::CHILDREN);
+
+        old.clone()
+            .move_to(&form, destination.clone(), gpui_form::Position::End, cx)
+            .unwrap();
+        (source, destination, old)
+    });
+
+    let change = changes.borrow()[0].clone();
+    assert_eq!(change.kind(), gpui_form::ModelChangeKind::Edit);
+    assert!(change.impact(&source).value_changed());
+    assert!(change.impact(&source).structure_changed());
+    assert!(change.impact(&destination).value_changed());
+    assert!(change.impact(&destination).structure_changed());
+    assert!(change.impact(&old).retired());
 }
 
 #[cfg(feature = "garde-adapter")]
@@ -559,22 +699,19 @@ struct GardeRoot {
 fn garde_positions_map_to_runtime_item_paths(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let form = cx.new(|_| {
-            Form::try_new_with_validator(
-                GardeRoot {
-                    rows: vec![
-                        GardeRow {
-                            label: "valid".into(),
-                        },
-                        GardeRow {
-                            label: String::new(),
-                        },
-                    ],
-                },
-                gpui_form::GardeValidator::<GardeRoot>::new(()),
-            )
-            .unwrap()
+            Form::new(GardeRoot {
+                rows: vec![
+                    GardeRow {
+                        label: "valid".into(),
+                    },
+                    GardeRow {
+                        label: String::new(),
+                    },
+                ],
+            })
+            .with_validator(gpui_form::GardeValidator::<GardeRoot>::new(()))
         });
-        let rows = GardeRoot::ROWS.items(&form, cx).unwrap();
+        let rows = GardeRoot::ROWS.items(&form, cx);
         let second_label = rows[1].clone().then(GardeRow::LABEL);
         assert!(second_label.try_errors(&form, cx).unwrap().is_empty());
 

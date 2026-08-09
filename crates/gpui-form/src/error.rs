@@ -4,22 +4,6 @@ use crate::{PathKey, ValidationReport};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum FormBuildError {
-    IdentityExhausted,
-}
-
-impl fmt::Display for FormBuildError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::IdentityExhausted => f.write_str("form runtime identity space is exhausted"),
-        }
-    }
-}
-
-impl Error for FormBuildError {}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum ResolveError {
     WrongSession {
         path: PathKey,
@@ -61,7 +45,6 @@ pub enum TopologyError {
     WrongCollection { path: PathKey },
     InvalidAnchor { path: PathKey },
     MoveIntoDescendant { path: PathKey },
-    IdentityExhausted,
 }
 
 impl fmt::Display for TopologyError {
@@ -74,7 +57,6 @@ impl fmt::Display for TopologyError {
             Self::MoveIntoDescendant { .. } => {
                 f.write_str("an item cannot be moved into its own descendant")
             }
-            Self::IdentityExhausted => f.write_str("form runtime identity space is exhausted"),
         }
     }
 }

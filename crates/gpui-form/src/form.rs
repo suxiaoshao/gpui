@@ -2,20 +2,22 @@ mod transition;
 
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     future::Future,
     sync::{Weak, atomic::AtomicBool},
 };
 
-use gpui::{Context, EventEmitter, Task};
+use gpui::{Context, EventEmitter};
 use gpui_operation::Transition as _;
 
 use crate::{
-    DynamicPath, FormBuildError, FormSchema, IntoTotalPath, PathCore, PathKey, PrepareError,
-    Prepared, ResolveError, ValidationIssue, ValidationMessage, ValidationReport, ValidationSource,
-    ValidationTrigger, Validator,
-    topology::{CanonicalAddress, Incarnation, SessionId, TopologyEpoch, TopologyIndex},
-    validation,
+    DynamicPath, FormSchema, FormVersion, IntoTotalPath, ModelChange, ModelChangeKind, PathCore,
+    PathKey, PrepareError, Prepared, ResolveError, ValidationIssue, ValidationMessage,
+    ValidationReport, ValidationSource, ValidationTrigger, Validator,
+    change::{ChangeSet, ControlOrigin},
+    schema::SchemaVisitor,
+    topology::{CanonicalAddress, SessionId, TopologyEdit, TopologyIndex, root_address},
+    validation::{self, AsyncValidationEffect, AsyncValidationMessage, AsyncValidationRuntime},
 };
 
 use self::transition::{Effect, Message, Runtime};
@@ -31,18 +33,10 @@ impl FormRevision {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum FormEvent {
-    Committed {
-        path: PathKey,
-        revision: FormRevision,
-    },
-    ModelReplaced {
-        revision: FormRevision,
-    },
-    ValidationChanged {
-        revision: FormRevision,
-    },
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FormEvent<M: FormSchema> {
+    ModelChanged(ModelChange<M>),
+    ValidationChanged { revision: FormRevision },
 }
 
 pub struct Form<M: FormSchema> {
@@ -52,21 +46,7 @@ pub struct Form<M: FormSchema> {
     topology: TopologyIndex,
     validator: Option<Box<dyn Validator<M>>>,
     validation: ValidationReport,
-    async_validation: HashMap<u64, AsyncValidationTask>,
-    next_async_generation: u64,
-    controls: HashMap<u64, ControlRegistration>,
-}
-
-struct ControlRegistration {
-    address: CanonicalAddress,
-    incarnation: Incarnation,
-    epoch: TopologyEpoch,
-    active: Weak<AtomicBool>,
-}
-
-struct AsyncValidationTask {
-    address: CanonicalAddress,
-    _task: Task<()>,
+    async_validation: AsyncValidationRuntime,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -84,54 +64,60 @@ impl AsyncValidationIssue {
     }
 }
 
-impl<M: FormSchema> EventEmitter<FormEvent> for Form<M> {}
+impl<M: FormSchema> EventEmitter<FormEvent<M>> for Form<M> {}
 
 impl<M: FormSchema> Form<M> {
-    pub fn try_new(value: M) -> Result<Self, FormBuildError> {
-        Self::build(value, None)
-    }
-
-    pub fn try_new_with_validator<V>(value: M, validator: V) -> Result<Self, FormBuildError>
-    where
-        V: Validator<M>,
-    {
-        Self::build(value, Some(Box::new(validator)))
-    }
-
-    fn build(value: M, validator: Option<Box<dyn Validator<M>>>) -> Result<Self, FormBuildError> {
-        let topology = TopologyIndex::new()?;
+    pub fn new(value: M) -> Self {
+        let topology = TopologyIndex::new();
+        materialize_model(&value, &topology);
+        let runtime = Runtime::new();
+        let version = FormVersion::new(topology.session(), runtime.revision());
         let validation = ValidationReport {
             issues: validation::validate(
                 &value,
                 &topology,
+                version,
                 ValidationTrigger::Mount,
                 None,
-                validator.as_deref(),
+                None,
             ),
         };
-        Ok(Self {
+        Self {
             baseline: value.clone(),
             value,
-            runtime: Runtime::new(),
+            runtime,
             topology,
-            validator,
+            validator: None,
             validation,
-            async_validation: HashMap::new(),
-            next_async_generation: 1,
-            controls: HashMap::new(),
-        })
+            async_validation: AsyncValidationRuntime::new(),
+        }
     }
 
-    pub fn value(&self) -> &M {
+    pub fn with_validator<V: Validator<M>>(mut self, validator: V) -> Self {
+        self.validator = Some(Box::new(validator));
+        self.validation = ValidationReport {
+            issues: validation::validate(
+                &self.value,
+                &self.topology,
+                self.version(),
+                ValidationTrigger::Mount,
+                None,
+                self.validator.as_deref(),
+            ),
+        };
+        self
+    }
+
+    pub(crate) fn value(&self) -> &M {
         &self.value
-    }
-
-    pub fn baseline(&self) -> &M {
-        &self.baseline
     }
 
     pub fn revision(&self) -> FormRevision {
         self.runtime.revision()
+    }
+
+    pub(crate) fn version(&self) -> FormVersion {
+        FormVersion::new(self.session(), self.revision())
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -149,7 +135,7 @@ impl<M: FormSchema> Form<M> {
     }
 
     pub fn is_validating(&self) -> bool {
-        !self.async_validation.is_empty()
+        self.async_validation.is_pending()
     }
 
     pub fn first_error_path(&self) -> Option<PathKey> {
@@ -164,16 +150,29 @@ impl<M: FormSchema> Form<M> {
     where
         V: Validator<M>,
     {
+        let before = self.validation.clone();
+        let was_validating = self.async_validation.is_pending();
         self.validator = Some(Box::new(validator));
         self.validation.issues.retain(|issue| {
             matches!(
                 issue.source(),
-                ValidationSource::Required | ValidationSource::Control(_)
+                ValidationSource::Required | ValidationSource::Control
             )
         });
         self.cancel_all_async_validation();
-        let effect = self.runtime.transition(Message::ValidationChanged);
-        self.publish(effect, cx);
+        let next = validation::validate(
+            &self.value,
+            &self.topology,
+            self.version(),
+            ValidationTrigger::External,
+            None,
+            self.validator.as_deref(),
+        );
+        self.validation
+            .replace_scope(None, ValidationTrigger::External, next);
+        if self.validation != before || was_validating != self.async_validation.is_pending() {
+            self.publish_validation(cx);
+        }
     }
 
     pub fn validate(&mut self, trigger: ValidationTrigger, cx: &mut Context<Self>) {
@@ -186,56 +185,63 @@ impl<M: FormSchema> Form<M> {
         if !self.validation.is_valid() {
             return Err(PrepareError::Validation(self.validation.clone()));
         }
-        if !self.async_validation.is_empty() {
+        if self.async_validation.is_pending() {
             return Err(PrepareError::ValidationPending);
         }
-        Ok(Prepared::new(self.revision(), self.value.clone()))
+        Ok(Prepared::new(self.version(), self.value.clone()))
     }
 
     pub fn replace(&mut self, value: M, cx: &mut Context<Self>) {
-        self.install_model(value, false, cx);
+        self.install_model(value, false, ModelChangeKind::Replace, cx);
     }
 
     pub fn reset(&mut self, cx: &mut Context<Self>) {
-        self.install_model(self.baseline.clone(), false, cx);
+        self.install_model(self.baseline.clone(), false, ModelChangeKind::Reset, cx);
     }
 
     pub fn rebase(&mut self, value: M, cx: &mut Context<Self>) {
-        self.install_model(value, true, cx);
+        self.install_model(value, true, ModelChangeKind::Rebase, cx);
     }
 
-    pub fn rebase_if_revision(
+    pub fn rebase_if_current(
         &mut self,
-        expected: FormRevision,
+        version: FormVersion,
         value: M,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.revision() != expected {
+        if !version.is_current(self.session(), self.revision()) {
             return false;
         }
-        self.install_model(value, true, cx);
+        self.install_model(value, true, ModelChangeKind::Rebase, cx);
         true
     }
 
-    fn install_model(&mut self, value: M, rebase: bool, cx: &mut Context<Self>) {
+    fn install_model(
+        &mut self,
+        value: M,
+        rebase: bool,
+        kind: ModelChangeKind,
+        cx: &mut Context<Self>,
+    ) {
+        let retired = self.topology.dynamic_addresses();
         if rebase {
             self.baseline = value.clone();
         }
         self.value = value;
         self.topology.reset();
-        self.retire_stale_controls();
+        materialize_model(&self.value, &self.topology);
         self.cancel_all_async_validation();
         self.validation = ValidationReport {
             issues: validation::validate(
                 &self.value,
                 &self.topology,
+                self.next_version(),
                 ValidationTrigger::Mount,
                 None,
                 self.validator.as_deref(),
             ),
         };
-        let effect = self.runtime.transition(Message::ReplaceModel);
-        self.publish(effect, cx);
+        self.publish_model(kind, ChangeSet::whole_model(retired), None, cx);
     }
 
     pub(crate) fn session(&self) -> SessionId {
@@ -251,51 +257,95 @@ impl<M: FormSchema> Form<M> {
     }
 
     pub(crate) fn commit_value(&mut self, address: CanonicalAddress, cx: &mut Context<Self>) {
-        self.publish_value(address, true, cx);
+        self.commit_value_from(address, None, cx);
+    }
+
+    pub(crate) fn commit_control_value(
+        &mut self,
+        address: CanonicalAddress,
+        origin: ControlOrigin,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_value_from(address, Some(origin), cx);
+    }
+
+    fn commit_value_from(
+        &mut self,
+        address: CanonicalAddress,
+        origin: Option<ControlOrigin>,
+        cx: &mut Context<Self>,
+    ) {
+        self.invalidate_async_for_model_change(std::slice::from_ref(&address));
+        self.validation.remove_control_intersecting(&address);
+        let before = self.topology.dynamic_addresses();
+        let mut edit = self.topology.stage();
+        edit.retire_descendants(&address);
+        materialize_model_in(&self.value, &mut edit);
+        self.topology.commit(edit);
+        let after = self.topology.dynamic_addresses();
+        let retired = difference(&before, &after);
+        let structure_changed =
+            before.iter().collect::<HashSet<_>>() != after.iter().collect::<HashSet<_>>();
+        self.refresh_validation(std::slice::from_ref(&address));
+        self.publish_model(
+            ModelChangeKind::Edit,
+            ChangeSet::subtree(address, structure_changed, retired),
+            origin,
+            cx,
+        );
     }
 
     pub(crate) fn commit_topology(&mut self, address: CanonicalAddress, cx: &mut Context<Self>) {
-        self.publish_values(address.clone(), vec![address], false, cx);
+        self.commit_topology_change(address.clone(), vec![address], Vec::new(), cx);
     }
 
-    fn publish_value(
+    pub(crate) fn commit_topology_retiring(
         &mut self,
         address: CanonicalAddress,
-        retire_below: bool,
+        retired: Vec<CanonicalAddress>,
         cx: &mut Context<Self>,
     ) {
-        self.publish_values(address.clone(), vec![address], retire_below, cx);
+        self.commit_topology_change(address.clone(), vec![address], retired, cx);
     }
 
-    pub(crate) fn commit_topology_scopes(
+    pub(crate) fn commit_topology_scopes_retiring(
         &mut self,
         primary: CanonicalAddress,
         scopes: Vec<CanonicalAddress>,
+        retired: Vec<CanonicalAddress>,
         cx: &mut Context<Self>,
     ) {
-        self.publish_values(primary, scopes, false, cx);
+        self.commit_topology_change(primary, scopes, retired, cx);
     }
 
-    fn publish_values(
+    fn commit_topology_change(
         &mut self,
-        primary: CanonicalAddress,
+        _primary: CanonicalAddress,
         scopes: Vec<CanonicalAddress>,
-        retire_below: bool,
+        retired: Vec<CanonicalAddress>,
         cx: &mut Context<Self>,
     ) {
-        for address in &scopes {
-            self.cancel_async_intersecting(address);
-        }
-        if retire_below {
-            self.topology.retire_below(&primary);
-        }
-        self.retire_stale_controls();
+        self.invalidate_async_for_model_change(&scopes);
+        let mut edit = self.topology.stage();
+        materialize_model_in(&self.value, &mut edit);
+        self.topology.commit(edit);
+        self.refresh_validation(&scopes);
+        self.publish_model(
+            ModelChangeKind::Edit,
+            ChangeSet::aggregate(scopes, retired),
+            None,
+            cx,
+        );
+    }
+
+    fn refresh_validation(&mut self, scopes: &[CanonicalAddress]) {
         self.validation.retain_current(&self.topology);
-        self.validation.invalidate_sync(&scopes);
-        for address in &scopes {
+        self.validation.invalidate_sync(scopes);
+        for address in scopes {
             let next = validation::validate(
                 &self.value,
                 &self.topology,
+                self.next_version(),
                 ValidationTrigger::Change,
                 Some(address),
                 self.validator.as_deref(),
@@ -303,13 +353,6 @@ impl<M: FormSchema> Form<M> {
             self.validation
                 .replace_scope(Some(address), ValidationTrigger::Change, next);
         }
-        let incarnation = self
-            .topology
-            .ensure_incarnation(&primary)
-            .expect("form identity exhausted after construction");
-        let path = PathKey::new(self.session(), &primary, incarnation);
-        let effect = self.runtime.transition(Message::Commit(path));
-        self.publish(effect, cx);
     }
 
     pub(crate) fn validate_at(
@@ -321,6 +364,7 @@ impl<M: FormSchema> Form<M> {
         let next = validation::validate(
             &self.value,
             &self.topology,
+            self.version(),
             trigger,
             address.as_ref(),
             self.validator.as_deref(),
@@ -329,8 +373,7 @@ impl<M: FormSchema> Form<M> {
         self.validation
             .replace_scope(address.as_ref(), trigger, next);
         if self.validation != before {
-            let effect = self.runtime.transition(Message::ValidationChanged);
-            self.publish(effect, cx);
+            self.publish_validation(cx);
         }
     }
 
@@ -342,76 +385,86 @@ impl<M: FormSchema> Form<M> {
         &mut self,
         control: u64,
         address: CanonicalAddress,
+        active: Weak<AtomicBool>,
         issue: Option<(String, ValidationMessage)>,
         cx: &mut Context<Self>,
     ) {
-        let control_active = self
-            .controls
-            .get(&control)
-            .map(|registration| registration.active.clone());
-        let issue = issue.map(|(code, message)| {
-            let incarnation = self
+        let issue = issue.map(|(code, message)| ValidationIssue {
+            path: self
                 .topology
-                .ensure_incarnation(&address)
-                .expect("form identity exhausted after construction");
-            ValidationIssue {
-                path: PathKey::new(self.session(), &address, incarnation),
-                address,
-                source: ValidationSource::Control(control),
-                trigger: ValidationTrigger::Change,
-                code: code.into(),
-                message,
-                control_active,
-            }
+                .key(&address)
+                .expect("a bound path identity must remain materialized while active"),
+            address,
+            source: ValidationSource::Control,
+            trigger: ValidationTrigger::Change,
+            code: code.into(),
+            message,
+            control: Some(control),
+            async_generation: None,
+            control_active: Some(active),
         });
         if self.validation.replace_control(control, issue) {
-            let effect = self.runtime.transition(Message::ValidationChanged);
-            self.publish(effect, cx);
+            self.publish_validation(cx);
         }
     }
 
-    pub(crate) fn register_control(
+    pub(crate) fn complete_control_write(
         &mut self,
         control: u64,
         address: CanonicalAddress,
-        incarnation: Incarnation,
-        epoch: TopologyEpoch,
-        active: Weak<AtomicBool>,
+        changed: bool,
+        origin: ControlOrigin,
+        cx: &mut Context<Self>,
     ) {
-        self.controls.insert(
-            control,
-            ControlRegistration {
-                address,
-                incarnation,
-                epoch,
-                active,
-            },
-        );
+        let issue_changed = self.validation.replace_control(control, None);
+        if changed {
+            self.commit_control_value(address, origin, cx);
+        } else if issue_changed {
+            self.publish_validation(cx);
+        }
     }
 
-    fn retire_stale_controls(&mut self) {
-        let epoch = self.topology.epoch();
-        self.controls.retain(|_, registration| {
-            let Some(active) = registration.active.upgrade() else {
-                return false;
-            };
-            let current = registration.epoch == epoch
-                && self.topology.incarnation(&registration.address)
-                    == Some(registration.incarnation);
-            if !current {
-                active.store(false, std::sync::atomic::Ordering::Release);
-            }
-            current && active.load(std::sync::atomic::Ordering::Acquire)
-        });
-        self.validation.issues.retain(ValidationIssue::is_active);
+    pub(crate) fn clear_control_issue(&mut self, control: u64, cx: &mut Context<Self>) {
+        if self.validation.replace_control(control, None) {
+            self.publish_validation(cx);
+        }
     }
 
-    fn publish(&mut self, effect: Effect, cx: &mut Context<Self>) {
-        let event = match effect {
-            Effect::Committed(event) | Effect::Validation(event) => event,
-        };
+    fn publish_model(
+        &mut self,
+        kind: ModelChangeKind,
+        changes: ChangeSet,
+        origin: Option<ControlOrigin>,
+        cx: &mut Context<Self>,
+    ) {
+        let effect = self.runtime.transition(Message::<M>::model_applied(
+            kind,
+            self.session(),
+            changes,
+            origin,
+        ));
+        self.publish(effect, cx);
+    }
+
+    fn publish_validation(&mut self, cx: &mut Context<Self>) {
+        let effect = self.runtime.transition(Message::<M>::validation_changed());
+        self.publish(effect, cx);
+    }
+
+    fn publish(&mut self, effect: Effect<M>, cx: &mut Context<Self>) {
+        let Effect::Publish(event) = effect;
         cx.emit(event);
         cx.notify();
+    }
+
+    fn next_version(&self) -> FormVersion {
+        let revision = self
+            .revision()
+            .0
+            .checked_add(1)
+            .map(FormRevision)
+            .expect("form revision overflow");
+        FormVersion::new(self.session(), revision)
     }
 
     pub fn start_async_validation<T, Path, Check, CheckFuture>(
@@ -464,18 +517,20 @@ impl<M: FormSchema> Form<M> {
             .get(&self.value, &self.topology.snapshot())?
             .clone();
         let address = core.address.clone();
-        self.cancel_async_intersecting(&address);
-        let generation = self.next_async_generation;
-        self.next_async_generation = self
-            .next_async_generation
-            .checked_add(1)
-            .expect("async validation generation space exhausted");
-        let revision = self.revision();
-        let epoch = self.topology.epoch();
-        let incarnation = self
+        let key = self
             .topology
-            .ensure_incarnation(&address)
-            .expect("form identity exhausted after construction");
+            .key(&address)
+            .expect("async validation path must be materialized");
+        self.cancel_async_intersecting(&address);
+        let AsyncValidationEffect::Reserved(generation) =
+            self.async_validation
+                .transition(AsyncValidationMessage::Reserve {
+                    address: address.clone(),
+                })
+        else {
+            unreachable!("reserve always returns a generation")
+        };
+        let version = self.version();
         let weak_form = cx.entity().downgrade();
         let completion_address = address.clone();
         let completion_source = source.clone();
@@ -484,9 +539,8 @@ impl<M: FormSchema> Form<M> {
             let _ = weak_form.update(cx, |form, cx| {
                 form.complete_async_validation(
                     generation,
-                    revision,
-                    epoch,
-                    incarnation,
+                    version,
+                    key,
                     completion_address,
                     completion_source,
                     result.err(),
@@ -494,15 +548,10 @@ impl<M: FormSchema> Form<M> {
                 );
             });
         });
-        self.async_validation.insert(
-            generation,
-            AsyncValidationTask {
-                address,
-                _task: task,
-            },
-        );
-        let effect = self.runtime.transition(Message::ValidationChanged);
-        self.publish(effect, cx);
+        let _ = self
+            .async_validation
+            .transition(AsyncValidationMessage::Attach { generation, task });
+        self.publish_validation(cx);
         Ok(())
     }
 
@@ -510,120 +559,167 @@ impl<M: FormSchema> Form<M> {
     fn complete_async_validation(
         &mut self,
         generation: u64,
-        revision: FormRevision,
-        epoch: TopologyEpoch,
-        incarnation: Incarnation,
+        version: FormVersion,
+        key: PathKey,
         address: CanonicalAddress,
         source: Cow<'static, str>,
         issue: Option<AsyncValidationIssue>,
         cx: &mut Context<Self>,
     ) {
-        let Some(_) = self.async_validation.remove(&generation) else {
-            return;
+        let current = version.is_current(self.session(), self.revision())
+            && self.topology.key(&address).as_ref() == Some(&key);
+        let AsyncValidationEffect::Completed { accepted } =
+            self.async_validation
+                .transition(AsyncValidationMessage::Complete {
+                    generation,
+                    fresh: current,
+                })
+        else {
+            unreachable!("completion always returns a completion effect")
         };
-        let current = self.revision() == revision
-            && self.topology.epoch() == epoch
-            && self.topology.incarnation(&address) == Some(incarnation);
-        if current {
-            let issue = issue.map(|issue| ValidationIssue {
-                path: PathKey::new(self.session(), &address, incarnation),
-                address,
-                source: ValidationSource::Async { source, generation },
-                trigger: ValidationTrigger::Dynamic,
-                code: issue.code,
-                message: issue.message,
-                control_active: None,
-            });
-            self.validation.replace_async(generation, issue);
-            let effect = self.runtime.transition(Message::ValidationChanged);
-            self.publish(effect, cx);
+        if !accepted {
+            return;
         }
+        let issue = issue.map(|issue| ValidationIssue {
+            path: key,
+            address,
+            source: ValidationSource::Async(source),
+            trigger: ValidationTrigger::External,
+            code: issue.code,
+            message: issue.message,
+            control: None,
+            async_generation: Some(generation),
+            control_active: None,
+        });
+        self.validation.replace_async(generation, issue);
+        self.publish_validation(cx);
     }
 
     fn cancel_async_intersecting(&mut self, address: &CanonicalAddress) {
-        let generations = self
-            .async_validation
-            .iter()
-            .filter_map(|(generation, task)| {
-                validation::intersects(address, &task.address).then_some(*generation)
-            })
-            .collect::<HashSet<_>>();
-        self.async_validation
-            .retain(|generation, _| !generations.contains(generation));
+        let AsyncValidationEffect::Cancelled(generations) =
+            self.async_validation
+                .transition(AsyncValidationMessage::CancelIntersecting {
+                    address: address.clone(),
+                })
+        else {
+            unreachable!("cancellation always returns cancelled generations")
+        };
         self.validation.remove_async_generations(&generations);
         self.validation.remove_async_intersecting(address);
     }
 
+    fn invalidate_async_for_model_change(&mut self, scopes: &[CanonicalAddress]) {
+        // Every pending task is bound to one global FormVersion, so any model revision
+        // invalidates its snapshot proof. Completed issues remain scope-aware facts.
+        self.cancel_all_async_validation();
+        for address in scopes {
+            self.validation.remove_async_intersecting(address);
+        }
+    }
+
     fn cancel_all_async_validation(&mut self) {
-        let generations = self
+        let AsyncValidationEffect::Cancelled(generations) = self
             .async_validation
-            .keys()
-            .copied()
-            .collect::<HashSet<_>>();
-        self.async_validation.clear();
+            .transition(AsyncValidationMessage::CancelAll)
+        else {
+            unreachable!("cancellation always returns cancelled generations")
+        };
         self.validation.remove_async_generations(&generations);
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::{cell::Cell, rc::Rc};
+fn difference(before: &[CanonicalAddress], after: &[CanonicalAddress]) -> Vec<CanonicalAddress> {
+    before
+        .iter()
+        .filter(|address| !after.contains(address))
+        .cloned()
+        .collect()
+}
 
-    use gpui::{AppContext as _, Task, TestAppContext};
+fn materialize_model<M: FormSchema>(model: &M, topology: &TopologyIndex) {
+    let mut edit = topology.stage();
+    materialize_model_in(model, &mut edit);
+    topology.commit(edit);
+}
 
-    use super::*;
-    use crate::schema::SchemaVisitor;
+fn materialize_model_in<M: FormSchema>(model: &M, edit: &mut TopologyEdit) {
+    edit.materialize_total(&root_address());
+    let mut visitor = TopologyMaterializer {
+        edit,
+        address: root_address(),
+    };
+    model.__visit(&mut visitor);
+}
 
-    #[derive(Clone, PartialEq)]
-    struct Empty;
+struct TopologyMaterializer<'a> {
+    edit: &'a mut TopologyEdit,
+    address: CanonicalAddress,
+}
 
-    impl FormSchema for Empty {
-        fn __visit(&self, _visitor: &mut dyn SchemaVisitor) {}
+impl SchemaVisitor for TopologyMaterializer<'_> {
+    fn field(&mut self, schema: crate::FieldSchema, _missing: bool) {
+        self.edit
+            .materialize_total(&self.address.field(schema.name()));
     }
 
-    #[gpui::test]
-    fn stale_async_completion_is_not_published(cx: &mut TestAppContext) {
-        let events = Rc::new(Cell::new(0));
-        let form = cx.update(|cx| {
-            let form = cx.new(|_| Form::try_new(Empty).unwrap());
-            let count = events.clone();
-            cx.subscribe(&form, move |_, _: &FormEvent, _| {
-                count.set(count.get() + 1);
-            })
-            .detach();
-            form
-        });
-        cx.update(|cx| {
-            form.update(cx, |form, cx| {
-                let address = CanonicalAddress::default();
-                let incarnation = form.topology.ensure_incarnation(&address).unwrap();
-                form.async_validation.insert(
-                    1,
-                    AsyncValidationTask {
-                        address: address.clone(),
-                        _task: Task::ready(()),
-                    },
-                );
-                form.complete_async_validation(
-                    1,
-                    FormRevision(99),
-                    form.topology.epoch(),
-                    incarnation,
-                    address,
-                    Cow::Borrowed("stale"),
-                    Some(AsyncValidationIssue::new(
-                        "stale",
-                        ValidationMessage::literal("stale"),
-                    )),
-                    cx,
-                );
-            });
-        });
-        cx.run_until_parked();
-        assert_eq!(events.get(), 0);
-        cx.update(|cx| {
-            assert!(!form.read(cx).is_validating());
-            assert!(form.read(cx).validation_report().is_valid());
-        });
+    fn child(&mut self, name: &'static str, visit: &mut dyn FnMut(&mut dyn SchemaVisitor)) {
+        let address = self.address.field(name);
+        self.edit.materialize_total(&address);
+        let mut nested = TopologyMaterializer {
+            edit: self.edit,
+            address,
+        };
+        visit(&mut nested);
+    }
+
+    fn optional(
+        &mut self,
+        name: &'static str,
+        present: bool,
+        visit: &mut dyn FnMut(&mut dyn SchemaVisitor),
+    ) {
+        let parent = self.address.field(name);
+        self.edit.materialize_total(&parent);
+        if !present {
+            self.edit.deactivate_some(&parent);
+            return;
+        }
+        let address = self.edit.activate_some(&parent);
+        let mut nested = TopologyMaterializer {
+            edit: self.edit,
+            address,
+        };
+        visit(&mut nested);
+    }
+
+    fn items(
+        &mut self,
+        name: &'static str,
+        len: usize,
+        visit: &mut dyn FnMut(usize, &mut dyn SchemaVisitor),
+    ) {
+        let collection = self.address.field(name);
+        self.edit.materialize_total(&collection);
+        let occurrences = self.edit.ensure_items(&collection, len);
+        for (index, occurrence) in occurrences.into_iter().enumerate() {
+            let mut nested = TopologyMaterializer {
+                edit: self.edit,
+                address: collection.item(occurrence),
+            };
+            visit(index, &mut nested);
+        }
+    }
+
+    fn case(&mut self, name: &'static str, visit: &mut dyn FnMut(&mut dyn SchemaVisitor)) {
+        let address = self.edit.activate_case(&self.address, name);
+        let mut nested = TopologyMaterializer {
+            edit: self.edit,
+            address,
+        };
+        visit(&mut nested);
+    }
+
+    fn unit_case(&mut self, name: &'static str) {
+        self.edit.activate_case(&self.address, name);
     }
 }

@@ -1,48 +1,89 @@
-use std::hash::{Hash, Hasher};
+use std::{
+    fmt,
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 
+/// A Form-session identity. It is intentionally crate-private: a path from one
+/// session must never be usable in another one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct SessionId(pub(crate) u64);
 
+/// Runtime identity for an item, active enum case, or active `Some` value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct ItemToken(pub(super) u64);
+pub(crate) struct OccurrenceId(pub(super) u64);
+
+/// Role-specific names for the same runtime-owned occurrence identity. Neither
+/// is supplied by the model or UI.
+pub(crate) type ItemToken = OccurrenceId;
+pub(crate) type Incarnation = OccurrenceId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct Incarnation(pub(super) u64);
+pub(crate) struct OpaquePathId(pub(super) u64);
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub(crate) struct TopologyEpoch(pub(super) u64);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct FieldId(pub(crate) &'static str);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct CaseId(pub(crate) &'static str);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum AddressSegment {
-    Field(&'static str),
-    Item(ItemToken),
-    Case(&'static str),
-    Some,
+pub(crate) enum AddressSegment {
+    Field(FieldId),
+    Item(OccurrenceId),
+    Case(CaseId, OccurrenceId),
+    Some(OccurrenceId),
 }
 
+/// The actual schema/runtime address. This never crosses the public API
+/// boundary; `PathKey` is the public, opaque UI identity.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub(crate) struct CanonicalAddress(Vec<AddressSegment>);
+pub(crate) struct CanonicalAddress(Arc<[AddressSegment]>);
 
 impl CanonicalAddress {
     pub(crate) fn field(&self, name: &'static str) -> Self {
-        self.with(AddressSegment::Field(name))
+        self.with(AddressSegment::Field(FieldId(name)))
     }
-    pub(crate) fn item(&self, token: ItemToken) -> Self {
-        self.with(AddressSegment::Item(token))
+
+    pub(crate) fn item(&self, occurrence: OccurrenceId) -> Self {
+        self.with(AddressSegment::Item(occurrence))
     }
-    pub(crate) fn case(&self, name: &'static str) -> Self {
-        self.with(AddressSegment::Case(name))
+
+    pub(crate) fn case_occurrence(&self, name: &'static str, occurrence: OccurrenceId) -> Self {
+        self.with(AddressSegment::Case(CaseId(name), occurrence))
     }
-    pub(crate) fn some(&self) -> Self {
-        self.with(AddressSegment::Some)
+
+    pub(crate) fn some_occurrence(&self, occurrence: OccurrenceId) -> Self {
+        self.with(AddressSegment::Some(occurrence))
     }
-    fn with(&self, segment: AddressSegment) -> Self {
-        let mut segments = self.0.clone();
-        segments.push(segment);
-        Self(segments)
-    }
+
     pub(crate) fn is_prefix_of(&self, other: &Self) -> bool {
         other.0.starts_with(&self.0)
+    }
+
+    pub(crate) fn final_occurrence(&self) -> Option<OccurrenceId> {
+        match self.0.last() {
+            Some(AddressSegment::Item(occurrence))
+            | Some(AddressSegment::Case(_, occurrence))
+            | Some(AddressSegment::Some(occurrence)) => Some(*occurrence),
+            Some(AddressSegment::Field(_)) | None => None,
+        }
+    }
+
+    pub(crate) fn has_dynamic_occurrence(&self) -> bool {
+        self.0.iter().any(|segment| {
+            matches!(
+                segment,
+                AddressSegment::Item(_) | AddressSegment::Case(_, _) | AddressSegment::Some(_)
+            )
+        })
+    }
+
+    fn with(&self, segment: AddressSegment) -> Self {
+        let mut segments = Vec::with_capacity(self.0.len() + 1);
+        segments.extend(self.0.iter().cloned());
+        segments.push(segment);
+        Self(segments.into())
     }
 }
 
@@ -50,57 +91,63 @@ impl CanonicalAddress {
 pub(crate) struct DynamicGuard {
     pub(crate) address: CanonicalAddress,
     pub(crate) incarnation: Incarnation,
+    pub(crate) key: PathKey,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PathKey {
-    session: u64,
-    address_hash: u64,
-    incarnation: u64,
+#[derive(Debug)]
+pub(crate) struct PathIdentity {
+    pub(crate) session: SessionId,
+    pub(crate) id: OpaquePathId,
+    pub(crate) address: CanonicalAddress,
 }
+
+/// Public UI identity backed by a session-local opaque id. The canonical
+/// address remains available only inside this crate for impact/topology work.
+#[derive(Clone)]
+pub struct PathKey(Arc<PathIdentity>);
+
+impl PathKey {
+    pub(crate) fn from_identity(identity: Arc<PathIdentity>) -> Self {
+        Self(identity)
+    }
+
+    pub(crate) fn session(&self) -> SessionId {
+        self.0.session
+    }
+
+    pub(crate) fn address(&self) -> &CanonicalAddress {
+        &self.0.address
+    }
+}
+
+impl PartialEq for PathKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.session == other.0.session && self.0.id == other.0.id
+    }
+}
+
+impl Eq for PathKey {}
 
 impl Hash for PathKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.session.hash(state);
-        self.address_hash.hash(state);
-        self.incarnation.hash(state);
+        self.0.session.hash(state);
+        self.0.id.hash(state);
     }
 }
 
-impl PathKey {
-    pub(crate) fn new(
-        session: SessionId,
-        address: &CanonicalAddress,
-        incarnation: Incarnation,
-    ) -> Self {
-        Self {
-            session: session.0,
-            address_hash: address_hash(address),
-            incarnation: incarnation.0,
-        }
-    }
-    pub(crate) fn total(session: SessionId, address: &CanonicalAddress) -> Self {
-        Self::new(session, address, Incarnation(0))
-    }
-    pub(crate) fn matches(
-        &self,
-        session: SessionId,
-        address: &CanonicalAddress,
-        incarnation: Incarnation,
-    ) -> bool {
-        self == &Self::new(session, address, incarnation)
+impl fmt::Debug for PathKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PathKey")
+            .field("session", &self.0.session.0)
+            .field("id", &self.0.id.0)
+            .finish()
     }
 }
 
 impl From<PathKey> for gpui::ElementId {
     fn from(value: PathKey) -> Self {
-        Self::Name(
-            format!(
-                "form-path-{:016x}-{:016x}-{:016x}",
-                value.session, value.address_hash, value.incarnation
-            )
-            .into(),
-        )
+        Self::Name(format!("form-path-{:016x}-{:016x}", value.0.session.0, value.0.id.0).into())
     }
 }
 
@@ -108,10 +155,4 @@ impl From<&PathKey> for gpui::ElementId {
     fn from(value: &PathKey) -> Self {
         value.clone().into()
     }
-}
-
-fn address_hash(address: &CanonicalAddress) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    address.hash(&mut hasher);
-    hasher.finish()
 }

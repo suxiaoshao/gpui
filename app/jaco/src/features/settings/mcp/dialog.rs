@@ -9,7 +9,7 @@ use fluent_bundle::FluentArgs;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled,
-    Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, relative,
+    Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
@@ -25,8 +25,8 @@ use gpui_component::{
     v_flex,
 };
 use gpui_form::{
-    DynamicPath, FormRevision, FormSchema, GardeValidator, ItemPath, MutationError, ResolveError,
-    TotalItemsPath, ValidationTrigger,
+    DynamicPath, FormEvent, FormSchema, FormVersion, GardeValidator, ItemPath, ModelChange,
+    MutationError, ResolveError, TotalItemsPath, ValidationTrigger,
 };
 use jaco_agent::McpOAuthStatusSnapshot;
 use std::{
@@ -43,8 +43,9 @@ use super::{
         two_input_rows, validation_error_list,
     },
     form_state::{
-        McpArgRowInput, McpEnvHeaderRowInput, McpEnvRowInput, McpEnvVarRowInput, McpHeaderRowInput,
-        McpServerFormComponents, McpServerFormDraft, McpServerFormInput,
+        McpArgRowInput, McpCollectionImpact, McpEnvHeaderRowInput, McpEnvRowInput,
+        McpEnvVarRowInput, McpHeaderRowInput, McpServerFormComponents, McpServerFormDraft,
+        McpServerFormInput,
     },
     validation::{mcp_validation_context, normalize_mcp_input},
 };
@@ -88,6 +89,7 @@ pub(super) struct McpServerEditDialogState {
     draft_oauth_credential_keys: BTreeSet<state::mcp::oauth::CredentialsKey>,
     sign_out_task: Option<Task<()>>,
     save_task: Option<Task<()>>,
+    _form_subscription: Subscription,
 }
 
 struct McpOAuthDialogTarget {
@@ -101,7 +103,7 @@ struct McpOAuthDialogTarget {
 
 #[derive(Clone)]
 struct McpServerSaveRequest {
-    revision: FormRevision,
+    version: FormVersion,
     output: McpServerFormInput,
     original_server_id: Option<String>,
     server_id: String,
@@ -138,6 +140,26 @@ struct OAuthSectionLabels {
     sign_out: SharedString,
 }
 
+fn mcp_collection_impact(change: &ModelChange<McpServerFormInput>) -> McpCollectionImpact {
+    fn changed(impact: gpui_form::PathImpact) -> bool {
+        impact.structure_changed() || impact.retired()
+    }
+
+    McpCollectionImpact {
+        args: changed(change.impact(&McpServerFormInput::ROOT.then(McpServerFormInput::ARGS))),
+        env: changed(change.impact(&McpServerFormInput::ROOT.then(McpServerFormInput::ENV))),
+        env_vars: changed(
+            change.impact(&McpServerFormInput::ROOT.then(McpServerFormInput::ENV_VARS)),
+        ),
+        headers: changed(
+            change.impact(&McpServerFormInput::ROOT.then(McpServerFormInput::HEADERS)),
+        ),
+        env_headers: changed(
+            change.impact(&McpServerFormInput::ROOT.then(McpServerFormInput::ENV_HEADERS)),
+        ),
+    }
+}
+
 impl McpServerEditDialogState {
     fn new(
         mode: McpServerEditMode,
@@ -150,6 +172,41 @@ impl McpServerEditDialogState {
         let draft = McpServerFormDraft::from_config(server_id, &server_for_draft, window, cx);
         let components = McpServerFormComponents::try_bind(&draft.form, window, cx)
             .expect("fresh MCP form rows have unique stable ids");
+        let dialog = cx.entity().downgrade();
+        let dialog_window = window.window_handle();
+        let form_subscription = App::subscribe(
+            cx,
+            &draft.form,
+            move |form, event: &FormEvent<McpServerFormInput>, cx| {
+                let FormEvent::ModelChanged(change) = event else {
+                    return;
+                };
+                let impact = mcp_collection_impact(change);
+                if impact.is_empty() {
+                    return;
+                }
+                let dialog = dialog.clone();
+                cx.defer(move |cx| {
+                    let Some(dialog) = dialog.upgrade() else {
+                        return;
+                    };
+                    let _ = dialog_window.update(cx, |_, window, cx| {
+                        dialog.update(cx, |dialog, cx| {
+                            if let Err(error) = dialog.components.reconcile(
+                                &form,
+                                impact,
+                                window,
+                                cx,
+                            ) {
+                                event!(Level::ERROR, error = ?error, "reconcile MCP form rows failed");
+                                return;
+                            }
+                            cx.notify();
+                        });
+                    });
+                });
+            },
+        );
 
         Self {
             mode,
@@ -165,6 +222,7 @@ impl McpServerEditDialogState {
             draft_oauth_credential_keys: BTreeSet::new(),
             sign_out_task: None,
             save_task: None,
+            _form_subscription: form_subscription,
         }
     }
 
@@ -172,30 +230,12 @@ impl McpServerEditDialogState {
         let input = if !self.mode.is_edit() {
             self.components.server_id.clone()
         } else {
-            match McpServerFormInput::TRANSPORT.value(&self.draft.form, cx) {
+            match McpServerFormInput::TRANSPORT.get(&self.draft.form, cx) {
                 McpTransportKind::Stdio => self.components.command.clone(),
                 McpTransportKind::StreamableHttp => self.components.url.clone(),
             }
         };
         input.update(cx, |input, cx| input.focus(window, cx));
-    }
-
-    fn rebind_form_components(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Result<(), MutationError> {
-        let components = McpServerFormComponents::try_bind(&self.draft.form, window, cx);
-        self.install_form_components(components)
-    }
-
-    fn install_form_components(
-        &mut self,
-        components: Result<McpServerFormComponents, MutationError>,
-    ) -> Result<(), MutationError> {
-        let components = components?;
-        self.components = components;
-        Ok(())
     }
 
     fn is_saving(&self, cx: &App) -> bool {
@@ -255,7 +295,7 @@ impl McpServerEditDialogState {
         let Ok(prepared) = prepared else {
             return false;
         };
-        let (revision, output) = prepared.into_parts();
+        let (version, output) = prepared.into_parts();
         let server_id = output.server_id(original_server_id.as_deref());
         let server = output.clone().merge_into_config(original_config.as_ref());
         let saved_server = server.clone();
@@ -281,7 +321,7 @@ impl McpServerEditDialogState {
             ),
         );
         let request = McpServerSaveRequest {
-            revision,
+            version,
             output,
             original_server_id,
             server_id,
@@ -343,8 +383,8 @@ impl McpServerEditDialogState {
         let saved_server_id = request.server_id.clone();
         match result {
             Ok(()) => {
-                self.draft.form.update(cx, |form, cx| {
-                    form.rebase_if_revision(request.revision, request.output, cx);
+                let rebased = self.draft.form.update(cx, |form, cx| {
+                    form.rebase_if_current(request.version, request.output, cx)
                 });
                 if let Some(original_server_id) = request.original_server_id {
                     disconnect_server(original_server_id, window, cx);
@@ -361,7 +401,15 @@ impl McpServerEditDialogState {
                         .with_type(NotificationType::Success),
                     cx,
                 );
-                window.close_dialog(cx);
+                if rebased {
+                    window.close_dialog(cx);
+                } else {
+                    self.mode = McpServerEditMode::Edit {
+                        original_server_id: saved_server_id,
+                    };
+                    self.original_config = Some(saved_server);
+                    cx.notify();
+                }
             }
             Err(err) => {
                 let title = cx.global::<I18n>().t("mcp-notify-save-failed");
@@ -416,7 +464,7 @@ impl McpServerEditDialogState {
     }
 
     fn render_transport_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
-        let transport = McpServerFormInput::TRANSPORT.value(&self.draft.form, cx);
+        let transport = McpServerFormInput::TRANSPORT.get(&self.draft.form, cx);
         ToggleGroup::new("mcp-dialog-transport")
             .segmented()
             .outline()
@@ -435,7 +483,7 @@ impl McpServerEditDialogState {
             ])
             .on_click(cx.listener(|this, states: &Vec<bool>, window, cx| {
                 let transport = transport_from_toggle_states(
-                    McpServerFormInput::TRANSPORT.value(&this.draft.form, cx),
+                    McpServerFormInput::TRANSPORT.get(&this.draft.form, cx),
                     states,
                 );
                 this.draft.set_transport(transport, window, cx);
@@ -456,9 +504,6 @@ impl McpServerEditDialogState {
         if let Err(error) = result {
             event!(Level::ERROR, error = ?error, "add MCP form row failed");
             return;
-        }
-        if let Err(error) = self.rebind_form_components(window, cx) {
-            event!(Level::ERROR, error = ?error, "rebind MCP form components after adding a row failed");
         }
         self.revalidate_form(ValidationTrigger::Change, window, cx);
         cx.notify();
@@ -481,9 +526,6 @@ impl McpServerEditDialogState {
                         event!(Level::DEBUG, "ignored stale MCP row removal callback");
                     }
                     Ok(true) => {
-                        if let Err(error) = dialog.rebind_form_components(window, cx) {
-                            event!(Level::ERROR, error = ?error, "rebind MCP form components after removing a row failed");
-                        }
                         dialog.revalidate_form(ValidationTrigger::Change, window, cx);
                         cx.notify();
                     }
@@ -534,20 +576,14 @@ impl McpServerEditDialogState {
             let row = row.clone();
             let anchor = anchor.clone();
             let _ = dialog.update(cx, |dialog, cx| {
-                match dialog.draft.move_row_before(
-                    collection,
-                    &row,
-                    &anchor,
-                    window,
-                    cx,
-                ) {
+                match dialog
+                    .draft
+                    .move_row_before(collection, &row, &anchor, window, cx)
+                {
                     Ok(false) => {
                         event!(Level::DEBUG, "ignored stale MCP row move callback");
                     }
                     Ok(true) => {
-                        if let Err(error) = dialog.rebind_form_components(window, cx) {
-                            event!(Level::ERROR, error = ?error, "rebind MCP form components after moving a row failed");
-                        }
                         dialog.revalidate_form(ValidationTrigger::Change, window, cx);
                         cx.notify();
                     }
@@ -733,7 +769,7 @@ impl McpServerEditDialogState {
         let dialog = cx.entity().downgrade();
         let authorize_dialog = dialog.clone();
         let sign_out_dialog = dialog.clone();
-        let enabled = McpServerFormInput::OAUTH_ENABLED.value(&self.draft.form, cx);
+        let enabled = McpServerFormInput::OAUTH_ENABLED.get(&self.draft.form, cx);
         let status = self.oauth_status(cx);
         let authorized = matches!(status, McpOAuthStatusSnapshot::Authorized { .. });
         let signing_in = matches!(status, McpOAuthStatusSnapshot::SigningIn);
@@ -882,7 +918,7 @@ impl McpServerEditDialogState {
     }
 
     fn oauth_status(&self, cx: &App) -> McpOAuthStatusSnapshot {
-        if !McpServerFormInput::OAUTH_ENABLED.value(&self.draft.form, cx) {
+        if !McpServerFormInput::OAUTH_ENABLED.get(&self.draft.form, cx) {
             return McpOAuthStatusSnapshot::SignedOut;
         }
         let Some(target) = self.draft_oauth_target(cx) else {
@@ -989,8 +1025,7 @@ impl Render for McpServerEditDialogState {
             url_errors,
             bearer_token_env_var_errors,
         ) = {
-            let form = self.draft.form.read(cx);
-            let value = form.value();
+            let value = McpServerFormInput::ROOT.get(&self.draft.form, cx);
             (
                 value.transport,
                 self.components.server_id.clone(),
@@ -1079,20 +1114,21 @@ impl Render for McpServerEditDialogState {
                                                     McpServerFormDraft::remove_arg_row,
                                                     cx,
                                                 );
-                                                let Some((_, input)) =
-                                                    self.components.args.get(&key)
+                                                let Some(row) = self.components.args.get(&key)
                                                 else {
                                                     event!(Level::ERROR, row = ?key, "MCP arg row control is missing");
                                                     return None;
                                                 };
                                                 let errors = dynamic_validation_messages(
-                                                    item.clone().then(McpArgRowInput::VALUE),
+                                                    row.item
+                                                        .clone()
+                                                        .then(McpArgRowInput::VALUE),
                                                     &self.draft.form,
                                                     cx,
                                                 )?;
                                                 Some((
                                                     key,
-                                                    input.clone(),
+                                                    row.input.clone(),
                                                     errors,
                                                     moves,
                                                     remove,
@@ -1137,27 +1173,26 @@ impl Render for McpServerEditDialogState {
                                                     McpServerFormDraft::remove_env_row,
                                                     cx,
                                                 );
-                                                let Some((_, key_input, value_input)) =
-                                                    self.components.env.get(&key)
+                                                let Some(row) = self.components.env.get(&key)
                                                 else {
                                                     event!(Level::ERROR, row = ?key, "MCP env row controls are missing");
                                                     return None;
                                                 };
                                                 let key_errors = dynamic_validation_messages(
-                                                    item.clone().then(McpEnvRowInput::KEY),
+                                                    row.item.clone().then(McpEnvRowInput::KEY),
                                                     &self.draft.form,
                                                     cx,
                                                 )?;
                                                 let value_errors = dynamic_validation_messages(
-                                                    item.clone().then(McpEnvRowInput::VALUE),
+                                                    row.item.clone().then(McpEnvRowInput::VALUE),
                                                     &self.draft.form,
                                                     cx,
                                                 )?;
                                                 Some((
                                                     key,
-                                                    key_input.clone(),
+                                                    row.key.clone(),
                                                     key_errors,
-                                                    value_input.clone(),
+                                                    row.value.clone(),
                                                     value_errors,
                                                     moves,
                                                     remove,
@@ -1203,20 +1238,21 @@ impl Render for McpServerEditDialogState {
                                                     McpServerFormDraft::remove_env_var_row,
                                                     cx,
                                                 );
-                                                let Some((_, input)) =
-                                                    self.components.env_vars.get(&key)
+                                                let Some(row) = self.components.env_vars.get(&key)
                                                 else {
                                                     event!(Level::ERROR, row = ?key, "MCP env-var row control is missing");
                                                     return None;
                                                 };
                                                 let errors = dynamic_validation_messages(
-                                                    item.clone().then(McpEnvVarRowInput::VALUE),
+                                                    row.item
+                                                        .clone()
+                                                        .then(McpEnvVarRowInput::VALUE),
                                                     &self.draft.form,
                                                     cx,
                                                 )?;
                                                 Some((
                                                     key,
-                                                    input.clone(),
+                                                    row.input.clone(),
                                                     errors,
                                                     moves,
                                                     remove,
@@ -1291,27 +1327,30 @@ impl Render for McpServerEditDialogState {
                                                     McpServerFormDraft::remove_header_row,
                                                     cx,
                                                 );
-                                                let Some((_, name_input, value_input)) =
-                                                    self.components.headers.get(&key)
+                                                let Some(row) = self.components.headers.get(&key)
                                                 else {
                                                     event!(Level::ERROR, row = ?key, "MCP header row controls are missing");
                                                     return None;
                                                 };
                                                 let name_errors = dynamic_validation_messages(
-                                                    item.clone().then(McpHeaderRowInput::NAME),
+                                                    row.item
+                                                        .clone()
+                                                        .then(McpHeaderRowInput::NAME),
                                                     &self.draft.form,
                                                     cx,
                                                 )?;
                                                 let value_errors = dynamic_validation_messages(
-                                                    item.clone().then(McpHeaderRowInput::VALUE),
+                                                    row.item
+                                                        .clone()
+                                                        .then(McpHeaderRowInput::VALUE),
                                                     &self.draft.form,
                                                     cx,
                                                 )?;
                                                 Some((
                                                     key,
-                                                    name_input.clone(),
+                                                    row.key.clone(),
                                                     name_errors,
-                                                    value_input.clone(),
+                                                    row.value.clone(),
                                                     value_errors,
                                                     moves,
                                                     remove,
@@ -1357,27 +1396,31 @@ impl Render for McpServerEditDialogState {
                                                     McpServerFormDraft::remove_env_header_row,
                                                     cx,
                                                 );
-                                                let Some((_, name_input, env_var_input)) =
+                                                let Some(row) =
                                                     self.components.env_headers.get(&key)
                                                 else {
                                                     event!(Level::ERROR, row = ?key, "MCP env-header row controls are missing");
                                                     return None;
                                                 };
                                                 let name_errors = dynamic_validation_messages(
-                                                    item.clone().then(McpEnvHeaderRowInput::NAME),
+                                                    row.item
+                                                        .clone()
+                                                        .then(McpEnvHeaderRowInput::NAME),
                                                     &self.draft.form,
                                                     cx,
                                                 )?;
                                                 let env_var_errors = dynamic_validation_messages(
-                                                    item.clone().then(McpEnvHeaderRowInput::ENV_VAR),
+                                                    row.item
+                                                        .clone()
+                                                        .then(McpEnvHeaderRowInput::ENV_VAR),
                                                     &self.draft.form,
                                                     cx,
                                                 )?;
                                                 Some((
                                                     key,
-                                                    name_input.clone(),
+                                                    row.key.clone(),
                                                     name_errors,
-                                                    env_var_input.clone(),
+                                                    row.value.clone(),
                                                     env_var_errors,
                                                     moves,
                                                     remove,
@@ -1837,16 +1880,10 @@ fn validation_messages(issues: Vec<gpui_form::ValidationIssue>, cx: &App) -> Vec
 }
 
 fn live_mcp_items<Row: FormSchema>(
-    result: Result<Vec<ItemPath<McpServerFormInput, Row>>, MutationError>,
-    list: &'static str,
+    items: Vec<ItemPath<McpServerFormInput, Row>>,
+    _list: &'static str,
 ) -> Vec<ItemPath<McpServerFormInput, Row>> {
-    match result {
-        Ok(items) => items,
-        Err(error) => {
-            event!(Level::ERROR, error = ?error, list, "resolve MCP form row list failed");
-            Vec::new()
-        }
-    }
+    items
 }
 
 fn dynamic_validation_messages<T: Clone + PartialEq + 'static>(
@@ -1904,7 +1941,6 @@ mod tests {
     };
     use gpui::{AppContext as _, Entity, Render, TestAppContext, VisualTestContext, WindowHandle};
     use gpui_component::input::{InputEvent, InputState};
-    use gpui_form::{MutationError, ResolveError};
     use jaco_agent::McpOAuthStatusSnapshot;
     use tempfile::{TempDir, tempdir};
 
@@ -2045,19 +2081,21 @@ mod tests {
             cx.new(|cx| McpServerEditDialogState::new(McpServerEditMode::Create, None, window, cx))
         });
         let arg_input = cx.update(|_, cx| {
-            let (draft_form, args) = {
+            let (draft_form, arg_input) = {
                 let dialog = form.read(cx);
-                (dialog.draft.form.clone(), dialog.components.args.clone())
+                let draft_form = dialog.draft.form.clone();
+                let row_key = McpServerFormInput::ARGS.items(&draft_form, cx)[0].key();
+                let input = dialog
+                    .components
+                    .args
+                    .get(&row_key)
+                    .expect("MCP arg row control exists")
+                    .input
+                    .clone();
+                (draft_form, input)
             };
-            let row_key = McpServerFormInput::ARGS
-                .items(&draft_form, cx)
-                .unwrap()
-                .remove(0)
-                .key();
-            args.get(&row_key)
-                .expect("MCP arg row control exists")
-                .1
-                .clone()
+            let _ = draft_form;
+            arg_input
         });
         set_input_value(arg_input, "   ", &mut cx);
         cx.run_until_parked();
@@ -2066,10 +2104,7 @@ mod tests {
             assert!(!form.update(cx, |form, cx| form.save(window, cx)));
 
             let draft_form = form.read(cx).draft.form.clone();
-            let arg = McpServerFormInput::ARGS
-                .items(&draft_form, cx)
-                .unwrap()
-                .remove(0);
+            let arg = McpServerFormInput::ARGS.items(&draft_form, cx).remove(0);
             assert_eq!(
                 McpServerFormInput::SERVER_ID
                     .errors(&draft_form, cx)
@@ -2103,6 +2138,80 @@ mod tests {
     }
 
     #[gpui::test]
+    fn same_parent_reorder_reuses_mcp_row_control_owner(cx: &mut TestAppContext) {
+        let _dir = init_dialog_test(cx);
+        let window = open_test_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let dialog = cx.update(|window, cx| {
+            cx.new(|cx| {
+                McpServerEditDialogState::new(
+                    McpServerEditMode::Create,
+                    Some(McpServerTomlConfig {
+                        transport: McpTransportKind::Stdio,
+                        command: Some("mcp".to_string()),
+                        args: vec!["first".to_string()],
+                        ..Default::default()
+                    }),
+                    window,
+                    cx,
+                )
+            })
+        });
+
+        cx.update(|window, cx| {
+            dialog.update(cx, |dialog, cx| {
+                dialog.draft.add_arg_row(window, cx).unwrap();
+            });
+        });
+        cx.run_until_parked();
+
+        let (first, second, control_ids) = cx.update(|_, cx| {
+            let dialog = dialog.read(cx);
+            let items = McpServerFormInput::ARGS.items(&dialog.draft.form, cx);
+            let control_ids = items
+                .iter()
+                .map(|item| {
+                    let key = item.key();
+                    (key.clone(), dialog.components.args[&key].input.entity_id())
+                })
+                .collect::<std::collections::HashMap<_, _>>();
+            (items[0].clone(), items[1].clone(), control_ids)
+        });
+
+        cx.update(|window, cx| {
+            dialog.update(cx, |dialog, cx| {
+                assert!(
+                    dialog
+                        .draft
+                        .move_row_before(
+                            McpServerFormInput::ROOT.then(McpServerFormInput::ARGS),
+                            &second,
+                            &first,
+                            window,
+                            cx,
+                        )
+                        .unwrap()
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|_, cx| {
+            let dialog = dialog.read(cx);
+            let items = McpServerFormInput::ARGS.items(&dialog.draft.form, cx);
+            assert_eq!(items[0].key(), second.key());
+            assert_eq!(items[1].key(), first.key());
+            for item in items {
+                let key = item.key();
+                assert_eq!(
+                    dialog.components.args[&key].input.entity_id(),
+                    control_ids[&key]
+                );
+            }
+        });
+    }
+
+    #[gpui::test]
     fn retired_remove_callback_cannot_remove_reinserted_row(cx: &mut TestAppContext) {
         let _dir = init_dialog_test(cx);
         let window = open_test_window(cx);
@@ -2115,7 +2224,6 @@ mod tests {
             dialog.update(cx, |dialog, cx| {
                 let row = McpServerFormInput::ARGS
                     .items(&dialog.draft.form, cx)
-                    .unwrap()
                     .remove(0);
                 let key = row.key();
                 (
@@ -2133,53 +2241,20 @@ mod tests {
         cx.update(|window, cx| {
             dialog.update(cx, |dialog, cx| {
                 dialog.draft.add_arg_row(window, cx).unwrap();
-                dialog.rebind_form_components(window, cx).unwrap();
             });
         });
+        cx.run_until_parked();
         let new_key = cx.update(|_, cx| {
             let form = dialog.read(cx).draft.form.clone();
-            McpServerFormInput::ARGS
-                .items(&form, cx)
-                .unwrap()
-                .remove(0)
-                .key()
+            McpServerFormInput::ARGS.items(&form, cx).remove(0).key()
         });
         assert_ne!(old_key, new_key);
 
         cx.update(|window, cx| remove(window, cx));
         cx.update(|_, cx| {
             let form = dialog.read(cx).draft.form.clone();
-            assert_eq!(form.read(cx).value().args.len(), 1);
-            assert_eq!(
-                McpServerFormInput::ARGS.items(&form, cx).unwrap()[0].key(),
-                new_key
-            );
-        });
-    }
-
-    #[gpui::test]
-    fn failed_component_install_keeps_the_previous_container(cx: &mut TestAppContext) {
-        let _dir = init_dialog_test(cx);
-        let window = open_test_window(cx);
-        let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let dialog = cx.update(|window, cx| {
-            cx.new(|cx| McpServerEditDialogState::new(McpServerEditMode::Create, None, window, cx))
-        });
-
-        cx.update(|_, cx| {
-            dialog.update(cx, |dialog, cx| {
-                let old_server_id = dialog.components.server_id.entity_id();
-                let row_key = McpServerFormInput::ARGS
-                    .items(&dialog.draft.form, cx)
-                    .unwrap()[0]
-                    .key();
-                let result = dialog.install_form_components(Err(MutationError::Resolve(
-                    ResolveError::Retired { path: row_key },
-                )));
-
-                assert!(result.is_err());
-                assert_eq!(dialog.components.server_id.entity_id(), old_server_id);
-            });
+            assert_eq!(McpServerFormInput::ROOT.get(&form, cx).args.len(), 1);
+            assert_eq!(McpServerFormInput::ARGS.items(&form, cx)[0].key(), new_key);
         });
     }
 

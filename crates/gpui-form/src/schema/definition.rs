@@ -7,7 +7,7 @@ pub struct ValidationTriggers {
     pub mount: bool,
     pub change: bool,
     pub blur: bool,
-    pub dynamic: bool,
+    pub external: bool,
     pub submit: bool,
 }
 
@@ -16,7 +16,7 @@ impl ValidationTriggers {
         mount: true,
         change: true,
         blur: true,
-        dynamic: true,
+        external: true,
         submit: true,
     };
 
@@ -25,7 +25,7 @@ impl ValidationTriggers {
             ValidationTrigger::Mount => self.mount,
             ValidationTrigger::Change => self.change,
             ValidationTrigger::Blur => self.blur,
-            ValidationTrigger::Dynamic => self.dynamic,
+            ValidationTrigger::External => self.external,
             ValidationTrigger::Submit => self.submit,
         }
     }

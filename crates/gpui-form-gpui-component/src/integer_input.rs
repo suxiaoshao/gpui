@@ -12,7 +12,8 @@ use gpui::{
 use gpui_component::input::{InputEvent, InputState, NumberInput, NumberInputEvent, StepAction};
 use gpui_component::{Disableable, Sizable, Size};
 use gpui_form::{
-    DynamicPath, Form, FormEvent, FormSchema, IntoTotalPath, TotalPath, ValidationMessage,
+    ControlBinding, ControlProjection, ControlWriter, DynamicPath, Form, FormSchema, IntoTotalPath,
+    ValidationMessage,
 };
 
 use crate::{FormIntegerInputBuildError, IntegerInputPolicyError};
@@ -186,8 +187,9 @@ pub struct FormIntegerInput<N>
 where
     N: IntegerValue,
 {
+    #[allow(dead_code)]
     subscriptions: Vec<Subscription>,
-    _lease: gpui_form::ControlLease,
+    _binding: ControlBinding,
     state: Entity<IntegerInputState<N>>,
 }
 
@@ -209,18 +211,25 @@ where
         Build: FnOnce(&mut Window, &mut Context<IntegerInputState<N>>) -> IntegerInputState<N>,
     {
         let path = path.into_total_path();
-        let value = path.value(form, cx);
+        let value = path.get(form, cx);
         let state = cx.new(|cx| build(window, cx));
         state.read(cx).validate_policy()?;
         state.update(cx, |state, cx| state.set_value(value, window, cx));
-        let binding = path.bind_control(form, cx);
-        let lease = binding.lease();
-        let form_subscription = subscribe_total(form, path, &state, binding.clone(), window, cx);
+        let (binding, writer) = path.bind_control_in(
+            form,
+            &state,
+            |state, projection, window, cx| match projection {
+                ControlProjection::Value(value) => state.set_value(value, window, cx),
+                ControlProjection::Retired => {}
+            },
+            window,
+            cx,
+        );
 
-        let event_subscription = integer_event_subscription(&state, binding, window, cx);
+        let event_subscription = integer_event_subscription(&state, writer, window, cx);
         Ok(Self {
-            subscriptions: vec![form_subscription, event_subscription],
-            _lease: lease,
+            subscriptions: vec![event_subscription],
+            _binding: binding,
             state,
         })
     }
@@ -237,92 +246,28 @@ where
         Owner: 'static,
         Build: FnOnce(&mut Window, &mut Context<IntegerInputState<N>>) -> IntegerInputState<N>,
     {
-        let value = path.try_value(form, cx)?;
+        let value = path.try_get(form, cx)?;
         let state = cx.new(|cx| build(window, cx));
         state.read(cx).validate_policy()?;
         state.update(cx, |state, cx| state.set_value(value, window, cx));
-        let binding = path.try_bind_control(form, cx)?;
-        let lease = binding.lease();
-        let form_subscription = subscribe_dynamic(form, path, &state, binding.clone(), window, cx);
+        let (binding, writer) = path.try_bind_control_in(
+            form,
+            &state,
+            |state, projection, window, cx| match projection {
+                ControlProjection::Value(value) => state.set_value(value, window, cx),
+                ControlProjection::Retired => {}
+            },
+            window,
+            cx,
+        )?;
 
-        let event_subscription = integer_event_subscription(&state, binding, window, cx);
+        let event_subscription = integer_event_subscription(&state, writer, window, cx);
         Ok(Self {
-            subscriptions: vec![form_subscription, event_subscription],
-            _lease: lease,
+            subscriptions: vec![event_subscription],
+            _binding: binding,
             state,
         })
     }
-}
-
-fn subscribe_total<Root, Owner, N>(
-    form: &Entity<Form<Root>>,
-    path: TotalPath<Root, N>,
-    state: &Entity<IntegerInputState<N>>,
-    binding: gpui_form::ControlBinding<Root, N>,
-    window: &Window,
-    cx: &mut Context<Owner>,
-) -> Subscription
-where
-    Root: FormSchema,
-    Owner: 'static,
-    N: IntegerValue,
-{
-    let weak_form = form.downgrade();
-    let weak_state = state.downgrade();
-    cx.subscribe_in(form, window, move |_, _, event: &FormEvent, window, cx| {
-        if matches!(event, FormEvent::ValidationChanged { .. }) {
-            return;
-        }
-        let weak_form = weak_form.clone();
-        let weak_state = weak_state.clone();
-        let path = path.clone();
-        let binding = binding.clone();
-        cx.defer_in(window, move |_, window, cx| {
-            let (Some(form), Some(state)) = (weak_form.upgrade(), weak_state.upgrade()) else {
-                return;
-            };
-            state.update(cx, |state, cx| {
-                state.set_value(path.value(&form, cx), window, cx)
-            });
-            binding.defer_clear_issue(window, cx);
-        });
-    })
-}
-
-fn subscribe_dynamic<Root, Owner, N>(
-    form: &Entity<Form<Root>>,
-    path: DynamicPath<Root, N>,
-    state: &Entity<IntegerInputState<N>>,
-    binding: gpui_form::ControlBinding<Root, N>,
-    window: &Window,
-    cx: &mut Context<Owner>,
-) -> Subscription
-where
-    Root: FormSchema,
-    Owner: 'static,
-    N: IntegerValue,
-{
-    let weak_form = form.downgrade();
-    let weak_state = state.downgrade();
-    cx.subscribe_in(form, window, move |_, _, event: &FormEvent, window, cx| {
-        if matches!(event, FormEvent::ValidationChanged { .. }) {
-            return;
-        }
-        let weak_form = weak_form.clone();
-        let weak_state = weak_state.clone();
-        let path = path.clone();
-        let binding = binding.clone();
-        cx.defer_in(window, move |_, window, cx| {
-            let (Some(form), Some(state)) = (weak_form.upgrade(), weak_state.upgrade()) else {
-                return;
-            };
-            let Ok(value) = path.try_value(&form, cx) else {
-                return;
-            };
-            state.update(cx, |state, cx| state.set_value(value, window, cx));
-            binding.defer_clear_issue(window, cx);
-        });
-    })
 }
 
 impl<N> Deref for FormIntegerInput<N>
@@ -335,18 +280,9 @@ where
     }
 }
 
-impl<N> Drop for FormIntegerInput<N>
-where
-    N: IntegerValue,
-{
-    fn drop(&mut self) {
-        self.subscriptions.clear();
-    }
-}
-
 fn integer_event_subscription<N, Root, Owner>(
     state: &Entity<IntegerInputState<N>>,
-    binding: gpui_form::ControlBinding<Root, N>,
+    writer: ControlWriter<Root, N>,
     window: &Window,
     cx: &mut Context<Owner>,
 ) -> Subscription
@@ -360,14 +296,13 @@ where
         window,
         move |_, _, event: &IntegerInputEvent<N>, window, cx| match event {
             IntegerInputEvent::Change(Ok(value)) => {
-                binding.defer_clear_issue(window, cx);
-                binding.defer_set(*value, window, cx);
+                writer.defer_set(*value, window, cx);
             }
             IntegerInputEvent::Change(Err(error)) => {
                 let (code, message) = integer_issue(*error);
-                binding.defer_set_issue(code, message, window, cx);
+                writer.defer_set_issue(code, message, window, cx);
             }
-            IntegerInputEvent::Blur => binding.defer_blur(window, cx),
+            IntegerInputEvent::Blur => writer.defer_blur(window, cx),
         },
     )
 }

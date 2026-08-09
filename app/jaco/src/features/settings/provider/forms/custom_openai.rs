@@ -88,5 +88,5 @@ pub(in crate::features::settings::provider) struct CustomOpenAiProviderFormInput
     pub(super) base_url: String,
     #[form(validate(on_change, on_submit))]
     #[garde(skip)]
-    pub(super) api_mode: ProviderApiMode,
+    pub(super) api_mode: Option<ProviderApiMode>,
 }

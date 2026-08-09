@@ -4,7 +4,7 @@
 
 ## Before you start
 
-Add the runtime, native components, and adapters:
+Add the Form runtime, gpui-component, and this adapter crate:
 
 ```toml
 [dependencies]
@@ -14,11 +14,11 @@ gpui-form.workspace = true
 gpui-form-gpui-component.workspace = true
 ```
 
-The snippets use this common prelude. `ModelDelegate`, `TagDelegate`, and the
-custom `SlugInput*` types later in the guide belong to the application.
+The snippets below use the following imports. `ModelDelegate`, `TagDelegate`,
+and `SlugInputState` are application types.
 
 ```rust,ignore
-use gpui::{AppContext as _, Context, Entity, Subscription, Window};
+use gpui::{Context, Entity, Subscription, Window};
 use gpui_component::{
     checkbox::Checkbox,
     combobox::{Combobox, ComboboxState},
@@ -26,14 +26,15 @@ use gpui_component::{
     select::{Select, SelectState},
     switch::Switch,
 };
-use gpui_form::{DynamicPath, Form, FormSchema, IntoTotalPath, ResolveError};
+use gpui_form::{DynamicPath, Form, FormSchema, ResolveError};
 use gpui_form_gpui_component::{
     FormCombobox, FormInput, FormIntegerInput, FormSelect, IntegerInput,
     IntegerInputState,
 };
 ```
 
-The recipes below share these ordinary Rust draft types:
+The examples use ordinary typed drafts. Schema annotations describe nesting once;
+call sites do not use string paths or application-managed item IDs.
 
 ```rust,ignore
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -59,7 +60,7 @@ struct JobDraft {
 #[derive(Clone, FormSchema)]
 struct QueryDraft {
     #[form(child)]
-    root: FilterGroup,
+    filters: FilterGroup,
 }
 
 #[derive(Clone, FormSchema)]
@@ -89,25 +90,33 @@ struct FilterCondition {
 }
 ```
 
-Create one strong form entity for each editing session. The examples use
-`form`, `job_form`, and `query_form` below:
+## Create and locate a form
+
+Create one strong `Entity<Form<M>>` per editing session. `Form::new` is
+infallible. Static fields are total paths: use `get` and `set` directly.
 
 ```rust,ignore
-let provider_runtime = Form::try_new(ProviderDraft {
+let form = cx.new(|_| Form::new(ProviderDraft {
     name: String::new(),
     model_id: None,
     enabled: true,
-})?;
-let form: Entity<Form<ProviderDraft>> = cx.new(|_| provider_runtime);
+}));
 
-let job_runtime = Form::try_new(JobDraft {
+let name: String = ProviderDraft::NAME.get(&form, cx);
+let changed: bool = ProviderDraft::NAME.set(&form, "Local provider".into(), cx);
+```
+
+Collection items, active enum cases, and `Option::Some` values are dynamic
+locations. Form creates their identities. Enumerate them from the Form, then
+resolve a case or optional boundary against that same session:
+
+```rust,ignore
+let job_form = cx.new(|_| Form::new(JobDraft {
     budget: 1_024,
     tag_ids: Vec::new(),
-})?;
-let job_form: Entity<Form<JobDraft>> = cx.new(|_| job_runtime);
-
-let query_runtime = Form::try_new(QueryDraft {
-    root: FilterGroup {
+}));
+let query_form = cx.new(|_| Form::new(QueryDraft {
+    filters: FilterGroup {
         children: vec![FilterNode {
             kind: FilterNodeKind::Condition(FilterCondition {
                 value: String::new(),
@@ -117,38 +126,29 @@ let query_runtime = Form::try_new(QueryDraft {
             }),
         }],
     },
-})?;
-let query_form: Entity<Form<QueryDraft>> = cx.new(|_| query_runtime);
-
-let condition_node = QueryDraft::ROOT
-    .then(FilterGroup::CHILDREN)
-    .items(&query_form, cx)?
-    .into_iter()
-    .next()
-    .expect("the example contains one condition");
-let condition: DynamicPath<QueryDraft, FilterCondition> = condition_node
+}));
+let children = QueryDraft::ROOT
+    .then(QueryDraft::FILTERS)
+    .then(FilterGroup::CHILDREN);
+let node = children.items(&query_form, cx).into_iter().next().unwrap();
+let condition = node
     .then(FilterNode::KIND)
-    .try_case(query_form.read(cx), FilterNodeKind::CONDITION)?;
+    .case(FilterNodeKind::CONDITION)
+    .resolve(&query_form, cx)?
+    .expect("the example starts with a condition");
+let value: DynamicPath<QueryDraft, String> =
+    condition.clone().then(FilterCondition::VALUE);
+let current = value.try_get(&query_form, cx)?;
 ```
 
-Use `new` when the target always exists. Pass either a root definition such as
-`ProviderDraft::NAME` or an already composed `TotalPath<M, T>` directly.
+`Ok(None)` means the current enum case or optional value is not active. A
+`ResolveError` means the dynamic starting point is no longer usable, such as
+after removal or replacement. Do not turn either condition into an index lookup
+or a business ID lookup.
 
-A root `FieldDef<M, T>` also exposes the total-path façade directly, including
-`value`, `set`, `errors`, and validation queries.
+## Bind Input
 
-Use `try_new` with a `DynamicPath<M, T>` after the path crosses an item, enum
-case, or optional child, because that target can be absent in the current form.
-Resolve cases and options first with `try_case(form_entity.read(cx), case_def)`
-or `try_some(form_entity.read(cx))`; adapters never receive `TopologyIndex`.
-
-Form assigns and owns the identity of every item occurrence. Traversal and
-topology operations return a typed located item path, from which the renderer
-composes `condition` above. The model, page, and adapter never create or look up
-an item ID. A located path is valid only for the occurrence and active case from
-which Form returned it.
-
-## Bind Input to a total path
+Pass a total path to `FormInput::new`:
 
 ```rust,ignore
 let name_input = FormInput::new(
@@ -162,18 +162,14 @@ let name_input = FormInput::new(
 let element = Input::new(&name_input);
 ```
 
-`InputEvent::Change` defers the typed `String` write. `InputEvent::Blur` defers
-blur validation. Form commits silently call the native value setter.
+`InputEvent::Change` defers a typed write. `InputEvent::Blur` requests the
+configured blur validation. Relevant Form value changes are silently projected
+back to the input; a write from this input is not echoed to itself.
 
-Because `ProviderDraft::NAME` is total, `FormInput::new` has no
-path-resolution `Result`.
-
-## Bind Input to a dynamic path
+Bind a resolved dynamic path with `try_new`:
 
 ```rust,ignore
-let value: DynamicPath<QueryDraft, String> =
-    condition.clone().then(FilterCondition::VALUE);
-
+let value = condition.clone().then(FilterCondition::VALUE);
 let value_input = FormInput::try_new(
     &query_form,
     value,
@@ -183,13 +179,15 @@ let value_input = FormInput::try_new(
 )?;
 ```
 
-Mount fails if the item has retired or the condition case is inactive. Store a
-dynamic adapter in the renderer under that dynamic location's UI key. When the
-renderer no longer receives that location, drop the adapter; if a new location
-appears, call `try_new` for it instead of retargeting the old control. Queued
-work from the retired path becomes a silent no-op.
+Keep a dynamic adapter under its dynamic `PathKey` in the renderer. If that
+location retires, drop its adapter. If a later model change creates another
+condition at the same schema position, create a new adapter; never retarget the
+old one.
 
-## Bind Integer to a total path
+## Bind integer input
+
+`FormIntegerInput` keeps incomplete or invalid editor text in its native state.
+Only a valid typed integer is written to the Form.
 
 ```rust,ignore
 let budget_input = FormIntegerInput::new(
@@ -208,20 +206,13 @@ let budget_input = FormIntegerInput::new(
 let element = IntegerInput::new(&budget_input);
 ```
 
-The form value remains `u64`. The native entity owns private editor text.
-Incomplete, invalid, overflowing, or out-of-range text stays native and
-publishes a leased control issue; only valid typed input is deferred to the
-form. Checked arithmetic never routes the integer through `String` or `f64`.
-
-The total constructor may return a native integer-policy error, but not a
-path-resolution error.
-
-## Bind Integer to a dynamic path
+The constructor can reject an invalid native integer policy. It does not turn a
+total path into a resolution error. For a dynamic integer path, use
+`FormIntegerInput::try_new`; its build error distinguishes an unavailable path
+from an invalid integer policy.
 
 ```rust,ignore
-let limit: DynamicPath<QueryDraft, u64> =
-    condition.clone().then(FilterCondition::LIMIT);
-
+let limit = condition.clone().then(FilterCondition::LIMIT);
 let limit_input = FormIntegerInput::try_new(
     &query_form,
     limit,
@@ -229,24 +220,15 @@ let limit_input = FormIntegerInput::try_new(
     window,
     cx,
 )?;
-
-let element = IntegerInput::new(&limit_input);
 ```
 
-`FormIntegerInputBuildError` distinguishes `Resolve` from `Policy`, so callers
-can handle an unavailable path separately from an invalid integer policy.
+## Bind Select and Combobox
 
-## Bind Select to a total path
-
-`FormSelect<D>` binds `Option<D::Item::Value>` and writes only after
+`FormSelect<D>` binds `Option<D::Item::Value>` and writes after
 `SelectEvent::Confirm`:
 
-`ModelDelegate` is an application-defined native select delegate whose item
-value is `ModelId`. `provider_models` and `condition_models` below are separate
-option snapshots owned by the application.
-
 ```rust,ignore
-let provider_model_select = FormSelect::new(
+let model_select = FormSelect::new(
     &form,
     ProviderDraft::MODEL_ID,
     move |window, cx| {
@@ -257,47 +239,14 @@ let provider_model_select = FormSelect::new(
     cx,
 );
 
-let element = Select::new(&provider_model_select);
+let element = Select::new(&model_select);
 ```
-
-The adapter uses the native state's current delegate for every silent
-projection. It does not retain a second delegate or value/index map.
-
-## Bind Select to a dynamic path
-
-```rust,ignore
-let model_id: DynamicPath<QueryDraft, Option<ModelId>> =
-    condition.clone().then(FilterCondition::MODEL_ID);
-
-let condition_model_select = FormSelect::try_new(
-    &query_form,
-    model_id,
-    move |window, cx| {
-        SelectState::new(ModelDelegate::new(condition_models), None, window, cx)
-            .searchable(true)
-    },
-    window,
-    cx,
-)?;
-
-let element = Select::new(&condition_model_select);
-```
-
-`try_new` resolves the current item and case before constructing native state.
-If the dynamic location later disappears, its old binding cannot write a newly
-created object at the same address.
-
-## Bind Combobox to a total path
 
 `FormCombobox<D>` binds `Vec<D::Item::Value>` and writes on
 `ComboboxEvent::Change`:
 
-`TagDelegate` is an application-defined native combobox delegate whose item
-value is `TagId`. The two option variables below are independent application
-snapshots.
-
 ```rust,ignore
-let job_tags = FormCombobox::new(
+let tags = FormCombobox::new(
     &job_form,
     JobDraft::TAG_IDS,
     move |window, cx| {
@@ -309,55 +258,31 @@ let job_tags = FormCombobox::new(
     cx,
 );
 
-let element = Combobox::new(&job_tags);
+let element = Combobox::new(&tags);
 ```
 
-Programmatic projection uses `set_selected_values` against the native state's
-current delegate.
-
-## Bind Combobox to a dynamic path
-
-```rust,ignore
-let tag_ids: DynamicPath<QueryDraft, Vec<TagId>> =
-    condition.clone().then(FilterCondition::TAG_IDS);
-
-let condition_tags = FormCombobox::try_new(
-    &query_form,
-    tag_ids,
-    move |window, cx| {
-        ComboboxState::new(TagDelegate::new(condition_tag_options), vec![], window, cx)
-            .multiple(true)
-            .searchable(true)
-    },
-    window,
-    cx,
-)?;
-
-let element = Combobox::new(&condition_tags);
-```
-
-The selected values remain typed even when the surrounding item or case is
-dynamic.
+Use the equivalent `try_new` constructor after resolving a dynamic `model_id`
+or `tag_ids` path. Selections stay typed even when their enclosing item or case
+is dynamic.
 
 ## Render Checkbox and Switch
 
-`Checkbox` and `Switch` expose no public native state entity, so use them as
-controlled elements instead of creating adapter wrappers:
+`Checkbox` and `Switch` have no state entity, so render them as controlled
+elements. A total-path callback can write through the explicit Form directly:
 
 ```rust,ignore
-let enabled = ProviderDraft::ENABLED;
-let checked = enabled.value(&form, cx);
+let enabled_path = ProviderDraft::ENABLED;
+let checked = enabled_path.get(&form, cx);
+let form_for_change = form.clone();
 
-let checkbox_form = form.clone();
-let checkbox_path = enabled.clone();
 let checkbox = Checkbox::new("provider-enabled-checkbox")
     .checked(checked)
     .on_click(move |checked, _window, cx| {
-        checkbox_path.set(&checkbox_form, *checked, cx);
+        enabled_path.set(&form_for_change, *checked, cx);
     });
 
 let switch_form = form.clone();
-let switch_path = enabled.clone();
+let switch_path = ProviderDraft::ENABLED;
 let switch = Switch::new("provider-enabled-switch")
     .checked(checked)
     .on_click(move |checked, _window, cx| {
@@ -365,18 +290,19 @@ let switch = Switch::new("provider-enabled-switch")
     });
 ```
 
-These callbacks are not emitted from another state entity's active update, so
-the total path writes synchronously through the explicit strong form. For a
-dynamic boolean, use `try_value` while rendering and `try_set` in the callback.
+For a dynamic boolean, use `try_get` while rendering and `try_set` in the
+callback. A callback emitted from another state entity must defer its write;
+use a stateful adapter for that case.
 
-## Refresh Select or Combobox options
+## Refresh options without changing the Form
 
-Options and delegates belong to the application, not `Form<M>`. Update native
-items and immediately reproject the authoritative form value:
+Delegates, catalogs, and option snapshots belong to the application. After
+replacing native items, reproject the Form's authoritative selection using the
+native state's current delegate:
 
 ```rust,ignore
-let selected_model = ProviderDraft::MODEL_ID.value(&form, cx);
-provider_model_select.update(cx, |state, cx| {
+let selected_model = ProviderDraft::MODEL_ID.get(&form, cx);
+model_select.update(cx, |state, cx| {
     state.set_items(ModelDelegate::new(next_models), window, cx);
     match selected_model.as_ref() {
         Some(value) => state.set_selected_value(value, window, cx),
@@ -384,94 +310,75 @@ provider_model_select.update(cx, |state, cx| {
     }
 });
 
-let selected_tags = JobDraft::TAG_IDS.value(&job_form, cx);
-job_tags.update(cx, |state, cx| {
+let selected_tags = JobDraft::TAG_IDS.get(&job_form, cx);
+tags.update(cx, |state, cx| {
     state.set_items(TagDelegate::new(next_tags), window, cx);
     state.set_selected_values(&selected_tags, window, cx);
 });
 ```
 
-If the native API cannot update items and silently reproject in place, rebuild
-the adapter. An options refresh never selects a fallback, writes form data,
-starts validation, or persists configuration implicitly.
+An option refresh must not select a fallback, mutate Form data, start
+validation, or persist configuration. If a dynamic location no longer resolves,
+tear down its adapter instead of selecting a replacement.
 
-For a dynamic path, call `try_value`; if it no longer resolves, tear down the
-adapter instead of choosing a replacement value.
+Form suppresses the immediate self-echo after a Combobox commits a selection.
+It does not change `gpui-component`'s own collection-selection semantics:
+`set_selected_values` must still resolve all committed values from its source,
+including while a search filter is active. That behavior is tracked separately
+in [gpui-component#2652](https://github.com/longbridge/gpui-component/issues/2652).
 
-## Handle errors
+## Render validation feedback
 
-Keep total and dynamic failures distinct:
+Form owns validation facts; the page owns visibility, localization, layout, and
+focus decisions. Total and dynamic paths keep their different failure modes:
 
 ```rust,ignore
-// Total path: no ResolveError.
 let errors = ProviderDraft::NAME.errors(&form, cx);
 
-// Dynamic path: current availability is checked.
-let condition_value = condition.clone().then(FilterCondition::VALUE);
-match condition_value.try_errors(&query_form, cx) {
+let value = condition.clone().then(FilterCondition::VALUE);
+match value.try_errors(&query_form, cx) {
     Ok(errors) => render_errors(errors),
     Err(error) => teardown_missing_control(error),
 }
 ```
 
-- `ResolveError` reports a missing item, inactive case, retired path, wrong
-  session, or another dynamic resolution failure.
-- Item identity is runtime-owned and opaque. A located path carries the
-  occurrence and freshness selected by Form; models and adapters never manage
-  item IDs or choose among items.
-- Integer-policy errors remain distinguishable from resolution errors.
-- A leased control issue represents native editor state, not a second form
-  value.
-- The page decides when to show errors and which visible control to focus.
+Native editor issues, such as incomplete integer text, remain associated with
+that control. A valid edit clears its own obsolete editor issue. Validation-only
+changes do not reset a native value or erase unrelated editor state.
 
-## Connect your own component
-
-### Controlled elements need no adapter
-
-If your component is rendered directly and has no separate state entity, read
-the typed value while rendering and write it from the callback:
+Observe the Form only when page-owned rendering needs it:
 
 ```rust,ignore
-let enabled_path = ProviderDraft::ENABLED;
-let enabled = enabled_path.value(&form, cx);
-let form_for_change = form.clone();
-
-TogglePill::new("provider-enabled")
-    .selected(enabled)
-    .on_change(move |enabled, _window, cx| {
-        enabled_path.set(&form_for_change, enabled, cx);
-    });
+let form_observer = cx.observe(&form, |_, _, cx| cx.notify());
 ```
 
-Use `try_value` and `try_set` instead when the component points through an
-item, case, or optional payload.
+Built-in adapters and custom bindings synchronize independently of this
+observer. Do not subscribe each adapter to `FormEvent`.
 
-### Wrap a stateful component once
+## Connect a custom component
 
-Callers should get the same ergonomics as the built-in adapters:
+### Stateless controlled element
 
-```rust,ignore
-let slug_input = FormSlugInput::new(
-    &form,
-    ProviderDraft::NAME,
-    |initial, window, cx| SlugInputState::new(initial, window, cx),
-    window,
-    cx,
-);
+If a component has no separate state entity, use the same read-in-render and
+write-in-callback pattern as `Checkbox` and `Switch`.
 
-let element = SlugInput::new(&slug_input);
-```
+### Stateful adapter
 
-An adapter author has four jobs: read the initial typed value, defer native
-change and blur events into the form, silently project form commits back into
-the native state, and keep the control lease plus subscriptions alive.
+For a native state entity, the core binding owns Form-to-control projection.
+The adapter owns the native entity, its native event subscriptions, and one
+non-`Clone` `ControlBinding`. Native callbacks capture the cloneable typed
+`ControlWriter`.
 
 ```rust,ignore
 use std::ops::Deref;
+use gpui_form::{
+    ControlBinding, ControlProjection, ControlWriter, Form, FormSchema,
+    IntoTotalPath,
+};
 
 pub struct FormSlugInput {
     subscriptions: Vec<Subscription>,
-    _lease: ControlLease,
+    _binding: ControlBinding,
     state: Entity<SlugInputState>,
 }
 
@@ -498,57 +405,58 @@ impl FormSlugInput {
         Owner: 'static,
     {
         let path = path.into_total_path();
-        let initial = path.value(form, cx);
+        let initial = path.get(form, cx);
         let state = cx.new(|state_cx| build(initial, window, state_cx));
-        let binding = path.bind_control(form, cx);
-        let lease = binding.lease();
 
-        let native_binding = binding.clone();
+        let (binding, writer): (ControlBinding, ControlWriter<M, String>) =
+            path.bind_control_in(
+                form,
+                &state,
+                |state, projection, window, cx| match projection {
+                    ControlProjection::Value(value) => {
+                        state.set_value_silently(value, window, cx);
+                    }
+                    ControlProjection::Retired => {
+                        state.set_retired(window, cx);
+                    }
+                },
+                window,
+                cx,
+            );
+
         let native_subscription = cx.subscribe_in(
             &state,
             window,
             move |_, _, event: &SlugInputEvent, window, cx| match event {
                 SlugInputEvent::Change(value) => {
-                    native_binding.defer_set(value.clone(), window, cx);
+                    writer.defer_set(value.clone(), window, cx);
                 }
-                SlugInputEvent::Blur => {
-                    native_binding.defer_blur(window, cx);
-                }
-            },
-        );
-
-        let weak_form = form.downgrade();
-        let weak_state = state.downgrade();
-        let form_subscription = cx.subscribe_in(
-            form,
-            window,
-            move |_, _, _: &FormEvent, window, cx| {
-                let (Some(form), Some(state)) =
-                    (weak_form.upgrade(), weak_state.upgrade())
-                else { return };
-                let value = path.value(&form, cx);
-                state.update(cx, |state, cx| {
-                    state.set_value_silent(value, window, cx);
-                });
+                SlugInputEvent::Blur => writer.defer_blur(window, cx),
             },
         );
 
         Self {
-            subscriptions: vec![native_subscription, form_subscription],
-            _lease: lease,
+            subscriptions: vec![native_subscription],
+            _binding: binding,
             state,
         }
     }
 }
 ```
 
-For a dynamic path, use `try_value` and `try_bind_control`, return
-`Result<Self, ResolveError>`, and ignore a form projection after the path has
-retired. The `ControlLease` is required: dropping the adapter retires queued
-binding callbacks and its control issue. The owning handle stores neither the
-strong form nor an authoritative value.
+The silent setter must not emit a native `Change` event. `ControlProjection` is
+exhaustive: `Value` updates the state, and `Retired` marks the dynamic control
+unavailable until the renderer removes it. The adapter does not hold a form
+entity, subscribe to `FormEvent`, clone the binding, identify a control, or
+implement a local direction flag.
+
+For a dynamic path, read with `try_get`, call `try_bind_control_in`, and return
+`Result<Self, ResolveError>`. The method returns a `ControlBinding` and a
+`ControlWriter` only when that dynamic location is still active. Dropping the
+adapter drops its binding, so later native callbacks cannot change the Form.
 
 ## Related documentation
 
+- [gpui-form README](../../gpui-form/README.md)
 - [gpui-form guide](../../gpui-form/docs/guide.md)
 - [gpui-form-macros guide](../../gpui-form-macros/docs/guide.md)

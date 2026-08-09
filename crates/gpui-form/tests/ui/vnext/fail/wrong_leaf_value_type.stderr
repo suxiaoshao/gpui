@@ -1,0 +1,17 @@
+error[E0308]: mismatched types
+  --> tests/ui/vnext/fail/wrong_leaf_value_type.rs:10:27
+   |
+10 |     Draft::NAME.set(form, 42_u64, cx);
+   |                 ---       ^^^^^^ expected `String`, found `u64`
+   |                 |
+   |                 arguments to this method are incorrect
+   |
+note: method defined here
+  --> src/path.rs
+   |
+   |     pub fn set(&self, form: &Entity<Form<Root>>, value: T, cx: &mut App) -> bool {
+   |            ^^^
+help: try using a conversion method
+   |
+10 |     Draft::NAME.set(form, 42_u64.to_string(), cx);
+   |                                 ++++++++++++

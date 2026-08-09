@@ -1,4 +1,5 @@
-use syn::Attribute;
+use proc_macro2::Span;
+use syn::{Attribute, spanned::Spanned};
 
 pub(super) fn reject_container_attributes(attributes: &[Attribute]) -> syn::Result<()> {
     if let Some(attribute) = attributes
@@ -20,19 +21,49 @@ pub(super) enum FieldKind {
     Items,
 }
 
-#[derive(Default)]
-pub(super) struct FieldOptions {
-    pub(super) kind: Option<FieldKind>,
-    pub(super) required: bool,
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct TriggerSelection {
     pub(super) mount: bool,
     pub(super) change: bool,
     pub(super) blur: bool,
-    pub(super) dynamic: bool,
+    pub(super) external: bool,
     pub(super) submit: bool,
+}
+
+impl TriggerSelection {
+    fn is_empty(self) -> bool {
+        !self.mount && !self.change && !self.blur && !self.external && !self.submit
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct FieldOptions {
+    pub(super) kind: FieldKind,
+    pub(super) required: bool,
+    pub(super) triggers: TriggerSelection,
+    pub(super) has_validation: bool,
+    pub(super) required_span: Option<Span>,
+    pub(super) validation_span: Option<Span>,
+}
+
+impl Default for FieldOptions {
+    fn default() -> Self {
+        Self {
+            kind: FieldKind::Leaf,
+            required: false,
+            triggers: TriggerSelection::default(),
+            has_validation: false,
+            required_span: None,
+            validation_span: None,
+        }
+    }
 }
 
 pub(super) fn parse_field_options(attributes: &[Attribute]) -> syn::Result<FieldOptions> {
     let mut options = FieldOptions::default();
+    let mut child_span = None;
+    let mut items_span = None;
+
     for attribute in attributes
         .iter()
         .filter(|attribute| attribute.path().is_ident("form"))
@@ -43,55 +74,68 @@ pub(super) fn parse_field_options(attributes: &[Attribute]) -> syn::Result<Field
                     return Err(meta.error("duplicate `required` option"));
                 }
                 options.required = true;
+                options.required_span = Some(meta.path.span());
                 return Ok(());
             }
             if meta.path.is_ident("child") {
-                return set_kind(&mut options, FieldKind::Child, &meta);
+                if child_span.is_some() {
+                    return Err(meta.error("duplicate `child` option"));
+                }
+                if items_span.is_some() {
+                    return Err(meta.error("only one of `child` or `items` may be specified"));
+                }
+                child_span = Some(meta.path.span());
+                options.kind = FieldKind::Child;
+                return Ok(());
             }
             if meta.path.is_ident("items") {
-                return set_kind(&mut options, FieldKind::Items, &meta);
+                if items_span.is_some() {
+                    return Err(meta.error("duplicate `items` option"));
+                }
+                if child_span.is_some() {
+                    return Err(meta.error("only one of `child` or `items` may be specified"));
+                }
+                items_span = Some(meta.path.span());
+                options.kind = FieldKind::Items;
+                return Ok(());
             }
             if meta.path.is_ident("validate") {
+                if options.has_validation {
+                    return Err(meta.error("duplicate `validate` option"));
+                }
+                options.has_validation = true;
+                options.validation_span = Some(meta.path.span());
                 return meta.parse_nested_meta(|trigger| {
-                    if trigger.path.is_ident("on_mount") {
-                        options.mount = true;
+                    let (value, name) = if trigger.path.is_ident("on_mount") {
+                        (&mut options.triggers.mount, "on_mount")
                     } else if trigger.path.is_ident("on_change") {
-                        options.change = true;
+                        (&mut options.triggers.change, "on_change")
                     } else if trigger.path.is_ident("on_blur") {
-                        options.blur = true;
-                    } else if trigger.path.is_ident("on_dynamic") {
-                        options.dynamic = true;
+                        (&mut options.triggers.blur, "on_blur")
+                    } else if trigger.path.is_ident("on_external") {
+                        (&mut options.triggers.external, "on_external")
                     } else if trigger.path.is_ident("on_submit") {
-                        options.submit = true;
+                        (&mut options.triggers.submit, "on_submit")
                     } else {
                         return Err(trigger.error(
-                            "expected on_mount, on_change, on_blur, on_dynamic, or on_submit",
+                            "expected on_mount, on_change, on_blur, on_external, or on_submit",
                         ));
+                    };
+
+                    if *value {
+                        return Err(trigger.error(format!("duplicate `{name}` trigger")));
                     }
+                    *value = true;
                     Ok(())
                 });
             }
             Err(meta.error("unsupported FormSchema field option"))
         })?;
     }
-    if options.required
-        && !(options.mount || options.change || options.blur || options.dynamic || options.submit)
-    {
-        options.mount = true;
-        options.change = true;
-        options.blur = true;
-        options.submit = true;
-    }
-    Ok(options)
-}
 
-fn set_kind(
-    options: &mut FieldOptions,
-    kind: FieldKind,
-    meta: &syn::meta::ParseNestedMeta<'_>,
-) -> syn::Result<()> {
-    if options.kind.replace(kind).is_some() {
-        return Err(meta.error("only one of `child` or `items` may be specified"));
+    if (options.required || options.has_validation) && options.triggers.is_empty() {
+        options.triggers.submit = true;
     }
-    Ok(())
+
+    Ok(options)
 }
