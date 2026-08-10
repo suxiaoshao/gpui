@@ -1,5 +1,5 @@
 use errors::HttpClientResult;
-use features::HttpFormView;
+use features::RequestView;
 use foundation::I18n;
 use gpui::*;
 use gpui_component::Root;
@@ -89,7 +89,7 @@ fn main() -> HttpClientResult<()> {
                 ..Default::default()
             },
             |window, cx| {
-                let view = cx.new(|cx| HttpFormView::new(window, cx));
+                let view = cx.new(|cx| RequestView::new(window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             },
         ) {

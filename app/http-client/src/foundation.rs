@@ -1,3 +1,3 @@
 pub(crate) mod i18n;
 
-pub(crate) use i18n::I18n;
+pub(crate) use i18n::{I18n, validation_message};

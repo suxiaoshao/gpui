@@ -1,3 +1,3 @@
 pub(crate) mod request;
 
-pub(crate) use request::HttpFormView;
+pub(crate) use request::RequestView;

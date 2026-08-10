@@ -26,14 +26,24 @@ gpui-component = { workspace = true, features = [
   "tree-sitter-languages",
 ] }
 gpui-component-assets.workspace = true
+gpui-form.workspace = true
+gpui-form-gpui-component.workspace = true
 fluent-bundle = "0.16.0"
 unic-langid = "0.9.6"
 sys-locale = "0.3.2"
 
 url = "2.5.8"
+http = "1.4.2"
+mime = "0.3.17"
+mime_guess = "2.0.5"
+base64 = { version = "0.23.0", default-features = false, features = ["std"] }
 thiserror = "2.0.19"
 
 # log
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
 dirs-next = "2.0.0"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile = "3.27.0"

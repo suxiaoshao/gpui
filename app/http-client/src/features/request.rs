@@ -1,167 +1,130 @@
-use crate::{
-    features::request::{
-        headers::HttpHeader,
-        method::{HttpMethod, SelectHttpMethod},
-        tab::HttpTabView,
-        url_input::UrlInput,
-    },
-    foundation::I18n,
+use gpui::{
+    AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    ParentElement, Styled, Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
-use gpui::*;
 use gpui_component::{
-    IndexPath,
-    button::Button,
-    select::{Select, SelectEvent, SelectState},
+    ActiveTheme as _, Disableable as _,
+    button::{Button, ButtonVariants as _},
+    label::Label,
+    select::SelectState,
+    v_flex,
 };
+use gpui_form::Form;
 
-pub enum HttpFormEvent {
-    Send,
-    SetUrl(String),
-    SetUrlByInput(String),
-    SetMethod(HttpMethod),
-    SetUrlByParams(String),
-    AddHeader,
-    DeleteHeader(usize),
-}
+use self::{
+    controls::FormScalarSelect,
+    draft::{HttpClientTransportSettings, RequestDraft},
+    method::{HttpMethod, SelectHttpMethod},
+    prepared::{PreparedRequest, RequestPrepareError, compile_request},
+    tab::RequestTabsView,
+    url_input::UrlInput,
+    validation::RequestValidator,
+};
+use crate::foundation::{I18n, validation_message};
 
+mod auth;
 mod body;
+mod controls;
+mod draft;
 mod headers;
 mod method;
 mod params;
+#[allow(dead_code)]
+mod prepared;
+mod settings;
 mod tab;
 mod url_input;
+mod validation;
 
-pub struct HttpForm {
-    pub http_method: HttpMethod,
-    pub url: String,
-    pub headers: Vec<Entity<HttpHeader>>,
-}
-
-impl HttpForm {
-    fn new() -> Self {
-        Self {
-            http_method: HttpMethod::Get,
-            url: "".to_string(),
-            headers: vec![],
-        }
-    }
-}
-
-impl EventEmitter<HttpFormEvent> for HttpForm {}
-
-pub struct HttpFormView {
-    form: Entity<HttpForm>,
-    http_method_select: Entity<SelectState<SelectHttpMethod>>,
-    http_tab: Entity<HttpTabView>,
-    url_input: Entity<UrlInput>,
+pub(crate) struct RequestView {
+    form: Entity<Form<RequestDraft>>,
+    transport_settings: HttpClientTransportSettings,
+    method: FormScalarSelect<RequestDraft, SelectHttpMethod, HttpMethod>,
+    url: UrlInput,
+    tabs: Entity<RequestTabsView>,
+    _form_observer: Subscription,
     focus_handle: FocusHandle,
-    _subscriptions: Vec<Subscription>,
 }
 
-impl HttpFormView {
-    pub fn new(window: &mut Window, form_cx: &mut Context<Self>) -> Self {
-        let form = form_cx.new(|_cx| HttpForm::new());
-        let http_method_select = form_cx
-            .new(|cx| SelectState::new(SelectHttpMethod, Some(IndexPath::default()), window, cx));
-        let _subscriptions = vec![
-            form_cx.subscribe_in(&form, window, Self::subscribe),
-            form_cx.subscribe_in(
-                &http_method_select,
-                window,
-                |this, _state, event, _window, cx| {
-                    if let SelectEvent::Confirm(Some(method)) = event {
-                        this.form.update(cx, |_form, cx| {
-                            cx.emit(HttpFormEvent::SetMethod(*method));
-                        });
-                    }
-                },
-            ),
-        ];
-
+impl RequestView {
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let form = cx.new(|_| Form::new(RequestDraft::default()).with_validator(RequestValidator));
+        let transport_settings = HttpClientTransportSettings::default();
+        let method = FormScalarSelect::new(
+            &form,
+            RequestDraft::METHOD,
+            |window, cx| SelectState::new(SelectHttpMethod, None, window, cx),
+            window,
+            cx,
+        );
+        let url = UrlInput::new(&form, window, cx);
+        let tabs =
+            cx.new(|cx| RequestTabsView::new(form.clone(), transport_settings.clone(), window, cx));
+        let form_observer = cx.observe(&form, |_, _, cx| cx.notify());
         Self {
-            url_input: form_cx.new(|cx| UrlInput::new(window, form.clone(), cx)),
-            http_tab: form_cx.new(|cx| HttpTabView::new(form.clone(), window, cx)),
             form,
-            http_method_select,
-            focus_handle: form_cx.focus_handle(),
-            _subscriptions,
+            transport_settings,
+            method,
+            url,
+            tabs,
+            _form_observer: form_observer,
+            focus_handle: cx.focus_handle(),
         }
     }
-    fn subscribe(
+
+    #[allow(dead_code)]
+    pub(crate) fn prepare_request(
         &mut self,
-        subscriber: &Entity<HttpForm>,
-        emitter: &HttpFormEvent,
-        window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        match emitter {
-            HttpFormEvent::Send => {
-                // todo
-            }
-            HttpFormEvent::SetUrlByInput(url)
-            | HttpFormEvent::SetUrlByParams(url)
-            | HttpFormEvent::SetUrl(url) => {
-                subscriber.update(cx, |data, _cx| {
-                    data.url.clone_from(url);
-                });
-            }
-            HttpFormEvent::SetMethod(method) => {
-                subscriber.update(cx, |data, _cx| {
-                    data.http_method = *method;
-                });
-            }
-            HttpFormEvent::AddHeader => {
-                subscriber.update(cx, |data, cx| {
-                    data.headers.push(cx.new(|cx| HttpHeader::new(window, cx)));
-                });
-            }
-            HttpFormEvent::DeleteHeader(index) => {
-                subscriber.update(cx, |data, _cx| {
-                    if *index < data.headers.len() {
-                        data.headers.remove(*index);
-                    }
-                });
-            }
-        };
+    ) -> Result<PreparedRequest, RequestPrepareError> {
+        let prepared = self.form.update(cx, |form, cx| form.prepare(cx))?;
+        let (_, draft) = prepared.into_parts();
+        compile_request(draft, &self.transport_settings).map_err(Into::into)
     }
 }
 
-impl Render for HttpFormView {
+impl gpui::Render for RequestView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let send_label = cx.global::<I18n>().t("button-send");
-        let send_button =
-            Button::new("Send")
-                .label(send_label)
-                .on_click(cx.listener(|this, _event, _, cx| {
-                    this.form.update(cx, |_, cx| {
-                        cx.emit(HttpFormEvent::Send);
-                    });
-                }));
-        let header = div()
+        let send_label = {
+            let i18n = cx.global::<I18n>();
+            i18n.t("button-send")
+        };
+        let url_error = RequestDraft::URL
+            .errors(&self.form, cx)
+            .first()
+            .map(|issue| validation_message(issue.message(), cx));
+
+        let request_line = div()
             .flex()
+            .items_start()
             .gap_2()
             .p_2()
-            .items_start()
-            .text_sm()
+            .child(div().w(px(112.)).child(self.method.element()))
             .child(
-                div()
-                    .flex()
-                    .items_center()
+                v_flex()
                     .flex_1()
-                    .child(
-                        div()
-                            .flex_initial()
-                            .child(Select::new(&self.http_method_select).w(px(100.))),
-                    )
-                    .child(div().flex_1().child(self.url_input.clone())),
+                    .gap_1()
+                    .child(self.url.element())
+                    .when_some(url_error, |this, error| {
+                        this.child(Label::new(error).text_xs().text_color(cx.theme().danger))
+                    }),
             )
-            .child(send_button);
+            .child(
+                Button::new("request-send")
+                    .primary()
+                    .label(send_label)
+                    .disabled(true),
+            );
+
         div()
             .track_focus(&self.focus_handle)
             .flex()
             .flex_col()
             .size_full()
-            .child(header)
-            .child(self.http_tab.clone())
+            .child(request_line)
+            .child(self.tabs.clone())
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -6289,13 +6289,20 @@ dependencies = [
 name = "http-client"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.0",
  "dirs-next",
  "fluent-bundle",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
+ "gpui-form",
+ "gpui-form-gpui-component",
  "gpui_platform",
+ "http 1.4.2",
+ "mime",
+ "mime_guess",
  "sys-locale",
+ "tempfile",
  "thiserror 2.0.19",
  "tracing",
  "tracing-subscriber",

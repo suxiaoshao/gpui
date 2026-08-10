@@ -4,12 +4,12 @@
 
 - 状态：`Draft`
 - 最近整理：`2026-08-10`
-- 核对基线：`codex/199-adopt-gpui-store-form-operation` 分支，commit `b8c7a93`
 - 总入口：[Issue #199 多轮任务索引](README.md)
 
 本文只保留尚未实施且仍会影响后续设计的用户决定、技术结论、暂缓范围和未回答问题。已经由源码、
 自动化与独立 owner 执行文档承接的 Form vNext、Jaco Form consumer、Feiwen Query/Fetch/Catalog/DB/Form
-和 Novel Download 内容已从本草稿删除，不在这里维护第二份完成态说明。
+和 Novel Download 内容已从本草稿删除，不在这里维护第二份完成态说明。HTTP Client
+也已建立 owner 草稿；本文只保留其总状态和入口，不复制 HTTP 专属问题或回答。
 
 保留规则：
 
@@ -18,7 +18,9 @@
 3. 明确暂缓的范围保留恢复入口，不提前设计或创建实施计划。
 4. 已完成内容从草稿删除；其历史、契约和验证以 Git 及对应 owner 执行文档为准。
 
-本文中的 `CONV-*` 和 `HTTP-*` 只是问题跟踪编号，不是 root plan 或 owner plan 的正式 ID。
+本文中的 `CONV-*` 只是问题跟踪编号，不是 root plan 或 owner plan 的正式 ID。HTTP
+专属 `HTTP-*` 编号由 [HTTP Client owner 草稿](../../../app/http-client/docs/dev/issue-199/http-client-product-and-migration-draft.md)
+维护。
 
 ## 2. 当前未完成范围
 
@@ -26,7 +28,7 @@
 | --- | --- | --- | --- |
 | Jaco Conversation active run | 产品语义已确认，Transition 尚未实施 | 共享 `Submitting / Running / Stopping` 私有 Transition；非法重入丢弃，不排队 | 建立 owner plan；闭环迟到 completion 防护 |
 | Jaco MCP runtime | 暂缓 | 不开始 Transition / Store 迁移 | 等用户明确恢复任务 |
-| HTTP Client | 全部未回答 | 尚无产品决定 | 请求运行、Form、Store 与 repair 问题 |
+| HTTP Client | Request Form / prepared request 子阶段 `Done`；Send / Response 仍为 `Draft` | HTTP 专属目标、缺失、决定和问题只在 app owner 中维护 | [HTTP Client owner索引](../../../app/http-client/docs/dev/issue-199/README.md) |
 
 Issue 范围内继续有效的共通边界：
 
@@ -142,45 +144,20 @@ producer 或独立 cleanup completion，则必须保留 run key / generation；�
 - 自定义 Transition 与 status Store 当前不继续调研、不建立 owner plan、不实施。
 - 用户明确恢复该任务后，再从当前源码重新调研；本草稿不预先选择状态机或 Store owner。
 
-## 5. HTTP Client：尚未回答的问题
+## 5. HTTP Client
 
-状态：**全部未回答**。当前 Send runtime 仍未实现，因此本文只保存问题，不预建状态机。
-
-### 5.1 请求运行与 Operation
-
-- **HTTP-RUN-Q01：** `ResponseData` 的权威内容是什么：status、headers、timing、body、大小、截断和
-  binary 表示分别如何建模。
-- **HTTP-RUN-Q02：** HTTP 4xx / 5xx 是成功的 HTTP response Data，还是 RequestProblem。
-- **HTTP-RUN-Q03：** resend 开始后是否保留旧 response；这会决定是否适用
-  `refresh::Operation` 的 Refreshing / Degraded 语义。
-- **HTTP-RUN-Q04：** 运行 owner 是单 request page、未来 request tab，还是共享 runtime；是否允许
-  多 tab 并行。
-- **HTTP-RUN-Q05：** Send 是否冻结不可变 prepared request snapshot，运行中编辑是否只影响下一次
-  Send。
-- **HTTP-RUN-Q06：** 取消、超时、重发和迟到 completion 的规则。
-- **HTTP-RUN-Q07：** 非幂等请求的 Retry / Resend 是否需要显式确认。
-
-### 5.2 RequestDraft Form
-
-- **HTTP-FORM-Q01：** 支持哪些 URL scheme，以及相对 URL 是否依赖 environment base URL。
-- **HTTP-FORM-Q02：** URL 与 Params 的唯一 source of truth；URL 无法解析时 Params 如何显示和编辑。
-- **HTTP-FORM-Q03：** Params 修改后是否规范化或重写用户原始 URL 字符串。
-- **HTTP-FORM-Q04：** empty / duplicate headers 的合法性、顺序和大小写保留规则。
-- **HTTP-FORM-Q05：** body 类型与 Content-Type 的同步规则，以及重复 x-form key 的语义。
-- **HTTP-FORM-Q06：** multipart FormData 尚未实现，未来文件字段、文本字段和重复 key 如何进入 Form。
-
-### 5.3 Store 与 repair
-
-- **HTTP-STORE-Q01：** history、favorites、environment、auth、cookie jar 分别是否跨 tab/window 共享，
-  哪些需要 Store，哪些需要持久化服务。
-- **HTTP-STORE-Q02：** 多 tab catalog、active tab 和 request identity 的 owner。
-- **HTTP-STORE-Q03：** secret/auth/cookie 的内存与持久化安全边界；不能因为共享就直接放入普通 UI
-  snapshot。
-- **HTTP-REPAIR-Q01：** auth challenge、客户端证书、代理或 TLS 问题是否提供显式修复动作；在动作
-  未定义前不采用预定义 `repair::Operation`。
+状态：Request Form / prepared request 子阶段已经 `Done`，Send / Operation / Response 子阶段仍为
+`Draft`。本轮 HTTP Client 必须做到单请求场景下基础可用，不以迁移 shared crates 作为完成条件。
+其专属功能缺失、`HTTP-*` 问题和产品回答继续由
+[HTTP Client 产品与迁移草稿](../../../app/http-client/docs/dev/issue-199/http-client-product-and-migration-draft.md)
+维护；Request 子阶段的文件动作、工作包与门禁由
+[独立实施计划](../../../app/http-client/docs/dev/issue-199/request-form-and-preparation-plan.md)维护。
+ResponseData 的未回答问题不再影响已完成的 Request 子阶段，但继续阻塞后续 Send / Response 计划。本根草稿不维护
+HTTP 详细副本。
 
 ## 6. 后续入口
 
 1. Jaco Conversation 下一步先建立独立 owner plan，并在实现前闭环 `CONV-Q02`。
 2. Jaco MCP runtime 只有在用户明确恢复后才重新调研。
-3. HTTP Client 在用户回答对应问题前，不预先选择产品语义或建立实施计划。
+3. HTTP Client 下一步在 owner 草稿中闭环 ResponseData，并为 Send / Operation / Response 新建另一份
+   独立计划。
