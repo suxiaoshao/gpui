@@ -31,8 +31,8 @@
 | `FORM-199-03` | `gpui-form`、`gpui-form-macros`、`gpui-form-gpui-component` 按最终目标契约进行 breaking 重构 | `Done`；producer/consumer 与 aggregate gate 通过 | [core 实施计划](../../../crates/gpui-form/docs/dev/issue-199/form-runtime-breaking-refactor-plan.md)、[macro 实施计划](../../../crates/gpui-form-macros/docs/dev/issue-199/form-schema-generation-update-plan.md)、[adapter 实施计划](../../../crates/gpui-form-gpui-component/docs/dev/issue-199/form-binding-adapter-update-plan.md) | `C-900`–`C-904` 已达 `consumer-complete` |
 | `JACO-199-03` | Jaco 迁移到本轮最终 Form API 与 binding/event/version 契约 | `Done`；362 tests 与 Clippy 通过；实际 UI 操作测试未执行 | [Jaco 再迁移计划](../../../app/jaco/docs/dev/issue-199/form-breaking-api-remigration-plan.md) | 已消费 `C-900`–`C-904`；未改 MCP runtime operation |
 | `FEI-199-02` | Feiwen Query/Fetch 迁移到本轮最终 Form API 与动态 topology 契约 | `Done`；93 tests 与 Clippy 通过；实际 UI 操作测试未执行 | [Feiwen 再迁移计划](../../../app/feiwen/docs/dev/issue-199/form-breaking-api-remigration-plan.md) | 已消费 `C-900`–`C-904`；未重做现有 Operation/Store/DB/Catalog |
-| `NOVEL-199-01` | Novel Download 最小 Form、私有下载 Transition、唯一 Task 与 `.part` 文件事务迁移 | `Done`；39 tests 与定向门禁通过，当前工作树未提交；实际 UI 未执行 | [Novel Download 实施计划](../../../app/novel-download/docs/dev/issue-199/form-operation-download-migration-plan.md) | 消费 `C-900`–`C-904`；不引入 Store、队列、resume 或 repair |
-| `HTTP-199-02` | HTTP Client Request Form、五种 Body、Auth、redirect、prepared request 与 Store 适用性 | `Done`；56 tests 与 Check、Clippy、格式、残留扫描通过；实际 UI 操作未执行 | [Request Form 与 prepared request 实施计划](../../../app/http-client/docs/dev/issue-199/request-form-and-preparation-plan.md) | 消费 `C-900`–`C-904`；不依赖 ResponseData；不引入 Store/Operation/transport |
+| `NOVEL-199-01` | Novel Download 最小 Form、私有下载 Transition、唯一 Task 与 `.part` 文件事务迁移 | `Done`；39 tests 与定向门禁通过；实现提交 `64b0c4a` 已推送；实际 UI 未执行 | [Novel Download 实施计划](../../../app/novel-download/docs/dev/issue-199/form-operation-download-migration-plan.md) | 消费 `C-900`–`C-904`；不引入 Store、队列、resume 或 repair |
+| `HTTP-199-02` | HTTP Client Request Form、五种 Body、Auth、redirect、prepared request 与 Store 适用性 | `Done`；56 tests 与 Check、Clippy、格式、残留扫描通过；实现提交 `933ee09` 已推送；实际 UI 操作未执行 | [Request Form 与 prepared request 实施计划](../../../app/http-client/docs/dev/issue-199/request-form-and-preparation-plan.md) | 消费 `C-900`–`C-904`；不依赖 ResponseData；不引入 Store/Operation/transport |
 
 Form breaking 与 consumer 再迁移轮次的实际实施顺序：
 
@@ -82,7 +82,7 @@ Form breaking 与 consumer 再迁移轮次的实际实施顺序：
 | --- | --- | --- |
 | [应用迁移决策与后续调研草稿](application-migration-decisions.md) | `Draft` | 保留未实施的 Jaco Conversation、暂缓的 Jaco MCP runtime 与 HTTP Client owner 草稿入口；不复制 HTTP 专属问题。 |
 | [HTTP Client 产品与迁移草稿](../../../app/http-client/docs/dev/issue-199/http-client-product-and-migration-draft.md) | `Draft` | HTTP Client 基础可用目标、功能缺失、已确认决定与未回答 `HTTP-*` 问题的 owner 权威入口。 |
-| [HTTP Client Request Form 与 prepared request 实施计划](../../../app/http-client/docs/dev/issue-199/request-form-and-preparation-plan.md) | `Done` | Request Form、五种 Body、Auth、redirect 与 prepared request 已实施；Store 本阶段不适用。 |
+| [HTTP Client Request Form 与 prepared request 实施计划](../../../app/http-client/docs/dev/issue-199/request-form-and-preparation-plan.md) | `Done` | Request Form、五种 Body、Auth、redirect 与 prepared request 已在 `933ee09` 实施并推送；Store 本阶段不适用。 |
 | [workspace Store/Operation/Form 适用性调研](workspace-store-operation-form-assessment.md) | 已审阅；MCP runtime暂缓 | 记录全局候选与“不改Store内部”的结论 |
 | [上一轮root delivery归档](explicit-form-owner-delivery.md) | 历史原样 | 保存此前共享规格、工作包、验证与完成审计，不作为vNext执行入口 |
 

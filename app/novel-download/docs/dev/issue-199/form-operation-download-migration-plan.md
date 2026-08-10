@@ -2,8 +2,8 @@
 
 ## 状态与范围
 
-- 状态：`Done`。`WP-1400`–`WP-1407` 的生产实现、39 项自动化测试和定向门禁已在当前工作树完成；
-  实际 UI 操作测试按本轮要求未执行。
+- 状态：`Done`。`WP-1400`–`WP-1407` 的生产实现已由提交 `64b0c4a` 交付并推送；39 项自动化测试和
+  定向门禁通过；实际 UI 操作测试按本轮要求未执行。
 - 关联 issue：[#199](https://github.com/suxiaoshao/gpui/issues/199)
 - 子任务 ID：`NOVEL-199-01`
 - 子任务索引：[Issue #199：Novel Download 子任务跟踪](README.md)
@@ -13,13 +13,14 @@
   [gpui-form 运行时破坏性重构实施计划](../../../../../crates/gpui-form/docs/dev/issue-199/form-runtime-breaking-refactor-plan.md)
 - 所有者：`app/novel-download`
 - 本地 ID 范围：`E/D/F/L/ST/ERR/R/T-1400..1499`、`WP-1400..1409`
-- 实施引用：当前工作树；尚未创建 commit 或 PR
+- 实施引用：`64b0c4a refactor(novel-download): adopt form operation runtime`，已推送至
+  `origin/codex/199-adopt-gpui-store-form-operation`；未创建 PR
 
 本文是 Novel Download 在 Issue #199 中的首轮完整 owner plan。它负责最小 typed Form、下载输入解析、
 私有 `gpui_operation::Transition`、Task 与取消、HTTP/retry、下载范围、`.part` 文件事务、UI、本地化、
 依赖和验证。目录 `README.md` 只登记多轮子任务状态与本文链接，不承载执行细节。
 
-本轮已获准并完成代码实施；实际 UI 操作测试不在本轮执行范围内，且当前工作树尚未提交。
+本轮已获准并完成代码实施与远端推送；实际 UI 操作测试不在本轮执行范围内。
 
 ## 目标
 
@@ -1229,8 +1230,8 @@ cargo tree -p novel-download --locked
 | 证据 | 当前结果 |
 | --- | --- |
 | 产品决定 | `NOVEL-*` 已全部确认并由 `D-1400`–`D-1410` 消费 |
-| 实施 commit/PR | 尚未创建；实现位于当前工作树 |
-| 实际 added/modified/moved/deleted 文件 | 已完成 `F-1400`–`F-1419` 的 manifest、crawler、workspace、错误与 Fluent 改动/重组，以及 `F-1420`–`F-1424` 文档同步；以当前 `git diff --name-status -- app/novel-download docs/dev/issue-199` 为准 |
+| 实施 commit/PR | 实现提交 `64b0c4a` 已推送至目标分支；未创建 PR |
+| 实际 added/modified/moved/deleted 文件 | 已完成 `F-1400`–`F-1419` 的 manifest、crawler、workspace、错误与 Fluent 改动/重组，以及 `F-1420`–`F-1424` 文档同步；以提交 `64b0c4a` 为准 |
 | 已交付工作包 | `WP-1400`–`WP-1407` 全部完成 |
 | focused/完整自动化命令与结果 | `cargo fmt --package novel-download -- --check`、39 项 app tests、`cargo check`、全 targets/features Clippy `-D warnings`、`cargo tree -p novel-download --locked` 和限定路径 `git diff --check` 均通过 |
 | actual dependency/Cargo.lock diff | 新增 `gpui-form`、`gpui-form-gpui-component`、带 tracing 的 `gpui-operation` 与 `tempfile 3.27.0`；`reqwest 0.13.4` 显式启用 `rustls`；删除未再使用的 direct `nom 8.0.0`；lockfile 仅更新 Novel Download package 的 direct dependency 列表 |
@@ -1250,6 +1251,6 @@ cargo tree -p novel-download --locked
 - [x] Error到runtime/UI/i18n/logging的完整映射明确。
 - [x] 文件动作、依赖版本、Fluent keys、R/T矩阵、WP依赖和验证命令明确。
 - [x] 明确不引入Store、preview、queue、resume、repair、compat shim或新assets。
-- [x] 生产代码、依赖与文档索引已在当前工作树实施；历史迁移文档未改写。
-- [x] 实际自动化命令、39 项测试、依赖核对与残留扫描已回填；当前未创建 commit 或 PR。
+- [x] 生产代码、依赖与文档索引已由提交 `64b0c4a` 实施并推送；历史迁移文档未改写。
+- [x] 实际自动化命令、39 项测试、依赖核对与残留扫描已回填；未创建 PR。
 - [x] 实际 UI 操作测试明确记录为未执行，不以编译或自动化代替。

@@ -6,6 +6,8 @@
 - 子任务：`HTTP-199-02`
 - 关联 issue：[#199](https://github.com/suxiaoshao/gpui/issues/199)
 - 目标分支：`codex/199-adopt-gpui-store-form-operation`
+- 实施引用：`933ee09 refactor(http-client): adopt typed request form`，已推送至
+  `origin/codex/199-adopt-gpui-store-form-operation`；未创建 PR
 - owner 索引：[HTTP Client Issue #199 跟踪](README.md)
 - 产品决定权威：[HTTP Client 产品与迁移草稿](http-client-product-and-migration-draft.md)
 - 消费的 Form 契约：`C-900`–`C-904`，状态为 `consumer-complete`
@@ -1112,6 +1114,7 @@ Auth、redirect、timeout 快照、控件迁移、双语错误呈现及旧 autho
 
 | 证据 | 实际结果 |
 | --- | --- |
+| 实施 commit/PR | 实现提交 `933ee09` 已推送至目标分支；未创建 PR |
 | 定向测试 | 56 个测试通过 |
 | 编译检查 | `cargo check -p http-client --bin http-client --all-features --locked` 通过 |
 | Clippy | `cargo clippy -p http-client --all-targets --all-features --locked -- -D warnings` 通过 |

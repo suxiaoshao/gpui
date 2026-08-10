@@ -1,6 +1,6 @@
 # Issue #199：HTTP Client 子任务跟踪
 
-- 状态：`HTTP-199-01 Draft`；`HTTP-199-02 Done`
+- 状态：`HTTP-199-01 Draft`；`HTTP-199-02 Done`（实现提交 `933ee09` 已推送）
 - 关联 issue：[#199](https://github.com/suxiaoshao/gpui/issues/199)
 - 根入口：[Issue #199 多轮任务索引](../../../../../docs/dev/issue-199/README.md)
 - HTTP Client 开发文档索引：[开发文档](../README.md)
@@ -16,7 +16,7 @@ README。
 | ID | 子任务 | 状态 | 专题文档 |
 | --- | --- | --- | --- |
 | `HTTP-199-01` | HTTP Client 基础可用产品范围、功能缺失与 Form / Operation / Store 迁移边界 | `Draft`；Request 阶段已完成，ResponseData 精确模型待闭环 | [HTTP Client 产品与迁移草稿](http-client-product-and-migration-draft.md) |
-| `HTTP-199-02` | Request Form、prepared request 与 Store 适用性 | `Done`；56 个测试及 Check、Clippy、格式、残留扫描通过，实际 UI 操作未执行 | [Request Form 与 prepared request 实施计划](request-form-and-preparation-plan.md) |
+| `HTTP-199-02` | Request Form、prepared request 与 Store 适用性 | `Done`；56 个测试及 Check、Clippy、格式、残留扫描通过；实现提交 `933ee09` 已推送；实际 UI 操作未执行 | [Request Form 与 prepared request 实施计划](request-form-and-preparation-plan.md) |
 
 ## 跟踪规则
 
