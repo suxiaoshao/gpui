@@ -2,11 +2,11 @@
 
 ## 文档职责
 
-- 状态：`进行中`。本轮 Form breaking 重构及 Jaco、Feiwen consumer 再迁移均为 `Done`；
-  HTTP Client、Novel Download、Jaco Conversation/MCP runtime 等暂缓轮次仍未开始。
+- 状态：`进行中`。本轮 Form breaking 重构、Jaco/Feiwen consumer 再迁移与 Novel Download 均为 `Done`；
+  HTTP Client、Jaco Conversation/MCP runtime 等后续轮次仍未开始。
 - 关联 issue：[#199](https://github.com/suxiaoshao/gpui/issues/199)
 - 分支：`codex/199-adopt-gpui-store-form-operation`
-- 最近更新：2026-08-09
+- 最近更新：2026-08-10
 
 本文只维护 Issue #199 的总指导、轮次、子任务状态、依赖顺序和专题文档入口。架构契约、文件清单、
 工作包、测试与完成证据写在独立专题文档中；后续任务不得继续把执行计划堆入本 README。
@@ -18,16 +18,18 @@
 3. 已完成历史文档保留原样并继续可发现，不改写成后续 breaking 计划。
 4. Form core 可以内部使用 `gpui_operation::Transition`，公开/generated/adapter API 仍为领域方法。
 5. Form vNext producer contract 固定并验证后，Jaco/Feiwen 才消费最终签名；应用不得各自创建兼容 shim。
-6. HTTP Client、Novel Download 和 Jaco MCP runtime operation 本轮不做；未回答问题继续保留在总草稿。
+6. HTTP Client 和 Jaco MCP runtime operation 继续暂缓；已完成的 Novel Download 保留 owner plan 作为
+   实施证据，不直接从总草稿或本 README 派生后续改动。
 7. `gpui-store` 本轮不重构：复杂状态机由业务类型自己建模，最终使用 Store `set/update` 发布即可。
 
-## 本轮新计划
+## 最近完成的轮次
 
 | ID | 范围 | 状态 | 专题文档 | 前置关系 |
 | --- | --- | --- | --- | --- |
 | `FORM-199-03` | `gpui-form`、`gpui-form-macros`、`gpui-form-gpui-component` 按最终目标契约进行 breaking 重构 | `Done`；producer/consumer 与 aggregate gate 通过 | [core 实施计划](../../../crates/gpui-form/docs/dev/issue-199/form-runtime-breaking-refactor-plan.md)、[macro 实施计划](../../../crates/gpui-form-macros/docs/dev/issue-199/form-schema-generation-update-plan.md)、[adapter 实施计划](../../../crates/gpui-form-gpui-component/docs/dev/issue-199/form-binding-adapter-update-plan.md) | `C-900`–`C-904` 已达 `consumer-complete` |
 | `JACO-199-03` | Jaco 迁移到本轮最终 Form API 与 binding/event/version 契约 | `Done`；362 tests 与 Clippy 通过；实际 UI 操作测试未执行 | [Jaco 再迁移计划](../../../app/jaco/docs/dev/issue-199/form-breaking-api-remigration-plan.md) | 已消费 `C-900`–`C-904`；未改 MCP runtime operation |
 | `FEI-199-02` | Feiwen Query/Fetch 迁移到本轮最终 Form API 与动态 topology 契约 | `Done`；93 tests 与 Clippy 通过；实际 UI 操作测试未执行 | [Feiwen 再迁移计划](../../../app/feiwen/docs/dev/issue-199/form-breaking-api-remigration-plan.md) | 已消费 `C-900`–`C-904`；未重做现有 Operation/Store/DB/Catalog |
+| `NOVEL-199-01` | Novel Download 最小 Form、私有下载 Transition、唯一 Task 与 `.part` 文件事务迁移 | `Done`；39 tests 与定向门禁通过，当前工作树未提交；实际 UI 未执行 | [Novel Download 实施计划](../../../app/novel-download/docs/dev/issue-199/form-operation-download-migration-plan.md) | 消费 `C-900`–`C-904`；不引入 Store、队列、resume 或 repair |
 
 本轮实际实施顺序：
 
@@ -75,16 +77,15 @@
 
 | 文档 | 状态 | 职责 |
 | --- | --- | --- |
-| [应用迁移决策与后续调研草稿](application-migration-decisions.md) | `Draft` | 只保留尚未实施的 Jaco Conversation、暂缓的 Jaco MCP runtime，以及 HTTP Client、Novel Download 未回答问题；已完成 Form/Feiwen/Jaco Form 内容不再重复。 |
+| [应用迁移决策与后续调研草稿](application-migration-decisions.md) | `Draft` | 只保留未实施的 Jaco Conversation、暂缓的 Jaco MCP runtime 与 HTTP Client 未回答问题；已完成的 Form、Jaco、Feiwen 与 Novel Download 内容不再重复。 |
 | [workspace Store/Operation/Form 适用性调研](workspace-store-operation-form-assessment.md) | 已审阅；MCP runtime暂缓 | 记录全局候选与“不改Store内部”的结论 |
 | [上一轮root delivery归档](explicit-form-owner-delivery.md) | 历史原样 | 保存此前共享规格、工作包、验证与完成审计，不作为vNext执行入口 |
 
-## 暂缓范围
+## 后续未实施范围
 
 | 范围 | 本轮状态 | 后续入口 |
 | --- | --- | --- |
 | HTTP Client Form/运行/Store | 不做 | 总草稿 `HTTP-*` 问题保持未回答 |
-| Novel Download Form/并发/文件提交 | 不做 | 总草稿 `NOVEL-*` 问题保持未回答 |
 | Jaco Conversation Transition | 本轮不做 | 总草稿保留已确认语义与技术问题，另建owner plan后再实施 |
 | Jaco MCP runtime Transition | 本轮不做 | `JACO-199-03` 只迁移 MCP 设置表单 consumer，不改连接/OAuth/tool runtime |
 

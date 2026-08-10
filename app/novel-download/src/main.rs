@@ -1,4 +1,4 @@
-use errors::{NovelError, NovelResult};
+use errors::{AppError, AppResult};
 use features::WorkspaceView;
 use foundation::I18n;
 use gpui::*;
@@ -29,26 +29,26 @@ fn init(cx: &mut App) {
     foundation::i18n::init_i18n(cx);
 }
 
-fn get_logs_dir() -> NovelResult<PathBuf> {
+fn get_logs_dir() -> AppResult<PathBuf> {
     #[cfg(target_os = "macos")]
     let path = dirs_next::home_dir()
-        .ok_or(NovelError::LogFileNotFound)
+        .ok_or(AppError::LogDirectoryUnavailable)
         .map(|dir| dir.join("Library/Logs").join(APP_NAME));
 
     #[cfg(not(target_os = "macos"))]
     let path = dirs_next::data_local_dir()
-        .ok_or(NovelError::LogFileNotFound)
+        .ok_or(AppError::LogDirectoryUnavailable)
         .map(|dir| dir.join(APP_NAME).join("logs"));
 
     if let Ok(path) = &path
         && !path.exists()
     {
-        create_dir_all(path).map_err(|_| NovelError::LogFileNotFound)?;
+        create_dir_all(path).map_err(AppError::LogInitialization)?;
     }
     path
 }
 
-fn main() -> NovelResult<()> {
+fn main() -> AppResult<()> {
     // tracing
     tracing_subscriber::registry()
         .with(
@@ -59,7 +59,7 @@ fn main() -> NovelResult<()> {
                         .append(true)
                         .create(true)
                         .open(get_logs_dir()?.join("data.log"))
-                        .map_err(|_| NovelError::LogFileNotFound)?,
+                        .map_err(AppError::LogInitialization)?,
                 )
                 .with_filter(LevelFilter::INFO),
         )
