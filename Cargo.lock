@@ -2279,10 +2279,13 @@ version = "0.4.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce2548391e9c1929c21bf6aa2680af86fe4c1b33e6cea9ac1cfeec0bd11218cf"
 dependencies = [
+ "brotli",
  "bzip2 0.6.1",
  "compression-core",
  "flate2",
  "memchr",
+ "zstd",
+ "zstd-safe",
 ]
 
 [[package]]
@@ -6289,21 +6292,33 @@ dependencies = [
 name = "http-client"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
+ "async-compression",
  "base64 0.23.0",
+ "bytes",
  "dirs-next",
+ "encoding_rs",
  "fluent-bundle",
+ "futures-util",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
  "gpui-form",
  "gpui-form-gpui-component",
+ "gpui-operation",
+ "gpui-tokio",
  "gpui_platform",
  "http 1.4.2",
+ "image",
  "mime",
  "mime_guess",
+ "reqwest 0.13.4",
+ "serde_json",
  "sys-locale",
  "tempfile",
  "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "unic-langid",

@@ -3,6 +3,9 @@ app-title = HTTP Client
 gpui-form-error-required = This field is required.
 
 button-send = Send
+button-cancel = Cancel
+button-clear-response = Clear Response
+button-save-response = Save Response
 button-add = Add
 button-confirm = Confirm
 button-delete = Delete
@@ -30,6 +33,52 @@ tab-authorization = Authorization
 tab-headers = Headers
 tab-body = Body
 tab-settings = Settings
+tab-response-body = Body
+tab-response-headers = Headers
+
+response-title = Response
+response-empty = Send a request to inspect its response.
+response-sending = Sending request…
+response-receiving-known = Receiving response: { $received } of { $total }
+response-receiving-unknown = Receiving response: { $received }
+response-status = Status
+response-final-url = Final URL
+response-protocol = Protocol
+response-head-time = Headers received
+response-total-time = Total time
+response-received-size = Received
+response-stored-size = Stored
+response-header-name = Header
+response-header-value = Value
+response-headers-empty = The response has no headers.
+
+response-view-auto = Auto
+response-view-text = Text
+response-view-json = JSON
+response-view-xml = XML
+response-view-hex = Hex
+response-view-base64 = Base64
+response-view-image = Image
+
+response-preview-truncated = The preview is truncated. Save the response to inspect all bytes.
+response-decoding-unsupported = This content encoding is not supported. The encoded bytes are preserved.
+response-viewer-mode-unavailable = This view is not available for the response.
+response-viewer-invalid-json = The response is not valid JSON. Showing bounded text instead.
+response-viewer-invalid-image = The response could not be decoded as a supported image.
+response-image-too-large = The image exceeds the safe preview limits.
+response-save-complete = The response was saved.
+response-save-failed = The response could not be saved.
+
+request-problem-transport = The request could not connect to the server.
+request-problem-timeout = The request timed out.
+request-problem-redirect = The redirect chain could not be completed.
+request-problem-request-body = The request body could not be read.
+request-problem-response-read = The response body could not be read completely.
+request-problem-response-decode = The response content could not be decoded completely.
+request-problem-storage = The response could not be stored safely.
+request-problem-too-large-encoded = The encoded response is too large ({ $observed } bytes; limit { $limit } bytes).
+request-problem-too-large-stored = The decoded response is too large ({ $observed } bytes; limit { $limit } bytes).
+request-problem-internal = The request ended because of an internal error.
 
 params-invalid-url-disabled = Enter a valid absolute HTTP or HTTPS URL to edit query parameters.
 

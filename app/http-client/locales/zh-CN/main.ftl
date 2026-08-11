@@ -3,6 +3,9 @@ app-title = HTTP 客户端
 gpui-form-error-required = 此字段为必填项。
 
 button-send = 发送
+button-cancel = 取消
+button-clear-response = 清除响应
+button-save-response = 保存响应
 button-add = 添加
 button-confirm = 确认
 button-delete = 删除
@@ -30,6 +33,52 @@ tab-authorization = 授权
 tab-headers = 请求头
 tab-body = 请求体
 tab-settings = 设置
+tab-response-body = 响应体
+tab-response-headers = 响应头
+
+response-title = 响应
+response-empty = 发送请求后可在此查看响应。
+response-sending = 正在发送请求…
+response-receiving-known = 正在接收响应：{ $received } / { $total }
+response-receiving-unknown = 正在接收响应：{ $received }
+response-status = 状态
+response-final-url = 最终链接
+response-protocol = 协议
+response-head-time = 响应头用时
+response-total-time = 总用时
+response-received-size = 已接收
+response-stored-size = 已保存
+response-header-name = 响应头
+response-header-value = 值
+response-headers-empty = 该响应没有响应头。
+
+response-view-auto = 自动
+response-view-text = 文本
+response-view-json = JSON
+response-view-xml = XML
+response-view-hex = 十六进制
+response-view-base64 = Base64
+response-view-image = 图片
+
+response-preview-truncated = 预览已截断。请保存响应以查看全部字节。
+response-decoding-unsupported = 不支持该内容编码，已保留编码后的字节。
+response-viewer-mode-unavailable = 当前响应无法使用该视图。
+response-viewer-invalid-json = 响应不是有效 JSON，已改为显示受限文本。
+response-viewer-invalid-image = 无法将响应解码为受支持的图片。
+response-image-too-large = 图片超出安全预览限制。
+response-save-complete = 响应已保存。
+response-save-failed = 无法保存响应。
+
+request-problem-transport = 请求无法连接到服务器。
+request-problem-timeout = 请求已超时。
+request-problem-redirect = 无法完成重定向链。
+request-problem-request-body = 无法读取请求体。
+request-problem-response-read = 无法完整读取响应体。
+request-problem-response-decode = 无法完整解码响应内容。
+request-problem-storage = 无法安全保存响应。
+request-problem-too-large-encoded = 编码后的响应过大（{ $observed } 字节，上限 { $limit } 字节）。
+request-problem-too-large-stored = 解码后的响应过大（{ $observed } 字节，上限 { $limit } 字节）。
+request-problem-internal = 请求因内部错误结束。
 
 params-invalid-url-disabled = 请输入有效的 HTTP 或 HTTPS 绝对链接后再编辑查询参数。
 

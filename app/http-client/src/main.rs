@@ -24,6 +24,7 @@ fn quit(_: &Quit, cx: &mut App) {
 
 fn init(cx: &mut App) {
     gpui_component::init(cx);
+    gpui_tokio::init(cx);
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.activate(true);
     cx.on_action(quit);

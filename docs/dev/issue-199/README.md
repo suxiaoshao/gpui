@@ -2,12 +2,12 @@
 
 ## 文档职责
 
-- 状态：`进行中`。本轮 Form breaking 重构、Jaco/Feiwen consumer 再迁移、Novel Download 与
-  HTTP Client Request Form / prepared request 均为 `Done`；Send / Response 子阶段仍待
-  ResponseData 契约闭环；Jaco Conversation/MCP runtime 等后续轮次仍未开始。
+- 状态：`进行中`。本轮 Form breaking 重构、Jaco/Feiwen consumer 再迁移、Novel Download、HTTP Client
+  Request Form / prepared request 与单请求真实 Send / Response 均为 `Done`；Jaco Conversation/MCP
+  runtime 等后续轮次仍未开始。
 - 关联 issue：[#199](https://github.com/suxiaoshao/gpui/issues/199)
 - 分支：`codex/199-adopt-gpui-store-form-operation`
-- 最近更新：2026-08-10
+- 最近更新：2026-08-11
 
 本文只维护 Issue #199 的总指导、轮次、子任务状态、依赖顺序和专题文档入口。架构契约、文件清单、
 工作包、测试与完成证据写在独立专题文档中；后续任务不得继续把执行计划堆入本 README。
@@ -33,6 +33,7 @@
 | `FEI-199-02` | Feiwen Query/Fetch 迁移到本轮最终 Form API 与动态 topology 契约 | `Done`；93 tests 与 Clippy 通过；实际 UI 操作测试未执行 | [Feiwen 再迁移计划](../../../app/feiwen/docs/dev/issue-199/form-breaking-api-remigration-plan.md) | 已消费 `C-900`–`C-904`；未重做现有 Operation/Store/DB/Catalog |
 | `NOVEL-199-01` | Novel Download 最小 Form、私有下载 Transition、唯一 Task 与 `.part` 文件事务迁移 | `Done`；39 tests 与定向门禁通过；实现提交 `64b0c4a` 已推送；实际 UI 未执行 | [Novel Download 实施计划](../../../app/novel-download/docs/dev/issue-199/form-operation-download-migration-plan.md) | 消费 `C-900`–`C-904`；不引入 Store、队列、resume 或 repair |
 | `HTTP-199-02` | HTTP Client Request Form、五种 Body、Auth、redirect、prepared request 与 Store 适用性 | `Done`；56 tests 与 Check、Clippy、格式、残留扫描通过；实现提交 `933ee09` 已推送；实际 UI 操作未执行 | [Request Form 与 prepared request 实施计划](../../../app/http-client/docs/dev/issue-199/request-form-and-preparation-plan.md) | 消费 `C-900`–`C-904`；不依赖 ResponseData；不引入 Store/Operation/transport |
+| `HTTP-199-03` | HTTP Client 真实 Send、私有 Transition、Response 收集、viewer 与完成后 Save | `Done`；116 tests、Check、Clippy、格式与残留扫描通过；本轮实现尚未提交；实际 UI 操作未执行 | [真实 Send 与 Response 实施计划](../../../app/http-client/docs/dev/issue-199/request-send-and-response-plan.md) | 消费 `HTTP-199-02` 的 `PreparedRequest`；不引入 Store；不包含 `Send and Download` |
 
 Form breaking 与 consumer 再迁移轮次的实际实施顺序：
 
@@ -83,6 +84,7 @@ Form breaking 与 consumer 再迁移轮次的实际实施顺序：
 | [应用迁移决策与后续调研草稿](application-migration-decisions.md) | `Draft` | 保留未实施的 Jaco Conversation、暂缓的 Jaco MCP runtime 与 HTTP Client owner 草稿入口；不复制 HTTP 专属问题。 |
 | [HTTP Client 产品与迁移草稿](../../../app/http-client/docs/dev/issue-199/http-client-product-and-migration-draft.md) | `Draft` | HTTP Client 基础可用目标、功能缺失、已确认决定与未回答 `HTTP-*` 问题的 owner 权威入口。 |
 | [HTTP Client Request Form 与 prepared request 实施计划](../../../app/http-client/docs/dev/issue-199/request-form-and-preparation-plan.md) | `Done` | Request Form、五种 Body、Auth、redirect 与 prepared request 已在 `933ee09` 实施并推送；Store 本阶段不适用。 |
+| [HTTP Client 真实 Send 与 Response 实施计划](../../../app/http-client/docs/dev/issue-199/request-send-and-response-plan.md) | `Done` | 已交付单请求 Send/Cancel、私有 Transition、head-first Response、受限 body 收集、安全 viewer 与完成后 Save；116 tests、Check、Clippy、格式与残留扫描通过；实现尚未提交，实际 UI 未执行。 |
 | [workspace Store/Operation/Form 适用性调研](workspace-store-operation-form-assessment.md) | 已审阅；MCP runtime暂缓 | 记录全局候选与“不改Store内部”的结论 |
 | [上一轮root delivery归档](explicit-form-owner-delivery.md) | 历史原样 | 保存此前共享规格、工作包、验证与完成审计，不作为vNext执行入口 |
 
@@ -90,7 +92,7 @@ Form breaking 与 consumer 再迁移轮次的实际实施顺序：
 
 | 范围 | 本轮状态 | 后续入口 |
 | --- | --- | --- |
-| HTTP Client 基础可用与 Form/运行/Store | Request Form / prepared request 已完成；Send / Operation / Response 仍待 ResponseData 精确模型闭环 | [HTTP Client owner索引](../../../app/http-client/docs/dev/issue-199/README.md) |
+| HTTP Client 基础可用与 Form/运行/Store | Request Form / prepared request 与单请求 Send / Response 已完成；History/multi-tab/Store/repair 后置 | [HTTP Client owner索引](../../../app/http-client/docs/dev/issue-199/README.md) |
 | Jaco Conversation Transition | 本轮不做 | 总草稿保留已确认语义与技术问题，另建owner plan后再实施 |
 | Jaco MCP runtime Transition | 本轮不做 | `JACO-199-03` 只迁移 MCP 设置表单 consumer，不改连接/OAuth/tool runtime |
 

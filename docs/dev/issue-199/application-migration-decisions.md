@@ -3,7 +3,7 @@
 ## 1. 文档状态与使用方式
 
 - 状态：`Draft`
-- 最近整理：`2026-08-10`
+- 最近整理：`2026-08-11`
 - 总入口：[Issue #199 多轮任务索引](README.md)
 
 本文只保留尚未实施且仍会影响后续设计的用户决定、技术结论、暂缓范围和未回答问题。已经由源码、
@@ -28,7 +28,7 @@
 | --- | --- | --- | --- |
 | Jaco Conversation active run | 产品语义已确认，Transition 尚未实施 | 共享 `Submitting / Running / Stopping` 私有 Transition；非法重入丢弃，不排队 | 建立 owner plan；闭环迟到 completion 防护 |
 | Jaco MCP runtime | 暂缓 | 不开始 Transition / Store 迁移 | 等用户明确恢复任务 |
-| HTTP Client | Request Form / prepared request 子阶段 `Done`；Send / Response 仍为 `Draft` | HTTP 专属目标、缺失、决定和问题只在 app owner 中维护 | [HTTP Client owner索引](../../../app/http-client/docs/dev/issue-199/README.md) |
+| HTTP Client | 单请求 Request Form、Send 与 Response 均为 `Done` | 未来 History、multi-tab、Store 与 repair 问题只在 app owner 中维护 | [HTTP Client owner索引](../../../app/http-client/docs/dev/issue-199/README.md) |
 
 Issue 范围内继续有效的共通边界：
 
@@ -146,18 +146,19 @@ producer 或独立 cleanup completion，则必须保留 run key / generation；�
 
 ## 5. HTTP Client
 
-状态：Request Form / prepared request 子阶段已经 `Done`，Send / Operation / Response 子阶段仍为
-`Draft`。本轮 HTTP Client 必须做到单请求场景下基础可用，不以迁移 shared crates 作为完成条件。
-其专属功能缺失、`HTTP-*` 问题和产品回答继续由
+状态：单请求 Request Form、不可变 prepared request、真实 Send、私有 Transition、Response 收集、
+viewer 与完成后 Save 均为 `Done`。已完成内容由
+[Request Form 实施计划](../../../app/http-client/docs/dev/issue-199/request-form-and-preparation-plan.md)和
+[Send / Response 实施计划](../../../app/http-client/docs/dev/issue-199/request-send-and-response-plan.md)
+承接，本根草稿不维护第二份实现说明。
+
+未来 History、multi-tab、Store 与 repair 的问题继续由
 [HTTP Client 产品与迁移草稿](../../../app/http-client/docs/dev/issue-199/http-client-product-and-migration-draft.md)
-维护；Request 子阶段的文件动作、工作包与门禁由
-[独立实施计划](../../../app/http-client/docs/dev/issue-199/request-form-and-preparation-plan.md)维护。
-ResponseData 的未回答问题不再影响已完成的 Request 子阶段，但继续阻塞后续 Send / Response 计划。本根草稿不维护
-HTTP 详细副本。
+维护；它们不属于本轮单请求基础可用范围。
 
 ## 6. 后续入口
 
 1. Jaco Conversation 下一步先建立独立 owner plan，并在实现前闭环 `CONV-Q02`。
 2. Jaco MCP runtime 只有在用户明确恢复后才重新调研。
-3. HTTP Client 下一步在 owner 草稿中闭环 ResponseData，并为 Send / Operation / Response 新建另一份
+3. HTTP Client 后续只有在用户选择 History、multi-tab、Store 或 repair 范围后，才从 owner 草稿建立新的
    独立计划。
