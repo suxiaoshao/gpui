@@ -243,6 +243,29 @@ mod tests {
         "response-view-hex",
         "response-view-base64",
         "response-view-image",
+        "response-view-audio",
+        "response-view-video",
+        "response-view-pdf",
+        "response-media-loading",
+        "response-media-play",
+        "response-media-pause",
+        "response-media-mute",
+        "response-media-unmute",
+        "response-media-position",
+        "response-media-runtime-unavailable",
+        "response-media-plugin-missing",
+        "response-media-unsupported",
+        "response-media-decode-failed",
+        "response-media-control-failed",
+        "response-media-resolution-unsupported",
+        "response-pdf-loading",
+        "response-pdf-previous",
+        "response-pdf-next",
+        "response-pdf-page",
+        "response-pdf-invalid",
+        "response-pdf-encrypted",
+        "response-pdf-too-large",
+        "response-pdf-render-failed",
         "response-preview-truncated",
         "response-decoding-unsupported",
         "response-viewer-mode-unavailable",
@@ -319,6 +342,33 @@ mod tests {
     #[test]
     fn locales_have_the_same_message_and_variable_contract() {
         assert_eq!(fluent_contract(EN_US), fluent_contract(ZH_CN));
+    }
+
+    #[test]
+    fn media_and_pdf_messages_have_the_required_variable_contract() {
+        let expected = [
+            ("response-media-position", &["current", "total"] as &[&str]),
+            ("response-media-plugin-missing", &["plugin"] as &[&str]),
+            (
+                "response-media-resolution-unsupported",
+                &["height", "width"] as &[&str],
+            ),
+            ("response-pdf-page", &["current", "total"] as &[&str]),
+        ];
+
+        for (locale, source) in [("en-US", EN_US), ("zh-CN", ZH_CN)] {
+            let contract = fluent_contract(source);
+            for (key, variables) in expected {
+                let actual = contract
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{locale} is missing {key}"));
+                let expected = variables.iter().map(|value| (*value).to_string()).collect();
+                assert_eq!(
+                    actual, &expected,
+                    "{locale} has an invalid variable contract for {key}"
+                );
+            }
+        }
     }
 
     #[test]

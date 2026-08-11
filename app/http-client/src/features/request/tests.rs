@@ -139,16 +139,54 @@ fn accepted_send_clears_the_previous_response_before_worker_poll(cx: &mut TestAp
     cx.update(|_, cx| RequestDraft::URL.set(&form, "http://127.0.0.1:9".into(), cx));
     cx.update(|window, cx| {
         view.update(cx, |view, cx| {
+            let previous = completed_response(b"old");
             view.runtime = RequestRuntime::Ready {
-                response: completed_response(b"old"),
+                response: previous.clone(),
             };
+            let stale_preview = view.response_pane.begin_preview(
+                previous,
+                crate::features::request::response::ViewerMode::Audio,
+                window,
+                cx,
+            );
             let save = cx.spawn(async |_, _| std::future::pending::<()>().await);
             view.response_pane.install_save_task(save);
             view.start_request(window, cx);
             assert_eq!(view.runtime.phase(), RequestPhase::Sending);
             assert!(view.runtime.response().is_none());
+            assert!(!view.response_pane.is_current_preview(&stale_preview));
+            assert_eq!(
+                view.response_pane.mode(),
+                crate::features::request::response::ViewerMode::Auto
+            );
             assert!(view.response_pane.save_is_running());
             view.cancel_request(cx);
+        });
+    });
+}
+
+#[gpui::test]
+fn clear_response_invalidates_the_current_preview(cx: &mut TestAppContext) {
+    initialize(cx);
+    let (view, cx) = cx.add_window_view(RequestView::new);
+    let response = completed_response(b"body");
+
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.runtime = RequestRuntime::Ready {
+                response: response.clone(),
+            };
+            let stale_preview = view.response_pane.begin_preview(
+                response,
+                crate::features::request::response::ViewerMode::Pdf,
+                window,
+                cx,
+            );
+
+            view.clear_response(cx);
+
+            assert_eq!(view.runtime.phase(), RequestPhase::Idle);
+            assert!(!view.response_pane.is_current_preview(&stale_preview));
         });
     });
 }
@@ -175,14 +213,30 @@ fn response_save_picker_cancel_is_silent_and_releases_its_task(cx: &mut TestAppC
 }
 
 #[gpui::test]
-fn response_view_mode_select_updates_only_the_viewer_projection_mode(cx: &mut TestAppContext) {
+fn response_view_mode_select_invalidates_only_the_previous_viewer_projection(
+    cx: &mut TestAppContext,
+) {
     initialize(cx);
     let (view, cx) = cx.add_window_view(RequestView::new);
+    let response = completed_response(b"body");
+    let stale_preview = cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.runtime = RequestRuntime::Ready {
+                response: response.clone(),
+            };
+            view.response_pane.begin_preview(
+                response,
+                crate::features::request::response::ViewerMode::Hex,
+                window,
+                cx,
+            )
+        })
+    });
     let mode_state = cx.update(|_, cx| view.read(cx).response_pane.mode_state.clone());
     cx.update(|_, cx| {
         mode_state.update(cx, |_, cx| {
             cx.emit(SelectEvent::Confirm(Some(
-                crate::features::request::response::ViewerMode::Hex,
+                crate::features::request::response::ViewerMode::Pdf,
             )));
         });
     });
@@ -190,8 +244,14 @@ fn response_view_mode_select_updates_only_the_viewer_projection_mode(cx: &mut Te
     cx.update(|_, cx| {
         assert_eq!(
             view.read(cx).response_pane.mode(),
-            crate::features::request::response::ViewerMode::Hex
+            crate::features::request::response::ViewerMode::Pdf
         );
-        assert_eq!(view.read(cx).runtime.phase(), RequestPhase::Idle);
+        assert!(
+            !view
+                .read(cx)
+                .response_pane
+                .is_current_preview(&stale_preview)
+        );
+        assert_eq!(view.read(cx).runtime.phase(), RequestPhase::Ready);
     });
 }

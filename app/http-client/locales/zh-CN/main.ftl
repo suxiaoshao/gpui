@@ -59,6 +59,31 @@ response-view-xml = XML
 response-view-hex = 十六进制
 response-view-base64 = Base64
 response-view-image = 图片
+response-view-audio = 音频
+response-view-video = 视频
+response-view-pdf = PDF
+
+response-media-loading = 正在准备媒体…
+response-media-play = 播放
+response-media-pause = 暂停
+response-media-mute = 静音
+response-media-unmute = 取消静音
+response-media-position = { $current } / { $total }
+response-media-runtime-unavailable = 当前安装无法播放媒体。
+response-media-plugin-missing = 缺少必需的媒体插件：{ $plugin }
+response-media-unsupported = 该响应不是受支持的媒体格式。
+response-media-decode-failed = 无法解码媒体响应。
+response-media-control-failed = 播放器无法完成该操作。
+response-media-resolution-unsupported = 视频分辨率 { $width } × { $height } 超出预览限制。
+
+response-pdf-loading = 正在准备 PDF…
+response-pdf-previous = 上一页
+response-pdf-next = 下一页
+response-pdf-page = 第 { $current } 页，共 { $total } 页
+response-pdf-invalid = 该响应不是有效且受支持的 PDF。
+response-pdf-encrypted = 暂不支持加密 PDF。
+response-pdf-too-large = PDF 超出安全预览限制。
+response-pdf-render-failed = 无法渲染 PDF 页面。
 
 response-preview-truncated = 预览已截断。请保存响应以查看全部字节。
 response-decoding-unsupported = 不支持该内容编码，已保留编码后的字节。

@@ -1,0 +1,73 @@
+name: GStreamer Windows Discovery Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    name: Windows GStreamer 1.28.5 inventory
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      GSTREAMER_AUDIT_SOURCE_URL: https://gstreamer.freedesktop.org/data/pkg/windows/1.28.5/msvc/gstreamer-1.0-msvc-x86_64-1.28.5.exe
+      GSTREAMER_AUDIT_SHA256: 51ee5eaec33008e8409d8cf6f6884457f22aa3bd515f8856f993a3eaab903530
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install official GStreamer runtime for discovery
+        run: >-
+          script/install-gstreamer-windows.ps1
+          -SdkSourceUrl $env:GSTREAMER_AUDIT_SOURCE_URL
+          -SdkSha256 $env:GSTREAMER_AUDIT_SHA256
+        shell: pwsh
+
+      - name: Collect runtime inventory
+        id: collect
+        continue-on-error: true
+        run: |
+          script/audit-gstreamer-windows.ps1 `
+            -RuntimeRoot $env:GPUI_GSTREAMER_SDK_ROOT `
+            -OutputDirectory target/gstreamer-audit/windows `
+            -RequiredElement @(
+              "playbin",
+              "uridecodebin",
+              "appsink",
+              "audioconvert",
+              "audioresample",
+              "videoconvert",
+              "videoscale",
+              "autoaudiosink",
+              "qtdemux",
+              "avdec_h264",
+              "avdec_aac",
+              "matroskademux",
+              "vp8dec",
+              "vp9dec",
+              "opusdec",
+              "avdec_mp3",
+              "wavparse",
+              "flacparse",
+              "flacdec",
+              "oggdemux",
+              "vorbisdec"
+            )
+        shell: pwsh
+
+      - name: Upload Windows GStreamer audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-gstreamer-1.28.5-inventory
+          path: target/gstreamer-audit/windows
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail when collection is incomplete
+        if: steps.collect.outcome == 'failure'
+        run: exit 1
+        shell: pwsh

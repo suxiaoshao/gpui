@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Instant};
+use std::time::Instant;
 
 use gpui::{
     AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
@@ -21,8 +21,9 @@ use self::{
     method::{HttpMethod, SelectHttpMethod},
     prepared::{PreparedRequest, RequestPrepareError, compile_request},
     response::{
-        ResponsePane, ResponseProjection, ResponseSaveProblem, ResponseViewWarning,
-        initial_save_directory, project_response, save_response, suggested_response_name,
+        ResponsePane, ResponseProjection, ResponseSaveProblem, ResponseViewWarning, ViewerMode,
+        initial_save_directory, project_response, resolved_viewer_mode, save_response,
+        suggested_response_name,
     },
     runtime::{HttpRunEffect, HttpRunMessage, RequestProblem, RequestRuntime},
     tab::RequestTabsView,
@@ -221,10 +222,47 @@ impl RequestView {
             self.response_pane.clear_projection();
             return;
         };
-        let mode = self.response_pane.mode();
-        let source = Arc::clone(&response);
-        let projection = gpui_tokio::Tokio::spawn(cx, project_response(response, mode));
+        let requested = self.response_pane.mode();
+        let Some(effective) = resolved_viewer_mode(&response, requested) else {
+            self.response_pane
+                .begin_preview(response, requested, window, cx);
+            self.response_pane
+                .install_projection(ResponseProjection::Unavailable(
+                    ResponseViewWarning::ModeUnavailable,
+                ));
+            cx.notify();
+            return;
+        };
+        let token = self
+            .response_pane
+            .begin_preview(response.clone(), effective, window, cx);
+        match effective {
+            ViewerMode::Pdf => {
+                self.response_pane.start_pdf_preview(token, window, cx);
+                cx.notify();
+                return;
+            }
+            ViewerMode::Audio => {
+                self.response_pane.start_audio_preview(token, window, cx);
+                cx.notify();
+                return;
+            }
+            ViewerMode::Video => {
+                self.response_pane.start_video_preview(token, window, cx);
+                cx.notify();
+                return;
+            }
+            ViewerMode::Auto
+            | ViewerMode::Text
+            | ViewerMode::Json
+            | ViewerMode::Xml
+            | ViewerMode::Hex
+            | ViewerMode::Base64
+            | ViewerMode::Image => {}
+        }
+        let projection = gpui_tokio::Tokio::spawn(cx, project_response(response, effective));
         let owner = cx.entity().downgrade();
+        let task_token = token.clone();
         let task = window.spawn(cx, async move |cx| {
             let projection = match projection.await {
                 Ok(Ok(projection)) => projection,
@@ -233,12 +271,7 @@ impl RequestView {
                 }
             };
             let _ = owner.update_in(cx, |this, _, cx| {
-                let is_current = this
-                    .runtime
-                    .response()
-                    .is_some_and(|current| Arc::ptr_eq(current, &source))
-                    && this.response_pane.mode() == mode;
-                if is_current {
+                if this.response_pane.is_current_preview(&task_token) {
                     this.response_pane.install_projection(projection);
                     cx.notify();
                 }
@@ -298,7 +331,7 @@ impl RequestView {
 }
 
 impl gpui::Render for RequestView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let send_label = {
             let i18n = cx.global::<I18n>();
             i18n.t("button-send")
@@ -347,7 +380,7 @@ impl gpui::Render for RequestView {
             .overflow_hidden()
             .child(request_line)
             .child(self.tabs.clone());
-        let response = self.response_pane.render(&self.runtime, cx);
+        let response = self.response_pane.render(&self.runtime, window, cx);
 
         div().track_focus(&self.focus_handle).size_full().child(
             v_resizable("request-response")

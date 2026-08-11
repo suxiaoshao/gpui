@@ -2,6 +2,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 pub mod common;
+pub mod gstreamer;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod settings;
@@ -35,10 +36,12 @@ pub fn run(args: BundleArgs) -> Result<()> {
     let manifest_path = app_dir.join("Cargo.toml");
     let main_bin_name = get_main_binary_name(&manifest_path)?;
     let (package_settings, mut bundle_settings) = settings::read_bundle_settings(&manifest_path)?;
+    #[cfg(target_os = "linux")]
+    gstreamer::configure_linux_bundle(args.app, &app_dir, &mut bundle_settings)?;
     bundle_icon_assets.apply_to_bundle_settings(&mut bundle_settings);
     let product_name = package_settings.product_name.clone();
 
-    let out_dir = bundle_out_dir(&workspace_dir, &main_bin_name)?;
+    let out_dir = bundle_out_dir(&workspace_dir, &main_bin_name, args.app)?;
     info!(bundle_out_dir = %out_dir.display(), "using bundle output dir");
 
     #[cfg(target_os = "macos")]
@@ -105,6 +108,7 @@ fn finalize_platform_bundle(
     #[cfg(target_os = "macos")]
     {
         if let Some(app_path) = macos::find_app_bundle(_bundle_dir, _product_name)? {
+            gstreamer::stage_macos_runtime(_args.app, _app_dir, &app_path)?;
             macos::inject_liquid_glass_icon(_app_dir, &app_path, _bundle_icon_assets)?;
         } else {
             warn!("未找到 .app 包，跳过 Liquid Glass 图标注入");
@@ -175,13 +179,24 @@ fn default_package_types() -> Vec<PackageType> {
 }
 
 #[cfg(target_os = "windows")]
-fn bundle_out_dir(workspace_dir: &Path, main_bin_name: &str) -> Result<PathBuf> {
+fn bundle_out_dir(
+    workspace_dir: &Path,
+    main_bin_name: &str,
+    app: crate::cli::BundleApp,
+) -> Result<PathBuf> {
     let target_root = windows::resolve_target_root(workspace_dir);
-    windows::prepare_windows_bundle_staging(&target_root, main_bin_name)
+    let staging_dir = windows::prepare_windows_bundle_staging(&target_root, main_bin_name)?;
+    let app_dir = workspace_dir.join("app").join(app.app_dir_name());
+    gstreamer::stage_windows_runtime(app, &app_dir, &staging_dir)?;
+    Ok(staging_dir)
 }
 
 #[cfg(not(target_os = "windows"))]
-fn bundle_out_dir(workspace_dir: &Path, _main_bin_name: &str) -> Result<PathBuf> {
+fn bundle_out_dir(
+    workspace_dir: &Path,
+    _main_bin_name: &str,
+    _app: crate::cli::BundleApp,
+) -> Result<PathBuf> {
     Ok(workspace_dir.join("target/release"))
 }
 

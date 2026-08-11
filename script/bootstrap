@@ -8,7 +8,8 @@ case "${RUNNER_OS:-$(uname -s)}" in
     "$(dirname "$0")/install-linux.sh"
     ;;
   macOS|Darwin)
-    echo "No additional macOS system dependencies required."
+    echo "Installing macOS GStreamer SDK..."
+    "$(dirname "$0")/install-gstreamer-macos.sh"
     ;;
   *)
     echo "No bootstrap steps required for this platform."

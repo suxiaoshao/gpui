@@ -3,7 +3,7 @@ name = "http-client"
 version = "0.1.0"
 description = "A desktop HTTP client built with GPUI."
 authors = ["suxiaoshao <48886207+suxiaoshao@users.noreply.github.com>"]
-license = "MIT"
+license = "MIT OR GPL-3.0-or-later"
 repository = "https://github.com/suxiaoshao/gpui"
 homepage = "https://github.com/suxiaoshao/gpui"
 edition = "2024"
@@ -48,8 +48,12 @@ async-compression = { version = "0.4.42", default-features = false, features = [
   "zstd",
 ] }
 bytes = "1.12.0"
+bytemuck = { version = "1.25.0", features = ["extern_crate_alloc"] }
 encoding_rs = "0.8.35"
 futures-util = "0.3.33"
+gpui-video-player = { git = "https://github.com/suxiaoshao/gpui-video-player", rev = "4f1a6cc49ddab9d0afc73404afc259bba73d6407" }
+gstreamer = { version = "=0.25.2", features = ["v1_20"] }
+hayro = "0.7.1"
 image = { version = "0.25.10", default-features = false, features = [
   "gif",
   "jpeg",

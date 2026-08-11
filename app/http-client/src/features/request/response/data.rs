@@ -269,6 +269,26 @@ impl ResponseReadLease {
         Ok(PrefixBytes { bytes, complete })
     }
 
+    pub(crate) async fn read_all_bounded(&self, limit: u64) -> Result<Bytes, ResponseReadProblem> {
+        let len = self.len();
+        if len > limit || len > usize::MAX as u64 {
+            return Err(ResponseReadProblem::LimitExceeded);
+        }
+        match &self.0.body {
+            StoredBody::Empty => Ok(Bytes::new()),
+            StoredBody::Memory(bytes) if bytes.len() as u64 == len => Ok(bytes.clone()),
+            StoredBody::Memory(_) => Err(ResponseReadProblem::LengthMismatch),
+            StoredBody::TempFile { .. } => {
+                let mut bytes = Vec::with_capacity(len as usize);
+                let copied = self.copy_all_to(&mut bytes).await?;
+                if copied != len || bytes.len() as u64 != len {
+                    return Err(ResponseReadProblem::LengthMismatch);
+                }
+                Ok(Bytes::from(bytes))
+            }
+        }
+    }
+
     pub(crate) async fn copy_all_to<W>(&self, writer: &mut W) -> Result<u64, ResponseReadProblem>
     where
         W: AsyncWrite + Unpin,
@@ -352,6 +372,7 @@ pub(crate) enum ResponseReadProblem {
     Open,
     Read,
     LengthMismatch,
+    LimitExceeded,
 }
 
 impl fmt::Display for ResponseReadProblem {
@@ -360,6 +381,7 @@ impl fmt::Display for ResponseReadProblem {
             Self::Open => "response body could not be opened",
             Self::Read => "response body could not be read",
             Self::LengthMismatch => "response body length changed unexpectedly",
+            Self::LimitExceeded => "response body exceeds the requested read limit",
         })
     }
 }
@@ -486,6 +508,22 @@ mod tests {
             lease.copy_all_to(&mut target).await.unwrap_err(),
             ResponseReadProblem::LengthMismatch
         );
+        assert_eq!(
+            lease.read_all_bounded(4).await.unwrap_err(),
+            ResponseReadProblem::LengthMismatch
+        );
         target.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn bounded_full_read_rejects_before_allocating_and_returns_exact_bytes() {
+        let response = response(StoredBody::Memory(Bytes::from_static(b"abcdef")));
+        let lease = response.read_lease();
+
+        assert_eq!(
+            lease.read_all_bounded(5).await.unwrap_err(),
+            ResponseReadProblem::LimitExceeded
+        );
+        assert_eq!(&lease.read_all_bounded(6).await.unwrap()[..], b"abcdef");
     }
 }

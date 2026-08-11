@@ -24,7 +24,7 @@
 - `request/response/` 已交付 `ResponseData`/`StoredBody`、内存溢写临时文件、read lease、有界 viewer
   和同目录 staging Save；response body 仍不写回 Form。
 - 两份 runtime locale 与 required-key contract 已补齐 Response、问题、viewer 与 Save 文案。
-- 实施尚未创建提交；`cargo fmt --check`、`cargo check`、完整 116 项测试、Clippy `-D warnings`、
+- 实现提交 `24e4a9f` 已推送；`cargo fmt --check`、`cargo check`、完整 116 项测试、Clippy `-D warnings`、
   文档空白检查与残留扫描均已通过。本轮没有、也不应据此推断任何实际桌面 UI、系统保存面板、
   打包 app 或真实外网验收。
 
@@ -678,7 +678,7 @@ Form API、Store、History、multi-tab、repair 与 `Send and Download` 仍未�
 
 | 证据 | 实际结果 |
 | --- | --- |
-| 实现提交与 PR | 尚未创建提交或 PR；本轮实现保留在当前工作树。 |
+| 实现提交与 PR | 实现提交 `24e4a9f` 已推送；本计划未创建 PR。 |
 | 代码、依赖与文档 | F-1600–F-1622 已按文件图落地；`Cargo.lock` 由 Cargo 更新。 |
 | 交付的工作包 | WP-1600–WP-1607 已完成；不扩大到 Form API、Store、History、multi-tab、repair 或 `Send and Download`。 |
 | 自动化命令与测试数 | `cargo fmt --package http-client -- --check`、`cargo check -p http-client --bin http-client --all-features --locked`、`cargo test -p http-client --bin http-client --all-features --locked --no-fail-fast`（116 passed）、`cargo clippy -p http-client --all-targets --all-features --locked -- -D warnings` 与 `git diff --check` 均通过；三项禁止面扫描零命中，`TempPath`/`PathBuf` 扫描只命中 `StoredBody`、collector、Save 用户目标和 staging 的预期 owner。local TCP fixture 只绑定本机回环端口。 |
