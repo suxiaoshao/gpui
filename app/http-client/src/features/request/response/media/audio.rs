@@ -20,7 +20,7 @@ use gstreamer::{self as gst, message::MessageView, prelude::*};
 
 use super::{
     DecoderPolicy, MediaCommand, MediaDriver, MediaDriverEvent, MediaDriverEvents, MediaMetadata,
-    MediaPosition, MediaProblem, MediaProblemKind, ResponseAssetLease,
+    MediaPosition, MediaProblem, MediaProblemKind, ResponseAssetLease, initialize_runtime,
 };
 
 /// A prepared audio pipeline and its single-consumer event endpoint.
@@ -65,7 +65,8 @@ impl AudioDriver {
         decoder_policy: DecoderPolicy,
         sink_factory: &str,
     ) -> Result<AudioPrepared, MediaProblem> {
-        gst::init().map_err(|_| MediaProblem::new(MediaProblemKind::RuntimeUnavailable))?;
+        initialize_runtime()
+            .map_err(|_| MediaProblem::new(MediaProblemKind::RuntimeUnavailable))?;
 
         let pipeline = gst::Pipeline::new();
         let decoder = make("uridecodebin", "audio decoder")?;
@@ -429,7 +430,7 @@ mod tests {
 
     #[test]
     fn missing_element_is_a_redacted_plugin_problem() {
-        gst::init().unwrap();
+        initialize_runtime().unwrap();
         let problem = make(
             "http-client-element-that-does-not-exist",
             "audio test plugin",

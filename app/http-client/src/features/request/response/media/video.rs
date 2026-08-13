@@ -22,7 +22,7 @@ use gpui_video_player::{
 
 use super::{
     DecoderPolicy, MediaCommand, MediaDriver, MediaDriverEvent, MediaDriverEvents, MediaMetadata,
-    MediaPosition, MediaProblem, MediaProblemKind, ResponseAssetLease,
+    MediaPosition, MediaProblem, MediaProblemKind, ResponseAssetLease, initialize_runtime,
 };
 
 const EVENT_CHANNEL_CAPACITY: usize = 4;
@@ -72,6 +72,8 @@ impl VideoDriver {
         asset: ResponseAssetLease,
         decoder_policy: DecoderPolicy,
     ) -> Result<VideoPrepared, MediaProblem> {
+        initialize_runtime()
+            .map_err(|_| MediaProblem::new(MediaProblemKind::RuntimeUnavailable))?;
         let uri = asset.uri().clone();
         let options = VideoOptions {
             frame_buffer_capacity: Some(PRESENTATION_QUEUE_CAPACITY),

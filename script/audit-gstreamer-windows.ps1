@@ -227,9 +227,38 @@ Write-Json -Path (Join-Path $output "license-candidates.json") -Value @{
     files = @($licenseRecords)
 }
 
+# This is a source-layout record for the private-runtime staging helper. It
+# deliberately records files and hashes only; a later manifest review selects
+# the actual runtime closure and a human still decides redistribution terms.
+$coreDlls = @($fileRecords | Where-Object {
+    $_.path -match '(?i)^bin/[^/]+\.dll$'
+})
+$pluginFiles = @($fileRecords | Where-Object {
+    $_.path -match '(?i)^lib/gstreamer-1\.0/'
+})
+$scannerFiles = @($fileRecords | Where-Object {
+    $_.path -match '(?i)^libexec/gstreamer-1\.0/gst-plugin-scanner\.exe$'
+})
+$privateDataFiles = @($fileRecords | Where-Object {
+    $_.path -notmatch '(?i)^bin/[^/]+\.dll$' -and
+    $_.path -notmatch '(?i)^lib/gstreamer-1\.0/' -and
+    $_.path -notmatch '(?i)^libexec/gstreamer-1\.0/gst-plugin-scanner\.exe$'
+})
+Write-Json -Path (Join-Path $output "private-layout.json") -Value @{
+    evidence_only = $true
+    note = "Source layout and hashes for staging design. This file does not select a runtime closure and is not a license or redistribution conclusion."
+    intended_bundle_layout = @{
+        application_root_dlls = @($coreDlls)
+        private_runtime_root = "gstreamer"
+        plugins = @($pluginFiles)
+        plugin_scanner = @($scannerFiles)
+        other_private_files = @($privateDataFiles)
+    }
+}
+
 $elementRecords = [System.Collections.Generic.List[object]]::new()
 $seedPaths = [System.Collections.Generic.List[string]]::new()
-foreach ($seedName in @("gst-inspect-1.0.exe", "libgstreamer-1.0-0.dll", "gst-plugin-scanner.exe")) {
+foreach ($seedName in @("gst-inspect-1.0.exe", "gstreamer-1.0-0.dll", "gst-plugin-scanner.exe")) {
     foreach ($candidate in @($runtimeByName[$seedName])) {
         $seedPaths.Add($candidate)
     }

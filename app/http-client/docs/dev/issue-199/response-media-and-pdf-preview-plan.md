@@ -41,7 +41,7 @@
   闭包为 artifact。该 artifact 是待人工审计的输入，不是 manifest/notice，也不自动证明许可证、source
   offer、codec 专利或 delay-load/`LoadLibrary` 完整性；人工冻结 manifest 后，release/bundle gate 仍只
   读取该 manifest，普通源码 CI 只验证独立的开发 SDK contract。
-  Linux 仅有目标系统包契约，尚未在 runner 验证解析版本、元素与 `.deb` depends。三者都不能用占位 manifest
+  Linux 私有 runtime producer 尚未在 runner 完成 prefix、元素与 `.deb` 验证。三者都不能用占位 manifest
   代替。
 
 ### 目标
@@ -94,8 +94,8 @@ PDF 只读预览：按 `Content-Type` 自动选择，也允许用户手动尝试
 | `S-1713` | Fluent i18n | 两 locale 同步增加 mode、控制、加载、错误与 PDF 页码文案 | `WP-1706` |
 | `S-1714` | 安全与隐私 | 不执行响应内容、不记录 URL/header/body/path；PDF/media 有尺寸、像素、队列和次数预算 | `WP-1701`–`WP-1707` |
 | `S-1715` | tracing | 只记录安全的 mode、phase、decoder factory、caps 摘要、尺寸、计数和 problem kind | `WP-1702`、`WP-1707` |
-| `S-1716` | packaging / CI | macOS/Windows 私有携带审计 runtime；Linux `.deb` 声明系统包；三平台验证 plugin contract | `WP-1700`、`WP-1707` |
-| `S-1717` | 依赖与许可 | 精确 pin Rust crate/fork；增加 GPL 许可选项但保留 MIT；bundle 记录实际 native 许可 | `WP-1700` |
+| `S-1716` | packaging / CI | macOS/Windows/Linux 都携带私有 runtime；三平台验证 plugin contract | `WP-1700`、`WP-1707` |
+| `S-1717` | 依赖与许可 | 精确 pin Rust crate/fork；`http-client` 保持 MIT；native 组件沿用各自许可 | `WP-1700` |
 | `S-1718` | owner 文档 | 本文件是执行权威；README 只记录状态和入口，草稿保留未实施产品决定 | `WP-1707` |
 | `S-1719` | 验证证据 | pure、GPUI、codec/PDF fixtures、资源预算、三平台 plugin/package smoke 与手工播放 | `WP-1707` |
 
@@ -127,8 +127,8 @@ PDF 只读预览：按 `Content-Type` 自动选择，也允许用户手动尝试
 | `D-1709` | PDF | `hayro 0.7.1` + app-local `PdfPreview`；只显示单页与上一页/下一页，无 zoom；加密 PDF 明确不支持。 | 用户决定 | 不 fork `gpui-pdf`，兼容性失败只触发重新评估 `pdfium-render`。 |
 | `D-1710` | PDF 预算 | 完整 PDF 仍受 50 MiB cap；最多 10,000 页；单页长边≤4096、像素 buffer≤64 MiB，同时只持有一张页面图。 | 安全推荐 | checked arithmetic 后才分配/渲染；超限为局部错误。 |
 | `D-1711` | 清理顺序 | 新 Send、Clear、mode/Response 切换先安装新 viewer 状态，再停止旧 Task/session；页面 drop 取消 owner Task。 | GPUI/Transition 契约 | 任何 user-defined Drop、pipeline stop 或 TempPath 删除前，owner 都处于合法状态。 |
-| `D-1712` | native 分发 | macOS arm64 app 使用官方 Universal GStreamer 1.28.5 runtime，Windows MSVC x86_64 私有携带同版本 runtime/plugin；Linux `.deb` 使用发行版 ≥1.20 系统包并声明依赖。 | 官方安装/部署文档与当前 bundle 结构 | 不承诺 Universal app；不要求最终用户手工安装 macOS/Windows runtime；Linux 以包管理器解决 ABI。 |
-| `D-1713` | 许可 | `http-client` 源码许可从 `MIT` 扩为 `MIT OR GPL-3.0-or-later`，不是删除 MIT；每个平台仍按实际 plugin/libav 构建记录并履行许可证。 | 用户确认 | 双许可不能替代 notice、source offer、专利与插件级审计。 |
+| `D-1712` | native 分发 | macOS arm64 app 与 Windows MSVC x86_64 包携带 GStreamer 1.28.5 runtime；Linux x86_64 `.deb` 携带固定 Cerbero producer 生成的 glibc ≥2.35 私有 prefix。 | 官方安装/部署文档与当前 bundle 结构 | 不承诺 Universal app；三个目标平台均不要求最终用户另行安装 GStreamer。 |
+| `D-1713` | 许可 | `http-client` 保持 MIT；最终采用的 `gstreamer-rs`、`gpui-video-player` 与 `hayro` 不要求更改应用许可证。 | 最终依赖与用户修正 | 应用许可证不改变第三方组件各自的许可。 |
 | `D-1714` | UI | 只用现有 Button、Slider、Progress、Alert、Select、Label 与 GPUI image/surface element；不造通用组件库。 | gpui-component 审计 | 复杂解码归 backend，app 只做 feature-local viewer。 |
 | `D-1715` | MIME 手动覆盖 | `application/pdf`、`audio/*`、`video/*` 自动选；未知 MIME 保持 Hex。手动 Audio/Video/Pdf 可让后端 typefind/parse，失败不改 Response。 | Postman 类交互与用户决定 | 不根据 filename 或 body 内容偷偷改变 Auto。 |
 | `D-1716` | 完成标准 | Cargo 编译不足以证明交付；三平台 native/plugin/package smoke 与实际播放/翻页是 Done 门禁。 | native dependency 审计 | 无相应证据时只能保持 `In progress`。 |
@@ -228,13 +228,12 @@ MVP plugin contract 至少验证：
 | MP3/WAV/FLAC | `avdec_mp3`、`wavparse`、`flacparse`、`flacdec` |
 | Ogg Vorbis/Opus | `oggdemux`、`vorbisdec`、`opusdec` |
 
-macOS/Windows bundle 只复制 manifest 白名单并修复 loader/plugin 路径；macOS 在最终 codesign 之前完成
-framework/dylib/plugin staging 与 rpath 检查，Windows 保持 `bin` 与 `lib/gstreamer-1.0` 相对结构。Linux
-`.deb` 明确依赖 core/base/good/libav 与平台音频 sink 包，并在支持的发行版上运行相同 element smoke。
+三个平台都从 manifest 锁定的 producer 输入生成私有 runtime 并修复 loader/plugin 路径；macOS 在最终
+codesign 之前完成 framework staging 与 rpath 检查，Windows 保持 exe 同级 DLL 和
+`lib/gstreamer-1.0` 相对结构，Linux 为主程序、lib、plugin 与 scanner 写入相对 RUNPATH。
 
-`THIRD_PARTY_NOTICES.md` 和 machine-readable audit 输出必须与 manifest 一起进入安装包。即使 app 增加
-`GPL-3.0-or-later` 许可选项，也不能省略 LGPL/GPL source offer、版权声明、plugin 许可证、libav 构建配置
-或适用的 codec 专利评估。
+`THIRD_PARTY_NOTICES.md` 和 machine-readable audit 输出与 manifest 一起进入安装包。HTTP Client 的
+MIT 许可不改变 GStreamer、plugin 或 libav 各自的许可。
 
 ## 文件图与 owner 边界
 
@@ -257,9 +256,9 @@ framework/dylib/plugin staging 与 rpath 检查，Windows 保持 `bin` 与 `lib/
 ├── crates/xtask/src/bundle/windows.rs                         # F-1710 [修改] DLL/plugin staging
 ├── docs/dev/issue-199/README.md                               # F-1733 [修改] root 状态索引
 └── app/http-client/
-    ├── Cargo.toml                                              # F-1700 [修改] Rust deps、双许可、bundle metadata
+    ├── Cargo.toml                                              # F-1700 [修改] Rust deps、bundle metadata
     ├── build-assets/gstreamer/runtime-manifest.toml            # F-1711 [新增] native source/hash/file/plugin contract
-    ├── build-assets/gstreamer/THIRD_PARTY_NOTICES.md            # F-1712 [新增] 随包 notice/source offer
+    ├── build-assets/gstreamer/THIRD_PARTY_NOTICES.md            # F-1712 [新增] 随包 third-party notice
     ├── test-data/response-preview/README.md                     # F-1729 [新增] fixture 来源、许可与生成方式
     ├── test-data/response-preview/*                             # F-1730 [新增] 小型 codec/PDF fixture
     ├── src/features/request.rs                                 # F-1724 [修改] preview start/teardown/completion route
@@ -668,8 +667,8 @@ manifest、notices、fixture corpus 与三平台发行证据仍阻塞完成。
 
 1. 从 upstream `beb23b09...` 建立 `suxiaoshao/gpui-video-player` 窄 fork；只实施 C-1700 列出的 API/
    生命周期修正，固定 fork SHA 与所有 GStreamer Rust crate 版本。
-2. 增加 Rust dependencies、双许可 metadata；Cargo 生成 lockfile，确认只有一套 GStreamer/glib major/minor。
-3. 建立 1.28.5 runtime manifest、下载/checksum/install 脚本、plugin/license/notice 审计；Linux 声明系统依赖。
+2. 增加 Rust dependencies；Cargo 生成 lockfile，确认只有一套 GStreamer/glib major/minor。
+3. 建立 runtime manifest、下载/checksum/producer 脚本、plugin/notice 校验；三个目标平台均把私有 runtime 放入安装包。
    Windows 首次清单由手动 discovery workflow 在官方 installer 的隔离安装后生成 artifact；仅在人工审计
    artifact 后，才把 file/plugin/license/source 结论写进唯一 release manifest 与 notices。该采集只记录
    原始技术和许可候选证据，不得把自动 metadata 当作许可证结论。

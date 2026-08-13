@@ -29,16 +29,17 @@ app/http-client/
 └── docs/dev/issue-200/README.md                       # F-2006 [This file] owner evidence and completion record
 ```
 
-Runtime installers, frameworks, DLLs, plugins and generated package payloads never enter Git. The manifest is
-the sole input for xtask; source code may not hard-code release paths or plugin lists.
+Runtime installers, frameworks, DLLs, plugins and generated package payloads never enter Git. The manifest
+freezes the three producer inputs, final layouts and common plugin contract; xtask and app code only hard-code
+platform loader locations that are part of those layouts.
 
 ## Owner-local requirements
 
 ### R-2000：可审计 native runtime
 
-`runtime-manifest.toml` records every supported target's version, source URL, immutable SHA-256, deployment
-mode, staged files, transitive native libraries, required element→plugin mapping and per-component license/notice
-path. Placeholder values cannot be committed.
+`runtime-manifest.toml` records every supported target's version, source URL and immutable SHA/revision, private
+layout, required runtime paths, macOS package components, Linux ABI baseline and required element→plugin mapping.
+Placeholder values cannot be committed.
 
 ### R-2001：可审计 fixture corpus
 
@@ -61,6 +62,18 @@ and Save behavior; response content and URLs stay out of logs/assertion snapshot
 3. In every packaged target, run the manifest's required element/plugin and codec/PDF smoke through the app.
 4. Record commands, fixture checksums, target triple, package artifact and actual viewer result here; do not
    record a platform as passed from another platform's result.
+
+### 已落地
+
+- F-2000/F-2001 已新增；HTTP Client 保持 MIT，manifest/notices 随安装包进入私有 runtime 的
+  `share/http-client`。
+- `media/runtime.rs` 在首次 Audio/Video 初始化前选择 macOS Framework、Windows sibling prefix 或 Linux
+  `/usr/lib/HTTP Client/gstreamer`，隔离 plugin/scanner/registry；聚焦测试与 strict Clippy 通过。
+- producer 会在 runtime 中写入与 manifest 一致的 source SHA/revision marker；app-local manifest verifier
+  和 staging 在复制前同时检查 marker、required paths 与 notices。
+- 2026-08-13 macOS 私有 runtime `.app` 已在未设置任何 `GPUI_GSTREAMER_*` 环境变量时成功生成并通过
+  element/plugin smoke、bundle closure 与 deep codesign；实际 Audio/Video/PDF UI 尚未执行。
+- F-2002/F-2003 以及三平台实际安装包 UI/playback 证据仍待 release workflow 与 fixture 工作包完成。
 
 ## Focused validation
 

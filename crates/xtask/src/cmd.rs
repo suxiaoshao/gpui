@@ -9,9 +9,14 @@ pub fn command_exists(command: &str) -> bool {
     which::which(command).is_ok()
 }
 
-pub fn run_cmd(command: &str, args: &[&str], current_dir: Option<&Path>) -> Result<()> {
+pub fn run_cmd_with_env(
+    command: &str,
+    args: &[&str],
+    current_dir: Option<&Path>,
+    environment: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Result<()> {
     let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-    run_cmd_os(command, &args, current_dir)
+    run_cmd_program_os_with_env(OsStr::new(command), &args, current_dir, environment)
 }
 
 pub fn run_cmd_os(command: &str, args: &[&OsStr], current_dir: Option<&Path>) -> Result<()> {
@@ -22,6 +27,15 @@ pub fn run_cmd_program_os(
     command: &OsStr,
     args: &[&OsStr],
     current_dir: Option<&Path>,
+) -> Result<()> {
+    run_cmd_program_os_with_env(command, args, current_dir, &[])
+}
+
+fn run_cmd_program_os_with_env(
+    command: &OsStr,
+    args: &[&OsStr],
+    current_dir: Option<&Path>,
+    environment: &[(std::ffi::OsString, std::ffi::OsString)],
 ) -> Result<()> {
     let rendered_cmd = format!(
         "{} {}",
@@ -34,6 +48,7 @@ pub fn run_cmd_program_os(
 
     let mut cmd = Command::new(command);
     cmd.args(args);
+    cmd.envs(environment.iter().map(|(key, value)| (key, value)));
 
     if let Some(current_dir) = current_dir {
         cmd.current_dir(current_dir);

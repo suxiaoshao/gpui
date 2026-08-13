@@ -1,4 +1,6 @@
 use std::env;
+#[cfg(target_os = "linux")]
+use std::fs;
 use std::path::{Path, PathBuf};
 
 pub mod common;
@@ -10,7 +12,7 @@ pub mod settings;
 pub mod windows;
 
 use crate::cli::BundleArgs;
-use crate::cmd::run_cmd;
+use crate::cmd::run_cmd_with_env;
 use crate::context::workspace_root;
 use crate::error::Result;
 use crate::manifest::get_main_binary_name;
@@ -27,22 +29,25 @@ pub fn run(args: BundleArgs) -> Result<()> {
     validate_platform_args(&args);
     let bundle_icon_assets = prepare_platform_bundle(&app_dir)?;
 
-    run_cmd(
+    let build_environment =
+        gstreamer::release_build_environment(args.app, &workspace_dir, &app_dir)?;
+    run_cmd_with_env(
         "cargo",
         &["build", "-p", args.app.package_name(), "--release"],
         Some(&workspace_dir),
+        &build_environment,
     )?;
 
     let manifest_path = app_dir.join("Cargo.toml");
     let main_bin_name = get_main_binary_name(&manifest_path)?;
     let (package_settings, mut bundle_settings) = settings::read_bundle_settings(&manifest_path)?;
-    #[cfg(target_os = "linux")]
-    gstreamer::configure_linux_bundle(args.app, &app_dir, &mut bundle_settings)?;
     bundle_icon_assets.apply_to_bundle_settings(&mut bundle_settings);
     let product_name = package_settings.product_name.clone();
 
     let out_dir = bundle_out_dir(&workspace_dir, &main_bin_name, args.app)?;
     info!(bundle_out_dir = %out_dir.display(), "using bundle output dir");
+    let runtime_resources = prepare_gstreamer_bundle(args.app, &app_dir, &out_dir, &main_bin_name)?;
+    merge_bundle_resources(&mut bundle_settings, runtime_resources);
 
     #[cfg(target_os = "macos")]
     let bundle_settings = {
@@ -110,6 +115,7 @@ fn finalize_platform_bundle(
         if let Some(app_path) = macos::find_app_bundle(_bundle_dir, _product_name)? {
             gstreamer::stage_macos_runtime(_args.app, _app_dir, &app_path)?;
             macos::inject_liquid_glass_icon(_app_dir, &app_path, _bundle_icon_assets)?;
+            macos::finalize_ad_hoc_codesign(&app_path)?;
         } else {
             warn!("未找到 .app 包，跳过 Liquid Glass 图标注入");
         }
@@ -185,19 +191,98 @@ fn bundle_out_dir(
     app: crate::cli::BundleApp,
 ) -> Result<PathBuf> {
     let target_root = windows::resolve_target_root(workspace_dir);
-    let staging_dir = windows::prepare_windows_bundle_staging(&target_root, main_bin_name)?;
-    let app_dir = workspace_dir.join("app").join(app.app_dir_name());
-    gstreamer::stage_windows_runtime(app, &app_dir, &staging_dir)?;
-    Ok(staging_dir)
+    let _ = app;
+    windows::prepare_windows_bundle_staging(&target_root, main_bin_name)
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+fn bundle_out_dir(
+    workspace_dir: &Path,
+    main_bin_name: &str,
+    _app: crate::cli::BundleApp,
+) -> Result<PathBuf> {
+    prepare_linux_bundle_staging(workspace_dir, main_bin_name)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn bundle_out_dir(
     workspace_dir: &Path,
     _main_bin_name: &str,
     _app: crate::cli::BundleApp,
 ) -> Result<PathBuf> {
     Ok(workspace_dir.join("target/release"))
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_linux_bundle_staging(workspace_dir: &Path, main_bin_name: &str) -> Result<PathBuf> {
+    let target_root = env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                workspace_dir.join(path)
+            }
+        })
+        .unwrap_or_else(|| workspace_dir.join("target"));
+    let source = target_root.join("release").join(main_bin_name);
+    if !source.is_file() {
+        return Err(crate::error::XtaskError::msg(format!(
+            "failed to find built Linux binary {}",
+            source.display()
+        )));
+    }
+    let staging = target_root.join("xtask-bundle/release");
+    if staging.exists() {
+        fs::remove_dir_all(&staging).map_err(|err| {
+            crate::error::XtaskError::msg(format!(
+                "failed to clean Linux bundle staging {}: {err}",
+                staging.display()
+            ))
+        })?;
+    }
+    fs::create_dir_all(&staging)?;
+    fs::copy(&source, staging.join(main_bin_name))?;
+    Ok(staging)
+}
+
+fn merge_bundle_resources(
+    settings: &mut tauri_bundler::BundleSettings,
+    resources: std::collections::HashMap<String, String>,
+) {
+    if resources.is_empty() {
+        return;
+    }
+    settings
+        .resources_map
+        .get_or_insert_with(Default::default)
+        .extend(resources);
+}
+
+fn prepare_gstreamer_bundle(
+    _app: crate::cli::BundleApp,
+    _app_dir: &Path,
+    _out_dir: &Path,
+    _main_bin_name: &str,
+) -> Result<std::collections::HashMap<String, String>> {
+    #[cfg(target_os = "windows")]
+    {
+        return gstreamer::stage_windows_runtime(_app, _app_dir, _out_dir);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return gstreamer::stage_linux_runtime(
+            _app,
+            _app_dir,
+            _out_dir,
+            &_out_dir.join(_main_bin_name),
+        );
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        let _ = (_app, _app_dir, _out_dir, _main_bin_name);
+        Ok(Default::default())
+    }
 }
 
 #[cfg(target_os = "windows")]

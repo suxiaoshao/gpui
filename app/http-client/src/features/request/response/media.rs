@@ -1,5 +1,6 @@
 mod asset;
 pub(super) mod audio;
+mod runtime;
 mod session;
 pub(super) mod video;
 
@@ -8,6 +9,7 @@ use std::{fmt, sync::Arc};
 use super::{ResponseData, ViewerMode};
 
 pub(crate) use asset::{ResponseAssetLease, ResponseAssetProblem, ResponseAssetProblemKind};
+pub(crate) use runtime::initialize_runtime;
 pub(crate) use session::{
     DecoderPolicy, MediaCommand, MediaDriver, MediaDriverEvent, MediaDriverEvents, MediaKind,
     MediaMessage, MediaMetadata, MediaPhase, MediaPosition, MediaProblem, MediaProblemDetail,

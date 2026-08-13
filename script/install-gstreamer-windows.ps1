@@ -2,14 +2,16 @@ param(
     # Optional SDK-source override. Both values must be supplied together and
     # remain independent from the release runtime allow-list.
     [string]$SdkSourceUrl,
-    [string]$SdkSha256
+    [string]$SdkSha256,
+    [ValidateSet("devel", "runtime")]
+    [string]$InstallType = "devel"
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$DefaultSourceUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/1.28.5/msvc/gstreamer-1.0-msvc-x86_64-1.28.5.exe"
-$DefaultSha256 = "51ee5eaec33008e8409d8cf6f6884457f22aa3bd515f8856f993a3eaab903530"
+$DefaultSourceUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/1.28.6/msvc/gstreamer-1.0-msvc-x86_64-1.28.6.exe"
+$DefaultSha256 = "059251444d1267b486eba390b18d25fed87e10315e72f757ec6c7e912fa746b5"
 $HasSdkSource = -not [string]::IsNullOrWhiteSpace($SdkSourceUrl)
 $HasSdkSha256 = -not [string]::IsNullOrWhiteSpace($SdkSha256)
 if ($HasSdkSource -xor $HasSdkSha256) {
@@ -44,7 +46,7 @@ try {
     $process = Start-Process -FilePath $InstallerPath -ArgumentList @(
         "/VERYSILENT",
         "/NORESTART",
-        "/TYPE=devel",
+        "/TYPE=$InstallType",
         "/DIR=$InstallRoot"
     ) -Wait -PassThru
     if ($process.ExitCode -ne 0) {
@@ -59,27 +61,39 @@ if (-not (Test-Path -LiteralPath $RuntimeRoot -PathType Container)) {
     throw "GStreamer installer completed but expected runtime root is missing: $RuntimeRoot"
 }
 
+$SourceMarkerDirectory = Join-Path $RuntimeRoot "share\http-client-runtime"
+New-Item -ItemType Directory -Force -Path $SourceMarkerDirectory | Out-Null
+Set-Content -LiteralPath (Join-Path $SourceMarkerDirectory "source-sha256.txt") -Value $ExpectedSha256 -Encoding ascii
+
 $env:PATH = (Join-Path $RuntimeRoot "bin") + ";" + $env:PATH
-$env:PKG_CONFIG = Join-Path $RuntimeRoot "bin\pkg-config.exe"
-$env:GPUI_PKG_CONFIG = $env:PKG_CONFIG
-$env:PKG_CONFIG_PATH = Join-Path $RuntimeRoot "lib\pkgconfig"
-$env:GPUI_GSTREAMER_SDK_ROOT = $RuntimeRoot
+$env:GPUI_GSTREAMER_RUNTIME_DIR = $RuntimeRoot
 $env:GSTREAMER_1_0_ROOT_X86_64_PC_WINDOWS_MSVC = $RuntimeRoot
 
-if (-not (Test-Path -LiteralPath $env:PKG_CONFIG -PathType Leaf)) {
-    throw "GStreamer SDK pkg-config executable is missing: $env:PKG_CONFIG"
-}
-$GstreamerPc = Join-Path $env:PKG_CONFIG_PATH "gstreamer-1.0.pc"
-if (-not (Test-Path -LiteralPath $GstreamerPc -PathType Leaf)) {
-    throw "GStreamer SDK pkg-config metadata is missing: $GstreamerPc"
+if ($InstallType -eq "devel") {
+    $env:GPUI_GSTREAMER_SDK_ROOT = $RuntimeRoot
+    $env:PKG_CONFIG = Join-Path $RuntimeRoot "bin\pkg-config.exe"
+    $env:GPUI_PKG_CONFIG = $env:PKG_CONFIG
+    $env:PKG_CONFIG_PATH = Join-Path $RuntimeRoot "lib\pkgconfig"
+    if (-not (Test-Path -LiteralPath $env:PKG_CONFIG -PathType Leaf)) {
+        throw "GStreamer SDK pkg-config executable is missing: $env:PKG_CONFIG"
+    }
+    $GstreamerPc = Join-Path $env:PKG_CONFIG_PATH "gstreamer-1.0.pc"
+    if (-not (Test-Path -LiteralPath $GstreamerPc -PathType Leaf)) {
+        throw "GStreamer SDK pkg-config metadata is missing: $GstreamerPc"
+    }
 }
 
 if ($env:GITHUB_ENV) {
     Add-Content -LiteralPath $env:GITHUB_ENV -Value "PATH=$env:PATH"
-    Add-Content -LiteralPath $env:GITHUB_ENV -Value "PKG_CONFIG=$env:PKG_CONFIG"
-    Add-Content -LiteralPath $env:GITHUB_ENV -Value "GPUI_PKG_CONFIG=$env:GPUI_PKG_CONFIG"
-    Add-Content -LiteralPath $env:GITHUB_ENV -Value "PKG_CONFIG_PATH=$env:PKG_CONFIG_PATH"
-    Add-Content -LiteralPath $env:GITHUB_ENV -Value "GPUI_GSTREAMER_SDK_ROOT=$RuntimeRoot"
+    if ($InstallType -eq "devel") {
+        Add-Content -LiteralPath $env:GITHUB_ENV -Value "PKG_CONFIG=$env:PKG_CONFIG"
+        Add-Content -LiteralPath $env:GITHUB_ENV -Value "GPUI_PKG_CONFIG=$env:GPUI_PKG_CONFIG"
+        Add-Content -LiteralPath $env:GITHUB_ENV -Value "PKG_CONFIG_PATH=$env:PKG_CONFIG_PATH"
+    }
+    Add-Content -LiteralPath $env:GITHUB_ENV -Value "GPUI_GSTREAMER_RUNTIME_DIR=$RuntimeRoot"
+    if ($InstallType -eq "devel") {
+        Add-Content -LiteralPath $env:GITHUB_ENV -Value "GPUI_GSTREAMER_SDK_ROOT=$RuntimeRoot"
+    }
     Add-Content -LiteralPath $env:GITHUB_ENV -Value "GSTREAMER_1_0_ROOT_X86_64_PC_WINDOWS_MSVC=$RuntimeRoot"
 }
 

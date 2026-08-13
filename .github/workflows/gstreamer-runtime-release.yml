@@ -1,0 +1,318 @@
+name: HTTP Client Bundled Runtime Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-package:
+    name: macOS arm64 self-contained app
+    runs-on: macos-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install pkg-config
+        run: brew install pkgconf
+
+      - name: Prepare pinned private GStreamer runtime
+        run: script/prepare-gstreamer-macos-runtime.sh
+        shell: bash
+
+      - name: Prepare matching GStreamer development SDK
+        run: script/prepare-gstreamer-macos-sdk.sh
+        shell: bash
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+
+      - name: Bundle HTTP Client
+        run: cargo run -p xtask -- bundle http-client
+
+      - name: Archive app preserving framework links
+        run: >-
+          ditto -c -k --sequesterRsrc --keepParent
+          "target/release/bundle/macos/HTTP Client.app"
+          target/http-client-macos-arm64.zip
+
+      - name: Upload macOS package
+        uses: actions/upload-artifact@v4
+        with:
+          name: http-client-macos-arm64
+          path: target/http-client-macos-arm64.zip
+          if-no-files-found: error
+
+  macos-package-smoke:
+    name: macOS packaged private runtime smoke
+    needs: macos-package
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download packaged app
+        uses: actions/download-artifact@v4
+        with:
+          name: http-client-macos-arm64
+          path: target/package-smoke
+
+      - name: Extract packaged app
+        run: |
+          mkdir -p target/package-smoke/unpacked
+          ditto -x -k \
+            target/package-smoke/http-client-macos-arm64.zip \
+            target/package-smoke/unpacked
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify packaged runtime and signature
+        run: |
+          app="target/package-smoke/unpacked/HTTP Client.app"
+          test -x "$app/Contents/MacOS/http-client"
+          export GPUI_GSTREAMER_RUNTIME_DIR="$PWD/$app/Contents/Frameworks/GStreamer.framework"
+          cargo run -p xtask -- verify-gstreamer \
+            --manifest app/http-client/build-assets/gstreamer/runtime-manifest.toml \
+            --inspect
+          codesign --verify --deep --strict "$app"
+          otool -L "$app/Contents/MacOS/http-client" | tee target/package-smoke/http-client-otool.txt
+          ! grep -E '/opt/homebrew|/usr/local|/Library/Frameworks/GStreamer' \
+            target/package-smoke/http-client-otool.txt
+
+  windows-evidence:
+    name: Windows MSVC runtime evidence
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      GSTREAMER_SOURCE_URL: https://gstreamer.freedesktop.org/data/pkg/windows/1.28.6/msvc/gstreamer-1.0-msvc-x86_64-1.28.6.exe
+      GSTREAMER_SOURCE_SHA256: 059251444d1267b486eba390b18d25fed87e10315e72f757ec6c7e912fa746b5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pinned official GStreamer SDK
+        run: >-
+          script/install-gstreamer-windows.ps1
+          -SdkSourceUrl $env:GSTREAMER_SOURCE_URL
+          -SdkSha256 $env:GSTREAMER_SOURCE_SHA256
+        shell: pwsh
+
+      - name: Collect source layout and closure evidence
+        run: |
+          script/audit-gstreamer-windows.ps1 `
+            -RuntimeRoot $env:GPUI_GSTREAMER_RUNTIME_DIR `
+            -OutputDirectory target/gstreamer-runtime/windows-evidence `
+            -RequiredElement @(
+              "playbin",
+              "uridecodebin",
+              "appsink",
+              "audioconvert",
+              "audioresample",
+              "videoconvert",
+              "videoscale"
+            )
+        shell: pwsh
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+
+      - name: Bundle HTTP Client
+        run: cargo run -p xtask -- bundle http-client
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: http-client-windows-x86_64
+          path: target/xtask-bundle/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+      - name: Upload Windows runtime evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: gstreamer-windows-1.28.6-evidence
+          path: target/gstreamer-runtime/windows-evidence
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-package-smoke:
+    name: Windows packaged private runtime smoke
+    needs: windows-evidence
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download MSI
+        uses: actions/download-artifact@v4
+        with:
+          name: http-client-windows-x86_64
+          path: target/package-smoke
+
+      - name: Extract MSI into an isolated target
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem -LiteralPath target/package-smoke -Filter *.msi -Recurse | Select-Object -First 1
+          if (-not $msi) { throw "HTTP Client MSI is missing" }
+          $target = Join-Path $PWD "target/package-smoke/unpacked"
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          $process = Start-Process -FilePath msiexec.exe -ArgumentList @(
+            "/a",
+            ('"' + $msi.FullName + '"'),
+            "/qn",
+            ("TARGETDIR=" + '"' + $target + '"')
+          ) -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "MSI extraction failed with exit code $($process.ExitCode)" }
+
+          $app = Get-ChildItem -LiteralPath $target -Filter http-client.exe -Recurse | Select-Object -First 1
+          if (-not $app) { throw "packaged http-client.exe is missing" }
+          $runtime = Join-Path $app.Directory.FullName "gstreamer"
+          if (-not (Test-Path -LiteralPath $runtime -PathType Container)) { throw "packaged private runtime is missing" }
+          if (-not (Test-Path -LiteralPath (Join-Path $app.Directory.FullName "gstreamer-1.0-0.dll") -PathType Leaf)) {
+            throw "app-root GStreamer loader DLL is missing"
+          }
+          "GPUI_GSTREAMER_RUNTIME_DIR=$runtime" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify packaged private runtime
+        run: >-
+          cargo run -p xtask -- verify-gstreamer
+          --manifest app/http-client/build-assets/gstreamer/runtime-manifest.toml
+          --inspect
+        shell: pwsh
+
+  linux-private-prefix:
+    name: Linux x86_64 private prefix
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Cerbero bootstrap prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            ca-certificates \
+            git \
+            python3 \
+            patchelf \
+            tar
+
+      - name: Build pinned Cerbero private prefix
+        run: >-
+          script/build-gstreamer-linux-runtime.sh
+          --output target/gstreamer-runtime/linux-x86_64
+
+      - name: Export private SDK/runtime
+        run: |
+          echo "GPUI_GSTREAMER_RUNTIME_DIR=$GITHUB_WORKSPACE/target/gstreamer-runtime/linux-x86_64" >> "$GITHUB_ENV"
+          echo "GPUI_GSTREAMER_SDK_ROOT=$GITHUB_WORKSPACE/target/gstreamer-runtime/linux-x86_64" >> "$GITHUB_ENV"
+          echo "GPUI_PKG_CONFIG=pkg-config" >> "$GITHUB_ENV"
+
+      - name: Install desktop build dependencies
+        run: script/install-linux.sh
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+
+      - name: Bundle HTTP Client
+        run: cargo run -p xtask -- bundle http-client
+
+      - name: Upload Linux package
+        uses: actions/upload-artifact@v4
+        with:
+          name: http-client-linux-x86_64-glibc-2.35
+          path: target/xtask-bundle/release/bundle/deb/*.deb
+          if-no-files-found: error
+
+      - name: Upload Linux private prefix
+        uses: actions/upload-artifact@v4
+        with:
+          name: gstreamer-linux-x86_64-ubuntu-22.04-private-prefix
+          path: target/gstreamer-runtime/linux-x86_64
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-package-smoke:
+    name: Linux packaged private runtime smoke
+    needs: linux-private-prefix
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download DEB
+        uses: actions/download-artifact@v4
+        with:
+          name: http-client-linux-x86_64-glibc-2.35
+          path: target/package-smoke
+
+      - name: Install package inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends pax-utils
+
+      - name: Extract package and export private runtime
+        run: |
+          package="$(find target/package-smoke -name '*.deb' -type f -print -quit)"
+          test -n "$package"
+          mkdir -p target/package-smoke/unpacked
+          dpkg-deb -x "$package" target/package-smoke/unpacked
+          runtime="$PWD/target/package-smoke/unpacked/usr/lib/HTTP Client/gstreamer"
+          test -x "$runtime/bin/gst-inspect-1.0"
+          test -x target/package-smoke/unpacked/usr/bin/http-client
+          echo "GPUI_GSTREAMER_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify packaged runtime elements and loader closure
+        run: |
+          cargo run -p xtask -- verify-gstreamer \
+            --manifest app/http-client/build-assets/gstreamer/runtime-manifest.toml \
+            --inspect
+          app="$PWD/target/package-smoke/unpacked/usr/bin/http-client"
+          lddtree -l "$app" | tee target/package-smoke/http-client-lddtree.txt
+          while IFS= read -r dependency; do
+            case "$(basename "$dependency")" in
+              libgst*.so*|libgstreamer*.so*)
+                case "$dependency" in
+                  "$GPUI_GSTREAMER_RUNTIME_DIR"/*) ;;
+                  *) echo "host GStreamer dependency: $dependency" >&2; exit 1 ;;
+                esac
+                ;;
+            esac
+          done < target/package-smoke/http-client-lddtree.txt

@@ -8,12 +8,12 @@ permissions:
 
 jobs:
   inventory:
-    name: Windows GStreamer 1.28.5 inventory
+    name: Windows GStreamer 1.28.6 inventory
     runs-on: windows-latest
     timeout-minutes: 30
     env:
-      GSTREAMER_AUDIT_SOURCE_URL: https://gstreamer.freedesktop.org/data/pkg/windows/1.28.5/msvc/gstreamer-1.0-msvc-x86_64-1.28.5.exe
-      GSTREAMER_AUDIT_SHA256: 51ee5eaec33008e8409d8cf6f6884457f22aa3bd515f8856f993a3eaab903530
+      GSTREAMER_AUDIT_SOURCE_URL: https://gstreamer.freedesktop.org/data/pkg/windows/1.28.6/msvc/gstreamer-1.0-msvc-x86_64-1.28.6.exe
+      GSTREAMER_AUDIT_SHA256: 059251444d1267b486eba390b18d25fed87e10315e72f757ec6c7e912fa746b5
 
     steps:
       - name: Checkout
@@ -62,7 +62,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-gstreamer-1.28.5-inventory
+          name: windows-gstreamer-1.28.6-inventory
           path: target/gstreamer-audit/windows
           if-no-files-found: warn
           retention-days: 14
