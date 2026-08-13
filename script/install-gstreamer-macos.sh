@@ -13,26 +13,42 @@ if ! command -v brew >/dev/null 2>&1; then
   echo "Homebrew is required to install the macOS GStreamer development SDK" >&2
   exit 1
 fi
-if ! brew --prefix gstreamer >/dev/null 2>&1; then
+if ! brew list --versions gstreamer >/dev/null 2>&1; then
   brew install gstreamer
 fi
-if ! brew --prefix pkgconf >/dev/null 2>&1; then
+if ! brew list --versions pkgconf >/dev/null 2>&1; then
   brew install pkgconf
 fi
 
 readonly sdk_root="$(brew --prefix gstreamer)"
 readonly pkg_config="$(brew --prefix pkgconf)/bin/pkg-config"
-if ! PKG_CONFIG_PATH="$sdk_root/lib/pkgconfig" \
-  "$pkg_config" --atleast-version="$minimum_gstreamer_version" gstreamer-1.0; then
-  echo "Homebrew GStreamer must be at least $minimum_gstreamer_version" >&2
-  exit 1
-fi
-
 readonly gstreamer_pc="$sdk_root/lib/pkgconfig/gstreamer-1.0.pc"
 if [[ ! -f "$gstreamer_pc" ]]; then
   echo "GStreamer SDK pkg-config metadata is missing: $gstreamer_pc" >&2
   exit 1
 fi
+
+if ! gstreamer_version="$(PKG_CONFIG_PATH="$sdk_root/lib/pkgconfig" \
+  "$pkg_config" --print-errors --modversion gstreamer-1.0)"; then
+  echo "Failed to read the GStreamer version from $gstreamer_pc" >&2
+  exit 1
+fi
+if ! PKG_CONFIG_PATH="$sdk_root/lib/pkgconfig" \
+  "$pkg_config" --print-errors --atleast-version="$minimum_gstreamer_version" gstreamer-1.0; then
+  echo "Upgrading Homebrew GStreamer from $gstreamer_version to satisfy >= $minimum_gstreamer_version..."
+  brew upgrade gstreamer
+  if ! gstreamer_version="$(PKG_CONFIG_PATH="$sdk_root/lib/pkgconfig" \
+    "$pkg_config" --print-errors --modversion gstreamer-1.0)"; then
+    echo "Failed to read the upgraded GStreamer version from $gstreamer_pc" >&2
+    exit 1
+  fi
+fi
+if ! PKG_CONFIG_PATH="$sdk_root/lib/pkgconfig" \
+  "$pkg_config" --print-errors --atleast-version="$minimum_gstreamer_version" gstreamer-1.0; then
+  echo "Homebrew GStreamer version $gstreamer_version does not satisfy >= $minimum_gstreamer_version" >&2
+  exit 1
+fi
+echo "Using Homebrew GStreamer $gstreamer_version from $sdk_root"
 
 export PKG_CONFIG_PATH="$sdk_root/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 export PATH="$sdk_root/bin:$PATH"

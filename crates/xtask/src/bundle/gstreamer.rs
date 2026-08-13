@@ -263,7 +263,6 @@ fn sdk_setup_instruction(target: &str) -> &'static str {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn macos_sdk_directory(workspace_dir: &Path) -> PathBuf {
     workspace_dir.join("target/gstreamer-sdk/macos/GStreamer.framework/Versions/1.0")
 }

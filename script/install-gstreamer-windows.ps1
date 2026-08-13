@@ -29,6 +29,8 @@ if ($ExpectedSha256 -notmatch '^[0-9a-f]{64}$') {
 
 $DownloadDir = Join-Path ([System.IO.Path]::GetTempPath()) ("gpui-gstreamer-windows-" + [guid]::NewGuid())
 $InstallerPath = Join-Path $DownloadDir "gstreamer.exe"
+$InstallerLogPath = Join-Path $DownloadDir "installer.log"
+$InstallerTimeout = [TimeSpan]::FromMinutes(25)
 $InstallRoot = if ($env:GPUI_GSTREAMER_INSTALL_ROOT) {
     $env:GPUI_GSTREAMER_INSTALL_ROOT
 } else {
@@ -36,22 +38,57 @@ $InstallRoot = if ($env:GPUI_GSTREAMER_INSTALL_ROOT) {
 }
 New-Item -ItemType Directory -Force -Path $DownloadDir | Out-Null
 
+function Write-InstallerLog {
+    if (-not (Test-Path -LiteralPath $InstallerLogPath -PathType Leaf)) {
+        Write-Host "GStreamer installer did not produce a log."
+        return
+    }
+
+    Write-Host "GStreamer installer log follows:"
+    Get-Content -LiteralPath $InstallerLogPath -Tail 200 | ForEach-Object {
+        Write-Host $_
+    }
+}
+
 try {
+    Write-Host "Downloading GStreamer $InstallType installer."
     Invoke-WebRequest -Uri $SourceUrl -OutFile $InstallerPath
+
+    Write-Host "Verifying GStreamer installer checksum."
     $ActualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $InstallerPath).Hash.ToLowerInvariant()
     if ($ActualSha256 -ne $ExpectedSha256) {
         throw "GStreamer package checksum mismatch: expected $ExpectedSha256, got $ActualSha256"
     }
 
+    Write-Host "Starting GStreamer installer with a $($InstallerTimeout.TotalMinutes)-minute timeout."
     $process = Start-Process -FilePath $InstallerPath -ArgumentList @(
+        "/SP-",
         "/VERYSILENT",
+        "/SUPPRESSMSGBOXES",
         "/NORESTART",
         "/TYPE=$InstallType",
-        "/DIR=$InstallRoot"
-    ) -Wait -PassThru
+        "/DIR=$InstallRoot",
+        "/LOG=$InstallerLogPath"
+    ) -PassThru
+    if (-not $process.WaitForExit([int]$InstallerTimeout.TotalMilliseconds)) {
+        Write-Warning "GStreamer installer exceeded its timeout; terminating its process tree."
+        & taskkill.exe /PID $process.Id /T /F | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "taskkill could not terminate the GStreamer installer process tree (exit code $LASTEXITCODE)."
+        }
+        if (-not $process.WaitForExit(30_000)) {
+            Write-Warning "GStreamer installer process did not exit within 30 seconds of taskkill."
+        }
+        throw "GStreamer installer exceeded the $($InstallerTimeout.TotalMinutes)-minute timeout and was terminated"
+    }
+    $process.Refresh()
+    Write-Host "GStreamer installer exited with code $($process.ExitCode)."
     if ($process.ExitCode -ne 0) {
         throw "GStreamer installer failed with exit code $($process.ExitCode)"
     }
+} catch {
+    Write-InstallerLog
+    throw
 } finally {
     Remove-Item -LiteralPath $DownloadDir -Recurse -Force -ErrorAction SilentlyContinue
 }
