@@ -304,7 +304,7 @@ git diff --check
 
 ## 实施证据
 
-- 实现位置：当前工作区，尚未提交；`WP-1200`–`WP-1204` 已完成。
+- `WP-1200`–`WP-1204` 已完成；提交/PR 以本专题的完成证据为准。
 - ChatInput、RunSettings、Provider、Prompt、Shortcut 与 MCP 设置表单已消费最终 typed path、impact、binding
   和 `FormVersion` 契约；MCP 五类集合按 `PathKey` 增量 reconcile，同父重排保留 row/control 身份。
 - stale save completion 不覆盖新 draft；Prompt/Shortcut/MCP 不关闭仍有新编辑的 dialog，Provider 只在 CAS

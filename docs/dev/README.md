@@ -4,7 +4,8 @@
 
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
-| [#199](https://github.com/suxiaoshao/gpui/issues/199) form owner、app store/form/operation 与 Transition 重构 | 显式owner v2已实施；当前Form vNext、Feiwen完整迁移、Jaco vNext consumer均已有独立Draft计划 | [issue-199/README.md](issue-199/README.md) |
+| [#200](https://github.com/suxiaoshao/gpui/issues/200) HTTP Client Response 媒体与 PDF 预览发行交付 | `In progress`；承接 #199 已有媒体/PDF 实现的 runtime、许可、fixture、打包与三平台验证 | [issue-200/README.md](issue-200/README.md) |
+| [#199](https://github.com/suxiaoshao/gpui/issues/199) form owner、app store/form/operation 与 Transition 重构 | `Done`；显式 owner v2、Form vNext、Feiwen、Jaco（含 Conversation 私有 Transition）与 HTTP Client 基础单请求已交付；媒体/PDF 发行交付已移交 #200，MCP runtime 已移交 #201 | [issue-199/README.md](issue-199/README.md) |
 | [#175](https://github.com/suxiaoshao/gpui/issues/175) previous typed form delivery | Issue/PR 已完成；form API 计划被 #199 取代 | [issue-175/README.md](issue-175/README.md) |
 
 ## Framework migrations

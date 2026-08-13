@@ -11,7 +11,8 @@
 - 前置：`HTTP-199-03` 的 `HttpTransport`、`PreparedRequest`、`WorkerEvent` 与 `RequestProblem` 已交付；
   `C-1800`–`C-1803` 和 `ERR-1800` 起的 producer 契约已可消费。
 - 待确认问题：无。
-- 实施引用：当前工作树实现完成；提交待用户另行要求。
+- 实施引用：producer/consumer 主实现提交 `1559cc8`；workspace feature-unification 稳定性修正
+  `735bc41`。
 
 本计划只把可由受控 HTTP 语义表达的 `HttpTransport` local-loopback 测试迁移到
 `http-client-test-server` 的 dev-dependency。生产代码、请求/响应产品契约、UI、Store、Form、Operation、
@@ -204,7 +205,8 @@ endpoint 或切换到外网 fixture。
 | 迁移后的受控测试 | timeout、3xx/4xx、HEAD/204、两阶段 abort、echo、delayed chunks、Receiving cancel、四种 coding、unknown coding、8 MiB spill 与 50 MiB cap 均改用 producer |
 | 保留的 raw fixture | `post_redirect_rewrites_to_get_and_explicit_headers_override_generated_ones`、`temporary_redirect_rebuilds_multipart_file_stream_for_each_hop`、`url_encoded_and_binary_bodies_use_their_frozen_bytes`，只断言 request wire |
 | 环境隔离 | test-only `HttpTransport::new_without_proxy()` 禁用环境代理；production `HttpTransport::new()` 行为保持不变 |
+| 实施提交 | producer/consumer 主实现 `1559cc8`；workspace feature-unification 稳定性修正 `735bc41` |
 | 聚焦测试 | `cargo test -p http-client --bin http-client --all-features --locked 'features::request::transport::tests::'`：15 passed |
-| 完整测试 | `cargo test -p http-client --bin http-client --all-features --locked --no-fail-fast`：160 passed |
+| 完整测试 | `cargo test -p http-client --bin http-client --all-features --locked --no-fail-fast`：161 passed |
 | 静态门禁 | `cargo check -p http-client --bin http-client --all-features --locked` 与严格 Clippy 通过；workspace fmt check、diff check 通过 |
 | 未执行边界 | 实际桌面 UI、packaged app、真实 TLS/proxy/external endpoint；按用户要求未进行实际 UI 测试 |

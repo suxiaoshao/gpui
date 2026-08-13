@@ -7,8 +7,9 @@
 - 关联 issue：[#199](https://github.com/suxiaoshao/gpui/issues/199)
 - owner：`crates/http-client-test-server`；[owner 索引](README.md)
 - 根入口：[Issue #199 多轮任务索引](../../../../../docs/dev/issue-199/README.md)
-- 实施引用：当前工作树实现完成；提交待用户另行要求
-- 最后证据刷新：2026-08-11
+- 实施引用：producer/consumer 主实现提交 `1559cc8`；workspace feature-unification 稳定性修正
+  `735bc41`
+- 最后证据刷新：2026-08-13
 - 待确认问题：无。
 
 ### 目标
@@ -505,7 +506,7 @@ consumer 均完成后，根 `HTTP-199-05` 已标为 `Done`。
 | T-1801 | R-1801/R-1805 | GET encoded/decoded 各 8 KiB cap、POST 24 MiB boundary、invalid JSON/status/header | 可到达的 encoded 边界成功；decoded 或 encoded 任一超限、invalid/restricted header 均返回 stable code；无 reflected value |
 | T-1802 | R-1802/R-1803 | Json/Base64/Repeat、duplicate `Set-Cookie`、status 404、ContentLength/Chunked | exact bytes/values；Json 无 automatic Content-Type；repeat 只按 chunk allocation |
 | T-1803 | R-1803/R-1804 | before-head delay、per-chunk delay、slow body reader、64-connection saturation | head 延后；next frame 不早于 delay；server 不预排完整 body；超出 permit 的新 socket 关闭且 shutdown 能收束全部 task |
-| T-1804 | R-1802/R-1805 | gzip/br/deflate/zstd、caller unknown coding、Location redirect target | encoded bytes/header 正确；coding conflict rejected；redirect final target 可到达 |
+| T-1804 | R-1802/R-1805 | gzip/br/deflate/zstd、caller unknown coding、Location redirect target | 测试 client 显式关闭自动 content decoding；encoded bytes/header 正确；coding conflict rejected；redirect final target 可到达 |
 | T-1805 | R-1808 | raw TCP before-head | 发出 valid abort request 后 EOF 前 response bytes 长度为零 |
 | T-1806 | R-1808 | raw TCP/HTTP client mid-body | 200/head/prefix 已到达；missing final byte/terminal chunk；body read fails |
 | T-1807 | R-1806/R-1809 | echo binary、multiple/no Content-Type、64 MiB boundary | exact body；only expected type values；413 无 partial echo |
@@ -531,11 +532,11 @@ consumer 均完成后，根 `HTTP-199-05` 已标为 `Done`。
 
 | 证据 | 实际结果 |
 | --- | --- |
-| 实施 commit/PR | 当前工作树实现完成；本轮未请求提交或 PR |
+| 实施 commit/PR | producer/consumer 主实现提交 `1559cc8`；workspace feature-unification 稳定性修正 `735bc41`；本轮未创建 PR |
 | 新增/修改文件与 Cargo.lock resolution | 新增 `contract/server/respond/abort/echo/main` 与 12 个 black-box integration tests；lockfile 只增加本 crate、`httpdate` 及既有 feature 所需的 `futures-util` |
 | 交付的 C/ERR/F/L/ST/R/T/WP ID | `C-1800`–`C-1803`、`ERR-1800`–`ERR-1804`、`F-1800`–`F-1808`、`L-1800`–`L-1804`、`ST-1800`–`ST-1804`、`R-1800`–`R-1809`、`T-1800`–`T-1809`、`WP-1800`–`WP-1809` |
 | 自动化命令与结果 | `cargo test -p http-client-test-server --all-features --locked`：2 library unit + 1 CLI unit + 12 integration，合计 15 passed；严格 Clippy、全 workspace fmt check 与 diff check 通过 |
 | CLI Ctrl-C 场景 | macOS/Unix black-box test 读取 readiness、请求 healthz、发送 SIGINT，并在 3 秒内以 code 0 退出；Windows native Ctrl-C 未在本机执行 |
-| HTTP Client consumer 迁移 | 已完成；最终 transport 聚焦 15/15、app 全量 160/160 通过，详见 consumer 计划 |
+| HTTP Client consumer 迁移 | 已完成；最终 transport 聚焦 15/15、app 全量 161/161 通过，详见 consumer 计划 |
 | Owner/root 索引同步 | producer、consumer、owner/root 索引均已同步为 `Done` |
 | 未验证边界 | 实际桌面 UI、packaged app、真实外网、TLS/proxy 与三平台 release matrix；按用户要求未做实际 UI 测试 |

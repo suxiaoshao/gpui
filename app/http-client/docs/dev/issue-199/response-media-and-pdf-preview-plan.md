@@ -1,10 +1,13 @@
-# Issue #199：Response 音频、视频与 PDF 只读预览实施计划
+# Issue #199：Response 音频、视频与 PDF 只读预览实施计划（历史基线）
 
 ## 状态、范围与执行边界
 
-- 状态：`In progress`
+- 状态：`Superseded`
 - 子任务：`HTTP-199-04`
 - 关联 issue：[#199](https://github.com/suxiaoshao/gpui/issues/199)
+- 后继 issue：[#200](https://github.com/suxiaoshao/gpui/issues/200)，其
+  [root hub](../../../../../docs/dev/issue-200/README.md) 是未完成 native runtime、许可、fixture、打包与
+  三平台验证的唯一执行入口。
 - 目标分支：`codex/199-adopt-gpui-store-form-operation`
 - primary owner：`app/http-client`；secondary owner：`crates/xtask`、`script` 与 CI 的 app-specific
   GStreamer 安装/打包钩子；[子任务索引](README.md)
@@ -26,7 +29,7 @@
   `cargo clippy --all-targets --all-features -- -D warnings` 均通过；app 的完整测试 154 项、媒体定向测试
   19 项、PDF 定向测试 12 项、i18n 定向测试 4 项通过，且 app Clippy、全 workspace 格式检查与
   `git diff --check` 通过。实际桌面 UI、真实音视频播放、PDF 手工翻页、安装包和三平台验证均**未执行**。
-- 当前 release gate：`C-1701` 仍未闭环。GStreamer runtime manifest、第三方 notices、受许可审计的
+- 移交时的 release gate：`C-1701` 尚未闭环。GStreamer runtime manifest、第三方 notices、受许可审计的
   fixture corpus 以及 macOS/Windows/Linux 的发行包/安装后 plugin 验证均未完成；不得将本计划或任何
   Audio/Video 发行能力标为 `Done`，也不得以 Cargo 测试替代这些证据。
   当前审计已确认：macOS 官方 1.28.5 payload 可得到包含目标 codec 的 54-file dylib closure，但尚缺
@@ -872,5 +875,6 @@ UI、Form、Store 或 fork 外部。
 `WP-1700` 的 fork source producer 已完成；`WP-1701`–`WP-1706` 已有 app 代码和上述定向自动化证据，
 但 codec/许可 fixture 与发行环境验证仍未完成；实际 UI 按用户要求未执行。`WP-1707` 尚未完成。
 
-下一执行者只能继续补齐 `C-1701` 的 manifest、notices、fixture 许可证与三平台开发/CI/安装包验证；不得
-伪造 runtime 清单，亦不得将本轮的 Cargo 定向结果写成实际 UI、native codec 或发行包 smoke 通过。
+后继 #200 继续补齐 `C-1701` 对应的 manifest、notices、fixture 许可证与三平台开发/CI/安装包验证；不得
+伪造 runtime 清单，亦不得将本轮的 Cargo 定向结果写成实际 UI、native codec 或发行包 smoke 通过。本文件
+不再接收新的实施或完成状态回填。

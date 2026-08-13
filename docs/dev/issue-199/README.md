@@ -2,13 +2,12 @@
 
 ## 文档职责
 
-- 状态：`进行中`。本轮 Form breaking 重构、Jaco/Feiwen consumer 再迁移、Novel Download、HTTP Client
-  Request Form / prepared request 与单请求真实 Send / Response 均为 `Done`；HTTP Client Response
-  媒体/PDF 为 `In progress`，其中 native runtime/发行门禁未完成；HTTP 测试服务与 HTTP Client consumer
-  集成测试为 `HTTP-199-05 Done`；Jaco Conversation/MCP runtime 等后续轮次仍未开始。
+- 状态：`Done`。本轮 Form breaking 重构、Jaco/Feiwen consumer 再迁移、Novel Download、HTTP Client
+  Request Form / prepared request、单请求真实 Send / Response、HTTP 测试服务与 consumer 集成测试，以及
+  Jaco Conversation 私有 Transition 均已交付。Response 媒体/PDF 的未完成发行门禁已移交 [#200](https://github.com/suxiaoshao/gpui/issues/200)；MCP runtime 已移交 [#201](https://github.com/suxiaoshao/gpui/issues/201)。
 - 关联 issue：[#199](https://github.com/suxiaoshao/gpui/issues/199)
 - 分支：`codex/199-adopt-gpui-store-form-operation`
-- 最近更新：2026-08-11
+- 最近更新：2026-08-13
 
 本文只维护 Issue #199 的总指导、轮次、子任务状态、依赖顺序和专题文档入口。架构契约、文件清单、
 工作包、测试与完成证据写在独立专题文档中；后续任务不得继续把执行计划堆入本 README。
@@ -21,7 +20,7 @@
 4. Form core 可以内部使用 `gpui_operation::Transition`，公开/generated/adapter API 仍为领域方法。
 5. Form vNext producer contract 固定并验证后，Jaco/Feiwen 才消费最终签名；应用不得各自创建兼容 shim。
 6. HTTP Client 本轮必须做到单请求场景下基础可用，不以迁移 shared crates 作为完成条件；先在 owner
-   草稿中闭环产品与运行语义，再建立独立实施计划。Jaco MCP runtime operation 继续暂缓。已完成的
+   草稿中闭环产品与运行语义，再建立独立实施计划。Jaco MCP runtime operation 由 [#201](https://github.com/suxiaoshao/gpui/issues/201) 独立承接。已完成的
    Novel Download 保留 owner plan 作为实施证据。
 7. `gpui-store` 本轮不重构：复杂状态机由业务类型自己建模，最终使用 Store `set/update` 发布即可。
 
@@ -35,13 +34,14 @@
 | `NOVEL-199-01` | Novel Download 最小 Form、私有下载 Transition、唯一 Task 与 `.part` 文件事务迁移 | `Done`；39 tests 与定向门禁通过；实现提交 `64b0c4a` 已推送；实际 UI 未执行 | [Novel Download 实施计划](../../../app/novel-download/docs/dev/issue-199/form-operation-download-migration-plan.md) | 消费 `C-900`–`C-904`；不引入 Store、队列、resume 或 repair |
 | `HTTP-199-02` | HTTP Client Request Form、五种 Body、Auth、redirect、prepared request 与 Store 适用性 | `Done`；56 tests 与 Check、Clippy、格式、残留扫描通过；实现提交 `933ee09` 已推送；实际 UI 操作未执行 | [Request Form 与 prepared request 实施计划](../../../app/http-client/docs/dev/issue-199/request-form-and-preparation-plan.md) | 消费 `C-900`–`C-904`；不依赖 ResponseData；不引入 Store/Operation/transport |
 | `HTTP-199-03` | HTTP Client 真实 Send、私有 Transition、Response 收集、viewer 与完成后 Save | `Done`；116 tests、Check、Clippy、格式与残留扫描通过；实现提交 `24e4a9f` 已推送；实际 UI 操作未执行 | [真实 Send 与 Response 实施计划](../../../app/http-client/docs/dev/issue-199/request-send-and-response-plan.md) | 消费 `HTTP-199-02` 的 `PreparedRequest`；不引入 Store；不包含 `Send and Download` |
-| `HTTP-199-05` | Hyper loopback 测试服务与 HTTP Client consumer 集成测试 | `Done`；producer 15 tests、consumer transport 15 tests、app 全量 160 tests 与严格 Clippy 通过；实际 UI 未执行 | [测试服务 producer 计划](../../../crates/http-client-test-server/docs/dev/issue-199/http-test-server-plan.md)、[HTTP Client consumer 计划](../../../app/http-client/docs/dev/issue-199/http-test-server-integration-plan.md) | 消费 `HTTP-199-03` 现有 HTTP runtime；test server 只进入 dev graph |
+| `HTTP-199-05` | Hyper loopback 测试服务与 HTTP Client consumer 集成测试 | `Done`；实现提交 `1559cc8`、稳定性修正 `735bc41`；producer 15 tests、consumer transport 15 tests、app 全量 161 tests 与严格 Clippy 通过；实际 UI 未执行 | [测试服务 producer 计划](../../../crates/http-client-test-server/docs/dev/issue-199/http-test-server-plan.md)、[HTTP Client consumer 计划](../../../app/http-client/docs/dev/issue-199/http-test-server-integration-plan.md) | 消费 `HTTP-199-03` 现有 HTTP runtime；test server 只进入 dev graph |
+| `JACO-199-04` | Jaco Conversation 提交、active-run、停止与迟到 completion 的私有 Transition | `Done`；实现提交 `99a073a`；聚焦 Conversation 42 tests、Jaco 全量 369 tests 与严格 Clippy 通过；实际 UI、打包与跨平台 CI 未执行 | [Conversation runtime Transition 实施计划](../../../app/jaco/docs/dev/issue-199/conversation-runtime-transition-plan.md) | 不改 MCP runtime、DB schema 或 Store |
 
-## 当前可执行轮次
+## 已移交范围
 
 | ID | 范围 | 状态 | 专题文档 | 前置关系 |
 | --- | --- | --- | --- | --- |
-| `HTTP-199-04` | HTTP Client 完整 Response 的音频、视频与 PDF 只读预览 | `In progress`；fork `4f1a6cc49...` 与 app 代码/定向自动化已实施；`C-1701` runtime manifest/notices/fixtures/三平台发行验证仍阻塞，实际 UI 未执行 | [Response 媒体与 PDF 实施计划](../../../app/http-client/docs/dev/issue-199/response-media-and-pdf-preview-plan.md) | 消费 `HTTP-199-03` 的 `Arc<ResponseData>`/read lease；不改 HTTP runtime 或 Store |
+| `HTTP-199-04` | HTTP Client 完整 Response 的音频、视频与 PDF 只读预览 | `Superseded`；已进入代码的实现/自动化证据留存，未完成的 native runtime、许可、fixture、打包与三平台验证由 [#200](https://github.com/suxiaoshao/gpui/issues/200) 接续 | [历史实施计划](../../../app/http-client/docs/dev/issue-199/response-media-and-pdf-preview-plan.md)、[#200 root hub](../issue-200/README.md) | #200 消费既有 `Arc<ResponseData>`/read lease；不改 HTTP runtime 或 Store |
 
 Form breaking 与 consumer 再迁移轮次的实际实施顺序：
 
@@ -89,23 +89,22 @@ Form breaking 与 consumer 再迁移轮次的实际实施顺序：
 
 | 文档 | 状态 | 职责 |
 | --- | --- | --- |
-| [应用迁移决策与后续调研草稿](application-migration-decisions.md) | `Draft` | 保留未实施的 Jaco Conversation、暂缓的 Jaco MCP runtime 与 HTTP Client owner 草稿入口；不复制 HTTP 专属问题。 |
+| [应用迁移决策与后续调研草稿](application-migration-decisions.md) | `Draft` | 已完成 Conversation 的设计与完成证据由 `JACO-199-04` owner plan 唯一维护；MCP runtime 已移交 #201；保留 HTTP Client owner 草稿入口且不复制 HTTP 专属问题。 |
 | [HTTP Client 产品与迁移草稿](../../../app/http-client/docs/dev/issue-199/http-client-product-and-migration-draft.md) | `Draft` | HTTP Client 基础可用目标、功能缺失、已确认决定与未回答 `HTTP-*` 问题的 owner 权威入口。 |
 | [HTTP Client Request Form 与 prepared request 实施计划](../../../app/http-client/docs/dev/issue-199/request-form-and-preparation-plan.md) | `Done` | Request Form、五种 Body、Auth、redirect 与 prepared request 已在 `933ee09` 实施并推送；Store 本阶段不适用。 |
 | [HTTP Client 真实 Send 与 Response 实施计划](../../../app/http-client/docs/dev/issue-199/request-send-and-response-plan.md) | `Done` | 已交付单请求 Send/Cancel、私有 Transition、head-first Response、受限 body 收集、安全 viewer 与完成后 Save；实现提交 `24e4a9f` 已推送；116 tests、Check、Clippy、格式与残留扫描通过，实际 UI 未执行。 |
-| [HTTP Client Response 媒体与 PDF 实施计划](../../../app/http-client/docs/dev/issue-199/response-media-and-pdf-preview-plan.md) | `In progress` | fork 已固定为 `4f1a6cc49ddab9d0afc73404afc259bba73d6407`，Response asset、私有媒体/PDF Transition、viewer 与定向自动化已实施；runtime manifest/notices/fixtures/三平台发行验证尚未完成，实际 UI 未执行。 |
+| [HTTP Client Response 媒体与 PDF 实施计划](../../../app/http-client/docs/dev/issue-199/response-media-and-pdf-preview-plan.md) | `Superseded` | 保留 #199 内已进入代码的媒体/PDF 实施与自动化证据；未完成发行门禁由 [#200](../issue-200/README.md) 的 root/owner plans 唯一负责。 |
 | [HTTP 测试服务 producer 实施计划](../../../crates/http-client-test-server/docs/dev/issue-199/http-test-server-plan.md) | `Done` | Hyper HTTP/1 loopback producer、受控 response/abort/echo、CLI 与 15 个自动化测试已交付。 |
-| [HTTP 测试服务 consumer 集成计划](../../../app/http-client/docs/dev/issue-199/http-test-server-integration-plan.md) | `Done` | HTTP Client 已用 dev-only producer 迁移 normal response/abort 测试，保留三项 request-wire raw fixture；transport 15 tests 与 app 160 tests 通过。 |
-| [workspace Store/Operation/Form 适用性调研](workspace-store-operation-form-assessment.md) | 已审阅；MCP runtime暂缓 | 记录全局候选与“不改Store内部”的结论 |
+| [HTTP 测试服务 consumer 集成计划](../../../app/http-client/docs/dev/issue-199/http-test-server-integration-plan.md) | `Done` | HTTP Client 已用 dev-only producer 迁移 normal response/abort 测试，保留三项 request-wire raw fixture；transport 15 tests 与 app 161 tests 通过。 |
+| [workspace Store/Operation/Form 适用性调研](workspace-store-operation-form-assessment.md) | 已审阅；MCP runtime 转 #201 | 记录全局候选与“不改Store内部”的结论 |
 | [上一轮root delivery归档](explicit-form-owner-delivery.md) | 历史原样 | 保存此前共享规格、工作包、验证与完成审计，不作为vNext执行入口 |
 
 ## 后续未实施范围
 
 | 范围 | 本轮状态 | 后续入口 |
 | --- | --- | --- |
-| HTTP Client 基础可用与 Form/运行/Store | Request Form / prepared request、单请求 Send / Response 与 loopback test-server `HTTP-199-05` 已完成；媒体/PDF `HTTP-199-04 In progress`；History/multi-tab/Store/repair 后置 | [HTTP Client owner索引](../../../app/http-client/docs/dev/issue-199/README.md) |
-| Jaco Conversation Transition | 本轮不做 | 总草稿保留已确认语义与技术问题，另建owner plan后再实施 |
-| Jaco MCP runtime Transition | 本轮不做 | `JACO-199-03` 只迁移 MCP 设置表单 consumer，不改连接/OAuth/tool runtime |
+| HTTP Client 基础可用与 Form/运行/Store | Request Form / prepared request、单请求 Send / Response 与 loopback test-server `HTTP-199-05` 已完成；媒体/PDF 发行门禁由 [#200](../issue-200/README.md) 接续；History/multi-tab/Store/repair 后置 | [HTTP Client owner索引](../../../app/http-client/docs/dev/issue-199/README.md) |
+| Jaco MCP runtime Transition | 移交 [#201](https://github.com/suxiaoshao/gpui/issues/201) | `JACO-199-03` 只迁移 MCP 设置表单 consumer，不改连接/OAuth/tool runtime；#201 继承 #184 的 alias/wire-name 兼容护栏 |
 
 ## 状态更新规则
 

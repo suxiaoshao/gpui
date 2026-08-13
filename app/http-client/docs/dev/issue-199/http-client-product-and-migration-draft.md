@@ -17,17 +17,9 @@ Send 与 Response 范围以源码及索引中标记为 `Done` 的实施计划为
 - 未来 Repair 先定义用户可执行的修复动作；在没有动作契约前，不采用预定义
   `gpui_operation::repair::Operation`。
 
-## HTTP-199-04 尚未落地的发行门禁
-
-状态：**`HTTP-199-04 In progress`**。产品、运行与实现契约，以及已进入代码的 Response asset、媒体/PDF
-运行态与 viewer，都以[实施计划](response-media-and-pdf-preview-plan.md)和源码为准；本草稿不再复制。
-
-- `C-1701` 仍未闭环：必须提供经审计的 GStreamer runtime manifest、第三方 notice、带来源和许可证的
-  媒体/PDF fixture corpus，以及 macOS、Windows、Linux 的开发 SDK、CI、bundle 和安装后 plugin/codec
-  验证。当前不得宣称音视频可发行。
-- 真实桌面 UI、音视频播放、PDF 手工翻页和三平台安装包验证均未执行；这些不是 Cargo 定向测试的替代物。
-- `gpui-video-player` fork 已固定到 `4f1a6cc49ddab9d0afc73404afc259bba73d6407`，但该 source producer
-  完成不等同于 native runtime/许可发行门禁完成。
+Response 媒体/PDF 的未完成发行门禁已移交 [#200](https://github.com/suxiaoshao/gpui/issues/200)；该 issue 的
+[owner plan](../issue-200/README.md) 是后续入口，#199 的 [历史计划](response-media-and-pdf-preview-plan.md)
+仅保留已进入代码的实施证据。
 
 ## 尚未解决的未来范围
 
