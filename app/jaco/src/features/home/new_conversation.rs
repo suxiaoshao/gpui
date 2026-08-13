@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     path::{Path, PathBuf},
     rc::Rc,
 };
@@ -12,7 +13,7 @@ use gpui_component::{
     v_flex,
 };
 use gpui_store::StoreSelection;
-use jaco_core::ProjectId;
+use jaco_core::{ConversationId, ProjectId, new_id};
 use jaco_db::ProjectRecord;
 use tracing::{Level, event};
 
@@ -20,8 +21,8 @@ use super::workspace::HomeWorkspace;
 use crate::{
     components::{
         chat::form::{
-            ProjectControlState, ProjectPickerOption, ProjectPickerValue, project_picker_value,
-            project_sections,
+            AgentRunControlStatus, AgentRunStatusSource, ProjectControlState, ProjectPickerOption,
+            ProjectPickerValue, project_picker_value, project_sections,
         },
         chat::input::{
             ChatFormSkillCompletionPlacement, ChatInput, ChatInputController, ChatInputEvent,
@@ -42,7 +43,34 @@ pub(crate) struct NewConversationPage {
     project: Entity<ProjectControlState>,
     workspace: Entity<HomeWorkspace>,
     runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
+    status_conversation_id: Rc<RefCell<Option<ConversationId>>>,
+    pending_submission: Option<conversation::runtime::ConversationSubmissionTicket>,
+    owned_runs: Vec<conversation::runtime::ConversationSubmissionTicket>,
     _subscriptions: Vec<Subscription>,
+}
+
+struct NewConversationRunStatus {
+    runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
+    conversation_id: Rc<RefCell<Option<ConversationId>>>,
+}
+
+impl AgentRunStatusSource for NewConversationRunStatus {
+    fn status(&self, cx: &App) -> AgentRunControlStatus {
+        let conversation_id = self.conversation_id.borrow();
+        let Some(conversation_id) = conversation_id.as_ref() else {
+            return AgentRunControlStatus::Idle;
+        };
+        match self.runtime.read(cx).run_status(conversation_id) {
+            conversation::runtime::ConversationRunStatus::Idle => AgentRunControlStatus::Idle,
+            conversation::runtime::ConversationRunStatus::Submitting => {
+                AgentRunControlStatus::Submitting
+            }
+            conversation::runtime::ConversationRunStatus::Running => AgentRunControlStatus::Running,
+            conversation::runtime::ConversationRunStatus::Stopping => {
+                AgentRunControlStatus::Stopping
+            }
+        }
+    }
 }
 
 impl NewConversationPage {
@@ -116,8 +144,18 @@ impl NewConversationPage {
             open: false,
             picker: project_picker,
         });
-        let chat_form =
-            cx.new(|cx| ChatInputController::new_with_project(project.clone(), window, cx));
+        let status_conversation_id = Rc::new(RefCell::new(None));
+        let chat_form = cx.new(|cx| {
+            let mut chat_form = ChatInputController::new_with_project(project.clone(), window, cx);
+            chat_form.set_agent_run_status(
+                Rc::new(NewConversationRunStatus {
+                    runtime: runtime.clone(),
+                    conversation_id: status_conversation_id.clone(),
+                }),
+                cx,
+            );
+            chat_form
+        });
         let project_catalog = state::projects::catalog(cx);
         let project_subscription = project_catalog.observe_select_in(
             cx,
@@ -149,6 +187,10 @@ impl NewConversationPage {
         let runtime_observation = cx.observe(&runtime, |page, _, cx| {
             page.sync_submission_problem(cx);
         });
+        let runtime_subscription =
+            cx.subscribe_in(&runtime, window, |page, _runtime, event, window, cx| {
+                page.handle_runtime_event(event, window, cx);
+            });
 
         if let Some(project) = selected_project {
             chat_form.update(cx, |chat_form, cx| {
@@ -163,11 +205,15 @@ impl NewConversationPage {
             project,
             workspace,
             runtime,
+            status_conversation_id,
+            pending_submission: None,
+            owned_runs: Vec::new(),
             _subscriptions: vec![
                 project_subscription,
                 chat_form_subscription,
                 workspace_observation,
                 runtime_observation,
+                runtime_subscription,
             ],
         };
         page.sync_submission_problem(cx);
@@ -442,10 +488,13 @@ impl NewConversationPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.chat_form.read(cx).submission_pending(cx) {
+        if self.pending_submission.is_some() {
             return;
         }
+        let conversation_id = new_id();
+        *self.status_conversation_id.borrow_mut() = Some(conversation_id.clone());
         let request = conversation::CreateConversationRequest {
+            conversation_id,
             project_id: self.selected_project_id.clone(),
             content_parts: submit.composer.content_parts.clone(),
             attachments: submit.attachments.clone(),
@@ -458,53 +507,96 @@ impl NewConversationPage {
             prompt_snapshot: None,
             trigger_kind: jaco_core::AgentRunTriggerKind::User,
         };
-        let task = conversation::create_conversation(request, cx);
-        let page = cx.entity().downgrade();
-        let completion = window.spawn(cx, async move |cx| {
-            let result = task.await;
-            let _ = page.update_in(cx, |page, window, cx| {
-                page.chat_form.update(cx, |chat_form, cx| {
-                    chat_form.finish_submission(cx);
+        match self.runtime.update(cx, |runtime, cx| {
+            runtime.submit_new_conversation(request, cx)
+        }) {
+            Ok(ticket) => self.pending_submission = Some(ticket),
+            Err(conversation::runtime::ConversationSubmissionError::Busy) => {
+                *self.status_conversation_id.borrow_mut() = None;
+            }
+            Err(conversation::runtime::ConversationSubmissionError::Unavailable(error)) => {
+                *self.status_conversation_id.borrow_mut() = None;
+                let title = cx.global::<I18n>().t("new-conversation-submit-failed");
+                push_project_notification(window, cx, title, error, NotificationType::Error);
+            }
+        }
+    }
+
+    fn handle_runtime_event(
+        &mut self,
+        event: &conversation::runtime::ConversationRuntimeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            conversation::runtime::ConversationRuntimeEvent::SubmissionCommitted {
+                ticket,
+                kind: conversation::runtime::ConversationSubmissionKind::Create,
+            } if self.pending_submission.as_ref() == Some(ticket) => {
+                *self.status_conversation_id.borrow_mut() = None;
+                self.chat_form.update(cx, |chat_form, cx| {
+                    chat_form.clear_after_submit(window, cx);
                 });
-                match result {
-                    Ok(created) => {
-                        let conversation_id = created.conversation_id.clone();
-                        page.chat_form.update(cx, |chat_form, cx| {
-                            chat_form.clear_after_submit(window, cx);
-                        });
-                        page.workspace.update(cx, |workspace, cx| {
-                            workspace.open_conversation(conversation_id, cx);
-                        });
-                        let start = page
-                            .runtime
-                            .update(cx, |runtime, cx| runtime.start_run(created.run_request, cx));
-                        if let Err(error) = start {
-                            let title = cx.global::<I18n>().t("conversation-run-failed");
-                            push_project_notification(
-                                window,
-                                cx,
-                                title,
-                                error,
-                                NotificationType::Error,
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        let title = cx.global::<I18n>().t("new-conversation-submit-failed");
+                self.workspace.update(cx, |workspace, cx| {
+                    workspace.open_conversation(ticket.conversation_id().clone(), cx);
+                });
+            }
+            conversation::runtime::ConversationRuntimeEvent::SubmissionFailed {
+                ticket,
+                kind: conversation::runtime::ConversationSubmissionKind::Create,
+                error,
+            } if self.pending_submission.as_ref() == Some(ticket) => {
+                self.pending_submission = None;
+                *self.status_conversation_id.borrow_mut() = None;
+                let title = cx.global::<I18n>().t("new-conversation-submit-failed");
+                push_project_notification(
+                    window,
+                    cx,
+                    title,
+                    error.clone(),
+                    NotificationType::Error,
+                );
+            }
+            conversation::runtime::ConversationRuntimeEvent::RunLaunchFailed { ticket, error }
+                if self.pending_submission.as_ref() == Some(ticket) =>
+            {
+                self.pending_submission = None;
+                *self.status_conversation_id.borrow_mut() = None;
+                let title = cx.global::<I18n>().t("conversation-run-failed");
+                push_project_notification(
+                    window,
+                    cx,
+                    title,
+                    error.clone(),
+                    NotificationType::Error,
+                );
+            }
+            conversation::runtime::ConversationRuntimeEvent::RunStarted { ticket }
+                if self.pending_submission.as_ref() == Some(ticket) =>
+            {
+                if let Some(ticket) = self.pending_submission.take() {
+                    self.owned_runs.push(ticket);
+                }
+                *self.status_conversation_id.borrow_mut() = None;
+            }
+            conversation::runtime::ConversationRuntimeEvent::RunFinished { ticket }
+                if remove_owned_run(&mut self.owned_runs, ticket) =>
+            {
+                self.runtime.update(cx, |runtime, cx| {
+                    if let Some(error) = runtime.take_last_error(ticket.conversation_id()) {
+                        let title = cx.global::<I18n>().t("conversation-run-failed");
                         push_project_notification(
                             window,
                             cx,
                             title,
-                            err.to_string(),
+                            error,
                             NotificationType::Error,
                         );
                     }
-                }
-            });
-        });
-        self.chat_form.update(cx, |chat_form, cx| {
-            chat_form.begin_submission(completion, cx);
-        });
+                });
+            }
+            _ => {}
+        }
     }
 
     fn insert_selected_project(
@@ -573,6 +665,17 @@ impl NewConversationPage {
 
         cx.notify();
     }
+}
+
+fn remove_owned_run(
+    owned_runs: &mut Vec<conversation::runtime::ConversationSubmissionTicket>,
+    ticket: &conversation::runtime::ConversationSubmissionTicket,
+) -> bool {
+    let Some(index) = owned_runs.iter().position(|candidate| candidate == ticket) else {
+        return false;
+    };
+    owned_runs.remove(index);
+    true
 }
 
 fn project_catalog_is_ready(cx: &App) -> bool {

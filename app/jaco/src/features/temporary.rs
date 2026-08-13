@@ -2,6 +2,7 @@ pub(crate) mod list;
 pub(crate) mod new_conversation;
 pub(crate) mod search;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -10,6 +11,7 @@ use crate::{
     app::{menus, temporary_window},
     components::{
         chat::detail::ConversationDetailPage,
+        chat::form::{AgentRunControlStatus, AgentRunStatusSource},
         chat::input::{COMPOSER_EDITOR_KEY_CONTEXT, ChatInputSubmit},
         resource::{CriticalResourceAction, CriticalResourceProblem, CriticalResourcesView},
     },
@@ -31,7 +33,7 @@ use gpui_component::{
     v_flex,
 };
 use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition};
-use jaco_core::ConversationId;
+use jaco_core::{ConversationId, new_id};
 use new_conversation::{TemporaryNewConversationPane, TemporaryNewConversationPaneEvent};
 
 use self::list::TemporaryConversationListDelegate;
@@ -84,8 +86,35 @@ pub(crate) struct TemporaryWindow {
     new_conversation: Entity<TemporaryNewConversationPane>,
     conversation_pages: HashMap<ConversationId, Entity<ConversationDetailPage>>,
     runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
+    status_conversation_id: Rc<RefCell<Option<ConversationId>>>,
+    pending_submission: Option<conversation::runtime::ConversationSubmissionTicket>,
+    owned_runs: Vec<conversation::runtime::ConversationSubmissionTicket>,
     _theme_binding: state::theme::WindowThemeBinding,
     _subscriptions: Vec<Subscription>,
+}
+
+struct TemporaryNewConversationRunStatus {
+    runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
+    conversation_id: Rc<RefCell<Option<ConversationId>>>,
+}
+
+impl AgentRunStatusSource for TemporaryNewConversationRunStatus {
+    fn status(&self, cx: &App) -> AgentRunControlStatus {
+        let conversation_id = self.conversation_id.borrow();
+        let Some(conversation_id) = conversation_id.as_ref() else {
+            return AgentRunControlStatus::Idle;
+        };
+        match self.runtime.read(cx).run_status(conversation_id) {
+            conversation::runtime::ConversationRunStatus::Idle => AgentRunControlStatus::Idle,
+            conversation::runtime::ConversationRunStatus::Submitting => {
+                AgentRunControlStatus::Submitting
+            }
+            conversation::runtime::ConversationRunStatus::Running => AgentRunControlStatus::Running,
+            conversation::runtime::ConversationRunStatus::Stopping => {
+                AgentRunControlStatus::Stopping
+            }
+        }
+    }
 }
 
 impl TemporaryWindow {
@@ -123,7 +152,18 @@ impl TemporaryWindow {
             window,
             cx,
         );
-        let new_conversation = cx.new(|cx| TemporaryNewConversationPane::new(window, cx));
+        let status_conversation_id = Rc::new(RefCell::new(None));
+        let new_conversation = cx.new(|cx| {
+            let mut pane = TemporaryNewConversationPane::new(window, cx);
+            pane.set_agent_run_status(
+                Rc::new(TemporaryNewConversationRunStatus {
+                    runtime: runtime.clone(),
+                    conversation_id: status_conversation_id.clone(),
+                }),
+                cx,
+            );
+            pane
+        });
         let database_store = crate::database::store(cx);
         let project_catalog = state::projects::catalog(cx);
         let conversation_catalog =
@@ -159,6 +199,10 @@ impl TemporaryWindow {
         let runtime_subscription = cx.observe_in(&runtime, window, |view, _, _window, cx| {
             view.sync_new_conversation_capability(cx);
         });
+        let runtime_event_subscription =
+            cx.subscribe_in(&runtime, window, |view, _runtime, event, window, cx| {
+                view.handle_runtime_event(event, window, cx);
+            });
 
         let mut view = Self {
             focus_handle,
@@ -171,12 +215,16 @@ impl TemporaryWindow {
             new_conversation,
             conversation_pages: HashMap::new(),
             runtime,
+            status_conversation_id,
+            pending_submission: None,
+            owned_runs: Vec::new(),
             _subscriptions: vec![
                 search_subscription,
                 new_conversation_subscription,
                 project_subscription,
                 conversation_subscription,
                 runtime_subscription,
+                runtime_event_subscription,
                 cx.observe_window_activation(window, |this, window, cx| {
                     if window.is_window_active() {
                         this.focus_search_input(window, cx);
@@ -547,10 +595,13 @@ impl TemporaryWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.new_conversation.read(cx).submission_pending(cx) {
+        if self.pending_submission.is_some() {
             return;
         }
+        let conversation_id = new_id();
+        *self.status_conversation_id.borrow_mut() = Some(conversation_id.clone());
         let request = conversation::CreateConversationRequest {
+            conversation_id,
             project_id: None,
             content_parts: submit.composer.content_parts.clone(),
             attachments: submit.attachments.clone(),
@@ -564,75 +615,27 @@ impl TemporaryWindow {
             trigger_kind: jaco_core::AgentRunTriggerKind::User,
         };
 
-        let task = conversation::create_conversation(request, cx);
-        let page = cx.entity().downgrade();
-        let completion = window.spawn(cx, async move |cx| {
-            let result = task.await;
-            let _ = page.update_in(cx, |page, window, cx| {
-                page.new_conversation.update(cx, |pane, cx| {
-                    pane.finish_submission(cx);
-                });
-                match result {
-                    Ok(created) => {
-                        let conversation_id = created.conversation_id.clone();
-                        page.new_conversation.update(cx, |pane, cx| {
-                            pane.clear_after_submit(window, cx);
-                        });
-                        if page.search_operation.is_running() {
-                            page.search_operation.transition(Cancel);
-                        }
-                        page.query.clear();
-                        page.search_input.update(cx, |input, cx| {
-                            if !input.value().is_empty() {
-                                input.set_value("", window, cx);
-                            }
-                        });
-                        page.reload_conversations(
-                            ReloadSelection::Conversation(conversation_id.clone()),
-                            window,
-                            cx,
-                        );
-                        page.route = TemporaryWindowRoute::Conversation(conversation_id.clone());
-                        let _ = page.conversation_page(conversation_id.clone(), window, cx);
-                        let start = page
-                            .runtime
-                            .update(cx, |runtime, cx| runtime.start_run(created.run_request, cx));
-                        if let Err(error) = start {
-                            let title = cx.global::<I18n>().t("conversation-run-failed");
-                            push_temporary_notification(
-                                window,
-                                cx,
-                                title,
-                                error,
-                                NotificationType::Error,
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        let title = cx.global::<I18n>().t("temporary-submit-failed");
-                        push_temporary_notification(
-                            window,
-                            cx,
-                            title,
-                            err.to_string(),
-                            NotificationType::Error,
-                        );
-                    }
-                }
-            });
-        });
-        self.new_conversation.update(cx, |pane, cx| {
-            pane.begin_submission(completion, cx);
-        });
+        match self.runtime.update(cx, |runtime, cx| {
+            runtime.submit_new_conversation(request, cx)
+        }) {
+            Ok(ticket) => self.pending_submission = Some(ticket),
+            Err(conversation::runtime::ConversationSubmissionError::Busy) => {
+                *self.status_conversation_id.borrow_mut() = None;
+            }
+            Err(conversation::runtime::ConversationSubmissionError::Unavailable(error)) => {
+                *self.status_conversation_id.borrow_mut() = None;
+                let title = cx.global::<I18n>().t("temporary-submit-failed");
+                push_temporary_notification(window, cx, title, error, NotificationType::Error);
+            }
+        }
     }
 
     pub(crate) fn open_created_conversation(
         &mut self,
-        created: conversation::CreatedConversation,
+        conversation_id: ConversationId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let conversation_id = created.conversation_id.clone();
         self.query.clear();
         self.search_input.update(cx, |input, cx| {
             if !input.value().is_empty() {
@@ -646,15 +649,86 @@ impl TemporaryWindow {
         );
         self.route = TemporaryWindowRoute::Conversation(conversation_id.clone());
         let _ = self.conversation_page(conversation_id.clone(), window, cx);
-        let start = self
-            .runtime
-            .update(cx, |runtime, cx| runtime.start_run(created.run_request, cx));
-        if let Err(error) = start {
-            let title = cx.global::<I18n>().t("conversation-run-failed");
-            push_temporary_notification(window, cx, title, error, NotificationType::Error);
-            return false;
-        }
         true
+    }
+
+    fn handle_runtime_event(
+        &mut self,
+        event: &conversation::runtime::ConversationRuntimeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            conversation::runtime::ConversationRuntimeEvent::SubmissionCommitted {
+                ticket,
+                kind: conversation::runtime::ConversationSubmissionKind::Create,
+            } if self.pending_submission.as_ref() == Some(ticket) => {
+                *self.status_conversation_id.borrow_mut() = None;
+                self.new_conversation.update(cx, |pane, cx| {
+                    pane.clear_after_submit(window, cx);
+                });
+                if self.search_operation.is_running() {
+                    self.search_operation.transition(Cancel);
+                }
+                let _ =
+                    self.open_created_conversation(ticket.conversation_id().clone(), window, cx);
+            }
+            conversation::runtime::ConversationRuntimeEvent::SubmissionFailed {
+                ticket,
+                kind: conversation::runtime::ConversationSubmissionKind::Create,
+                error,
+            } if self.pending_submission.as_ref() == Some(ticket) => {
+                self.pending_submission = None;
+                *self.status_conversation_id.borrow_mut() = None;
+                let title = cx.global::<I18n>().t("temporary-submit-failed");
+                push_temporary_notification(
+                    window,
+                    cx,
+                    title,
+                    error.clone(),
+                    NotificationType::Error,
+                );
+            }
+            conversation::runtime::ConversationRuntimeEvent::RunLaunchFailed { ticket, error }
+                if self.pending_submission.as_ref() == Some(ticket) =>
+            {
+                self.pending_submission = None;
+                *self.status_conversation_id.borrow_mut() = None;
+                let title = cx.global::<I18n>().t("conversation-run-failed");
+                push_temporary_notification(
+                    window,
+                    cx,
+                    title,
+                    error.clone(),
+                    NotificationType::Error,
+                );
+            }
+            conversation::runtime::ConversationRuntimeEvent::RunStarted { ticket }
+                if self.pending_submission.as_ref() == Some(ticket) =>
+            {
+                if let Some(ticket) = self.pending_submission.take() {
+                    self.owned_runs.push(ticket);
+                }
+                *self.status_conversation_id.borrow_mut() = None;
+            }
+            conversation::runtime::ConversationRuntimeEvent::RunFinished { ticket }
+                if remove_owned_run(&mut self.owned_runs, ticket) =>
+            {
+                self.runtime.update(cx, |runtime, cx| {
+                    if let Some(error) = runtime.take_last_error(ticket.conversation_id()) {
+                        let title = cx.global::<I18n>().t("conversation-run-failed");
+                        push_temporary_notification(
+                            window,
+                            cx,
+                            title,
+                            error,
+                            NotificationType::Error,
+                        );
+                    }
+                });
+            }
+            _ => {}
+        }
     }
 
     fn conversation_page(
@@ -780,6 +854,17 @@ impl TemporaryWindow {
                 .into_any_element(),
         }
     }
+}
+
+fn remove_owned_run(
+    owned_runs: &mut Vec<conversation::runtime::ConversationSubmissionTicket>,
+    ticket: &conversation::runtime::ConversationSubmissionTicket,
+) -> bool {
+    let Some(index) = owned_runs.iter().position(|candidate| candidate == ticket) else {
+        return false;
+    };
+    owned_runs.remove(index);
+    true
 }
 
 impl Focusable for TemporaryWindow {

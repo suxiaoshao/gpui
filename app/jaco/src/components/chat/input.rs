@@ -436,24 +436,6 @@ impl ChatInputController {
         });
     }
 
-    pub(crate) fn begin_submission(&mut self, task: Task<()>, cx: &mut Context<Self>) {
-        self.primary_action_state.update(cx, |state, cx| {
-            state.begin_submission(task);
-            cx.notify();
-        });
-    }
-
-    pub(crate) fn finish_submission(&mut self, cx: &mut Context<Self>) {
-        self.primary_action_state.update(cx, |state, cx| {
-            state.finish_submission();
-            cx.notify();
-        });
-    }
-
-    pub(crate) fn submission_pending(&self, cx: &App) -> bool {
-        self.primary_action_state.read(cx).submission_pending()
-    }
-
     pub(crate) fn refresh_primary_action(&self, cx: &mut Context<Self>) {
         cx.notify();
     }
@@ -479,16 +461,11 @@ impl ChatInputController {
     }
 
     fn primary_action_busy(&self, cx: &App) -> bool {
-        let state = self.primary_action_state.read(cx);
-        state.submission_pending() || state.agent_status(cx) != AgentRunControlStatus::Idle
+        self.primary_action_state.read(cx).agent_status(cx) != AgentRunControlStatus::Idle
     }
 
     fn agent_status(&self, cx: &App) -> AgentRunControlStatus {
         self.primary_action_state.read(cx).agent_status(cx)
-    }
-
-    fn submission_is_pending(&self, cx: &App) -> bool {
-        self.primary_action_state.read(cx).submission_pending()
     }
 
     fn save_chat_form_config(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -559,11 +536,8 @@ impl ChatInputController {
             AgentRunControlStatus::Running => {
                 return Some(ChatInputPrimaryButtonAction::Stop);
             }
-            AgentRunControlStatus::Stopping => return None,
+            AgentRunControlStatus::Submitting | AgentRunControlStatus::Stopping => return None,
             AgentRunControlStatus::Idle => {}
-        }
-        if self.submission_is_pending(cx) {
-            return None;
         }
 
         let snapshot = self.composer.read(cx).snapshot();
@@ -731,8 +705,8 @@ mod tests {
     };
     use gpui::{
         Anchor, App, AppContext as _, Bounds, Entity, IntoElement, ParentElement as _, Render,
-        Styled as _, Subscription, Task, TestAppContext, View, VisualTestContext, WindowHandle,
-        div, point, px, size,
+        Styled as _, Subscription, TestAppContext, View, VisualTestContext, WindowHandle, div,
+        point, px, size,
     };
     use gpui_operation::Transition as _;
     use jaco_core::{
@@ -1248,16 +1222,22 @@ mod tests {
     }
 
     #[gpui::test]
-    fn pending_submission_task_blocks_repeated_submit(cx: &mut TestAppContext) {
+    fn submitting_agent_blocks_repeated_submit(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         configure_chat_form_model(cx, "gpt-5");
         let window = open_chat_form_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let form = chat_input_controller(window, &mut cx);
 
+        let status = Rc::new(Cell::new(AgentRunControlStatus::Submitting));
         cx.update(|_, cx| {
             form.update(cx, |form, cx| {
-                form.begin_submission(Task::ready(()), cx);
+                form.set_agent_run_status(
+                    Rc::new(TestAgentRunStatus {
+                        status: status.clone(),
+                    }),
+                    cx,
+                );
             });
         });
 
@@ -1267,11 +1247,7 @@ mod tests {
         });
         assert_eq!(action, None);
 
-        cx.update(|_, cx| {
-            form.update(cx, |form, cx| {
-                form.finish_submission(cx);
-            });
-        });
+        status.set(AgentRunControlStatus::Idle);
 
         assert!(submit_snapshot(&form, test_snapshot("hello"), &mut cx).is_some());
     }

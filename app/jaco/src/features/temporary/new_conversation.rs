@@ -1,3 +1,4 @@
+use crate::components::chat::form::AgentRunStatusSource;
 use crate::components::chat::input::{
     ChatFormSkillCompletionPlacement, ChatInput, ChatInputController, ChatInputEvent,
     ChatInputSubmit,
@@ -5,6 +6,7 @@ use crate::components::chat::input::{
 use crate::components::chat::runtime_status::ConversationRuntimeStatus;
 use gpui::*;
 use gpui_component::v_flex;
+use std::rc::Rc;
 
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone)]
@@ -60,18 +62,14 @@ impl TemporaryNewConversationPane {
             .update(cx, |chat_form, cx| chat_form.clear_after_submit(window, cx));
     }
 
-    pub(super) fn submission_pending(&self, cx: &App) -> bool {
-        self.chat_form.read(cx).submission_pending(cx)
-    }
-
-    pub(super) fn begin_submission(&mut self, task: Task<()>, cx: &mut Context<Self>) {
-        self.chat_form
-            .update(cx, |chat_form, cx| chat_form.begin_submission(task, cx));
-    }
-
-    pub(super) fn finish_submission(&mut self, cx: &mut Context<Self>) {
-        self.chat_form
-            .update(cx, |chat_form, cx| chat_form.finish_submission(cx));
+    pub(super) fn set_agent_run_status(
+        &mut self,
+        source: Rc<dyn AgentRunStatusSource>,
+        cx: &mut Context<Self>,
+    ) {
+        self.chat_form.update(cx, |chat_form, cx| {
+            chat_form.set_agent_run_status(source, cx)
+        });
     }
 
     pub(super) fn set_submission_problem(

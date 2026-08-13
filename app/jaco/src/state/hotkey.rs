@@ -6,7 +6,7 @@ use std::{
 
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
 use gpui::{
-    AnyWindowHandle, App, AppContext, BorrowAppContext, Context, Entity, Global, Image,
+    AnyWindowHandle, App, AppContext, BorrowAppContext, Context, Entity, EntityId, Global, Image,
     ImageFormat, SharedString, Subscription, Task,
 };
 use gpui_component::{
@@ -16,7 +16,7 @@ use gpui_component::{
 use gpui_store::Select;
 use jaco_core::{
     AgentRunTriggerKind, ContentPart, PromptContent, PromptId, ShortcutAction, ShortcutId,
-    ShortcutInputSource,
+    ShortcutInputSource, new_id,
 };
 use jaco_db::ShortcutRecord;
 use platform_ext::{OcrError, ocr::ImageFrame};
@@ -150,6 +150,9 @@ pub(crate) struct GlobalHotkeyState {
     last_pressed: Option<HotkeyPressDiagnostics>,
     _task: Task<()>,
     tasks: Vec<Task<()>>,
+    pending_shortcut_submissions: Vec<conversation::runtime::ConversationSubmissionTicket>,
+    shortcut_runtime_observer: Option<Entity<ShortcutRuntimeObserver>>,
+    shortcut_runtime_entity_id: Option<EntityId>,
 }
 
 impl Global for GlobalHotkeyState {}
@@ -166,6 +169,10 @@ struct TemporaryHotkeyObserverGlobal {
 impl Global for TemporaryHotkeyObserverGlobal {}
 
 struct ShortcutHotkeyObserver {
+    _subscription: Subscription,
+}
+
+struct ShortcutRuntimeObserver {
     _subscription: Subscription,
 }
 
@@ -364,11 +371,17 @@ impl GlobalHotkeyState {
             last_pressed: None,
             _task: task,
             tasks: Vec::new(),
+            pending_shortcut_submissions: Vec::new(),
+            shortcut_runtime_observer: None,
+            shortcut_runtime_entity_id: None,
         }
     }
 
     fn shutdown_runtime(&mut self) {
         self.tasks.clear();
+        self.pending_shortcut_submissions.clear();
+        self.shortcut_runtime_observer = None;
+        self.shortcut_runtime_entity_id = None;
         let registered = self
             .temporary_hotkey
             .iter()
@@ -975,14 +988,7 @@ impl GlobalHotkeyState {
         let png = screenshot_png_bytes(&image)
             .map_err(|err| JacoError::Window(format!("encode screenshot failed: {err}")))?;
         let attachment = screenshot_composer_attachment(&image, &png)?;
-        let created = self.create_shortcut_conversation(
-            &trigger,
-            Vec::new(),
-            vec![attachment],
-            title_seed,
-            cx,
-        );
-        self.finish_shortcut_creation(created, cx);
+        self.submit_shortcut_conversation(&trigger, Vec::new(), vec![attachment], title_seed, cx)?;
         Ok(())
     }
 
@@ -993,19 +999,26 @@ impl GlobalHotkeyState {
         content_parts: Vec<ContentPart>,
         cx: &mut App,
     ) {
-        let task =
-            self.create_shortcut_conversation(&trigger, content_parts, Vec::new(), title_seed, cx);
-        self.finish_shortcut_creation(task, cx);
+        if let Err(error) =
+            self.submit_shortcut_conversation(&trigger, content_parts, Vec::new(), title_seed, cx)
+        {
+            self.push_notification(
+                "notify-shortcut-trigger-model-unavailable-title",
+                error.to_string(),
+                NotificationType::Error,
+                cx,
+            );
+        }
     }
 
-    fn create_shortcut_conversation(
-        &self,
+    fn submit_shortcut_conversation(
+        &mut self,
         trigger: &ShortcutTriggerContext,
         content_parts: Vec<ContentPart>,
         attachments: Vec<ComposerAttachment>,
         title_seed: String,
         cx: &mut App,
-    ) -> Task<JacoResult<conversation::CreatedConversation>> {
+    ) -> JacoResult<()> {
         if let Some(selection) = trigger
             .shortcut
             .settings_snapshot
@@ -1016,50 +1029,139 @@ impl GlobalHotkeyState {
                 selection,
             )
         {
-            return Task::ready(Err(JacoError::Window(
+            return Err(JacoError::Window(
                 "shortcut reasoning setting is not supported by the selected model".to_string(),
-            )));
+            ));
         }
-        conversation::create_conversation(
-            conversation::CreateConversationRequest {
-                project_id: None,
-                content_parts,
-                attachments,
-                title_seed,
-                skill_requests: Vec::new(),
-                provider_model: trigger.provider_model.clone(),
-                reasoning_selection: trigger
-                    .shortcut
-                    .settings_snapshot
-                    .reasoning_selection
-                    .clone(),
-                approval_mode: trigger.shortcut.settings_snapshot.tool_policy.approval_mode,
-                prompt_id: trigger.prompt_id.clone(),
-                prompt_snapshot: trigger.prompt_snapshot.clone(),
-                trigger_kind: AgentRunTriggerKind::Shortcut,
-            },
-            cx,
-        )
-    }
-
-    fn finish_shortcut_creation(
-        &mut self,
-        task: Task<JacoResult<conversation::CreatedConversation>>,
-        cx: &mut App,
-    ) {
-        let task = cx.spawn(async move |cx| {
-            let result = task.await;
-            cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| match result {
-                Ok(created) => hotkeys.finish_shortcut_trigger(created, cx),
-                Err(error) => hotkeys.push_notification(
+        let runtime = conversation::resources::ready_runtime(cx)
+            .ok_or_else(|| JacoError::Window("conversation runtime is unavailable".to_string()))?;
+        if self.shortcut_runtime_entity_id != Some(runtime.entity_id()) {
+            self.pending_shortcut_submissions.clear();
+        }
+        self.bind_shortcut_runtime(&runtime, cx);
+        let request = conversation::CreateConversationRequest {
+            conversation_id: new_id(),
+            project_id: None,
+            content_parts,
+            attachments,
+            title_seed,
+            skill_requests: Vec::new(),
+            provider_model: trigger.provider_model.clone(),
+            reasoning_selection: trigger
+                .shortcut
+                .settings_snapshot
+                .reasoning_selection
+                .clone(),
+            approval_mode: trigger.shortcut.settings_snapshot.tool_policy.approval_mode,
+            prompt_id: trigger.prompt_id.clone(),
+            prompt_snapshot: trigger.prompt_snapshot.clone(),
+            trigger_kind: AgentRunTriggerKind::Shortcut,
+        };
+        match runtime.update(cx, |runtime, cx| {
+            runtime.submit_new_conversation(request, cx)
+        }) {
+            Ok(ticket) => self.pending_shortcut_submissions.push(ticket),
+            Err(conversation::runtime::ConversationSubmissionError::Busy) => {}
+            Err(conversation::runtime::ConversationSubmissionError::Unavailable(error)) => {
+                self.push_notification(
                     "notify-shortcut-trigger-model-unavailable-title",
-                    error.to_string(),
+                    error,
                     NotificationType::Error,
                     cx,
-                ),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn bind_shortcut_runtime(
+        &mut self,
+        runtime: &Entity<conversation::runtime::ConversationRuntimeStore>,
+        cx: &mut App,
+    ) {
+        let entity_id = runtime.entity_id();
+        if self.shortcut_runtime_entity_id == Some(entity_id) {
+            return;
+        }
+        let observer = cx.new(|cx| {
+            let subscription = cx.subscribe(runtime, |_observer, _runtime, event, cx| {
+                cx.update_global::<GlobalHotkeyState, _>(|hotkeys, cx| {
+                    hotkeys.handle_shortcut_runtime_event(event, cx);
+                });
             });
+            ShortcutRuntimeObserver {
+                _subscription: subscription,
+            }
         });
-        self.retain_task(task);
+        self.shortcut_runtime_observer = Some(observer);
+        self.shortcut_runtime_entity_id = Some(entity_id);
+    }
+
+    fn handle_shortcut_runtime_event(
+        &mut self,
+        event: &conversation::runtime::ConversationRuntimeEvent,
+        cx: &mut App,
+    ) {
+        match event {
+            conversation::runtime::ConversationRuntimeEvent::SubmissionCommitted {
+                ticket,
+                kind: conversation::runtime::ConversationSubmissionKind::Create,
+            } if self.pending_shortcut_submissions.contains(ticket) => {
+                self.finish_shortcut_trigger(ticket.conversation_id().clone(), cx);
+            }
+            conversation::runtime::ConversationRuntimeEvent::SubmissionFailed {
+                ticket,
+                kind: conversation::runtime::ConversationSubmissionKind::Create,
+                error,
+            } if remove_pending_shortcut_submission(
+                &mut self.pending_shortcut_submissions,
+                ticket,
+            ) =>
+            {
+                self.push_notification(
+                    "notify-shortcut-trigger-model-unavailable-title",
+                    error.clone(),
+                    NotificationType::Error,
+                    cx,
+                );
+            }
+            conversation::runtime::ConversationRuntimeEvent::RunLaunchFailed { ticket, error }
+                if remove_pending_shortcut_submission(
+                    &mut self.pending_shortcut_submissions,
+                    ticket,
+                ) =>
+            {
+                self.push_notification(
+                    "conversation-run-failed",
+                    error.clone(),
+                    NotificationType::Error,
+                    cx,
+                );
+            }
+            conversation::runtime::ConversationRuntimeEvent::RunStarted { ticket }
+                if self.pending_shortcut_submissions.contains(ticket) => {}
+            conversation::runtime::ConversationRuntimeEvent::RunFinished { ticket }
+                if remove_pending_shortcut_submission(
+                    &mut self.pending_shortcut_submissions,
+                    ticket,
+                ) =>
+            {
+                let Some(runtime) = conversation::resources::ready_runtime(cx) else {
+                    return;
+                };
+                runtime.update(cx, |runtime, cx| {
+                    if let Some(error) = runtime.take_last_error(ticket.conversation_id()) {
+                        self.push_notification(
+                            "conversation-run-failed",
+                            error,
+                            NotificationType::Error,
+                            cx,
+                        );
+                    }
+                });
+            }
+            _ => {}
+        }
     }
 
     pub(crate) fn retain_task(&mut self, task: Task<()>) {
@@ -1067,13 +1169,13 @@ impl GlobalHotkeyState {
         self.tasks.push(task);
     }
 
-    fn finish_shortcut_trigger(&self, created: conversation::CreatedConversation, cx: &mut App) {
+    fn finish_shortcut_trigger(&self, conversation_id: jaco_core::ConversationId, cx: &mut App) {
         // Selection/OCR/screenshot completion normally arrives from inside a
         // `GlobalHotkeyState` update. The temporary-window lifecycle performs
         // nested global/window/entity updates, so dispatch it after the
         // current update scope has released its borrows.
         cx.defer(move |cx| {
-            if temporary_window::show_created_conversation(created, cx).is_none() {
+            if temporary_window::show_created_conversation(conversation_id, cx).is_none() {
                 event!(
                     Level::ERROR,
                     "failed to show shortcut conversation in temporary window"
@@ -1166,6 +1268,17 @@ impl GlobalHotkeyState {
             .map(GlobalHotkeyState::diagnostics)
             .unwrap_or_default()
     }
+}
+
+fn remove_pending_shortcut_submission(
+    pending: &mut Vec<conversation::runtime::ConversationSubmissionTicket>,
+    ticket: &conversation::runtime::ConversationSubmissionTicket,
+) -> bool {
+    let Some(index) = pending.iter().position(|candidate| candidate == ticket) else {
+        return false;
+    };
+    pending.remove(index);
+    true
 }
 
 fn normalized_text(text: Option<String>) -> Option<String> {

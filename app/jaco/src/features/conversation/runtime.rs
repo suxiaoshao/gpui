@@ -22,7 +22,7 @@ enum RuntimePublication {
 }
 
 pub(crate) struct ConversationRuntimeStore {
-    active_runs: HashMap<ConversationId, ActiveRun>,
+    active_runs: ActiveRuns,
     last_errors: HashMap<ConversationId, String>,
     next_run_key: u64,
     shutting_down: bool,
@@ -41,34 +41,329 @@ impl std::fmt::Display for ConversationRuntimeProblem {
 
 impl std::error::Error for ConversationRuntimeProblem {}
 
+#[derive(Default)]
+struct ActiveRuns(HashMap<ConversationId, ConversationAttempt>);
+
+#[cfg(test)]
+impl ActiveRuns {
+    fn insert(&mut self, conversation_id: ConversationId, active: ActiveRun) {
+        self.0
+            .insert(conversation_id, ConversationAttempt::Running(active));
+    }
+
+    fn contains_key(&self, conversation_id: &ConversationId) -> bool {
+        self.0.contains_key(conversation_id)
+    }
+}
+
+enum ConversationAttempt {
+    Submitting(SubmissionAttempt),
+    Running(ActiveRun),
+    Stopping(ActiveRun),
+}
+
+struct SubmissionAttempt {
+    key: ActiveRunKey,
+    task: Task<()>,
+}
+
 struct ActiveRun {
     key: ActiveRunKey,
     agent_run_id: Option<AgentRunId>,
     cancellation_token: AgentCancellationToken,
     approval_broker: Arc<ConversationApprovalBroker>,
-    task: ActiveRunTask,
+    task: Task<()>,
     _event_task: Task<()>,
 }
 
-enum ActiveRunTask {
-    Running(Task<()>),
-    Stopping(Task<()>),
+struct SubmitAttempt {
+    conversation_id: ConversationId,
+    key: ActiveRunKey,
+    task: Task<()>,
+}
+
+struct SubmissionCommitted {
+    conversation_id: ConversationId,
+    key: ActiveRunKey,
+}
+
+struct StartRun {
+    conversation_id: ConversationId,
+    key: ActiveRunKey,
+    active_run: ActiveRun,
+}
+
+struct SubmissionFailed {
+    conversation_id: ConversationId,
+    key: ActiveRunKey,
+}
+
+struct StopRun<'cx, 'app> {
+    conversation_id: ConversationId,
+    key: ActiveRunKey,
+    persistence: Result<Arc<dyn AgentPersistence>, String>,
+    openai_sessions: OpenAiResponsesSessionPool,
+    cx: &'cx mut Context<'app, ConversationRuntimeStore>,
+}
+
+struct RunFinished {
+    conversation_id: ConversationId,
+    key: ActiveRunKey,
+}
+
+struct StopFinished {
+    conversation_id: ConversationId,
+    key: ActiveRunKey,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ConversationRunStatus {
     Idle,
+    Submitting,
     Running,
     Stopping,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConversationSubmissionKind {
+    Create,
+    Message,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ConversationSubmissionTicket {
+    conversation_id: ConversationId,
+    attempt_key: ActiveRunKey,
+}
+
+impl ConversationSubmissionTicket {
+    pub(crate) fn conversation_id(&self) -> &ConversationId {
+        &self.conversation_id
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ConversationSubmissionError {
+    Busy,
+    Unavailable(String),
+}
+
+impl std::fmt::Display for ConversationSubmissionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy => formatter.write_str("conversation already has an active attempt"),
+            Self::Unavailable(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for ConversationSubmissionError {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ActiveRunKey(u64);
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ConversationRuntimeEvent {
-    RunStarted { conversation_id: ConversationId },
-    RunFinished { conversation_id: ConversationId },
+    SubmissionCommitted {
+        ticket: ConversationSubmissionTicket,
+        kind: ConversationSubmissionKind,
+    },
+    SubmissionFailed {
+        ticket: ConversationSubmissionTicket,
+        kind: ConversationSubmissionKind,
+        error: String,
+    },
+    RunLaunchFailed {
+        ticket: ConversationSubmissionTicket,
+        error: String,
+    },
+    RunStarted {
+        ticket: ConversationSubmissionTicket,
+    },
+    RunFinished {
+        ticket: ConversationSubmissionTicket,
+    },
+}
+
+impl Transition<SubmitAttempt> for &mut ActiveRuns {
+    type Output = bool;
+
+    fn transition(self, message: SubmitAttempt) -> Self::Output {
+        use std::collections::hash_map::Entry;
+
+        match self.0.entry(message.conversation_id) {
+            Entry::Vacant(entry) => {
+                entry.insert(ConversationAttempt::Submitting(SubmissionAttempt {
+                    key: message.key,
+                    task: message.task,
+                }));
+                true
+            }
+            Entry::Occupied(entry) => {
+                event!(
+                    Level::DEBUG,
+                    conversation_id = %entry.key(),
+                    "ignored duplicate conversation submission"
+                );
+                false
+            }
+        }
+    }
+}
+
+impl Transition<SubmissionCommitted> for &mut ActiveRuns {
+    type Output = bool;
+
+    fn transition(self, message: SubmissionCommitted) -> Self::Output {
+        matches!(
+            self.0.get(&message.conversation_id),
+            Some(ConversationAttempt::Submitting(submitting)) if submitting.key == message.key
+        )
+    }
+}
+
+impl Transition<StartRun> for &mut ActiveRuns {
+    type Output = bool;
+
+    fn transition(self, message: StartRun) -> Self::Output {
+        let Some(current) = self.0.get_mut(&message.conversation_id) else {
+            return false;
+        };
+        if !matches!(current, ConversationAttempt::Submitting(submitting) if submitting.key == message.key)
+        {
+            return false;
+        }
+
+        let previous = std::mem::replace(current, ConversationAttempt::Running(message.active_run));
+        drop(previous);
+        true
+    }
+}
+
+impl Transition<SubmissionFailed> for &mut ActiveRuns {
+    type Output = bool;
+
+    fn transition(self, message: SubmissionFailed) -> Self::Output {
+        let matches = matches!(
+            self.0.get(&message.conversation_id),
+            Some(ConversationAttempt::Submitting(submitting)) if submitting.key == message.key
+        );
+        if !matches {
+            return false;
+        }
+        drop(self.0.remove(&message.conversation_id));
+        true
+    }
+}
+
+impl Transition<StopRun<'_, '_>> for &mut ActiveRuns {
+    type Output = bool;
+
+    fn transition(self, message: StopRun<'_, '_>) -> Self::Output {
+        let StopRun {
+            conversation_id,
+            key: expected_key,
+            persistence,
+            openai_sessions,
+            cx,
+        } = message;
+        let matches = matches!(
+            self.0.get(&conversation_id),
+            Some(ConversationAttempt::Running(active)) if active.key == expected_key
+        );
+        if !matches {
+            return false;
+        }
+
+        let Some(ConversationAttempt::Running(active)) = self.0.remove(&conversation_id) else {
+            unreachable!("running attempt was validated before removal");
+        };
+        active.cancellation_token.cancel();
+        if let Some(agent_run_id) = active.agent_run_id.as_ref() {
+            active.approval_broker.cancel_all_for_run(agent_run_id);
+        } else {
+            active.approval_broker.cancel_all();
+        }
+
+        let ActiveRun {
+            key,
+            agent_run_id,
+            cancellation_token,
+            approval_broker,
+            task: running_task,
+            _event_task,
+        } = active;
+        let cleanup_conversation_id = conversation_id.clone();
+        let cleanup_agent_run_id = agent_run_id.clone();
+        let completion_sessions = openai_sessions.clone();
+        let cleanup = cx.spawn(async move |store, cx| {
+            running_task.await;
+            completion_sessions
+                .close_conversation(&cleanup_conversation_id)
+                .await;
+            let result = match persistence {
+                Ok(persistence) => AgentRuntime::new(persistence)
+                    .with_openai_session_pool(completion_sessions.clone())
+                    .cancel_non_terminal_runs_for_conversation(&cleanup_conversation_id, None)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+                Err(error) => Err(error),
+            };
+            finish_stop_from_task(
+                store,
+                cleanup_conversation_id,
+                key,
+                cleanup_agent_run_id,
+                result,
+                cx,
+            );
+        });
+        self.0.insert(
+            conversation_id,
+            ConversationAttempt::Stopping(ActiveRun {
+                key,
+                agent_run_id,
+                cancellation_token,
+                approval_broker,
+                task: cleanup,
+                _event_task,
+            }),
+        );
+        true
+    }
+}
+
+impl Transition<RunFinished> for &mut ActiveRuns {
+    type Output = bool;
+
+    fn transition(self, message: RunFinished) -> Self::Output {
+        let matches = matches!(
+            self.0.get(&message.conversation_id),
+            Some(ConversationAttempt::Running(active)) if active.key == message.key
+        );
+        if !matches {
+            return false;
+        }
+        drop(self.0.remove(&message.conversation_id));
+        true
+    }
+}
+
+impl Transition<StopFinished> for &mut ActiveRuns {
+    type Output = bool;
+
+    fn transition(self, message: StopFinished) -> Self::Output {
+        let matches = matches!(
+            self.0.get(&message.conversation_id),
+            Some(ConversationAttempt::Stopping(active)) if active.key == message.key
+        );
+        if !matches {
+            return false;
+        }
+        drop(self.0.remove(&message.conversation_id));
+        true
+    }
 }
 
 impl EventEmitter<ConversationRuntimeEvent> for ConversationRuntimeStore {}
@@ -76,7 +371,7 @@ impl EventEmitter<ConversationRuntimeEvent> for ConversationRuntimeStore {}
 impl ConversationRuntimeStore {
     fn new() -> Self {
         Self {
-            active_runs: HashMap::new(),
+            active_runs: ActiveRuns::default(),
             last_errors: HashMap::new(),
             next_run_key: 0,
             shutting_down: false,
@@ -94,18 +389,16 @@ impl ConversationRuntimeStore {
     }
 
     pub(crate) fn run_status(&self, conversation_id: &ConversationId) -> ConversationRunStatus {
-        match self
-            .active_runs
-            .get(conversation_id)
-            .map(|active| &active.task)
-        {
+        match self.active_runs.0.get(conversation_id) {
             None => ConversationRunStatus::Idle,
-            Some(ActiveRunTask::Running(_)) => ConversationRunStatus::Running,
-            Some(ActiveRunTask::Stopping(_)) => ConversationRunStatus::Stopping,
+            Some(ConversationAttempt::Submitting(_)) => ConversationRunStatus::Submitting,
+            Some(ConversationAttempt::Running(_)) => ConversationRunStatus::Running,
+            Some(ConversationAttempt::Stopping(_)) => ConversationRunStatus::Stopping,
         }
     }
 
-    pub(crate) fn is_running(&self, conversation_id: &ConversationId) -> bool {
+    #[cfg(test)]
+    fn is_running(&self, conversation_id: &ConversationId) -> bool {
         self.run_status(conversation_id) != ConversationRunStatus::Idle
     }
 
@@ -123,8 +416,14 @@ impl ConversationRuntimeStore {
         conversation_id: &ConversationId,
     ) -> Option<AgentRunId> {
         self.active_runs
+            .0
             .get(conversation_id)
-            .and_then(|active| active.agent_run_id.clone())
+            .and_then(|attempt| match attempt {
+                ConversationAttempt::Running(active) | ConversationAttempt::Stopping(active) => {
+                    active.agent_run_id.clone()
+                }
+                ConversationAttempt::Submitting(_) => None,
+            })
     }
 
     pub(crate) fn recovery(&self) -> &refresh::Operation<(), ConversationRuntimeProblem, Task<()>> {
@@ -135,110 +434,151 @@ impl ConversationRuntimeStore {
         self.last_errors.remove(conversation_id)
     }
 
+    pub(crate) fn submit_message(
+        &mut self,
+        request: super::SendConversationMessageRequest,
+        cx: &mut Context<Self>,
+    ) -> Result<ConversationSubmissionTicket, ConversationSubmissionError> {
+        let conversation_id = request.conversation_id.clone();
+        self.ensure_submission_available(&conversation_id)?;
+        self.last_errors.remove(&conversation_id);
+        let key = self.next_active_run_key();
+        let ticket = ConversationSubmissionTicket {
+            conversation_id: conversation_id.clone(),
+            attempt_key: key,
+        };
+        let submission = super::send_conversation_message(request, cx);
+        let completion_ticket = ticket.clone();
+        let task = cx.spawn(async move |store, cx| {
+            let result = submission
+                .await
+                .map(|sent| sent.run_request)
+                .map_err(|error| error.to_string());
+            finish_submission_from_task(
+                store,
+                completion_ticket,
+                ConversationSubmissionKind::Message,
+                result,
+                cx,
+            );
+        });
+        let accepted = (&mut self.active_runs).transition(SubmitAttempt {
+            conversation_id,
+            key,
+            task,
+        });
+        debug_assert!(
+            accepted,
+            "submission availability was checked synchronously"
+        );
+        cx.notify();
+        Ok(ticket)
+    }
+
+    pub(crate) fn submit_new_conversation(
+        &mut self,
+        request: super::CreateConversationRequest,
+        cx: &mut Context<Self>,
+    ) -> Result<ConversationSubmissionTicket, ConversationSubmissionError> {
+        let conversation_id = request.conversation_id.clone();
+        self.ensure_submission_available(&conversation_id)?;
+        self.last_errors.remove(&conversation_id);
+        let key = self.next_active_run_key();
+        let ticket = ConversationSubmissionTicket {
+            conversation_id: conversation_id.clone(),
+            attempt_key: key,
+        };
+        let submission = super::create_conversation(request, cx);
+        let completion_ticket = ticket.clone();
+        let task = cx.spawn(async move |store, cx| {
+            let result = submission
+                .await
+                .map(|created| created.run_request)
+                .map_err(|error| error.to_string());
+            finish_submission_from_task(
+                store,
+                completion_ticket,
+                ConversationSubmissionKind::Create,
+                result,
+                cx,
+            );
+        });
+        let accepted = (&mut self.active_runs).transition(SubmitAttempt {
+            conversation_id,
+            key,
+            task,
+        });
+        debug_assert!(
+            accepted,
+            "submission availability was checked synchronously"
+        );
+        cx.notify();
+        Ok(ticket)
+    }
+
+    fn ensure_submission_available(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<(), ConversationSubmissionError> {
+        if self.active_runs.0.contains_key(conversation_id) {
+            return Err(ConversationSubmissionError::Busy);
+        }
+        if self.shutting_down || !matches!(self.recovery, refresh::Operation::Ready(_)) {
+            return Err(ConversationSubmissionError::Unavailable(
+                self.recovery
+                    .problem()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "conversation runtime is recovering".to_string()),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn stop_run(
         &mut self,
         conversation_id: &ConversationId,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(active) = self.active_runs.get_mut(conversation_id) else {
+        let Some(ConversationAttempt::Running(active)) = self.active_runs.0.get(conversation_id)
+        else {
             return false;
         };
-        if matches!(active.task, ActiveRunTask::Stopping(_)) {
-            return false;
-        }
-
-        active.cancellation_token.cancel();
-        if let Some(agent_run_id) = active.agent_run_id.as_ref() {
-            active.approval_broker.cancel_all_for_run(agent_run_id);
-        } else {
-            active.approval_broker.cancel_all();
-        }
         let run_key = active.key;
-        let agent_run_id = active.agent_run_id.clone();
         let persistence = database::ready_agent_persistence(cx).map_err(|error| error.to_string());
         let openai_sessions = self.openai_sessions.clone();
-        let cleanup_conversation_id = conversation_id.clone();
-        let running_task =
-            match std::mem::replace(&mut active.task, ActiveRunTask::Stopping(Task::ready(()))) {
-                ActiveRunTask::Running(task) => task,
-                ActiveRunTask::Stopping(task) => {
-                    active.task = ActiveRunTask::Stopping(task);
-                    return false;
-                }
-            };
-        let cleanup = cx.spawn(async move |store, cx| {
-            running_task.await;
-            openai_sessions
-                .close_conversation(&cleanup_conversation_id)
-                .await;
-            let result = match persistence {
-                Ok(persistence) => AgentRuntime::new(persistence)
-                    .with_openai_session_pool(openai_sessions.clone())
-                    .cancel_non_terminal_runs_for_conversation(&cleanup_conversation_id, None)
-                    .await
-                    .map(|_| ())
-                    .map_err(|error| error.to_string()),
-                Err(error) => Err(error),
-            };
-            finish_stop_from_task(
-                store,
-                cleanup_conversation_id,
-                run_key,
-                agent_run_id,
-                result,
-                cx,
-            );
+        let stopped = (&mut self.active_runs).transition(StopRun {
+            conversation_id: conversation_id.clone(),
+            key: run_key,
+            persistence,
+            openai_sessions,
+            cx,
         });
-        active.task = ActiveRunTask::Stopping(cleanup);
+        if !stopped {
+            return false;
+        }
 
         self.last_errors.remove(conversation_id);
         cx.notify();
         true
     }
 
-    pub(crate) fn start_run(
+    fn prepare_active_run(
         &mut self,
         request: AgentRunRequest,
+        run_key: ActiveRunKey,
         cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        if self.shutting_down || !matches!(self.recovery, refresh::Operation::Ready(_)) {
-            let message = self
-                .recovery
-                .problem()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| "conversation runtime is recovering".to_string());
-            self.last_errors
-                .insert(request.conversation_id.clone(), message.clone());
-            cx.notify();
-            return Err(message);
-        }
+    ) -> Result<ActiveRun, String> {
         let conversation_id = request.conversation_id.clone();
-        if self.active_runs.contains_key(&conversation_id) {
-            return Err("conversation already has an active run".to_string());
-        }
-
-        self.last_errors.remove(&conversation_id);
-        let run_key = self.next_active_run_key();
         let persistence = match database::ready_agent_persistence(cx) {
             Ok(persistence) => persistence,
-            Err(error) => {
-                self.last_errors
-                    .insert(conversation_id.clone(), error.to_string());
-                cx.notify();
-                return Err(error.to_string());
-            }
+            Err(error) => return Err(error.to_string()),
         };
         let provider = match crate::state::providers::ready_provider(&request.provider_id, cx) {
             Ok(provider) => provider,
-            Err(error) => {
-                self.last_errors
-                    .insert(conversation_id.clone(), error.to_string());
-                cx.notify();
-                return Err(error.to_string());
-            }
+            Err(error) => return Err(error.to_string()),
         };
         let (tx, rx) = smol::channel::unbounded();
-        let event_task = self.spawn_event_listener(rx, cx);
+        let event_task = self.spawn_event_listener(rx, run_key, cx);
         let approval_broker = Arc::new(ConversationApprovalBroker::new());
         let run_conversation_id = conversation_id.clone();
         let cancellation_token = request.cancellation_token.clone();
@@ -266,23 +606,14 @@ impl ConversationRuntimeStore {
             finish_run_from_task(store, run_conversation_id, run_key, result, cx);
         });
 
-        self.active_runs.insert(
-            conversation_id.clone(),
-            ActiveRun {
-                key: run_key,
-                agent_run_id: None,
-                cancellation_token,
-                approval_broker,
-                task: ActiveRunTask::Running(run_task),
-                _event_task: event_task,
-            },
-        );
-        super::registry::retain_active(conversation_id.clone(), cx);
-        cx.emit(ConversationRuntimeEvent::RunStarted {
-            conversation_id: conversation_id.clone(),
-        });
-        cx.notify();
-        Ok(())
+        Ok(ActiveRun {
+            key: run_key,
+            agent_run_id: None,
+            cancellation_token,
+            approval_broker,
+            task: run_task,
+            _event_task: event_task,
+        })
     }
 
     pub(crate) fn shutdown_all(&mut self, cx: &mut Context<Self>) -> Task<()> {
@@ -294,27 +625,37 @@ impl ConversationRuntimeStore {
             self.recovery.transition(Cancel);
         }
 
-        let active_runs = std::mem::take(&mut self.active_runs);
+        let ActiveRuns(active_runs) = std::mem::take(&mut self.active_runs);
         let mut tasks = Vec::with_capacity(active_runs.len());
-        for (conversation_id, active) in active_runs {
-            active.cancellation_token.cancel();
-            if let Some(agent_run_id) = active.agent_run_id.as_ref() {
-                active.approval_broker.cancel_all_for_run(agent_run_id);
-            } else {
-                active.approval_broker.cancel_all();
+        for (conversation_id, attempt) in active_runs {
+            match attempt {
+                ConversationAttempt::Submitting(submitting) => {
+                    drop(submitting.task);
+                }
+                ConversationAttempt::Running(active) | ConversationAttempt::Stopping(active) => {
+                    active.cancellation_token.cancel();
+                    if let Some(agent_run_id) = active.agent_run_id.as_ref() {
+                        active.approval_broker.cancel_all_for_run(agent_run_id);
+                    } else {
+                        active.approval_broker.cancel_all();
+                    }
+                    self.last_errors.remove(&conversation_id);
+                    cx.emit(ConversationRuntimeEvent::RunFinished {
+                        ticket: ConversationSubmissionTicket {
+                            conversation_id,
+                            attempt_key: active.key,
+                        },
+                    });
+                    tasks.push((active.task, active._event_task));
+                }
             }
-            self.last_errors.remove(&conversation_id);
-            cx.emit(ConversationRuntimeEvent::RunFinished { conversation_id });
-            tasks.push((active.task, active._event_task));
         }
         cx.notify();
 
         let openai_sessions = self.openai_sessions.clone();
         cx.spawn(async move |_, _| {
             for (task, event_task) in tasks {
-                match task {
-                    ActiveRunTask::Running(task) | ActiveRunTask::Stopping(task) => task.await,
-                }
+                task.await;
                 event_task.await;
             }
             openai_sessions.close_all().await;
@@ -332,12 +673,10 @@ impl ConversationRuntimeStore {
             return false;
         }
         self.last_errors.remove(&conversation_id);
-        let Some(active) = self.active_runs.get(&conversation_id) else {
+        let Some(ConversationAttempt::Running(active)) = self.active_runs.0.get(&conversation_id)
+        else {
             return false;
         };
-        if !matches!(active.task, ActiveRunTask::Running(_)) {
-            return false;
-        }
         let Some(agent_run_id) = active.agent_run_id.as_ref() else {
             return false;
         };
@@ -374,12 +713,10 @@ impl ConversationRuntimeStore {
             return false;
         }
         self.last_errors.remove(&conversation_id);
-        let Some(active) = self.active_runs.get(&conversation_id) else {
+        let Some(ConversationAttempt::Running(active)) = self.active_runs.0.get(&conversation_id)
+        else {
             return false;
         };
-        if !matches!(active.task, ActiveRunTask::Running(_)) {
-            return false;
-        }
         let Some(agent_run_id) = active.agent_run_id.as_ref() else {
             return false;
         };
@@ -415,6 +752,7 @@ impl ConversationRuntimeStore {
     fn spawn_event_listener(
         &self,
         rx: Receiver<RuntimePublication>,
+        run_key: ActiveRunKey,
         cx: &mut Context<Self>,
     ) -> Task<()> {
         cx.spawn(async move |this, cx| {
@@ -425,7 +763,7 @@ impl ConversationRuntimeStore {
                             break;
                         };
                         this.update(cx, |store, cx| {
-                            store.handle_runtime_event(runtime_event, cx);
+                            store.handle_runtime_event(run_key, runtime_event, cx);
                         });
                     }
                     RuntimePublication::Drain(acknowledgement) => {
@@ -439,6 +777,7 @@ impl ConversationRuntimeStore {
 
     fn handle_runtime_event(
         &mut self,
+        run_key: ActiveRunKey,
         runtime_event: jaco_agent::AgentRuntimeEvent,
         cx: &mut Context<Self>,
     ) {
@@ -449,6 +788,9 @@ impl ConversationRuntimeStore {
             } => {
                 let conversation = *conversation;
                 let conversation_id = conversation.id.clone();
+                if !self.accepts_runtime_publication(&conversation_id, run_key) {
+                    return;
+                }
                 super::registry::publish_changes(
                     conversation_id.clone(),
                     Some(conversation.clone()),
@@ -460,6 +802,9 @@ impl ConversationRuntimeStore {
                 conversation_id,
                 changes,
             } => {
+                if !self.accepts_runtime_publication(&conversation_id, run_key) {
+                    return;
+                }
                 super::registry::publish_changes(
                     conversation_id.clone(),
                     None,
@@ -471,10 +816,12 @@ impl ConversationRuntimeStore {
                 agent_run_id,
                 conversation_id,
             } => {
-                let Some(active) = self.active_runs.get_mut(&conversation_id) else {
+                let Some(ConversationAttempt::Running(active)) =
+                    self.active_runs.0.get_mut(&conversation_id)
+                else {
                     return;
                 };
-                if !matches!(active.task, ActiveRunTask::Running(_)) {
+                if active.key != run_key {
                     return;
                 }
                 active.agent_run_id = Some(agent_run_id);
@@ -487,6 +834,94 @@ impl ConversationRuntimeStore {
         cx.notify();
     }
 
+    fn accepts_runtime_publication(
+        &self,
+        conversation_id: &ConversationId,
+        run_key: ActiveRunKey,
+    ) -> bool {
+        matches!(
+            self.active_runs.0.get(conversation_id),
+            Some(ConversationAttempt::Running(active) | ConversationAttempt::Stopping(active))
+                if active.key == run_key
+        )
+    }
+
+    fn finish_submission(
+        &mut self,
+        ticket: ConversationSubmissionTicket,
+        kind: ConversationSubmissionKind,
+        result: Result<AgentRunRequest, String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let conversation_id = ticket.conversation_id.clone();
+        let key = ticket.attempt_key;
+        match result {
+            Err(error) => {
+                if !(&mut self.active_runs).transition(SubmissionFailed {
+                    conversation_id,
+                    key,
+                }) {
+                    return false;
+                }
+                cx.emit(ConversationRuntimeEvent::SubmissionFailed {
+                    ticket,
+                    kind,
+                    error,
+                });
+            }
+            Ok(request) => {
+                if !(&mut self.active_runs).transition(SubmissionCommitted {
+                    conversation_id: conversation_id.clone(),
+                    key,
+                }) {
+                    return false;
+                }
+                cx.emit(ConversationRuntimeEvent::SubmissionCommitted {
+                    ticket: ticket.clone(),
+                    kind,
+                });
+
+                let launch = if self.shutting_down
+                    || !matches!(self.recovery, refresh::Operation::Ready(_))
+                {
+                    Err(self
+                        .recovery
+                        .problem()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "conversation runtime is recovering".to_string()))
+                } else {
+                    self.prepare_active_run(request, key, cx)
+                };
+                match launch {
+                    Ok(active_run) => {
+                        let started = (&mut self.active_runs).transition(StartRun {
+                            conversation_id: conversation_id.clone(),
+                            key,
+                            active_run,
+                        });
+                        if !started {
+                            return false;
+                        }
+                        super::registry::retain_active(conversation_id.clone(), cx);
+                        cx.emit(ConversationRuntimeEvent::RunStarted { ticket });
+                    }
+                    Err(error) => {
+                        let removed = (&mut self.active_runs).transition(SubmissionFailed {
+                            conversation_id,
+                            key,
+                        });
+                        if !removed {
+                            return false;
+                        }
+                        cx.emit(ConversationRuntimeEvent::RunLaunchFailed { ticket, error });
+                    }
+                }
+            }
+        }
+        cx.notify();
+        true
+    }
+
     fn finish_run(
         &mut self,
         conversation_id: ConversationId,
@@ -494,14 +929,13 @@ impl ConversationRuntimeStore {
         result: Result<AgentRunHandle, String>,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(active) = self.active_runs.get(&conversation_id) else {
-            return false;
-        };
-        if active.key != run_key || !matches!(active.task, ActiveRunTask::Running(_)) {
+        if !(&mut self.active_runs).transition(RunFinished {
+            conversation_id: conversation_id.clone(),
+            key: run_key,
+        }) {
             return false;
         }
 
-        self.active_runs.remove(&conversation_id);
         super::registry::release_active(&conversation_id, cx);
         if let Err(err) = result {
             let sessions = self.openai_sessions.clone();
@@ -512,7 +946,12 @@ impl ConversationRuntimeStore {
             .detach();
             self.last_errors.insert(conversation_id.clone(), err);
         }
-        cx.emit(ConversationRuntimeEvent::RunFinished { conversation_id });
+        cx.emit(ConversationRuntimeEvent::RunFinished {
+            ticket: ConversationSubmissionTicket {
+                conversation_id,
+                attempt_key: run_key,
+            },
+        });
         cx.notify();
         true
     }
@@ -525,14 +964,13 @@ impl ConversationRuntimeStore {
         result: Result<(), String>,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(active) = self.active_runs.get(&conversation_id) else {
-            return false;
-        };
-        if active.key != run_key || !matches!(active.task, ActiveRunTask::Stopping(_)) {
+        if !(&mut self.active_runs).transition(StopFinished {
+            conversation_id: conversation_id.clone(),
+            key: run_key,
+        }) {
             return false;
         }
 
-        self.active_runs.remove(&conversation_id);
         super::registry::release_active(&conversation_id, cx);
         match result {
             Ok(()) => {
@@ -549,9 +987,28 @@ impl ConversationRuntimeStore {
                 self.last_errors.insert(conversation_id.clone(), error);
             }
         }
-        cx.emit(ConversationRuntimeEvent::RunFinished { conversation_id });
+        cx.emit(ConversationRuntimeEvent::RunFinished {
+            ticket: ConversationSubmissionTicket {
+                conversation_id,
+                attempt_key: run_key,
+            },
+        });
         cx.notify();
         true
+    }
+}
+
+fn finish_submission_from_task(
+    store: WeakEntity<ConversationRuntimeStore>,
+    ticket: ConversationSubmissionTicket,
+    kind: ConversationSubmissionKind,
+    result: Result<AgentRunRequest, String>,
+    cx: &mut AsyncApp,
+) {
+    if let Err(err) = store.update(cx, |store, cx| {
+        store.finish_submission(ticket, kind, result, cx);
+    }) {
+        event!(Level::ERROR, error = ?err, "finish conversation submission failed");
     }
 }
 
@@ -786,7 +1243,7 @@ mod tests {
             agent_run_id: Some("run-1".to_string()),
             cancellation_token,
             approval_broker: Arc::new(ConversationApprovalBroker::new()),
-            task: ActiveRunTask::Running(Task::ready(())),
+            task: Task::ready(()),
             _event_task: Task::ready(()),
         }
     }
@@ -796,6 +1253,142 @@ mod tests {
             agent_run_id: Some(agent_run_id),
             ..active_run(key)
         }
+    }
+
+    fn submission_ticket(
+        conversation_id: ConversationId,
+        attempt_key: ActiveRunKey,
+    ) -> ConversationSubmissionTicket {
+        ConversationSubmissionTicket {
+            conversation_id,
+            attempt_key,
+        }
+    }
+
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[gpui::test]
+    fn duplicate_submit_is_ignored_and_drops_its_task(cx: &mut gpui::TestAppContext) {
+        let conversation_id = "conversation-1".to_string();
+        let mut active_runs = ActiveRuns::default();
+        assert!((&mut active_runs).transition(SubmitAttempt {
+            conversation_id: conversation_id.clone(),
+            key: ActiveRunKey(1),
+            task: Task::ready(()),
+        }));
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = DropFlag(dropped.clone());
+        let duplicate_task = cx.update(|cx| {
+            cx.spawn(async move |_| {
+                let _guard = guard;
+                std::future::pending::<()>().await;
+            })
+        });
+        assert!(!(&mut active_runs).transition(SubmitAttempt {
+            conversation_id: conversation_id.clone(),
+            key: ActiveRunKey(2),
+            task: duplicate_task,
+        }));
+        cx.run_until_parked();
+
+        assert!(dropped.load(Ordering::SeqCst));
+        assert!(matches!(
+            active_runs.0.get(&conversation_id),
+            Some(ConversationAttempt::Submitting(submitting))
+                if submitting.key == ActiveRunKey(1)
+        ));
+    }
+
+    #[test]
+    fn different_conversations_can_submit_in_parallel() {
+        let mut active_runs = ActiveRuns::default();
+        for (conversation_id, key) in [
+            ("conversation-1".to_string(), ActiveRunKey(1)),
+            ("conversation-2".to_string(), ActiveRunKey(2)),
+        ] {
+            assert!((&mut active_runs).transition(SubmitAttempt {
+                conversation_id,
+                key,
+                task: Task::ready(()),
+            }));
+        }
+
+        assert_eq!(active_runs.0.len(), 2);
+        assert!(matches!(
+            active_runs.0.get("conversation-1"),
+            Some(ConversationAttempt::Submitting(submitting))
+                if submitting.key == ActiveRunKey(1)
+        ));
+        assert!(matches!(
+            active_runs.0.get("conversation-2"),
+            Some(ConversationAttempt::Submitting(submitting))
+                if submitting.key == ActiveRunKey(2)
+        ));
+    }
+
+    #[test]
+    fn stale_submission_completion_cannot_replace_current_attempt() {
+        let conversation_id = "conversation-1".to_string();
+        let mut active_runs = ActiveRuns::default();
+        assert!((&mut active_runs).transition(SubmitAttempt {
+            conversation_id: conversation_id.clone(),
+            key: ActiveRunKey(3),
+            task: Task::ready(()),
+        }));
+
+        assert!(!(&mut active_runs).transition(StartRun {
+            conversation_id: conversation_id.clone(),
+            key: ActiveRunKey(2),
+            active_run: active_run(ActiveRunKey(2)),
+        }));
+        assert!(!(&mut active_runs).transition(SubmissionFailed {
+            conversation_id: conversation_id.clone(),
+            key: ActiveRunKey(2),
+        }));
+        assert!(matches!(
+            active_runs.0.get(&conversation_id),
+            Some(ConversationAttempt::Submitting(submitting))
+                if submitting.key == ActiveRunKey(3)
+        ));
+
+        assert!((&mut active_runs).transition(SubmissionFailed {
+            conversation_id: conversation_id.clone(),
+            key: ActiveRunKey(3),
+        }));
+        assert!(!active_runs.contains_key(&conversation_id));
+    }
+
+    #[gpui::test]
+    fn submission_failure_drops_the_owned_task(cx: &mut gpui::TestAppContext) {
+        let conversation_id = "conversation-1".to_string();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = DropFlag(dropped.clone());
+        let task = cx.update(|cx| {
+            cx.spawn(async move |_| {
+                let _guard = guard;
+                std::future::pending::<()>().await;
+            })
+        });
+        let mut active_runs = ActiveRuns::default();
+        assert!((&mut active_runs).transition(SubmitAttempt {
+            conversation_id: conversation_id.clone(),
+            key: ActiveRunKey(4),
+            task,
+        }));
+
+        assert!((&mut active_runs).transition(SubmissionFailed {
+            conversation_id,
+            key: ActiveRunKey(4),
+        }));
+        cx.run_until_parked();
+        assert!(dropped.load(Ordering::SeqCst));
     }
 
     #[gpui::test]
@@ -810,7 +1403,7 @@ mod tests {
         let driver = cx.update(|cx| {
             store.update(cx, |runtime, cx| {
                 let (tx, rx) = smol::channel::unbounded();
-                let event_task = runtime.spawn_event_listener(rx, cx);
+                let event_task = runtime.spawn_event_listener(rx, ActiveRunKey(0), cx);
                 runtime.active_runs.insert(
                     conversation_id.clone(),
                     ActiveRun {
@@ -849,6 +1442,46 @@ mod tests {
         cx.run_until_parked();
         assert!(event_applied.load(Ordering::SeqCst));
         drop(driver);
+    }
+
+    #[gpui::test]
+    fn stale_runtime_publication_cannot_mutate_a_new_attempt(cx: &mut gpui::TestAppContext) {
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
+        let conversation_id = "conversation-1".to_string();
+
+        cx.update(|cx| {
+            store.update(cx, |runtime, cx| {
+                runtime.active_runs.insert(
+                    conversation_id.clone(),
+                    ActiveRun {
+                        agent_run_id: None,
+                        ..active_run(ActiveRunKey(2))
+                    },
+                );
+                runtime.handle_runtime_event(
+                    ActiveRunKey(1),
+                    jaco_agent::AgentRuntimeEvent::AgentRunStarted {
+                        agent_run_id: "stale-run".to_string(),
+                        conversation_id: conversation_id.clone(),
+                    },
+                    cx,
+                );
+                assert!(runtime.active_agent_run_id(&conversation_id).is_none());
+
+                runtime.handle_runtime_event(
+                    ActiveRunKey(2),
+                    jaco_agent::AgentRuntimeEvent::AgentRunStarted {
+                        agent_run_id: "current-run".to_string(),
+                        conversation_id: conversation_id.clone(),
+                    },
+                    cx,
+                );
+                assert_eq!(
+                    runtime.active_agent_run_id(&conversation_id).as_deref(),
+                    Some("current-run")
+                );
+            });
+        });
     }
 
     #[gpui::test]
@@ -981,7 +1614,7 @@ mod tests {
             );
             let events = recorder.read(cx).events.lock().unwrap().clone();
             assert!(events.contains(&ConversationRuntimeEvent::RunFinished {
-                conversation_id: conversation_id.clone(),
+                ticket: submission_ticket(conversation_id.clone(), ActiveRunKey(0)),
             }));
         });
     }
@@ -1260,10 +1893,11 @@ mod tests {
                     approval_id.clone(),
                     cx
                 ));
-                let active = store
-                    .active_runs
-                    .get(&conversation_id)
-                    .expect("stale denial must not clear the active run");
+                let Some(ConversationAttempt::Running(active)) =
+                    store.active_runs.0.get(&conversation_id)
+                else {
+                    panic!("stale denial must not clear the active run");
+                };
                 assert_eq!(active.agent_run_id.as_ref(), Some(&agent_run_id));
                 assert!(store.take_last_error(&conversation_id).is_none());
             });

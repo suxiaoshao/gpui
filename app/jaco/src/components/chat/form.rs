@@ -660,9 +660,12 @@ impl View for PrimaryAction {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let state = self.state.read(cx);
         let agent_status = state.agent_status(cx);
-        let agent_active = agent_status != AgentRunControlStatus::Idle;
+        let agent_active = matches!(
+            agent_status,
+            AgentRunControlStatus::Running | AgentRunControlStatus::Stopping
+        );
+        let submitting = agent_status == AgentRunControlStatus::Submitting;
         let agent_stopping = agent_status == AgentRunControlStatus::Stopping;
-        let submission_pending = state.submission_pending();
         let enabled = self.enabled;
         let event_target = self.event_target;
 
@@ -676,10 +679,8 @@ impl View for PrimaryAction {
         .size(px(28.))
         .p(px(0.))
         .rounded(px(999.))
-        .disabled(
-            !enabled || submission_pending || agent_stopping || (!agent_active && !self.can_submit),
-        )
-        .loading(submission_pending)
+        .disabled(!enabled || submitting || agent_stopping || (!agent_active && !self.can_submit))
+        .loading(submitting)
         .when_some(
             match agent_status {
                 AgentRunControlStatus::Running => Some(
@@ -692,6 +693,7 @@ impl View for PrimaryAction {
                         .t("chat-form-stopping-tooltip")
                         .into(),
                 ),
+                AgentRunControlStatus::Submitting => None,
                 AgentRunControlStatus::Idle => self.disabled_reason,
             },
             |button, reason| button.tooltip(reason),
