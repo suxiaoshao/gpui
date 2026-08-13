@@ -11,12 +11,13 @@ use image::{AnimationDecoder as _, ImageDecoder as _, ImageFormat, Limits};
 
 use super::{
     BodyDecoding, ContentKind, INLINE_PREVIEW_BYTES, ResponseData, SourceLanguage,
-    TextDecodingProblem, classify_content_type, decode_text, fenced_source,
+    TextDecodingProblem, classify_content_type, decode_text,
 };
 
 const MAX_IMAGE_DIMENSION: u32 = 4096;
 const MAX_IMAGE_FRAMES: usize = 16;
 const MAX_IMAGE_RGBA_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_EDITOR_LINES: usize = 50_000;
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub(crate) enum ViewerMode {
@@ -87,7 +88,8 @@ pub(crate) enum ResponseViewWarning {
 pub(crate) enum ResponseProjection {
     Empty,
     Text {
-        markdown: String,
+        source: String,
+        language: SourceLanguage,
         warning: Option<ResponseViewWarning>,
     },
     Image {
@@ -111,9 +113,14 @@ impl fmt::Debug for ResponseProjection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => formatter.write_str("ResponseProjection::Empty"),
-            Self::Text { markdown, warning } => formatter
+            Self::Text {
+                source,
+                language,
+                warning,
+            } => formatter
                 .debug_struct("ResponseProjection::Text")
-                .field("len", &markdown.len())
+                .field("len", &source.len())
+                .field("language", language)
                 .field("warning", warning)
                 .finish(),
             Self::Image { warning, .. } => formatter
@@ -272,9 +279,10 @@ fn text_projection(
 ) -> ResponseProjection {
     match decode_text(bytes, headers, complete) {
         Ok(source) => {
-            let (markdown, output_truncated) = bounded_fence(source, language);
+            let (source, output_truncated) = bounded_source(source);
             ResponseProjection::Text {
-                markdown,
+                source,
+                language,
                 warning: preferred_warning
                     .or((!complete || output_truncated).then_some(ResponseViewWarning::Truncated)),
             }
@@ -310,7 +318,7 @@ fn json_projection(bytes: &[u8], headers: &http::HeaderMap, complete: bool) -> R
     let Ok(pretty) = serde_json::to_string_pretty(&value) else {
         return ResponseProjection::Unavailable(ResponseViewWarning::InvalidJson);
     };
-    let (markdown, truncated) = bounded_fence(pretty, SourceLanguage::Json);
+    let (source, truncated) = bounded_source(pretty);
     if truncated {
         text_projection(
             bytes,
@@ -321,27 +329,25 @@ fn json_projection(bytes: &[u8], headers: &http::HeaderMap, complete: bool) -> R
         )
     } else {
         ResponseProjection::Text {
-            markdown,
+            source,
+            language: SourceLanguage::Json,
             warning: None,
         }
     }
 }
 
-fn bounded_fence(mut source: String, language: SourceLanguage) -> (String, bool) {
+fn bounded_source(mut source: String) -> (String, bool) {
     let limit = INLINE_PREVIEW_BYTES as usize;
     let original_len = source.len();
-    loop {
-        let markdown = fenced_source(&source, language);
-        if markdown.len() <= limit {
-            return (markdown, source.len() != original_len);
-        }
-        if source.is_empty() {
-            return (markdown, original_len != 0);
-        }
-        let target = source.len() / 2;
-        let boundary = floor_char_boundary(&source, target);
+    if source.len() > limit {
+        let boundary = floor_char_boundary(&source, limit);
         source.truncate(boundary);
     }
+    if let Some((boundary, _)) = source.match_indices('\n').nth(MAX_EDITOR_LINES - 1) {
+        source.truncate(boundary);
+    }
+    let truncated = source.len() != original_len;
+    (source, truncated)
 }
 
 fn floor_char_boundary(source: &str, mut index: usize) -> usize {
@@ -381,8 +387,12 @@ fn hex_projection(bytes: &[u8], complete: bool, decoding: BodyDecoding) -> Respo
     } else {
         None
     };
-    let (markdown, _) = bounded_fence(output, SourceLanguage::Plain);
-    ResponseProjection::Text { markdown, warning }
+    let (source, _) = bounded_source(output);
+    ResponseProjection::Text {
+        source,
+        language: SourceLanguage::Plain,
+        warning,
+    }
 }
 
 fn base64_projection(bytes: &[u8], complete: bool, decoding: BodyDecoding) -> ResponseProjection {
@@ -397,8 +407,12 @@ fn base64_projection(bytes: &[u8], complete: bool, decoding: BodyDecoding) -> Re
     } else {
         None
     };
-    let (markdown, _) = bounded_fence(encoded, SourceLanguage::Plain);
-    ResponseProjection::Text { markdown, warning }
+    let (source, _) = bounded_source(encoded);
+    ResponseProjection::Text {
+        source,
+        language: SourceLanguage::Plain,
+        warning,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -569,7 +583,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_json_is_pretty_and_response_markup_remains_inside_a_fence() {
+    async fn auto_json_is_pretty_and_response_markup_remains_plain_editor_source() {
         let source = br#"{"html":"```\\n<img src='https://tracker.test'>"}"#;
         let projection = project_response(
             response(source, "application/problem+json", BodyDecoding::Identity),
@@ -577,17 +591,23 @@ mod tests {
         )
         .await
         .unwrap();
-        let ResponseProjection::Text { markdown, warning } = projection else {
+        let ResponseProjection::Text {
+            source,
+            language,
+            warning,
+        } = projection
+        else {
             panic!("JSON did not produce text")
         };
         assert_eq!(warning, None);
-        assert!(markdown.contains("tracker.test"));
-        let opening = markdown.lines().next().unwrap();
-        assert_eq!(markdown.lines().last(), opening.strip_suffix("json"));
+        assert_eq!(language, SourceLanguage::Json);
+        assert!(source.contains("tracker.test"));
+        assert!(source.starts_with("{\n"));
+        assert!(!source.starts_with("```"));
     }
 
     #[tokio::test]
-    async fn svg_is_always_fenced_text_and_never_an_image() {
+    async fn svg_is_always_plain_editor_source_and_never_an_image() {
         let projection = project_response(
             response(
                 b"<svg><image href='https://tracker.test'/></svg>",
@@ -598,7 +618,14 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(projection, ResponseProjection::Text { .. }));
+        assert!(matches!(
+            projection,
+            ResponseProjection::Text {
+                source,
+                language: SourceLanguage::Svg,
+                ..
+            } if source == "<svg><image href='https://tracker.test'/></svg>"
+        ));
         assert!(matches!(
             project_response(
                 response(
@@ -738,11 +765,18 @@ mod tests {
     }
 
     #[test]
-    fn output_builders_and_image_budgets_never_wrap_or_exceed_limits() {
-        let source = "`".repeat(INLINE_PREVIEW_BYTES as usize);
-        let (fenced, truncated) = bounded_fence(source, SourceLanguage::Plain);
+    fn output_builders_and_image_budgets_never_exceed_limits() {
+        let source = "é".repeat(INLINE_PREVIEW_BYTES as usize);
+        let (bounded, truncated) = bounded_source(source);
         assert!(truncated);
-        assert!(fenced.len() <= INLINE_PREVIEW_BYTES as usize);
+        assert!(bounded.len() <= INLINE_PREVIEW_BYTES as usize);
+        assert!(bounded.is_char_boundary(bounded.len()));
+
+        let source = "line\n".repeat(MAX_EDITOR_LINES + 1);
+        let (bounded, truncated) = bounded_source(source);
+        assert!(truncated);
+        assert_eq!(bounded.lines().count(), MAX_EDITOR_LINES);
+
         assert_eq!(
             reserve_frame_budget(MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION, 0).unwrap(),
             MAX_IMAGE_RGBA_BYTES

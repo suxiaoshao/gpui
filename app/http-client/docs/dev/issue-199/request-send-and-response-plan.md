@@ -87,7 +87,7 @@ head，流式收集有明确上限的完整 response，完成后可安全查看�
 | E-1602 | 当前事实 | 编译期已验证 HTTP(S) URL，body 可为内存 text/urlencoded、multipart 文件或 binary 文件；redirect 已冻结 max 10 hops、method 和跨 host Authorization 策略。 | `request/prepared.rs:PreparedRequest`、`PreparedBody`、`PreparedRedirect` | executor 每一跳从 frozen value 重建 request/body，不能重用已消耗的 stream。 |
 | E-1603 | 当前事实 | `gpui-tokio::Tokio::spawn` 在 workspace Tokio runtime 运行 `Send + 'static` future，返回的 GPUI Task drop 会 abort Tokio JoinHandle。 | `crates/gpui-tokio/src/lib.rs:Tokio::spawn` | outer owner task 是取消根；不得 detach worker 或另造 generation state。 |
 | E-1604 | 当前事实 | `gpui-operation` 的 runtime task 规则是 final state 先安装、再 drop task/payload；tracing feature 只记录脱敏非法消息。 | `crates/gpui-operation/README.md`、`dev/message-driven-transitions.md` | 私有 Transition 复用该顺序与诊断原则，不能把此 HTTP 多阶段状态塞进 `refresh::Operation`。 |
-| E-1605 | 当前事实 | app 已使用 `TabBar`、`Button`、`v_flex` 和 runtime Fluent locale；`TextView` 支持 Markdown、selection 和 scrolling，`v_resizable`/`resizable_panel` 支持 constrained panels。 | `request/tab.rs`、`foundation/i18n.rs`、gpui-component TextView/Resizable 文档 | response UI 组合既有组件，不写通用自定义 tab、split 或 text renderer。 |
+| E-1605 | 当前事实 | app 已使用 `TabBar`、`Button`、`v_flex` 和 runtime Fluent locale；`InputState::code_editor` 使用 Rope、Tree-sitter、可见行渲染和内建搜索，`v_resizable`/`resizable_panel` 支持 constrained panels。 | `request/tab.rs`、`foundation/i18n.rs`、gpui-component Editor/Resizable 文档 | response UI 组合既有组件，不写通用自定义 tab、split 或 text renderer。 |
 | E-1606 | 当前事实 | lockfile 已解析 reqwest 0.13.4、async-channel 2.5.0、async-compression 0.4.42、bytes 1.12.0、encoding_rs 0.8.35、futures-util 0.3.33、serde_json 1.0.151、tempfile 3.27.0、tokio 1.53.1、tokio-util 0.7.19、image 0.25.10。 | `Cargo.lock` | 本轮只把这些精确版本/feature 写为 app direct dependencies，不手写 lockfile。 |
 | D-1600 | 用户决定 | 普通 Send 上限为 8 MiB / 2 MiB / 50 MiB，且 encoded 与 stored 必须同时受限。 | 本轮任务 | 常量和测试固定为此值；“Send and Download”另立设计。 |
 | D-1601 | 用户决定 | `RequestView` 不用 Store；`Ready` 必须持有 `Arc<ResponseData>`，Save 使用 clone 的 Arc/read lease。 | 本轮任务 | 不新增 `gpui-store`，不暴露裸 `PathBuf`，没有第二份 response business state。 |
@@ -183,7 +183,7 @@ Send 在完整 Response 前必须经历 `Sending` 与 `Receiving`，因此只实
 | Tokio bridge | 使用 `gpui-tokio` 的 runtime 与 abort-on-drop Task | 不引入 smol/async-compat 网络 worker，不 detach |
 | 状态转换 | 使用 `gpui_operation::Transition` trait | 多阶段 head/progress 不适合 `refresh`/`repair` family，不并行维护 phase bool |
 | Response 布局/交互 | 使用 gpui-component `v_resizable`、`TabBar`、`Table`、`Progress`、`Alert`、`Select`、`Button` | 不重复实现 splitter/tab/table/progress |
-| 只读文本 | 使用 selectable/scrollable `TextView` + 安全 fenced code | 当前 Input/editor 没有合适 readonly API，不用 disabled editor，不执行 response markup |
+| 只读文本 | 使用持久化的 `InputState::code_editor`，以 `Input::disabled(true)` 禁写并保留选择、复制、搜索和滚动 | 不把 response 交给 Markdown/HTML renderer，不订阅编辑事件后回写，不在每帧重建 Editor |
 | 图片 | 使用 `image` crate 做有界 decode，再交 `Arc<RenderImage>` | 不直接把未验证动画 bytes 交给 GPUI decoder，不支持 SVG image |
 | 临时文件与导出 | 使用 `tempfile::TempPath`/staging persist 与 GPUI save panel | 不暴露裸临时路径，不直接写坏用户目标，不增加第三方 picker |
 | shared state | `RequestView` 直接拥有运行态与 Response | 单 consumer 无 Store 适用性，不建立 Global/Store 镜像 |
@@ -453,18 +453,19 @@ warning/Alert，不发送 `HttpRunMessage`，也不能把 `Ready` 改成 `Failed
   `Arc<RenderImage>`；不复制 `StoredBody`。accepted Send 重置为 Body/Auto，新的 Ready 或 Clear 会取消旧
   preview/image task。Headers 从 `HeaderMap` 逐值投影，重复值不折叠，非 UTF-8/不可见 bytes 使用
   `escape_ascii`，禁止 `to_str().unwrap()`。
-- preview 通过 read lease 最多读取 2 MiB source bytes；生成的 fenced text、pretty JSON、Hex 与 Base64
-  也各自硬限制在 2 MiB，builder 到达输出上限即停止并标注截断。完整 JSON 大于 2 MiB 不解析；pretty
-  结果超限退回有界 Text。Base64/Hex 不允许先读取完整 TempFile。
+- preview 通过 read lease 最多读取 2 MiB source bytes；生成的 editor source、pretty JSON、Hex 与 Base64
+  也各自硬限制在 2 MiB 和 50,000 行，builder 到达输出上限即停止并标注截断。完整 JSON 大于 2 MiB
+  不解析；pretty 结果超限退回有界 Text。Base64/Hex 不允许先读取完整 TempFile。
 - Auto 先检查 `BodyDecoding`；`Unsupported` 只允许 Hex/Base64/Save。其余按 `Content-Type` 与
   `+json/+xml` 选择。显式 charset 只接受 `encoding_rs` 已知 label；无 charset 时先识别 UTF BOM，否则
   尝试 UTF-8。未知 charset、产生 replacement 或无法无损解码时进入 bytes view + warning，不改变
   runtime。截断 preview 使用 streaming decoder/移除不完整尾字符，不能因 2 MiB 边界切在多字节字符
   中间而把完整 Response 误判为不可解码。
-- Text/JSON/XML/HTML/CSS/JS/YAML/Markdown/SVG 都通过
-  `TextView::markdown(id, fenced_source).selectable(true).scrollable(true)`。helper 在 backtick/tilde 中选择
-  正文无法闭合的 fence，并只接受固定 language tag；禁止 body 直传 `TextView::markdown` 或
-  `TextView::html`，禁止把 SVG 交给 image path，也不用 disabled editor 冒充 readonly viewer。
+- Text/JSON/XML/HTML/CSS/JS/YAML/Markdown/SVG 都通过 owner-local
+  `InputState::code_editor(language)` 和 `Input::disabled(true)` 展示；禁写状态保留 selection、Copy、Search
+  与 scrolling，并用 `replaceable(false)` 删除 Search 的 Replace 能力。每次当前 token 的新投影只创建一次
+  Editor entity，模式切换、新 Send、Clear 与 owner drop 都释放它。XML/SVG 在当前语言集合中使用 plain text，
+  其余使用可用的精确 highlighter。响应正文不进入 Markdown/HTML renderer，SVG 也不得进入 image path。
 - Image 只接受完整 stored body ≤ 2 MiB 的 PNG/JPEG/GIF/WebP，并按已验证的格式选择对应
   `image` decoder，不把 bytes 直接交给 GPUI 的通用 decoder。decoder 必须从 `Limits::default()`
   创建 limits，再把 `max_image_width/max_image_height/max_alloc` 分别设为 `4096/4096/64 MiB`；
@@ -581,10 +582,10 @@ Response pane 默认约 320 px、最小 160 px。Response 使用 `TabBar("respon
 **前置：** WP-1600、WP-1603、ST-1601、L-1603。
 
 1. 组合 `v_resizable`、状态 summary、Progress、Body/Headers tabs、mode Select、Alert 与 escaped header table。
-2. 实施 Auto/MIME/charset matrix、2 MiB source+output cap、safe fence、Text/JSON/XML/Hex/Base64 与截断/
+2. 实施 Auto/MIME/charset matrix、2 MiB/50,000 行 source+output cap、只读 Editor、Text/JSON/XML/Hex/Base64 与截断/
    fallback warning。
-3. pure/GPUI tests 覆盖 `+json/+xml`、BOM/charset、binary header、JSON pretty overflow、fence escape、HTML/
-   Markdown/SVG 不执行、非 Ready 无 body viewer。
+3. pure/GPUI tests 覆盖 `+json/+xml`、BOM/charset、binary header、JSON pretty overflow、HTML/Markdown/SVG
+   不执行、Editor 禁写但可选择复制、生命周期 teardown 和非 Ready 无 body viewer。
 
 **完成条件：** head 在 Receiving 即可查看，body 只在 Ready 查看；任何 viewer failure 不改变 runtime。
 
@@ -657,13 +658,13 @@ cargo check -p http-client --bin http-client --all-features --locked
 cargo clippy -p http-client --all-targets --all-features --locked -- -D warnings
 rg -n 'gpui_store|gpui-store|refresh::Operation|repair::Operation|error_for_status|Client::new\(|\.detach\(' app/http-client/src app/http-client/Cargo.toml
 rg -n '\.gzip\(|\.brotli\(|\.deflate\(|\.zstd\(' app/http-client/src/features/request
-rg -n 'TextView::html|TextView::markdown\([^,]+,\s*(body|content|bytes)' app/http-client/src/features/request
+rg -n 'TextView::html|TextView::markdown|fenced_source' app/http-client/src/features/request
 rg -n 'TempPath|PathBuf' app/http-client/src/features/request/response app/http-client/src/features/request/transport
 git diff --check -- app/http-client Cargo.lock docs/dev/issue-199
 ```
 
 残留扫描要求：Store/predefined Operation/`error_for_status`/`Client::new`/detach/自动解压 enablement 零命中；
-safe-fence 规则不能命中 body 直传；`TempPath` 只允许在 `StoredBody`/collector/read lease 私有实现，
+response body 不得进入 Markdown/HTML renderer；`TempPath` 只允许在 `StoredBody`/collector/read lease 私有实现，
 `PathBuf` 只允许 request body frozen path 与 Save 用户目标/staging，不得作为 Response 临时文件裸 owner。
 `.no_gzip/.no_brotli/.no_deflate/.no_zstd` 是预期配置，扫描的正向 `.gzip(...)` 等必须零命中。
 

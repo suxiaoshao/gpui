@@ -265,17 +265,16 @@ pub(crate) enum SourceLanguage {
 }
 
 impl SourceLanguage {
-    const fn tag(self) -> &'static str {
+    pub(crate) const fn editor_language(self) -> &'static str {
         match self {
             Self::Plain => "text",
             Self::Json => "json",
-            Self::Xml => "xml",
+            Self::Xml | Self::Svg => "text",
             Self::Html => "html",
             Self::Css => "css",
             Self::JavaScript => "javascript",
             Self::Yaml => "yaml",
             Self::Markdown => "markdown",
-            Self::Svg => "svg",
         }
     }
 }
@@ -371,32 +370,6 @@ fn response_media_type(headers: &HeaderMap) -> Option<Mime> {
         .ok()?
         .parse()
         .ok()
-}
-
-pub(crate) fn fenced_source(source: &str, language: SourceLanguage) -> String {
-    let backticks = longest_run(source.as_bytes(), b'`');
-    let tildes = longest_run(source.as_bytes(), b'~');
-    let (marker, len) = if backticks <= tildes {
-        ('`', backticks.saturating_add(1).max(3))
-    } else {
-        ('~', tildes.saturating_add(1).max(3))
-    };
-    let fence: String = std::iter::repeat_n(marker, len).collect();
-    format!("{fence}{}\n{source}\n{fence}", language.tag())
-}
-
-fn longest_run(bytes: &[u8], needle: u8) -> usize {
-    let mut longest = 0;
-    let mut current = 0;
-    for byte in bytes {
-        if *byte == needle {
-            current += 1;
-            longest = longest.max(current);
-        } else {
-            current = 0;
-        }
-    }
-    longest
 }
 
 pub(crate) fn escape_header_value(value: &HeaderValue) -> String {
@@ -750,19 +723,21 @@ mod tests {
     }
 
     #[test]
-    fn fenced_source_cannot_be_closed_by_response_markup() {
-        let source = "before\n```\n<script>secret()</script>\n~~~~\nafter";
-        let fenced = fenced_source(source, SourceLanguage::Html);
-        let opening = fenced.lines().next().unwrap();
-        let marker = opening.strip_suffix("html").unwrap();
-        assert!(marker.len() > longest_run(source.as_bytes(), marker.as_bytes()[0]));
-        assert_eq!(fenced.lines().last(), Some(marker));
-        assert!(fenced.contains(source));
-    }
-
-    #[test]
     fn header_escape_preserves_visible_ascii_and_escapes_opaque_bytes() {
         let value = HeaderValue::from_bytes(b"visible\\value\t\xFF").unwrap();
         assert_eq!(escape_header_value(&value), "visible\\\\value\\t\\xFF");
+    }
+
+    #[test]
+    fn response_languages_map_only_to_available_editor_highlighters() {
+        assert_eq!(SourceLanguage::Plain.editor_language(), "text");
+        assert_eq!(SourceLanguage::Json.editor_language(), "json");
+        assert_eq!(SourceLanguage::Xml.editor_language(), "text");
+        assert_eq!(SourceLanguage::Html.editor_language(), "html");
+        assert_eq!(SourceLanguage::Css.editor_language(), "css");
+        assert_eq!(SourceLanguage::JavaScript.editor_language(), "javascript");
+        assert_eq!(SourceLanguage::Yaml.editor_language(), "yaml");
+        assert_eq!(SourceLanguage::Markdown.editor_language(), "markdown");
+        assert_eq!(SourceLanguage::Svg.editor_language(), "text");
     }
 }

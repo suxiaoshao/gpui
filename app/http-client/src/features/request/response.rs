@@ -20,6 +20,7 @@ use gpui_component::{
     ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
     alert::Alert,
     button::Button,
+    input::{Input, InputState},
     label::Label,
     progress::Progress,
     scroll::ScrollableElement as _,
@@ -45,7 +46,7 @@ pub(crate) use data::{
 };
 pub(crate) use decoding::{
     ContentKind, SourceLanguage, TextDecodingProblem, classify_content_type, collect_response_body,
-    decode_text, escape_header_value, fenced_source,
+    decode_text, escape_header_value,
 };
 use media::audio::AudioDriver;
 use media::video::VideoDriver;
@@ -127,6 +128,7 @@ pub(super) struct ResponsePane {
     mode: ViewerMode,
     pub(super) mode_state: Entity<SelectState<ViewerModeItems>>,
     projection: Option<ResponseProjection>,
+    text_editor: Option<Entity<InputState>>,
     preview_task: Option<Task<()>>,
     preview_generation: u64,
     preview_token: Option<PreviewToken>,
@@ -225,6 +227,7 @@ impl ResponsePane {
             mode: ViewerMode::Auto,
             mode_state,
             projection: None,
+            text_editor: None,
             preview_task: None,
             preview_generation: 0,
             preview_token: None,
@@ -289,6 +292,7 @@ impl ResponsePane {
             .expect("response preview generation exhausted");
         self.preview_token = None;
         self.projection = None;
+        self.text_editor = None;
         self.preview_task.take();
         (&mut self.media).transition(MediaMessage::Stop);
         self.pdf.stop();
@@ -299,7 +303,33 @@ impl ResponsePane {
         self.preview_task = Some(task);
     }
 
-    pub(super) fn install_projection(&mut self, projection: ResponseProjection) {
+    pub(super) fn install_projection(
+        &mut self,
+        projection: ResponseProjection,
+        window: &mut Window,
+        cx: &mut Context<RequestView>,
+    ) {
+        self.text_editor = match &projection {
+            ResponseProjection::Text {
+                source, language, ..
+            } => {
+                let source = source.clone();
+                let language = language.editor_language();
+                Some(cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .code_editor(language)
+                        .line_number(true)
+                        .searchable(true)
+                        .replaceable(false)
+                        .soft_wrap(false)
+                        .scroll_beyond_last_line(Some(0))
+                        .default_value(source)
+                }))
+            }
+            ResponseProjection::Empty
+            | ResponseProjection::Image { .. }
+            | ResponseProjection::Unavailable(_) => None,
+        };
         self.projection = Some(projection);
         self.preview_task.take();
     }
@@ -945,18 +975,27 @@ impl ResponsePane {
         let projection = match &self.projection {
             None => centered_status(cx.global::<I18n>().t("response-sending")),
             Some(ResponseProjection::Empty) => centered_status(SharedString::default()),
-            Some(ResponseProjection::Text { markdown, .. }) => div()
-                .flex_1()
-                .min_h(px(0.))
-                .child(
-                    gpui_component::text::TextView::markdown(
-                        "response-body-text",
-                        markdown.clone(),
-                    )
-                    .selectable(true)
-                    .scrollable(true),
-                )
-                .into_any_element(),
+            Some(ResponseProjection::Text { .. }) => self
+                .text_editor
+                .as_ref()
+                .map(|editor| {
+                    div()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .overflow_hidden()
+                        .bg(cx.theme().input_background())
+                        .child(
+                            Input::new(editor)
+                                .disabled(true)
+                                .appearance(false)
+                                .size_full()
+                                .font_family(cx.theme().mono_font_family.clone()),
+                        )
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| {
+                    centered_status(cx.global::<I18n>().t("response-viewer-mode-unavailable"))
+                }),
             Some(ResponseProjection::Image { image, .. }) => div()
                 .flex_1()
                 .min_h(px(0.))
@@ -1609,6 +1648,58 @@ mod pane_tests {
                 ViewerMode::Pdf,
             ]
         );
+    }
+
+    #[gpui::test]
+    fn text_projection_uses_a_selectable_read_only_editor_and_teardown_releases_it(
+        cx: &mut TestAppContext,
+    ) {
+        initialize(cx);
+        let (view, cx) = cx.add_window_view(RequestView::new);
+        let response = completed_response();
+        let source = "{\n  \"answer\": 42\n}";
+        let editor = cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.runtime = RequestRuntime::Ready {
+                    response: Arc::clone(&response),
+                };
+                view.response_pane
+                    .begin_preview(response, ViewerMode::Json, window, cx);
+                view.response_pane.install_projection(
+                    ResponseProjection::Text {
+                        source: source.into(),
+                        language: SourceLanguage::Json,
+                        warning: None,
+                    },
+                    window,
+                    cx,
+                );
+                cx.notify();
+                view.response_pane
+                    .text_editor
+                    .clone()
+                    .expect("text projection must install an editor")
+            })
+        });
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.set_selected_range(0..source.len(), cx);
+                gpui::EntityInputHandler::replace_text_in_range(
+                    editor, None, "changed", window, cx,
+                );
+            });
+        });
+        assert_eq!(cx.update(|_, cx| editor.read(cx).value()), source);
+        assert_eq!(cx.update(|_, cx| editor.read(cx).selected_value()), source);
+
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.response_pane.reset_for_send(window, cx);
+                assert!(view.response_pane.text_editor.is_none());
+            })
+        });
     }
 
     #[gpui::test]

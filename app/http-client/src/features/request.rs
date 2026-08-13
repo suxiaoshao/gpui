@@ -226,10 +226,11 @@ impl RequestView {
         let Some(effective) = resolved_viewer_mode(&response, requested) else {
             self.response_pane
                 .begin_preview(response, requested, window, cx);
-            self.response_pane
-                .install_projection(ResponseProjection::Unavailable(
-                    ResponseViewWarning::ModeUnavailable,
-                ));
+            self.response_pane.install_projection(
+                ResponseProjection::Unavailable(ResponseViewWarning::ModeUnavailable),
+                window,
+                cx,
+            );
             cx.notify();
             return;
         };
@@ -270,9 +271,10 @@ impl RequestView {
                     ResponseProjection::Unavailable(ResponseViewWarning::ModeUnavailable)
                 }
             };
-            let _ = owner.update_in(cx, |this, _, cx| {
+            let _ = owner.update_in(cx, |this, window, cx| {
                 if this.response_pane.is_current_preview(&task_token) {
-                    this.response_pane.install_projection(projection);
+                    this.response_pane
+                        .install_projection(projection, window, cx);
                     cx.notify();
                 }
             });
