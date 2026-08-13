@@ -782,8 +782,16 @@ fn checkpoint(pool: &DbConn) -> super::super::errors::FeiwenResult<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "windows"))]
 fn sync_directory(path: &Path) -> std::io::Result<()> {
     std::fs::File::open(path)?.sync_all()
+}
+
+#[cfg(target_os = "windows")]
+fn sync_directory(_path: &Path) -> std::io::Result<()> {
+    // Windows cannot open a directory with std::fs::File. Database artifacts
+    // are flushed and synced through their file handles before this boundary.
+    Ok(())
 }
 
 fn wal_path(path: &Path) -> PathBuf {
@@ -955,6 +963,13 @@ mod tests {
             std::fs::read(backup.join("data.duckdb.wal")).unwrap(),
             b"wal"
         );
+    }
+
+    #[test]
+    fn directory_sync_accepts_an_existing_directory() {
+        let directory = TestDirectory::new("directory-sync");
+
+        sync_directory(&directory.0).unwrap();
     }
 
     #[test]
