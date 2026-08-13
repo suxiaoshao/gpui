@@ -324,16 +324,26 @@ fn request_repair(repair: DatabaseRepair, cx: &mut App) {
             })
             .await;
         cx.update(|cx| {
-            store(cx).update(cx, |resource| {
-                if matches!(resource, DatabaseResource::Repairing { .. }) {
-                    resource.transition(DatabaseMessage::Repaired(result));
-                }
-            });
+            complete_repair(result, cx);
         });
     });
     store(cx).update(cx, |resource| {
         resource.transition(DatabaseMessage::Repair { repair, task });
     });
+}
+
+fn complete_repair(result: Result<DatabaseReady, DatabaseProblem>, cx: &mut App) {
+    let accepted = store(cx).update(cx, |resource| {
+        if matches!(resource, DatabaseResource::Repairing { .. }) {
+            resource.transition(DatabaseMessage::Repaired(result));
+            true
+        } else {
+            false
+        }
+    });
+    if accepted && is_ready(cx) {
+        super::catalog::request_load(cx);
+    }
 }
 
 fn reopen(path: &Path) -> Result<DatabaseReady, DatabaseProblem> {
@@ -802,6 +812,8 @@ fn wal_path(path: &Path) -> PathBuf {
 mod tests {
     use std::collections::HashSet;
 
+    use gpui::TestAppContext;
+
     use super::*;
 
     struct TestDirectory(PathBuf);
@@ -886,6 +898,37 @@ mod tests {
             task: Task::ready(()),
         });
         assert_eq!(resource.phase(), DatabasePhase::Ready);
+    }
+
+    #[gpui::test]
+    fn successful_repair_completion_starts_catalog_load(cx: &mut TestAppContext) {
+        let pool = establish_connection_at(Path::new(":memory:")).unwrap();
+
+        cx.update(|cx| {
+            super::super::catalog::init(cx);
+            DatabaseStore::install_global(
+                cx,
+                DatabaseResource::Repairing {
+                    _repair: DatabaseRepair::Reopen,
+                    problem: DatabaseProblem::new("initial database failure"),
+                    task: Some(Task::ready(())),
+                },
+            );
+
+            complete_repair(
+                Ok(DatabaseReady {
+                    pool,
+                    completed_backup: None,
+                }),
+                cx,
+            );
+
+            assert_eq!(phase(cx), DatabasePhase::Ready);
+            assert_eq!(
+                super::super::catalog::phase(cx),
+                gpui_operation::refresh::Phase::Loading
+            );
+        });
     }
 
     #[test]
