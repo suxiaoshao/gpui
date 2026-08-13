@@ -4,7 +4,7 @@
 
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
-| [#199](https://github.com/suxiaoshao/gpui/issues/199) HTTP Client 基础可用与 Form / Operation / Store 迁移 | Request Form / prepared request `Done`（`933ee09`）；单请求 Send / Response `Done`（`24e4a9f`）；Response 媒体/PDF `In progress` | [issue-199/README.md](issue-199/README.md) |
+| [#199](https://github.com/suxiaoshao/gpui/issues/199) HTTP Client 基础可用与 Form / Operation / Store 迁移 | Request Form / prepared request `Done`（`933ee09`）；单请求 Send / Response `Done`（`24e4a9f`）；loopback test-server producer/consumer `Done`；Response 媒体/PDF `In progress` | [issue-199/README.md](issue-199/README.md) |
 
 ## 依赖迁移
 

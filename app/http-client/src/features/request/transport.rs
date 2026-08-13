@@ -35,7 +35,11 @@ pub(crate) struct HttpTransport {
 
 impl HttpTransport {
     pub(crate) fn new() -> Self {
-        let client = Client::builder()
+        Self::from_builder(Client::builder())
+    }
+
+    fn from_builder(builder: reqwest::ClientBuilder) -> Self {
+        let client = builder
             .redirect(Policy::none())
             .referer(false)
             .no_gzip()
@@ -45,6 +49,11 @@ impl HttpTransport {
             .build()
             .map_err(|error| Arc::new(RequestProblem::transport(error.without_url())));
         Self { client }
+    }
+
+    #[cfg(test)]
+    fn new_without_proxy() -> Self {
+        Self::from_builder(Client::builder().no_proxy())
     }
 
     pub(crate) fn channel() -> (Sender<WorkerEvent>, Receiver<WorkerEvent>) {
@@ -89,7 +98,12 @@ impl Default for HttpTransport {
 mod tests {
     use std::{io::Write as _, time::Duration};
 
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     use http::{HeaderMap, Method, header};
+    use http_client_test_server::{
+        AbortSpec, ContentEncoding as ServerContentEncoding, HeaderSpec, RespondSpec,
+        ResponseBodySpec, ResponseFraming, TestServer,
+    };
     use tokio::{
         io::{AsyncReadExt as _, AsyncWriteExt as _},
         net::TcpListener,
@@ -102,13 +116,12 @@ mod tests {
         prepared::{
             BodyContentType, PreparedBody, PreparedMultipartPart, PreparedRedirect, PreparedRequest,
         },
-        response::ActiveBodyStorage,
-        runtime::RequestProblemKind,
+        response::{ActiveBodyStorage, BodyDecoding, CAPTURE_LIMIT_BYTES, StoredBody},
+        runtime::{BodySizeDimension, RequestProblemKind},
     };
 
     struct FixtureResponse {
         bytes: &'static [u8],
-        delay: Duration,
     }
 
     async fn fixture(responses: Vec<FixtureResponse>) -> (Url, JoinHandle<Vec<Vec<u8>>>) {
@@ -119,9 +132,6 @@ mod tests {
             for response in responses {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 requests.push(read_request(&mut stream).await);
-                if !response.delay.is_zero() {
-                    tokio::time::sleep(response.delay).await;
-                }
                 stream.write_all(response.bytes).await.unwrap();
                 stream.shutdown().await.unwrap();
             }
@@ -190,7 +200,7 @@ mod tests {
         prepared: PreparedRequest,
     ) -> (Option<ResponseHead>, Result<CompletedBody, RequestProblem>) {
         let (sender, receiver) = HttpTransport::channel();
-        let worker = tokio::spawn(HttpTransport::new().run(prepared, sender));
+        let worker = tokio::spawn(HttpTransport::new_without_proxy().run(prepared, sender));
         let mut head = None;
         let result = loop {
             match receiver.recv().await.unwrap() {
@@ -203,16 +213,43 @@ mod tests {
         (head, result)
     }
 
+    fn respond(status: u16, body: ResponseBodySpec) -> RespondSpec {
+        RespondSpec {
+            status,
+            headers: Vec::new(),
+            body,
+            delay_before_headers_ms: 0,
+            chunk_size_bytes: 16 * 1024,
+            delay_between_chunks_ms: 0,
+            content_encoding: None,
+            framing: ResponseFraming::ContentLength,
+        }
+    }
+
+    fn controlled_url(server: &TestServer, spec: &RespondSpec) -> Url {
+        Url::parse(&server.respond_url(spec).unwrap()).unwrap()
+    }
+
+    fn abort_url(server: &TestServer, spec: &AbortSpec) -> Url {
+        Url::parse(&server.abort_url(spec).unwrap()).unwrap()
+    }
+
+    fn memory_bytes(completed: &CompletedBody) -> &[u8] {
+        match &completed.body {
+            StoredBody::Empty => &[],
+            StoredBody::Memory(bytes) => bytes,
+            StoredBody::TempFile { .. } => panic!("expected an in-memory response body"),
+        }
+    }
+
     #[tokio::test]
     async fn post_redirect_rewrites_to_get_and_explicit_headers_override_generated_ones() {
         let (url, server) = fixture(vec![
             FixtureResponse {
                 bytes: b"HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                delay: Duration::ZERO,
             },
             FixtureResponse {
                 bytes: b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-                delay: Duration::ZERO,
             },
         ])
         .await;
@@ -255,11 +292,9 @@ mod tests {
         let (url, server) = fixture(vec![
             FixtureResponse {
                 bytes: b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                delay: Duration::ZERO,
             },
             FixtureResponse {
                 bytes: b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                delay: Duration::ZERO,
             },
         ])
         .await;
@@ -297,11 +332,9 @@ mod tests {
         let (url, server) = fixture(vec![
             FixtureResponse {
                 bytes: b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                delay: Duration::ZERO,
             },
             FixtureResponse {
                 bytes: b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                delay: Duration::ZERO,
             },
         ])
         .await;
@@ -334,19 +367,17 @@ mod tests {
 
     #[tokio::test]
     async fn frozen_total_timeout_covers_waiting_for_the_final_head() {
-        let (url, server) = fixture(vec![FixtureResponse {
-            bytes: b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            delay: Duration::from_millis(200),
-        }])
-        .await;
+        let server = TestServer::spawn().await.unwrap();
+        let mut spec = respond(200, ResponseBodySpec::Empty);
+        spec.delay_before_headers_ms = 200;
+        let url = controlled_url(&server, &spec);
         let mut request = prepared(url, PreparedBody::None, BodyContentType::None);
         request.method = Method::GET;
         request.timeout = Some(Duration::from_millis(20));
 
         let problem = run_to_terminal(request).await.unwrap_err();
         assert_eq!(problem.kind(), RequestProblemKind::Timeout);
-        server.abort();
-        let _ = server.await;
+        server.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -366,49 +397,54 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_redirect_and_http_error_statuses_are_normal_responses() {
-        let (url, server) = fixture(vec![
-            FixtureResponse {
-                bytes: b"HTTP/1.1 302 Found\r\nLocation: /ignored\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                delay: Duration::ZERO,
-            },
-            FixtureResponse {
-                bytes: b"HTTP/1.1 404 Not Found\r\nContent-Length: 3\r\nConnection: close\r\n\r\nno!",
-                delay: Duration::ZERO,
-            },
-        ])
-        .await;
+        let server = TestServer::spawn().await.unwrap();
+        let mut redirect_spec = respond(302, ResponseBodySpec::Empty);
+        redirect_spec.headers.push(HeaderSpec {
+            name: "location".into(),
+            value: "/ignored".into(),
+        });
+        let redirect_url = controlled_url(&server, &redirect_spec);
 
-        let mut redirect = prepared(url.clone(), PreparedBody::None, BodyContentType::None);
+        let mut redirect = prepared(redirect_url, PreparedBody::None, BodyContentType::None);
         redirect.method = Method::GET;
         redirect.redirect.follow = false;
         let (head, completed) = run_to_terminal_with_head(redirect).await;
         assert_eq!(head.unwrap().status, http::StatusCode::FOUND);
         assert_eq!(completed.unwrap().sizes.stored_body_bytes, 0);
 
-        let mut not_found = prepared(url, PreparedBody::None, BodyContentType::None);
+        let not_found_url = controlled_url(
+            &server,
+            &respond(
+                404,
+                ResponseBodySpec::Base64 {
+                    value: STANDARD.encode(b"no!"),
+                },
+            ),
+        );
+        let mut not_found = prepared(not_found_url, PreparedBody::None, BodyContentType::None);
         not_found.method = Method::GET;
         let (head, completed) = run_to_terminal_with_head(not_found).await;
         assert_eq!(head.unwrap().status, http::StatusCode::NOT_FOUND);
         assert_eq!(completed.unwrap().sizes.stored_body_bytes, 3);
 
-        assert_eq!(server.await.unwrap().len(), 2);
+        server.shutdown().await.unwrap();
     }
 
     #[tokio::test]
     async fn head_and_no_content_responses_complete_without_a_body() {
-        let (url, server) = fixture(vec![
-            FixtureResponse {
-                bytes: b"HTTP/1.1 200 OK\r\nContent-Length: 42\r\nConnection: close\r\n\r\n",
-                delay: Duration::ZERO,
-            },
-            FixtureResponse {
-                bytes: b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n",
-                delay: Duration::ZERO,
-            },
-        ])
-        .await;
+        let server = TestServer::spawn().await.unwrap();
+        let head_url = controlled_url(
+            &server,
+            &respond(
+                200,
+                ResponseBodySpec::Repeat {
+                    byte: b'x',
+                    len: 42,
+                },
+            ),
+        );
 
-        let mut head_request = prepared(url.clone(), PreparedBody::None, BodyContentType::None);
+        let mut head_request = prepared(head_url, PreparedBody::None, BodyContentType::None);
         head_request.method = Method::HEAD;
         let (head, completed) = run_to_terminal_with_head(head_request).await;
         assert_eq!(head.unwrap().status, http::StatusCode::OK);
@@ -417,22 +453,40 @@ mod tests {
         assert_eq!(completed.sizes.received_encoded_bytes, 0);
         assert_eq!(completed.sizes.stored_body_bytes, 0);
 
-        let mut no_content = prepared(url, PreparedBody::None, BodyContentType::None);
+        let no_content_url = controlled_url(&server, &respond(204, ResponseBodySpec::Empty));
+        let mut no_content = prepared(no_content_url, PreparedBody::None, BodyContentType::None);
         no_content.method = Method::GET;
         let (head, completed) = run_to_terminal_with_head(no_content).await;
         assert_eq!(head.unwrap().status, http::StatusCode::NO_CONTENT);
         assert_eq!(completed.unwrap().sizes.stored_body_bytes, 0);
 
-        assert_eq!(server.await.unwrap().len(), 2);
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn before_head_abort_is_a_transport_problem_without_a_response_head() {
+        let server = TestServer::spawn().await.unwrap();
+        let url = abort_url(&server, &AbortSpec::BeforeHead);
+        let mut request = prepared(url, PreparedBody::None, BodyContentType::None);
+        request.method = Method::GET;
+
+        let (head, result) = run_to_terminal_with_head(request).await;
+        assert!(head.is_none(), "unexpected response head: {head:?}");
+        assert_eq!(result.unwrap_err().kind(), RequestProblemKind::Transport);
+        server.shutdown().await.unwrap();
     }
 
     #[tokio::test]
     async fn interrupted_body_keeps_the_head_but_never_completes_partial_bytes() {
-        let (url, server) = fixture(vec![FixtureResponse {
-            bytes: b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nshort",
-            delay: Duration::ZERO,
-        }])
-        .await;
+        let server = TestServer::spawn().await.unwrap();
+        let url = abort_url(
+            &server,
+            &AbortSpec::MidBody {
+                bytes_before_abort: 32,
+                chunk_size_bytes: 16,
+                delay_between_chunks_ms: 10,
+            },
+        );
         let mut request = prepared(url, PreparedBody::None, BodyContentType::None);
         request.method = Method::GET;
 
@@ -443,7 +497,254 @@ mod tests {
             result.unwrap_err().kind(),
             RequestProblemKind::ResponseBodyRead
         );
-        assert_eq!(server.await.unwrap().len(), 1);
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn echo_preserves_text_and_binary_request_bytes_and_content_type() {
+        let server = TestServer::spawn().await.unwrap();
+        let echo_url = Url::parse(&format!("{}/v1/echo", server.base_url())).unwrap();
+
+        let text_content_type = http::HeaderValue::from_static("application/vnd.test.text");
+        let (head, completed) = run_to_terminal_with_head(prepared(
+            echo_url.clone(),
+            PreparedBody::Text(b"text-payload".to_vec()),
+            BodyContentType::Fixed(text_content_type.clone()),
+        ))
+        .await;
+        assert_eq!(
+            head.unwrap().headers.get(header::CONTENT_TYPE),
+            Some(&text_content_type)
+        );
+        assert_eq!(memory_bytes(&completed.unwrap()), b"text-payload");
+
+        let mut source = tempfile::NamedTempFile::new().unwrap();
+        source.write_all(b"\0binary\xffpayload").unwrap();
+        let binary_content_type = http::HeaderValue::from_static("application/vnd.test.binary");
+        let mut binary_request = prepared(
+            echo_url,
+            PreparedBody::Binary(source.path().to_path_buf()),
+            BodyContentType::None,
+        );
+        binary_request
+            .headers
+            .insert(header::CONTENT_TYPE, binary_content_type.clone());
+        let (head, completed) = run_to_terminal_with_head(binary_request).await;
+        assert_eq!(
+            head.unwrap().headers.get(header::CONTENT_TYPE),
+            Some(&binary_content_type)
+        );
+        assert_eq!(memory_bytes(&completed.unwrap()), b"\0binary\xffpayload");
+
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delayed_chunks_emit_the_head_before_progress_and_terminal() {
+        let server = TestServer::spawn().await.unwrap();
+        let mut spec = respond(
+            200,
+            ResponseBodySpec::Repeat {
+                byte: b'x',
+                len: 3 * 64 * 1024,
+            },
+        );
+        spec.chunk_size_bytes = 64 * 1024;
+        spec.delay_between_chunks_ms = 120;
+        spec.framing = ResponseFraming::Chunked;
+        let mut request = prepared(
+            controlled_url(&server, &spec),
+            PreparedBody::None,
+            BodyContentType::None,
+        );
+        request.method = Method::GET;
+
+        let (sender, receiver) = HttpTransport::channel();
+        let worker = tokio::spawn(HttpTransport::new_without_proxy().run(request, sender));
+        assert!(matches!(
+            receiver.recv().await.unwrap(),
+            WorkerEvent::HeadReceived { .. }
+        ));
+
+        let mut progress_seen = false;
+        let completed = loop {
+            match receiver.recv().await.unwrap() {
+                WorkerEvent::HeadReceived { .. } => panic!("response head was emitted twice"),
+                WorkerEvent::BodyProgress(_) => progress_seen = true,
+                WorkerEvent::Finished { result, .. } => break result.unwrap(),
+            }
+        };
+        assert!(progress_seen);
+        assert_eq!(completed.sizes.stored_body_bytes, 3 * 64 * 1024);
+        worker.await.unwrap();
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn receiving_stage_cancellation_releases_the_controlled_connection() {
+        let server = TestServer::spawn().await.unwrap();
+        let mut spec = respond(
+            200,
+            ResponseBodySpec::Repeat {
+                byte: b'x',
+                len: 64 * 1024,
+            },
+        );
+        spec.chunk_size_bytes = 1024;
+        spec.delay_between_chunks_ms = 100;
+        spec.framing = ResponseFraming::Chunked;
+        let mut request = prepared(
+            controlled_url(&server, &spec),
+            PreparedBody::None,
+            BodyContentType::None,
+        );
+        request.method = Method::GET;
+        request.timeout = None;
+
+        let (sender, receiver) = HttpTransport::channel();
+        let worker = tokio::spawn(HttpTransport::new_without_proxy().run(request, sender));
+        assert!(matches!(
+            receiver.recv().await.unwrap(),
+            WorkerEvent::HeadReceived { .. }
+        ));
+        drop(receiver);
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn controlled_content_codings_decode_and_unknown_coding_is_preserved() {
+        let server = TestServer::spawn().await.unwrap();
+        let json = serde_json::json!({ "fixture": "controlled encoded response" });
+        let json_bytes = serde_json::to_vec(&json).unwrap();
+        let binary_bytes = b"controlled encoded response".to_vec();
+        for (encoding, header_value, body, expected) in [
+            (
+                ServerContentEncoding::Gzip,
+                "gzip",
+                ResponseBodySpec::Json { value: json },
+                json_bytes,
+            ),
+            (
+                ServerContentEncoding::Br,
+                "br",
+                ResponseBodySpec::Base64 {
+                    value: STANDARD.encode(&binary_bytes),
+                },
+                binary_bytes.clone(),
+            ),
+            (
+                ServerContentEncoding::Deflate,
+                "deflate",
+                ResponseBodySpec::Base64 {
+                    value: STANDARD.encode(&binary_bytes),
+                },
+                binary_bytes.clone(),
+            ),
+            (
+                ServerContentEncoding::Zstd,
+                "zstd",
+                ResponseBodySpec::Base64 {
+                    value: STANDARD.encode(&binary_bytes),
+                },
+                binary_bytes,
+            ),
+        ] {
+            let mut spec = respond(200, body);
+            spec.content_encoding = Some(encoding);
+            let mut request = prepared(
+                controlled_url(&server, &spec),
+                PreparedBody::None,
+                BodyContentType::None,
+            );
+            request.method = Method::GET;
+
+            let (head, completed) = run_to_terminal_with_head(request).await;
+            assert_eq!(
+                head.unwrap().headers.get(header::CONTENT_ENCODING),
+                Some(&http::HeaderValue::from_static(header_value))
+            );
+            let completed = completed.unwrap();
+            assert_eq!(completed.body_decoding, BodyDecoding::Decoded);
+            assert_eq!(memory_bytes(&completed), expected);
+        }
+
+        let encoded = b"bytes with caller-defined coding";
+        let mut spec = respond(
+            200,
+            ResponseBodySpec::Base64 {
+                value: STANDARD.encode(encoded),
+            },
+        );
+        spec.headers.push(HeaderSpec {
+            name: "content-encoding".into(),
+            value: "test-coding".into(),
+        });
+        let mut request = prepared(
+            controlled_url(&server, &spec),
+            PreparedBody::None,
+            BodyContentType::None,
+        );
+        request.method = Method::GET;
+        let (head, completed) = run_to_terminal_with_head(request).await;
+        assert_eq!(
+            head.unwrap().headers.get(header::CONTENT_ENCODING).unwrap(),
+            "test-coding"
+        );
+        let completed = completed.unwrap();
+        assert_eq!(completed.body_decoding, BodyDecoding::Unsupported);
+        assert_eq!(memory_bytes(&completed), encoded);
+
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn controlled_repeat_spills_to_disk_and_enforces_the_encoded_cap() {
+        let server = TestServer::spawn().await.unwrap();
+        let mut spill_spec = respond(
+            200,
+            ResponseBodySpec::Repeat {
+                byte: b'x',
+                len: 8 * 1024 * 1024 + 1,
+            },
+        );
+        spill_spec.chunk_size_bytes = 64 * 1024;
+        let mut spill_request = prepared(
+            controlled_url(&server, &spill_spec),
+            PreparedBody::None,
+            BodyContentType::None,
+        );
+        spill_request.method = Method::GET;
+        let completed = run_to_terminal(spill_request).await.unwrap();
+        assert_eq!(completed.sizes.stored_body_bytes, 8 * 1024 * 1024 + 1);
+        assert!(matches!(completed.body, StoredBody::TempFile { .. }));
+
+        let mut capped_spec = respond(
+            200,
+            ResponseBodySpec::Repeat {
+                byte: b'x',
+                len: CAPTURE_LIMIT_BYTES + 1,
+            },
+        );
+        capped_spec.chunk_size_bytes = 64 * 1024;
+        let mut capped_request = prepared(
+            controlled_url(&server, &capped_spec),
+            PreparedBody::None,
+            BodyContentType::None,
+        );
+        capped_request.method = Method::GET;
+        let problem = run_to_terminal(capped_request).await.unwrap_err();
+        assert_eq!(
+            problem.kind(),
+            RequestProblemKind::BodyTooLarge {
+                dimension: BodySizeDimension::Encoded,
+                limit: CAPTURE_LIMIT_BYTES,
+                observed: CAPTURE_LIMIT_BYTES + 1,
+            }
+        );
+
+        server.shutdown().await.unwrap();
     }
 
     #[tokio::test]

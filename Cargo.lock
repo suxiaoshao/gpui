@@ -6666,6 +6666,7 @@ dependencies = [
  "gstreamer",
  "hayro",
  "http 1.4.2",
+ "http-client-test-server",
  "image",
  "mime",
  "mime_guess",
@@ -6680,6 +6681,25 @@ dependencies = [
  "tracing-subscriber",
  "unic-langid",
  "url",
+]
+
+[[package]]
+name = "http-client-test-server"
+version = "0.1.0"
+dependencies = [
+ "async-compression",
+ "base64 0.23.0",
+ "bytes",
+ "futures-util",
+ "http-body-util",
+ "hyper 1.10.1",
+ "hyper-util",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -6767,6 +6787,7 @@ dependencies = [
  "http 1.4.2",
  "http-body 1.0.1",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -14652,6 +14673,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",

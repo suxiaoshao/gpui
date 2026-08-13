@@ -17,6 +17,7 @@ members = [
   "crates/gpui-operation",
   "crates/gpui-store",
   "crates/gpui-tokio",
+  "crates/http-client-test-server",
   "crates/platform-ext",
   "crates/window-ext",
   "crates/xtask",
