@@ -291,6 +291,10 @@ async fn response_codings_are_generated_and_conflicts_are_rejected() -> Result<(
     let server = TestServer::spawn().await?;
     let client = Client::builder()
         .no_proxy()
+        .no_gzip()
+        .no_brotli()
+        .no_deflate()
+        .no_zstd()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
     for (encoding, expected) in [
