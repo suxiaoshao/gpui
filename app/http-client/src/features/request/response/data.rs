@@ -184,6 +184,20 @@ pub(crate) struct CompletedBody {
     pub(crate) sizes: ResponseSizes,
 }
 
+impl CompletedBody {
+    pub(crate) const fn empty(declared_encoded_bytes: Option<u64>) -> Self {
+        Self {
+            body: StoredBody::Empty,
+            body_decoding: BodyDecoding::Identity,
+            sizes: ResponseSizes {
+                declared_encoded_bytes,
+                received_encoded_bytes: 0,
+                stored_body_bytes: 0,
+            },
+        }
+    }
+}
+
 impl fmt::Debug for CompletedBody {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter

@@ -433,13 +433,14 @@ mod tests {
     #[tokio::test]
     async fn head_and_no_content_responses_complete_without_a_body() {
         let server = TestServer::spawn().await.unwrap();
+        let declared_head_bytes = CAPTURE_LIMIT_BYTES + 1;
         let head_url = controlled_url(
             &server,
             &respond(
                 200,
                 ResponseBodySpec::Repeat {
                     byte: b'x',
-                    len: 42,
+                    len: declared_head_bytes,
                 },
             ),
         );
@@ -449,7 +450,10 @@ mod tests {
         let (head, completed) = run_to_terminal_with_head(head_request).await;
         assert_eq!(head.unwrap().status, http::StatusCode::OK);
         let completed = completed.unwrap();
-        assert_eq!(completed.sizes.declared_encoded_bytes, Some(42));
+        assert_eq!(
+            completed.sizes.declared_encoded_bytes,
+            Some(declared_head_bytes)
+        );
         assert_eq!(completed.sizes.received_encoded_bytes, 0);
         assert_eq!(completed.sizes.stored_body_bytes, 0);
 

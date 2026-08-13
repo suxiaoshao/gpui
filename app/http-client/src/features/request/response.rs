@@ -46,7 +46,7 @@ pub(crate) use data::{
 };
 pub(crate) use decoding::{
     ContentKind, SourceLanguage, TextDecodingProblem, classify_content_type, collect_response_body,
-    decode_text, escape_header_value,
+    declared_encoded_bytes, decode_text, escape_header_value,
 };
 use media::audio::AudioDriver;
 use media::video::VideoDriver;

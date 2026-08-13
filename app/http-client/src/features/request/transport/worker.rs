@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use async_channel::{Sender, TrySendError};
-use http::{HeaderMap, header};
+use http::{HeaderMap, Method, StatusCode, header};
 use reqwest::Client;
 
 use super::{
@@ -10,8 +10,11 @@ use super::{
 };
 use crate::features::request::{
     prepared::{PreparedBody, PreparedRequest},
-    response::{CAPTURE_LIMIT_BYTES, ResponseHead, ResponseProgress, collect_response_body},
-    runtime::{BodySizeDimension, RedirectProblemKind, RequestProblem},
+    response::{
+        CompletedBody, ResponseHead, ResponseProgress, collect_response_body,
+        declared_encoded_bytes,
+    },
+    runtime::{RedirectProblemKind, RequestProblem},
 };
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
@@ -68,18 +71,20 @@ pub(super) async fn execute(
             continue;
         }
 
-        return receive_final(response, sender, started_at).await;
+        return receive_final(response, &method, sender, started_at).await;
     }
 }
 
 async fn receive_final(
     response: reqwest::Response,
+    method: &Method,
     sender: &Sender<WorkerEvent>,
     started_at: Instant,
-) -> Result<crate::features::request::response::CompletedBody, RequestProblem> {
-    let declared_encoded_bytes = declared_content_length(response.headers());
+) -> Result<CompletedBody, RequestProblem> {
+    let status = response.status();
+    let declared_encoded_bytes = declared_encoded_bytes(response.headers());
     let head = ResponseHead {
-        status: response.status(),
+        status,
         version: response.version(),
         final_url: response.url().clone(),
         headers: response.headers().clone(),
@@ -94,14 +99,8 @@ async fn receive_final(
         .await
         .map_err(|_| RequestProblem::internal())?;
 
-    if let Some(declared) = declared_encoded_bytes
-        && declared > CAPTURE_LIMIT_BYTES
-    {
-        return Err(RequestProblem::too_large(
-            BodySizeDimension::Encoded,
-            CAPTURE_LIMIT_BYTES,
-            declared,
-        ));
+    if response_has_no_message_body(method, status) {
+        return Ok(CompletedBody::empty(declared_encoded_bytes));
     }
 
     let headers = response.headers().clone();
@@ -131,17 +130,17 @@ async fn receive_final(
     result
 }
 
+fn response_has_no_message_body(method: &Method, status: StatusCode) -> bool {
+    *method == Method::HEAD
+        || status.is_informational()
+        || matches!(status, StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED)
+        || (*method == Method::CONNECT && status.is_success())
+}
+
 fn strip_body_headers(headers: &mut HeaderMap) {
     headers.remove(header::CONTENT_LENGTH);
     headers.remove(header::CONTENT_TYPE);
     headers.remove(header::TRANSFER_ENCODING);
-}
-
-fn declared_content_length(headers: &HeaderMap) -> Option<u64> {
-    headers
-        .get(header::CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse().ok())
 }
 
 fn classify_send_error(error: reqwest::Error) -> RequestProblem {
@@ -169,12 +168,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn declared_content_length_is_strictly_numeric() {
+    fn declared_encoded_length_is_strictly_numeric() {
         let mut headers = HeaderMap::new();
         headers.insert(header::CONTENT_LENGTH, "123".parse().unwrap());
-        assert_eq!(declared_content_length(&headers), Some(123));
+        assert_eq!(declared_encoded_bytes(&headers), Some(123));
         headers.insert(header::CONTENT_LENGTH, "invalid".parse().unwrap());
-        assert_eq!(declared_content_length(&headers), None);
+        assert_eq!(declared_encoded_bytes(&headers), None);
+    }
+
+    #[test]
+    fn bodyless_response_matrix_matches_http_message_framing() {
+        for status in [
+            StatusCode::OK,
+            StatusCode::NOT_FOUND,
+            StatusCode::RESET_CONTENT,
+        ] {
+            assert!(response_has_no_message_body(&Method::HEAD, status));
+        }
+
+        for status in [
+            StatusCode::CONTINUE,
+            StatusCode::SWITCHING_PROTOCOLS,
+            StatusCode::NO_CONTENT,
+            StatusCode::NOT_MODIFIED,
+        ] {
+            assert!(response_has_no_message_body(&Method::GET, status));
+        }
+
+        for status in [StatusCode::OK, StatusCode::CREATED] {
+            assert!(response_has_no_message_body(&Method::CONNECT, status));
+        }
+
+        for (method, status) in [
+            (Method::GET, StatusCode::OK),
+            (Method::GET, StatusCode::RESET_CONTENT),
+            (Method::POST, StatusCode::OK),
+            (Method::CONNECT, StatusCode::MULTIPLE_CHOICES),
+        ] {
+            assert!(!response_has_no_message_body(&method, status));
+        }
     }
 
     #[test]
