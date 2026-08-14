@@ -35,14 +35,7 @@ pub(crate) struct HttpClient {
 impl HttpClient {
     pub(crate) fn new() -> Result<Self, HttpProblem> {
         let client = reqwest::Client::builder()
-            .redirect(redirect::Policy::custom(|attempt| {
-                let target = attempt.url();
-                if target.scheme() == "https" && target.host_str() == Some(ZGZL_HOST) {
-                    attempt.follow()
-                } else {
-                    attempt.error("redirect target must remain https://m.zgzl.net")
-                }
-            }))
+            .redirect(redirect_policy())
             .build()
             .map_err(|source| HttpProblem::new(root_url(), 1, source))?;
 
@@ -79,6 +72,27 @@ impl HttpClient {
 
         result.map_err(|failure| HttpProblem::new(url.clone(), failure.attempts, failure.error))
     }
+}
+
+fn redirect_policy() -> redirect::Policy {
+    redirect_policy_for(is_allowed_redirect_target)
+}
+
+fn redirect_policy_for(
+    is_allowed_target: impl Fn(&Url) -> bool + Send + Sync + 'static,
+) -> redirect::Policy {
+    let default_policy = redirect::Policy::default();
+    redirect::Policy::custom(move |attempt| {
+        if is_allowed_target(attempt.url()) {
+            default_policy.redirect(attempt)
+        } else {
+            attempt.error("redirect target must remain https://m.zgzl.net")
+        }
+    })
+}
+
+fn is_allowed_redirect_target(target: &Url) -> bool {
+    target.scheme() == "https" && target.host_str() == Some(ZGZL_HOST)
 }
 
 #[derive(Debug)]
@@ -136,11 +150,25 @@ fn root_url() -> Url {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, num::NonZeroU8, rc::Rc, time::Duration};
+    use std::{
+        cell::Cell,
+        io::{Read, Write},
+        net::TcpListener,
+        num::NonZeroU8,
+        rc::Rc,
+        thread,
+        time::Duration,
+    };
 
-    use reqwest::StatusCode;
+    use async_compat::Compat;
+    use reqwest::{StatusCode, Url};
 
-    use super::{RetryPolicy, is_transient_status, retry_with};
+    use super::{
+        RetryPolicy, is_allowed_redirect_target, is_transient_status, redirect_policy_for,
+        retry_with,
+    };
+
+    const DEFAULT_REDIRECT_LIMIT: usize = 10;
 
     #[test]
     fn retry_sleeps_only_between_transient_failures() {
@@ -240,5 +268,68 @@ mod tests {
         ] {
             assert!(!is_transient_status(status), "{status}");
         }
+    }
+
+    #[test]
+    fn redirects_must_remain_https_on_m_zgzl_net() {
+        for url in [
+            "https://m.zgzl.net/chapter/1",
+            "https://m.zgzl.net:443/chapter/1",
+        ] {
+            assert!(
+                is_allowed_redirect_target(&Url::parse(url).unwrap()),
+                "{url}"
+            );
+        }
+
+        for url in [
+            "http://m.zgzl.net/chapter/1",
+            "https://zgzl.net/chapter/1",
+            "https://www.m.zgzl.net/chapter/1",
+            "https://m.zgzl.net.evil.example/chapter/1",
+        ] {
+            assert!(
+                !is_allowed_redirect_target(&Url::parse(url).unwrap()),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn allowed_redirect_loop_stops_at_reqwests_default_limit() {
+        let (url, server) = redirect_loop_server(DEFAULT_REDIRECT_LIMIT + 1);
+        let client = reqwest::Client::builder()
+            .redirect(redirect_policy_for(|_| true))
+            .build()
+            .unwrap();
+
+        let result = smol::block_on(Compat::new(async { client.get(url).send().await }));
+
+        assert!(result.unwrap_err().is_redirect());
+        assert_eq!(server.join().unwrap(), DEFAULT_REDIRECT_LIMIT + 1);
+    }
+
+    fn redirect_loop_server(requests: usize) -> (Url, thread::JoinHandle<usize>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let url = Url::parse(&format!("http://{}/loop", listener.local_addr().unwrap())).unwrap();
+        let server = thread::spawn(move || {
+            for _ in 0..requests {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = [0; 1024];
+                let request_bytes = stream.read(&mut request).unwrap();
+                assert!(request_bytes > 0);
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /loop\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+            }
+            requests
+        });
+
+        (url, server)
     }
 }

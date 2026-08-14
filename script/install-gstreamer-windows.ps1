@@ -76,7 +76,7 @@ try {
         if ($LASTEXITCODE -ne 0) {
             Write-Warning "taskkill could not terminate the GStreamer installer process tree (exit code $LASTEXITCODE)."
         }
-        if (-not $process.WaitForExit(30_000)) {
+        if (-not $process.WaitForExit(30000)) {
             Write-Warning "GStreamer installer process did not exit within 30 seconds of taskkill."
         }
         throw "GStreamer installer exceeded the $($InstallerTimeout.TotalMinutes)-minute timeout and was terminated"

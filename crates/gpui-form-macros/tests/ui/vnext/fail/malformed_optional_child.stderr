@@ -1,19 +1,5 @@
 error: #[form(child)] requires Child or Option<Child>
- --> tests/ui/vnext/fail/malformed_optional_child.rs:4:19
+ --> tests/ui/vnext/fail/malformed_optional_child.rs:6:19
   |
-4 |     value: Option<String, bool>,
+6 |     value: Option<String, bool>,
   |                   ^^^^^^^^^^^^
-
-error[E0107]: enum takes 1 generic argument but 2 generic arguments were supplied
- --> tests/ui/vnext/fail/malformed_optional_child.rs:4:12
-  |
-4 |     value: Option<String, bool>,
-  |            ^^^^^^       ------ help: remove the unnecessary generic argument
-  |            |
-  |            expected 1 generic argument
-  |
-note: enum defined here, with 1 generic parameter: `T`
- --> $RUST/core/src/option.rs
-  |
-  | pub enum Option<T> {
-  |          ^^^^^^ -
