@@ -17,9 +17,9 @@ Send 与 Response 范围以源码及索引中标记为 `Done` 的实施计划为
 - 未来 Repair 先定义用户可执行的修复动作；在没有动作契约前，不采用预定义
   `gpui_operation::repair::Operation`。
 
-Response 媒体/PDF 的未完成发行门禁已移交 [#200](https://github.com/suxiaoshao/gpui/issues/200)；该 issue 的
-[owner plan](../issue-200/README.md) 是后续入口，#199 的 [历史计划](response-media-and-pdf-preview-plan.md)
-仅保留已进入代码的实施证据。
+媒体后端迁移已移交 [#200](https://github.com/suxiaoshao/gpui/issues/200)；该 issue 的
+[owner plan](../issue-200/README.md) 是唯一后续入口，采用 Rodio/CPAL/Symphonia、保留 PDF、排除视频并删除
+全部 GStreamer 产品/打包链路。#199 的 [历史记录](response-media-and-pdf-preview-plan.md) 不再包含实施指令。
 
 ## 尚未解决的未来范围
 

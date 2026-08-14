@@ -2,7 +2,6 @@ use std::{error::Error, fmt};
 
 use tempfile::{NamedTempFile, TempPath};
 use tokio::io::AsyncWriteExt as _;
-use url::Url;
 
 use super::super::{ResponseReadLease, ResponseReadProblem};
 
@@ -13,19 +12,23 @@ use super::super::{ResponseReadLease, ResponseReadProblem};
 /// unambiguous lifetime. It is intentionally non-cloneable and never exposes a
 /// filesystem path outside this response-local module.
 pub(crate) struct ResponseAssetLease {
-    _path: TempPath,
-    uri: Url,
+    path: TempPath,
     len: u64,
 }
 
 impl ResponseAssetLease {
-    pub(crate) fn uri(&self) -> &Url {
-        &self.uri
+    pub(super) fn open(&self) -> Result<std::fs::File, std::io::Error> {
+        std::fs::File::open(&self.path)
     }
 
     #[cfg(test)]
     pub(crate) const fn len(&self) -> u64 {
         self.len
+    }
+
+    #[cfg(test)]
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.path
     }
 }
 
@@ -43,7 +46,6 @@ pub(crate) enum ResponseAssetProblemKind {
     ReadResponse,
     CreateTemporaryAsset,
     WriteTemporaryAsset,
-    InvalidTemporaryAssetUri,
 }
 
 pub(crate) struct ResponseAssetProblem {
@@ -78,9 +80,6 @@ impl fmt::Display for ResponseAssetProblem {
             }
             ResponseAssetProblemKind::WriteTemporaryAsset => {
                 "media temporary asset could not be written"
-            }
-            ResponseAssetProblemKind::InvalidTemporaryAssetUri => {
-                "media temporary asset could not be addressed"
             }
         })
     }
@@ -118,14 +117,7 @@ impl ResponseReadLease {
         })?;
         drop(file);
 
-        let uri = Url::from_file_path(path.as_ref() as &std::path::Path).map_err(|_| {
-            ResponseAssetProblem::new(ResponseAssetProblemKind::InvalidTemporaryAssetUri)
-        })?;
-        Ok(ResponseAssetLease {
-            _path: path,
-            uri,
-            len: copied,
-        })
+        Ok(ResponseAssetLease { path, len: copied })
     }
 }
 
@@ -186,7 +178,7 @@ mod tests {
     async fn materialized_asset_is_exact_and_redacts_its_path() {
         let source = response(StoredBody::Memory(Bytes::from_static(b"media-body")));
         let asset = source.read_lease().materialize_media_asset().await.unwrap();
-        let asset_path = asset.uri().to_file_path().unwrap();
+        let asset_path = asset.path().to_owned();
 
         assert_eq!(asset.len(), 10);
         assert_eq!(tokio::fs::read(&asset_path).await.unwrap(), b"media-body");
@@ -209,7 +201,7 @@ mod tests {
         });
 
         let asset = source.read_lease().materialize_media_asset().await.unwrap();
-        let asset_path = asset.uri().to_file_path().unwrap();
+        let asset_path = asset.path().to_owned();
         assert_ne!(asset_path, source_path);
         assert_eq!(
             tokio::fs::read(&asset_path).await.unwrap(),

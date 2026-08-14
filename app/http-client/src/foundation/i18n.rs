@@ -244,7 +244,6 @@ mod tests {
         "response-view-base64",
         "response-view-image",
         "response-view-audio",
-        "response-view-video",
         "response-view-pdf",
         "response-media-loading",
         "response-media-play",
@@ -253,11 +252,8 @@ mod tests {
         "response-media-unmute",
         "response-media-position",
         "response-media-runtime-unavailable",
-        "response-media-plugin-missing",
-        "response-media-unsupported",
         "response-media-decode-failed",
         "response-media-control-failed",
-        "response-media-resolution-unsupported",
         "response-pdf-loading",
         "response-pdf-previous",
         "response-pdf-next",
@@ -348,11 +344,6 @@ mod tests {
     fn media_and_pdf_messages_have_the_required_variable_contract() {
         let expected = [
             ("response-media-position", &["current", "total"] as &[&str]),
-            ("response-media-plugin-missing", &["plugin"] as &[&str]),
-            (
-                "response-media-resolution-unsupported",
-                &["height", "width"] as &[&str],
-            ),
             ("response-pdf-page", &["current", "total"] as &[&str]),
         ];
 

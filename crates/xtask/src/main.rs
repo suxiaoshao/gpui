@@ -22,12 +22,6 @@ fn main() {
     let cli = cli::Cli::parse();
     let result = match cli.command {
         cli::Commands::Bundle(args) => bundle::run(args),
-        cli::Commands::VerifyGstreamer(args) => {
-            bundle::gstreamer::verify_runtime_manifest(&args.manifest, args.inspect)
-        }
-        cli::Commands::VerifyGstreamerSdk(args) => {
-            bundle::gstreamer::verify_sdk(&args.minimum_version)
-        }
     };
 
     if let Err(err) = result {

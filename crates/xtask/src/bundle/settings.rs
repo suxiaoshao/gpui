@@ -79,6 +79,14 @@ struct ManifestBundle {
     long_description: Option<String>,
     #[serde(default)]
     deep_link_protocols: Option<Vec<DeepLinkProtocol>>,
+    #[serde(default)]
+    deb: Option<ManifestDeb>,
+}
+
+#[derive(Deserialize)]
+struct ManifestDeb {
+    #[serde(default)]
+    depends: Option<Vec<String>>,
 }
 
 pub fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, BundleSettings)> {
@@ -136,6 +144,9 @@ pub fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bu
         bundle_settings.long_description = bundle.long_description;
         bundle_settings.homepage = bundle.homepage.or_else(|| homepage.clone());
         bundle_settings.deep_link_protocols = bundle.deep_link_protocols;
+        if let Some(deb) = bundle.deb {
+            bundle_settings.deb.depends = deb.depends;
+        }
     }
 
     if bundle_settings.homepage.is_none() {
@@ -321,6 +332,9 @@ name = "Jaco"
 identifier = "top.sushao.jaco"
 category = "DeveloperTool"
 deep_link_protocols = [{ schemes = ["jaco-screenclip"] }]
+
+[package.metadata.bundle.deb]
+depends = ["libasound2"]
 "#,
         )?;
 
@@ -332,6 +346,10 @@ deep_link_protocols = [{ schemes = ["jaco-screenclip"] }]
             Some(temp_dir.path.join("LICENSE"))
         );
         assert_eq!(bundle_settings.category, Some(AppCategory::DeveloperTool));
+        assert_eq!(
+            bundle_settings.deb.depends,
+            Some(vec!["libasound2".to_string()])
+        );
         assert_eq!(
             bundle_settings
                 .deep_link_protocols

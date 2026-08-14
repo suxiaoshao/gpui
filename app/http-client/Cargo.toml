@@ -19,6 +19,9 @@ HTTP requests.
 """
 category = "DeveloperTool"
 
+[package.metadata.bundle.deb]
+depends = ["libasound2"]
+
 [dependencies]
 gpui.workspace = true
 gpui_platform.workspace = true
@@ -51,14 +54,24 @@ bytes = "1.12.0"
 bytemuck = { version = "1.25.0", features = ["extern_crate_alloc"] }
 encoding_rs = "0.8.35"
 futures-util = "0.3.33"
-gpui-video-player = { git = "https://github.com/suxiaoshao/gpui-video-player", rev = "4f1a6cc49ddab9d0afc73404afc259bba73d6407" }
-gstreamer = { version = "=0.25.2", features = ["v1_20"] }
 hayro = "0.7.1"
 image = { version = "0.25.10", default-features = false, features = [
   "gif",
   "jpeg",
   "png",
   "webp",
+] }
+rodio = { version = "=0.22.2", default-features = false, features = [
+  "playback",
+  "symphonia-aac",
+  "symphonia-flac",
+  "symphonia-isomp4",
+  "symphonia-mkv",
+  "symphonia-mp3",
+  "symphonia-ogg",
+  "symphonia-pcm",
+  "symphonia-vorbis",
+  "symphonia-wav",
 ] }
 reqwest = { version = "0.13.4", default-features = false, features = [
   "rustls",

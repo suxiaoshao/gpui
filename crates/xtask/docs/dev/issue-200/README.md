@@ -1,72 +1,59 @@
-# xtask：HTTP Client GStreamer staging 与 release verifier
+# xtask：删除 HTTP Client GStreamer bundle 链路
 
-## Root Hub 与 Owner 边界
+## Root Hub 与 owner 边界
 
 - Plan ID：`issue-200`
-- Root hub：[Issue #200 发行交付计划](../../../../../docs/dev/issue-200/README.md)
+- Root hub：[Issue #200](../../../../../docs/dev/issue-200/README.md)
 - Owner directory：`crates/xtask`
 - Owner index：[xtask 开发文档](../README.md)
-- Root-owned IDs consumed：`C-2001`、`D-2000`–`D-2001`、`WP-2000`、`WP-2003`
-- Assigned work package：`WP-2002`
-- Owns：app-local manifest 的解析、staging、release verifier、其单元测试与安全诊断。
-- Does not own：manifest/notices/fixtures 的内容，也不拥有 HTTP Client 产品状态或媒体运行时代码。
+- Root-owned IDs consumed：`D-2000`、`D-2002`、`C-2001`、`R-2000`
+- Owner-authored IDs：`F-2100`–`F-2108`、`T-2100`
+- Assigned WP：`WP-2002`
+- Owns：删除 HTTP Client GStreamer bundle CLI、staging/verifier modules 与其测试入口。
+- Does not own：Rodio audio backend、Linux ALSA package、CI workflow 删除或 PDF viewer。
 
-## 文件与执行契约
+Rodio 通过 CPAL 调用 OS audio API，不需要提供、复制或验证独立 native runtime。完成此工作后，xtask 对
+HTTP Client 音频没有新运行时责任。
+
+## 文件边界
 
 ```text
 crates/xtask/
-├── src/bundle.rs                 # F-2100 [Modify] dispatch only for the http-client release path
-├── src/bundle/gstreamer.rs       # F-2101 [Modify/Add] manifest parser, whitelist staging and verifier
-├── src/cli.rs                    # F-2102 [Modify] explicit SDK versus release verification commands
-├── src/main.rs                   # F-2103 [Modify] command routing
-└── docs/dev/issue-200/README.md  # F-2104 [This file] owner plan and completion record
+├── src/bundle.rs                      # F-2100 [Modify, handwritten] remove GStreamer submodule/dispatch
+├── src/bundle/gstreamer.rs             # F-2101 [Delete, handwritten] manifest staging/verifier
+├── src/bundle/gstreamer/linux.rs       # F-2102 [Delete, handwritten] Linux private prefix staging
+├── src/bundle/gstreamer/macos.rs       # F-2103 [Delete, handwritten] Framework/rpath/codesign staging
+├── src/bundle/gstreamer/windows.rs     # F-2104 [Delete, handwritten] Windows DLL/prefix staging
+├── src/cli.rs                          # F-2105 [Modify, handwritten] remove GStreamer CLI options/subcommands
+├── src/main.rs                         # F-2106 [Modify, handwritten] remove GStreamer command routing/error text
+├── docs/dev/issue-200/README.md        # F-2107 [Modify, handwritten] this owner plan
+└── src/bundle/settings.rs              # F-2108 [Modify, handwritten] map generic bundle.deb.depends metadata
 ```
 
-The CLI accepts the app-local manifest path as its source of truth. It may inspect staged package contents but
-must not embed HTTP Client codec/plugin lists, silently discover an arbitrary system runtime, or mutate the
-manifest.
+The app-local `build-assets/gstreamer/*` inputs belong to `app/http-client` and are deleted by its owner plan.
+No replacement manifest, runtime copy, `GPUI_GSTREAMER_*` compatibility variable, or xtask audio command is added.
 
-## WP-2002：manifest-driven staging 与 verifier
+### 当前实施状态（2026-08-14）
 
-1. Parse and validate the `C-2001` manifest before copying any native payload.
-2. Preserve target-specific private layouts: macOS Framework/symlink/rpath, Windows exe-root DLL plus sibling
-   plugin tree, and Linux private prefix with per-ELF relative RUNPATH.
-3. Verify producer source identity, required paths, plugin/element mapping, notice presence and private runtime.
-4. Keep SDK verification separate from release verification. An SDK gate may establish build prerequisites only;
-   a release verifier rejects incomplete package artifacts.
-5. Cover malformed manifest, missing whitelist entry, hash mismatch, absent notice, missing plugin/element and
-   target-layout failure with focused unit tests.
+GStreamer bundle/staging/verifier/CLI 的 active implementation 已删除。此事实不等同于三平台 build 或 package
+验证通过；对应结果仍由 root `C-2001` 后续记录。
 
-`GPUI_GSTREAMER_SDK_ROOT` 与 `GPUI_GSTREAMER_RUNTIME_DIR` 只用于显式覆盖。macOS release build 默认自动准备
-同一官方 1.28.6 发行的 development SDK 与 private runtime，编译和运行使用一致的 GLib/GStreamer ABI；最终
-bundle 把动态库收敛到安装包内 `@rpath`，并拒绝 Homebrew 或其他宿主 GStreamer 路径。Windows 与 Linux 使用
-各自 producer 的固定 prefix；显式覆盖无效时直接失败，不回退到另一套安装。
+## WP-2002：删除 staging/verifier CLI
 
-## Diagnostics and validation
+1. Remove F-2101–F-2104 and the module declarations/exports in F-2100.
+2. Remove every GStreamer-specific bundle command, option, environment-variable diagnostic and unit test from
+   F-2100/F-2105/F-2106. Keep unrelated app bundle behavior untouched.
+3. Search `crates/xtask` for `gstreamer`, `GST_`, `GPUI_GSTREAMER`, `verify-gstreamer` and the deleted module paths;
+   any remaining executable reference is a failure.
+4. Do not replace this with an xtask Rodio check: dependency resolution and runtime audio behavior are owned by
+   HTTP Client/Cargo and root platform verification respectively.
+5. Preserve generic Deb metadata parsing and map HTTP Client's `depends = ["libasound2"]` into
+   `BundleSettings::deb.depends`; test the exact mapping without adding audio-specific xtask behavior.
 
-Diagnostics contain target, manifest field name, artifact-relative path and plugin/element identifier only. They
-must not emit HTTP response data, URLs, headers or user file paths.
+| T-ID | Focused validation | Expected evidence |
+| --- | --- | --- |
+| `T-2100` | `cargo test -p xtask --locked --no-fail-fast` | remaining xtask bundle commands/tests pass; actual result is recorded in root hub |
+| `T-2101` | `cargo clippy -p xtask --all-targets --all-features --locked -- -D warnings` | no lint regression |
+| `T-2102` | scoped residual scan | no executable GStreamer manifest/staging/verifier/CLI surface under `crates/xtask` |
 
-Run focused xtask tests and strict Clippy, then exercise the verifier against every produced package. The root hub
-records the three-platform package result. This plan remains `In progress` until `C-2001` is proven for all
-targets.
-
-## 当前实现（2026-08-13）
-
-- manifest format 1、三平台 private layouts、source SHA/revision、required paths 与 elements 已实现验证。
-- macOS：匹配 runtime 的官方开发 SDK 自动准备、完整 Framework copy、symlink preservation、arm64 thin、
-  主程序 load-command 与 rpath 验证、外部 Homebrew/GStreamer dependency 拒绝、私有 `gst-inspect`、所有
-  修改后的最终 codesign。
-- Windows：`bin/*.dll` 同时进入 app root 与 sibling prefix，plugins/scanner/data 进入 `gstreamer/` resources。
-- Linux：Cerbero prefix 进入 Debian resources，主程序/lib/plugin/scanner 分别写相对 RUNPATH。
-- `verify-gstreamer --inspect` 只运行 manifest 对应的 private inspector/plugin/scanner/registry，不再接受
-  host PATH 中的 GStreamer 作为 release 证据；source marker 与 notices 也属于 fail-closed contract。
-- bundle 命令会自动发现平台脚本安装的固定 SDK 与 private runtime；环境变量已收敛为可选覆盖，缺失产物时
-  错误会给出对应的 producer 命令。
-- release workflow 已增加 macOS ZIP、Windows MSI、Linux DEB 的独立解包 smoke；
-  `cargo test -p xtask --locked`（46）与 strict Clippy 已通过。三平台 workflow 尚未运行，因此仍为
-  `In progress`。
-- 2026-08-13 本机未设置 `GPUI_GSTREAMER_*` 环境变量运行真实 macOS bundle 成功。xtask 自动选择匹配的
-  官方 1.28.6 SDK/runtime，裁剪到可达 Mach-O/plugin 闭包，运行私有 `gst-inspect`，清除所有非系统绝对
-  rpath，并在最后完成 deep ad-hoc codesign。成品约 102 MiB；主程序与内置 GLib compatibility version
-  同为 8201，且未引用 SDK、Homebrew 或系统 GStreamer 路径。
+`WP-2002` 已完成：root plan 记录了实际删除路径、12/12 xtask tests、strict Clippy 与 active residual scan。

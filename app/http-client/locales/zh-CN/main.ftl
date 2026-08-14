@@ -60,7 +60,6 @@ response-view-hex = 十六进制
 response-view-base64 = Base64
 response-view-image = 图片
 response-view-audio = 音频
-response-view-video = 视频
 response-view-pdf = PDF
 
 response-media-loading = 正在准备媒体…
@@ -70,11 +69,8 @@ response-media-mute = 静音
 response-media-unmute = 取消静音
 response-media-position = { $current } / { $total }
 response-media-runtime-unavailable = 当前安装无法播放媒体。
-response-media-plugin-missing = 缺少必需的媒体插件：{ $plugin }
-response-media-unsupported = 该响应不是受支持的媒体格式。
 response-media-decode-failed = 无法解码媒体响应。
 response-media-control-failed = 播放器无法完成该操作。
-response-media-resolution-unsupported = 视频分辨率 { $width } × { $height } 超出预览限制。
 
 response-pdf-loading = 正在准备 PDF…
 response-pdf-previous = 上一页

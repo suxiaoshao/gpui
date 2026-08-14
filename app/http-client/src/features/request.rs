@@ -248,11 +248,6 @@ impl RequestView {
                 cx.notify();
                 return;
             }
-            ViewerMode::Video => {
-                self.response_pane.start_video_preview(token, window, cx);
-                cx.notify();
-                return;
-            }
             ViewerMode::Auto
             | ViewerMode::Text
             | ViewerMode::Json
@@ -330,6 +325,10 @@ impl RequestView {
         self.response_pane.install_save_task(task);
         cx.notify();
     }
+
+    fn send_is_disabled(&self) -> bool {
+        self.runtime.is_running() || self.response_pane.save_is_running()
+    }
 }
 
 impl gpui::Render for RequestView {
@@ -362,7 +361,7 @@ impl gpui::Render for RequestView {
                 Button::new("request-send")
                     .primary()
                     .label(send_label)
-                    .disabled(self.runtime.is_running())
+                    .disabled(self.send_is_disabled())
                     .on_click(cx.listener(|this, _, window, cx| this.start_request(window, cx))),
             )
             .when(self.runtime.is_running(), |this| {

@@ -7,10 +7,6 @@ case "${RUNNER_OS:-$(uname -s)}" in
     echo "Installing Linux dependencies..."
     "$(dirname "$0")/install-linux.sh"
     ;;
-  macOS|Darwin)
-    echo "Installing macOS GStreamer SDK..."
-    "$(dirname "$0")/install-gstreamer-macos.sh"
-    ;;
   *)
     echo "No bootstrap steps required for this platform."
     ;;

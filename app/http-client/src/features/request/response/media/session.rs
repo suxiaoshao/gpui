@@ -12,24 +12,12 @@ use async_channel::{Receiver, RecvError};
 use gpui::Task;
 use gpui_operation::Transition;
 
-use super::{PreviewToken, video::VideoHandle};
+use super::PreviewToken;
 
 #[cfg(test)]
 use super::ViewerMode;
 
 pub(crate) type MediaTask = Task<()>;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum MediaKind {
-    Audio,
-    Video,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DecoderPolicy {
-    Auto,
-    SoftwareOnly,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MediaMetadata {
@@ -76,60 +64,27 @@ pub(crate) enum MediaProblemKind {
     AssetRead,
     TemporaryAsset,
     RuntimeUnavailable,
-    PluginMissing,
-    UnsupportedMedia,
     Decode,
-    ResolutionUnsupported,
     Control,
     Internal,
 }
 
-/// Safe, bounded context for a viewer-local media problem.
-///
-/// This deliberately excludes paths, URLs, response metadata and native error
-/// strings. Plugin names are app-owned static families rather than values
-/// copied from a GStreamer diagnostic.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum MediaProblemDetail {
-    Plugin(&'static str),
-    Resolution { width: u32, height: u32 },
-}
-
 /// A deliberately redacted viewer-local media problem.
 ///
-/// Detailed GStreamer errors, response metadata, and temporary paths remain at
+/// Detailed backend errors, response metadata, and temporary paths remain at
 /// the adapter boundary; UI/i18n only receives this stable problem kind.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) struct MediaProblem {
     kind: MediaProblemKind,
-    detail: Option<MediaProblemDetail>,
 }
 
 impl MediaProblem {
     pub(crate) const fn new(kind: MediaProblemKind) -> Self {
-        Self { kind, detail: None }
-    }
-
-    pub(crate) const fn plugin(plugin: &'static str) -> Self {
-        Self {
-            kind: MediaProblemKind::PluginMissing,
-            detail: Some(MediaProblemDetail::Plugin(plugin)),
-        }
-    }
-
-    pub(crate) const fn resolution(width: u32, height: u32) -> Self {
-        Self {
-            kind: MediaProblemKind::ResolutionUnsupported,
-            detail: Some(MediaProblemDetail::Resolution { width, height }),
-        }
+        Self { kind }
     }
 
     pub(crate) const fn kind(self) -> MediaProblemKind {
         self.kind
-    }
-
-    pub(crate) const fn detail(self) -> Option<MediaProblemDetail> {
-        self.detail
     }
 }
 
@@ -138,7 +93,6 @@ impl fmt::Debug for MediaProblem {
         formatter
             .debug_struct("MediaProblem")
             .field("kind", &self.kind)
-            .field("detail", &self.detail)
             .finish()
     }
 }
@@ -149,10 +103,7 @@ impl fmt::Display for MediaProblem {
             MediaProblemKind::AssetRead => "response body could not be copied for media preview",
             MediaProblemKind::TemporaryAsset => "media temporary asset could not be prepared",
             MediaProblemKind::RuntimeUnavailable => "media runtime is unavailable",
-            MediaProblemKind::PluginMissing => "required media plugin is unavailable",
-            MediaProblemKind::UnsupportedMedia => "media format is unsupported",
             MediaProblemKind::Decode => "media could not be decoded",
-            MediaProblemKind::ResolutionUnsupported => "media resolution is unsupported",
             MediaProblemKind::Control => "media control failed",
             MediaProblemKind::Internal => "media preview encountered an internal error",
         })
@@ -181,13 +132,9 @@ pub(crate) enum MediaCommand {
 /// Implementations must be abort-on-drop, must not block the UI thread in
 /// `Drop`, and must report asynchronous pipeline failures through
 /// [`MediaMessage::PlaybackFailed`]. No implementation may change global
-/// GStreamer plugin ranks.
+/// process-wide decoder or output-device policy.
 pub(crate) trait MediaDriver: Send {
     fn command(&mut self, command: MediaCommand) -> Result<(), MediaProblem>;
-
-    fn video_handle(&self) -> Option<VideoHandle> {
-        None
-    }
 }
 
 impl<T> MediaDriver for Box<T>
@@ -196,10 +143,6 @@ where
 {
     fn command(&mut self, command: MediaCommand) -> Result<(), MediaProblem> {
         (**self).command(command)
-    }
-
-    fn video_handle(&self) -> Option<VideoHandle> {
-        (**self).video_handle()
     }
 }
 
@@ -295,23 +238,8 @@ enum PlayIntent {
     Playing,
 }
 
-impl PlayIntent {
-    const fn from_phase(phase: MediaPhase) -> Self {
-        match phase {
-            MediaPhase::Playing => Self::Playing,
-            MediaPhase::Idle
-            | MediaPhase::Preparing
-            | MediaPhase::Paused
-            | MediaPhase::Ended
-            | MediaPhase::Failed => Self::Paused,
-        }
-    }
-}
-
 pub(crate) struct MediaPreparing<T = MediaTask> {
     token: PreviewToken,
-    kind: MediaKind,
-    fallback_used: bool,
     resume_position: Duration,
     intent: PlayIntent,
     volume: f32,
@@ -319,36 +247,13 @@ pub(crate) struct MediaPreparing<T = MediaTask> {
     _task: T,
 }
 
-impl<T> MediaPreparing<T> {
-    #[cfg(test)]
-    pub(crate) const fn decoder_policy(&self) -> DecoderPolicy {
-        if self.fallback_used {
-            DecoderPolicy::SoftwareOnly
-        } else {
-            DecoderPolicy::Auto
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn fallback_used(&self) -> bool {
-        self.fallback_used
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn resume_position(&self) -> Duration {
-        self.resume_position
-    }
-}
-
 pub(crate) struct MediaActive<T = MediaTask, D = Box<dyn MediaDriver>> {
     token: PreviewToken,
-    kind: MediaKind,
     // Fields are dropped in declaration order. Stop the event route before
     // releasing the driver. Concrete drivers transitively own their private
     // response asset until their pipeline has stopped.
     _task: T,
     driver: D,
-    fallback_used: bool,
     metadata: MediaMetadata,
     position: MediaPosition,
     volume: f32,
@@ -356,10 +261,6 @@ pub(crate) struct MediaActive<T = MediaTask, D = Box<dyn MediaDriver>> {
 }
 
 impl<T, D> MediaActive<T, D> {
-    pub(crate) const fn kind(&self) -> MediaKind {
-        self.kind
-    }
-
     pub(crate) const fn metadata(&self) -> MediaMetadata {
         self.metadata
     }
@@ -375,22 +276,10 @@ impl<T, D> MediaActive<T, D> {
     pub(crate) const fn muted(&self) -> bool {
         self.muted
     }
-
-    pub(crate) const fn fallback_used(&self) -> bool {
-        self.fallback_used
-    }
-
-    pub(crate) fn video_handle(&self) -> Option<VideoHandle>
-    where
-        D: MediaDriver,
-    {
-        self.driver.video_handle()
-    }
 }
 
 pub(crate) struct MediaFailed {
     token: PreviewToken,
-    kind: MediaKind,
     problem: MediaProblem,
 }
 
@@ -398,7 +287,6 @@ impl MediaFailed {
     fn from_preparing<T>(preparing: &MediaPreparing<T>, problem: MediaProblem) -> Self {
         Self {
             token: preparing.token.clone(),
-            kind: preparing.kind,
             problem,
         }
     }
@@ -406,7 +294,6 @@ impl MediaFailed {
     fn from_active<T, D>(active: &MediaActive<T, D>, problem: MediaProblem) -> Self {
         Self {
             token: active.token.clone(),
-            kind: active.kind,
             problem,
         }
     }
@@ -455,15 +342,6 @@ impl<T, D> MediaRuntime<T, D> {
         }
     }
 
-    pub(crate) fn kind(&self) -> Option<MediaKind> {
-        match self {
-            Self::Idle => None,
-            Self::Preparing(preparing) => Some(preparing.kind),
-            Self::Paused(active) | Self::Playing(active) | Self::Ended(active) => Some(active.kind),
-            Self::Failed(failed) => Some(failed.kind),
-        }
-    }
-
     pub(crate) fn problem(&self) -> Option<MediaProblem> {
         match self {
             Self::Failed(failed) => Some(failed.problem),
@@ -504,8 +382,6 @@ impl<T, D> fmt::Debug for MediaRuntime<T, D> {
 pub(crate) enum MediaMessage<T = MediaTask, D = Box<dyn MediaDriver>> {
     Start {
         token: PreviewToken,
-        kind: MediaKind,
-        decoder_policy: DecoderPolicy,
         resume_position: Duration,
         resume_playing: bool,
         task: T,
@@ -538,13 +414,9 @@ pub(crate) enum MediaMessage<T = MediaTask, D = Box<dyn MediaDriver>> {
     Ended {
         token: PreviewToken,
     },
-    /// First failures include the lazily constructed fallback preparation task.
-    /// The Response pane must create it only after confirming the matching
-    /// active token; later failures use `None` and become terminal.
     PlaybackFailed {
         token: PreviewToken,
         problem: MediaProblem,
-        fallback_task: Option<T>,
     },
     Stop,
 }
@@ -564,8 +436,6 @@ where
                 MediaRuntime::Idle | MediaRuntime::Failed(_),
                 MediaMessage::Start {
                     token,
-                    kind,
-                    decoder_policy,
                     resume_position,
                     resume_playing,
                     task,
@@ -573,8 +443,6 @@ where
             ) => {
                 *self = MediaRuntime::Preparing(MediaPreparing {
                     token,
-                    kind,
-                    fallback_used: decoder_policy == DecoderPolicy::SoftwareOnly,
                     resume_position,
                     intent: if resume_playing {
                         PlayIntent::Playing
@@ -598,10 +466,8 @@ where
                 let position = MediaPosition::new(preparing.resume_position, metadata.duration());
                 let mut active = MediaActive {
                     token: preparing.token.clone(),
-                    kind: preparing.kind,
                     driver,
                     _task: task,
-                    fallback_used: preparing.fallback_used,
                     metadata,
                     position,
                     volume: preparing.volume,
@@ -796,30 +662,7 @@ where
                 MediaRuntime::Paused(mut active)
                 | MediaRuntime::Playing(mut active)
                 | MediaRuntime::Ended(mut active),
-                MediaMessage::PlaybackFailed {
-                    token,
-                    problem: _,
-                    fallback_task: Some(task),
-                },
-            ) if active.token.matches(&token) && !active.fallback_used => {
-                *self = MediaRuntime::Preparing(MediaPreparing {
-                    token: active.token.clone(),
-                    kind: active.kind,
-                    fallback_used: true,
-                    resume_position: active.position.position(),
-                    intent: PlayIntent::from_phase(current_phase),
-                    volume: active.volume,
-                    muted: active.muted,
-                    _task: task,
-                });
-                stop_active(&mut active, current_phase);
-                drop(active);
-            }
-            (
-                MediaRuntime::Paused(mut active)
-                | MediaRuntime::Playing(mut active)
-                | MediaRuntime::Ended(mut active),
-                MediaMessage::PlaybackFailed { token, problem, .. },
+                MediaMessage::PlaybackFailed { token, problem },
             ) if active.token.matches(&token) => {
                 let failed = MediaFailed::from_active(&active, problem);
                 *self = MediaRuntime::Failed(failed);
@@ -999,8 +842,8 @@ mod tests {
         let preview = token(1);
         let changed_mode = PreviewToken::new(
             Arc::clone(preview.response()),
-            ViewerMode::Video,
-            ViewerMode::Video,
+            ViewerMode::Pdf,
+            ViewerMode::Pdf,
             1,
         );
 
@@ -1016,8 +859,6 @@ mod tests {
 
         runtime.transition(MediaMessage::Start {
             token: preview.clone(),
-            kind: MediaKind::Audio,
-            decoder_policy: DecoderPolicy::Auto,
             resume_position: Duration::ZERO,
             resume_playing: false,
             task: task(&log),
@@ -1060,6 +901,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn playing_after_end_seeks_to_start_before_resuming() {
+        let log = DropLog(Arc::default());
+        let commands = Arc::default();
+        let preview = token(1);
+        let mut runtime = MediaRuntime::<FakeTask, FakeDriver>::default();
+
+        runtime.transition(MediaMessage::Start {
+            token: preview.clone(),
+            resume_position: Duration::ZERO,
+            resume_playing: false,
+            task: task(&log),
+        });
+        runtime.transition(MediaMessage::Prepared {
+            token: preview.clone(),
+            driver: FakeDriver {
+                commands: Arc::clone(&commands),
+                fail: false,
+                dropped: log.clone(),
+            },
+            metadata: MediaMetadata::new(Some(Duration::from_secs(10))),
+            task: task(&log),
+        });
+        runtime.transition(MediaMessage::Ended { token: preview });
+        assert_eq!(runtime.phase(), MediaPhase::Ended);
+
+        runtime.transition(MediaMessage::Play);
+
+        assert_eq!(runtime.phase(), MediaPhase::Playing);
+        assert_eq!(
+            *commands.lock().unwrap(),
+            vec![
+                MediaCommand::SetVolume(1.0),
+                MediaCommand::SetMuted(false),
+                MediaCommand::Seek(Duration::ZERO),
+                MediaCommand::Play,
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn driver_events_have_one_typed_receiver_owner() {
         let (sender, receiver) = async_channel::unbounded();
         let events = MediaDriverEvents::new(receiver);
@@ -1084,8 +965,6 @@ mod tests {
         let mut runtime = MediaRuntime::<FakeTask, FakeDriver>::default();
         runtime.transition(MediaMessage::Start {
             token: preview.clone(),
-            kind: MediaKind::Video,
-            decoder_policy: DecoderPolicy::Auto,
             resume_position: Duration::ZERO,
             resume_playing: false,
             task: task(&log),
@@ -1106,14 +985,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_pipeline_failure_restarts_once_with_software_only() {
+    async fn playback_failure_is_terminal_and_stops_the_driver() {
         let log = DropLog(Arc::default());
+        let commands = Arc::default();
         let preview = token(1);
         let mut runtime = MediaRuntime::<FakeTask, FakeDriver>::default();
         runtime.transition(MediaMessage::Start {
             token: preview.clone(),
-            kind: MediaKind::Video,
-            decoder_policy: DecoderPolicy::Auto,
             resume_position: Duration::ZERO,
             resume_playing: false,
             task: task(&log),
@@ -1121,130 +999,7 @@ mod tests {
         runtime.transition(MediaMessage::Prepared {
             token: preview.clone(),
             driver: FakeDriver {
-                commands: Arc::default(),
-                fail: false,
-                dropped: log.clone(),
-            },
-            metadata: MediaMetadata::new(Some(Duration::from_secs(10))),
-            task: task(&log),
-        });
-        runtime.transition(MediaMessage::Position {
-            token: preview.clone(),
-            position: MediaPosition::new(Duration::from_secs(4), Some(Duration::from_secs(10))),
-        });
-        runtime.transition(MediaMessage::PlaybackFailed {
-            token: preview,
-            problem: MediaProblem::new(MediaProblemKind::Decode),
-            fallback_task: Some(task(&log)),
-        });
-
-        let MediaRuntime::Preparing(preparing) = runtime else {
-            panic!("first failure should install a software preparation");
-        };
-        assert_eq!(preparing.decoder_policy(), DecoderPolicy::SoftwareOnly);
-        assert!(preparing.fallback_used());
-        assert_eq!(preparing.resume_position(), Duration::from_secs(4));
-    }
-
-    #[tokio::test]
-    async fn fallback_restores_play_intent_volume_mute_and_position() {
-        let log = DropLog(Arc::default());
-        let initial_commands = Arc::default();
-        let fallback_commands = Arc::default();
-        let preview = token(1);
-        let mut runtime = MediaRuntime::<FakeTask, FakeDriver>::default();
-
-        runtime.transition(MediaMessage::Start {
-            token: preview.clone(),
-            kind: MediaKind::Video,
-            decoder_policy: DecoderPolicy::Auto,
-            resume_position: Duration::ZERO,
-            resume_playing: false,
-            task: task(&log),
-        });
-        runtime.transition(MediaMessage::Prepared {
-            token: preview.clone(),
-            driver: FakeDriver {
-                commands: Arc::clone(&initial_commands),
-                fail: false,
-                dropped: log.clone(),
-            },
-            metadata: MediaMetadata::new(Some(Duration::from_secs(10))),
-            task: task(&log),
-        });
-        runtime.transition(MediaMessage::Play);
-        runtime.transition(MediaMessage::SetVolume(0.35));
-        runtime.transition(MediaMessage::SetMuted(true));
-        runtime.transition(MediaMessage::Position {
-            token: preview.clone(),
-            position: MediaPosition::new(Duration::from_secs(4), Some(Duration::from_secs(10))),
-        });
-        runtime.transition(MediaMessage::PlaybackFailed {
-            token: preview.clone(),
-            problem: MediaProblem::new(MediaProblemKind::Decode),
-            fallback_task: Some(task(&log)),
-        });
-
-        runtime.transition(MediaMessage::Prepared {
-            token: preview,
-            driver: FakeDriver {
-                commands: Arc::clone(&fallback_commands),
-                fail: false,
-                dropped: log,
-            },
-            metadata: MediaMetadata::new(Some(Duration::from_secs(10))),
-            task: task(&DropLog(Arc::default())),
-        });
-
-        assert_eq!(runtime.phase(), MediaPhase::Playing);
-        let active = runtime
-            .active()
-            .expect("fallback preparation becomes active");
-        assert_eq!(active.position().position(), Duration::from_secs(4));
-        assert_eq!(active.volume(), 0.35);
-        assert!(active.muted());
-        assert!(active.fallback_used());
-        assert_eq!(
-            *fallback_commands.lock().unwrap(),
-            vec![
-                MediaCommand::SetVolume(0.35),
-                MediaCommand::SetMuted(true),
-                MediaCommand::Seek(Duration::from_secs(4)),
-                MediaCommand::Play,
-            ]
-        );
-        assert_eq!(
-            *initial_commands.lock().unwrap(),
-            vec![
-                MediaCommand::SetVolume(1.0),
-                MediaCommand::SetMuted(false),
-                MediaCommand::Play,
-                MediaCommand::SetVolume(0.35),
-                MediaCommand::SetMuted(true),
-                MediaCommand::Stop,
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn second_pipeline_failure_is_terminal_after_the_software_fallback() {
-        let log = DropLog(Arc::default());
-        let fallback_commands = Arc::default();
-        let preview = token(1);
-        let mut runtime = MediaRuntime::<FakeTask, FakeDriver>::default();
-
-        runtime.transition(MediaMessage::Start {
-            token: preview.clone(),
-            kind: MediaKind::Video,
-            decoder_policy: DecoderPolicy::Auto,
-            resume_position: Duration::ZERO,
-            resume_playing: false,
-            task: task(&log),
-        });
-        runtime.transition(MediaMessage::Prepared {
-            token: preview.clone(),
-            driver: FakeDriver {
-                commands: Arc::default(),
+                commands: Arc::clone(&commands),
                 fail: false,
                 dropped: log.clone(),
             },
@@ -1252,24 +1007,8 @@ mod tests {
             task: task(&log),
         });
         runtime.transition(MediaMessage::PlaybackFailed {
-            token: preview.clone(),
-            problem: MediaProblem::new(MediaProblemKind::Decode),
-            fallback_task: Some(task(&log)),
-        });
-        runtime.transition(MediaMessage::Prepared {
-            token: preview.clone(),
-            driver: FakeDriver {
-                commands: Arc::clone(&fallback_commands),
-                fail: false,
-                dropped: log,
-            },
-            metadata: MediaMetadata::new(Some(Duration::from_secs(10))),
-            task: FakeTask(DropLog(Arc::default())),
-        });
-        runtime.transition(MediaMessage::PlaybackFailed {
             token: preview,
             problem: MediaProblem::new(MediaProblemKind::Decode),
-            fallback_task: None,
         });
 
         assert_eq!(runtime.phase(), MediaPhase::Failed);
@@ -1278,7 +1017,7 @@ mod tests {
             Some(MediaProblem::new(MediaProblemKind::Decode))
         );
         assert_eq!(
-            *fallback_commands.lock().unwrap(),
+            *commands.lock().unwrap(),
             vec![
                 MediaCommand::SetVolume(1.0),
                 MediaCommand::SetMuted(false),
@@ -1300,8 +1039,6 @@ mod tests {
 
         runtime.transition(MediaMessage::Start {
             token: token(1),
-            kind: MediaKind::Audio,
-            decoder_policy: DecoderPolicy::Auto,
             resume_position: Duration::ZERO,
             resume_playing: false,
             task,
@@ -1328,8 +1065,6 @@ mod tests {
         let mut runtime = MediaRuntime::<FakeTask, FakeDriver>::default();
         runtime.transition(MediaMessage::Start {
             token: preview.clone(),
-            kind: MediaKind::Audio,
-            decoder_policy: DecoderPolicy::Auto,
             resume_position: Duration::ZERO,
             resume_playing: false,
             task: task(&log),

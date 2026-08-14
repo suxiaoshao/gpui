@@ -30,12 +30,11 @@ pub(crate) enum ViewerMode {
     Base64,
     Image,
     Audio,
-    Video,
     Pdf,
 }
 
 impl ViewerMode {
-    pub(crate) const ALL: [Self; 10] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::Auto,
         Self::Text,
         Self::Json,
@@ -44,7 +43,6 @@ impl ViewerMode {
         Self::Base64,
         Self::Image,
         Self::Audio,
-        Self::Video,
         Self::Pdf,
     ];
 }
@@ -69,7 +67,6 @@ pub(crate) fn resolved_viewer_mode(
         ContentKind::Xml => ViewerMode::Xml,
         ContentKind::Image => ViewerMode::Image,
         ContentKind::Audio => ViewerMode::Audio,
-        ContentKind::Video => ViewerMode::Video,
         ContentKind::Pdf => ViewerMode::Pdf,
         ContentKind::Bytes => ViewerMode::Hex,
     })
@@ -246,27 +243,23 @@ fn effective_mode(
             ContentKind::Json => EffectiveMode::Json,
             ContentKind::Xml => EffectiveMode::Xml,
             ContentKind::Image => EffectiveMode::Image,
-            ContentKind::Audio | ContentKind::Video | ContentKind::Pdf => {
-                EffectiveMode::Unavailable
-            }
+            ContentKind::Audio | ContentKind::Pdf => EffectiveMode::Unavailable,
             ContentKind::Bytes => EffectiveMode::Hex,
         },
         ViewerMode::Text => EffectiveMode::Text(match kind {
             ContentKind::Text(language) => language,
             ContentKind::Json => SourceLanguage::Json,
             ContentKind::Xml => SourceLanguage::Xml,
-            ContentKind::Image
-            | ContentKind::Audio
-            | ContentKind::Video
-            | ContentKind::Pdf
-            | ContentKind::Bytes => SourceLanguage::Plain,
+            ContentKind::Image | ContentKind::Audio | ContentKind::Pdf | ContentKind::Bytes => {
+                SourceLanguage::Plain
+            }
         }),
         ViewerMode::Json => EffectiveMode::Json,
         ViewerMode::Xml => EffectiveMode::Xml,
         ViewerMode::Hex => EffectiveMode::Hex,
         ViewerMode::Base64 => EffectiveMode::Base64,
         ViewerMode::Image => EffectiveMode::Image,
-        ViewerMode::Audio | ViewerMode::Video | ViewerMode::Pdf => EffectiveMode::Unavailable,
+        ViewerMode::Audio | ViewerMode::Pdf => EffectiveMode::Unavailable,
     }
 }
 
@@ -711,10 +704,10 @@ mod tests {
     }
 
     #[test]
-    fn auto_resolves_media_and_pdf_from_content_type_without_sniffing() {
+    fn auto_resolves_audio_and_pdf_and_falls_back_to_hex_without_sniffing() {
         for (content_type, expected) in [
             ("audio/mpeg", ViewerMode::Audio),
-            ("video/webm", ViewerMode::Video),
+            ("video/webm", ViewerMode::Hex),
             ("application/pdf", ViewerMode::Pdf),
             ("application/octet-stream", ViewerMode::Hex),
         ] {
@@ -724,6 +717,16 @@ mod tests {
                 Some(expected)
             );
         }
+
+        let video = response(b"opaque", "video/webm", BodyDecoding::Identity);
+        assert_eq!(
+            resolved_viewer_mode(&video, ViewerMode::Text),
+            Some(ViewerMode::Text)
+        );
+        assert_eq!(
+            resolved_viewer_mode(&video, ViewerMode::Base64),
+            Some(ViewerMode::Base64)
+        );
 
         let unknown = response(
             b"opaque",
@@ -742,14 +745,13 @@ mod tests {
 
     #[test]
     fn unsupported_content_coding_disables_parser_and_player_modes() {
-        let response = response(b"encoded", "video/mp4", BodyDecoding::Unsupported);
+        let response = response(b"encoded", "audio/mpeg", BodyDecoding::Unsupported);
         for mode in [
             ViewerMode::Text,
             ViewerMode::Json,
             ViewerMode::Xml,
             ViewerMode::Image,
             ViewerMode::Audio,
-            ViewerMode::Video,
             ViewerMode::Pdf,
         ] {
             assert_eq!(resolved_viewer_mode(&response, mode), None);

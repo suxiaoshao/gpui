@@ -49,11 +49,9 @@ pub(crate) use decoding::{
     declared_encoded_bytes, decode_text, escape_header_value,
 };
 use media::audio::AudioDriver;
-use media::video::VideoDriver;
 use media::{
-    DecoderPolicy, MediaDriverEvent, MediaDriverEvents, MediaKind, MediaMessage, MediaPhase,
-    MediaProblem, MediaProblemDetail, MediaProblemKind, MediaRuntime, PreviewToken,
-    ResponseAssetProblem, ResponseAssetProblemKind,
+    MediaDriverEvent, MediaDriverEvents, MediaMessage, MediaPhase, MediaProblem, MediaProblemKind,
+    MediaRuntime, PreviewToken, ResponseAssetProblem, ResponseAssetProblemKind,
 };
 use pdf::{PdfPreview, PdfProblemKind, PdfViewport, PdfWorkerHandle};
 pub(crate) use save::{
@@ -451,12 +449,9 @@ impl ResponsePane {
         window: &mut Window,
         cx: &mut Context<RequestView>,
     ) {
-        let pending =
-            Self::build_audio_prepare_task(token.clone(), DecoderPolicy::Auto, window, cx);
+        let pending = Self::build_audio_prepare_task(token.clone(), window, cx);
         (&mut self.media).transition(MediaMessage::Start {
             token,
-            kind: MediaKind::Audio,
-            decoder_policy: DecoderPolicy::Auto,
             resume_position: Duration::ZERO,
             resume_playing: false,
             task: pending.task,
@@ -466,7 +461,6 @@ impl ResponsePane {
 
     fn build_audio_prepare_task(
         token: PreviewToken,
-        decoder_policy: DecoderPolicy,
         window: &mut Window,
         cx: &mut Context<RequestView>,
     ) -> PendingMediaPreparation {
@@ -482,81 +476,7 @@ impl ResponsePane {
                     .materialize_media_asset()
                     .await
                     .map_err(media_asset_problem)?;
-                AudioDriver::prepare(asset, decoder_policy)
-            });
-            let result = match worker.await {
-                Ok(Ok(result)) => Ok(result),
-                Ok(Err(problem)) => Err(problem),
-                Err(_) => Err(MediaProblem::new(MediaProblemKind::Internal)),
-            };
-            let _ = owner.update_in(cx, |this, window, cx| {
-                if !this.response_pane.is_current_preview(&token) {
-                    return;
-                }
-                match result {
-                    Ok(prepared) => {
-                        let (driver, events, metadata) = prepared.into_parts();
-                        let event_task =
-                            Self::build_media_event_task(events, token.clone(), window, cx);
-                        (&mut this.response_pane.media).transition(MediaMessage::Prepared {
-                            token: token.clone(),
-                            driver: Box::new(driver),
-                            metadata,
-                            task: event_task,
-                        });
-                    }
-                    Err(problem) => {
-                        (&mut this.response_pane.media).transition(MediaMessage::PrepareFailed {
-                            token: token.clone(),
-                            problem,
-                        });
-                    }
-                }
-                this.response_pane.sync_media_controls(window, cx);
-                cx.notify();
-            });
-        });
-        PendingMediaPreparation { task, gate }
-    }
-
-    pub(super) fn start_video_preview(
-        &mut self,
-        token: PreviewToken,
-        window: &mut Window,
-        cx: &mut Context<RequestView>,
-    ) {
-        let pending =
-            Self::build_video_prepare_task(token.clone(), DecoderPolicy::Auto, window, cx);
-        (&mut self.media).transition(MediaMessage::Start {
-            token,
-            kind: MediaKind::Video,
-            decoder_policy: DecoderPolicy::Auto,
-            resume_position: Duration::ZERO,
-            resume_playing: false,
-            task: pending.task,
-        });
-        let _ = pending.gate.try_send(());
-    }
-
-    fn build_video_prepare_task(
-        token: PreviewToken,
-        decoder_policy: DecoderPolicy,
-        window: &mut Window,
-        cx: &mut Context<RequestView>,
-    ) -> PendingMediaPreparation {
-        let lease = token.response().read_lease();
-        let owner = cx.entity().downgrade();
-        let (gate, start) = async_channel::bounded(1);
-        let task = window.spawn(cx, async move |cx| {
-            if start.recv().await.is_err() {
-                return;
-            }
-            let worker = gpui_tokio::Tokio::spawn(cx, async move {
-                let asset = lease
-                    .materialize_media_asset()
-                    .await
-                    .map_err(media_asset_problem)?;
-                VideoDriver::prepare(asset, decoder_policy).await
+                AudioDriver::prepare(asset)
             });
             let result = match worker.await {
                 Ok(Ok(result)) => Ok(result),
@@ -620,8 +540,6 @@ impl ResponsePane {
                                         MediaProblemKind::Internal,
                                     )),
                                     token.clone(),
-                                    window,
-                                    cx,
                                 );
                                 this.response_pane.sync_media_controls(window, cx);
                                 cx.notify();
@@ -637,12 +555,8 @@ impl ResponsePane {
                             return;
                         }
                         if let Some(event) = event {
-                            this.response_pane.handle_media_driver_event(
-                                event,
-                                token.clone(),
-                                window,
-                                cx,
-                            );
+                            this.response_pane
+                                .handle_media_driver_event(event, token.clone());
                         } else {
                             (&mut this.response_pane.media).transition(MediaMessage::PollPosition);
                         }
@@ -657,50 +571,13 @@ impl ResponsePane {
         })
     }
 
-    fn handle_media_driver_event(
-        &mut self,
-        event: MediaDriverEvent,
-        token: PreviewToken,
-        window: &mut Window,
-        cx: &mut Context<RequestView>,
-    ) {
+    fn handle_media_driver_event(&mut self, event: MediaDriverEvent, token: PreviewToken) {
         let message = match event {
             MediaDriverEvent::Metadata(metadata) => MediaMessage::Metadata { token, metadata },
             MediaDriverEvent::Position(position) => MediaMessage::Position { token, position },
             MediaDriverEvent::Ended => MediaMessage::Ended { token },
             MediaDriverEvent::PlaybackFailed(problem) => {
-                let pending = self
-                    .media
-                    .active()
-                    .filter(|active| !active.fallback_used())
-                    .map(|_| match self.media.kind() {
-                        Some(MediaKind::Audio) => Self::build_audio_prepare_task(
-                            token.clone(),
-                            DecoderPolicy::SoftwareOnly,
-                            window,
-                            cx,
-                        ),
-                        Some(MediaKind::Video) => Self::build_video_prepare_task(
-                            token.clone(),
-                            DecoderPolicy::SoftwareOnly,
-                            window,
-                            cx,
-                        ),
-                        None => unreachable!("an active media runtime always has a kind"),
-                    });
-                let (fallback_task, gate) = pending
-                    .map(|pending| (Some(pending.task), Some(pending.gate)))
-                    .unwrap_or((None, None));
-                let message = MediaMessage::PlaybackFailed {
-                    token,
-                    problem,
-                    fallback_task,
-                };
-                (&mut self.media).transition(message);
-                if let Some(gate) = gate {
-                    let _ = gate.try_send(());
-                }
-                return;
+                MediaMessage::PlaybackFailed { token, problem }
             }
         };
         (&mut self.media).transition(message);
@@ -956,7 +833,7 @@ impl ResponsePane {
             .map(PreviewToken::effective_mode)
         {
             match mode {
-                ViewerMode::Audio | ViewerMode::Video => return self.render_media(cx),
+                ViewerMode::Audio => return self.render_media(cx),
                 ViewerMode::Pdf => return self.render_pdf(window, cx),
                 ViewerMode::Auto
                 | ViewerMode::Text
@@ -1039,7 +916,6 @@ impl ResponsePane {
             .problem()
             .map(|problem| media_problem_message(problem, cx));
         let active = self.media.active();
-        let video = active.and_then(|active| active.video_handle());
         let position_label = active.map(|active| {
             let position = active.position();
             let mut args = FluentArgs::new();
@@ -1081,20 +957,9 @@ impl ResponsePane {
                         .child(Progress::new("response-media-loading-progress").loading(true)),
                 )
             })
-            .when_some(video, |this, video| {
-                this.child(
-                    div().flex_1().min_h(px(0.)).overflow_hidden().child(
-                        gpui_video_player::video(video)
-                            .id("response-video-preview")
-                            .size_full()
-                            .buffer_capacity(2),
-                    ),
-                )
+            .when(active.is_some(), |this| {
+                this.child(div().flex_1().min_h(px(0.)))
             })
-            .when(
-                active.is_some_and(|active| active.kind() == MediaKind::Audio),
-                |this| this.child(div().flex_1().min_h(px(0.))),
-            )
             .when_some(position_label, |this, position_label| {
                 let active = self
                     .media
@@ -1320,46 +1185,20 @@ const fn media_asset_problem(problem: ResponseAssetProblem) -> MediaProblem {
     let kind = match problem.kind() {
         ResponseAssetProblemKind::ReadResponse => MediaProblemKind::AssetRead,
         ResponseAssetProblemKind::CreateTemporaryAsset
-        | ResponseAssetProblemKind::WriteTemporaryAsset
-        | ResponseAssetProblemKind::InvalidTemporaryAssetUri => MediaProblemKind::TemporaryAsset,
+        | ResponseAssetProblemKind::WriteTemporaryAsset => MediaProblemKind::TemporaryAsset,
     };
     MediaProblem::new(kind)
 }
 
 fn media_problem_message(problem: MediaProblem, cx: &App) -> SharedString {
     let i18n = cx.global::<I18n>();
-    match (problem.kind(), problem.detail()) {
-        (MediaProblemKind::PluginMissing, Some(MediaProblemDetail::Plugin(plugin))) => {
-            let mut args = FluentArgs::new();
-            args.set("plugin", plugin);
-            i18n.t_with_args("response-media-plugin-missing", &args)
-                .into()
-        }
-        (
-            MediaProblemKind::ResolutionUnsupported,
-            Some(MediaProblemDetail::Resolution { width, height }),
-        ) if width > 0 && height > 0 => {
-            let mut args = FluentArgs::new();
-            args.set("width", width);
-            args.set("height", height);
-            i18n.t_with_args("response-media-resolution-unsupported", &args)
-                .into()
-        }
-        (MediaProblemKind::RuntimeUnavailable, _) => {
-            i18n.t("response-media-runtime-unavailable").into()
-        }
-        (MediaProblemKind::UnsupportedMedia | MediaProblemKind::ResolutionUnsupported, _) => {
-            i18n.t("response-media-unsupported").into()
-        }
-        (MediaProblemKind::Decode, _) => i18n.t("response-media-decode-failed").into(),
-        (MediaProblemKind::Control, _) => i18n.t("response-media-control-failed").into(),
-        (
-            MediaProblemKind::AssetRead
-            | MediaProblemKind::TemporaryAsset
-            | MediaProblemKind::PluginMissing
-            | MediaProblemKind::Internal,
-            _,
-        ) => i18n.t("response-viewer-mode-unavailable").into(),
+    match problem.kind() {
+        MediaProblemKind::RuntimeUnavailable => i18n.t("response-media-runtime-unavailable").into(),
+        MediaProblemKind::Decode => i18n.t("response-media-decode-failed").into(),
+        MediaProblemKind::Control => i18n.t("response-media-control-failed").into(),
+        MediaProblemKind::AssetRead
+        | MediaProblemKind::TemporaryAsset
+        | MediaProblemKind::Internal => i18n.t("response-viewer-mode-unavailable").into(),
     }
 }
 
@@ -1413,7 +1252,6 @@ const fn viewer_mode_key(mode: ViewerMode) -> &'static str {
         ViewerMode::Base64 => "response-view-base64",
         ViewerMode::Image => "response-view-image",
         ViewerMode::Audio => "response-view-audio",
-        ViewerMode::Video => "response-view-video",
         ViewerMode::Pdf => "response-view-pdf",
     }
 }
@@ -1644,7 +1482,6 @@ mod pane_tests {
                 ViewerMode::Base64,
                 ViewerMode::Image,
                 ViewerMode::Audio,
-                ViewerMode::Video,
                 ViewerMode::Pdf,
             ]
         );
@@ -1719,8 +1556,6 @@ mod pane_tests {
                 let preparation = cx.spawn(async |_, _| std::future::pending::<()>().await);
                 (&mut view.response_pane.media).transition(MediaMessage::Start {
                     token: token.clone(),
-                    kind: MediaKind::Audio,
-                    decoder_policy: DecoderPolicy::SoftwareOnly,
                     resume_position: Duration::ZERO,
                     resume_playing: false,
                     task: preparation,
@@ -1775,8 +1610,6 @@ mod pane_tests {
                 );
                 (&mut view.response_pane.media).transition(MediaMessage::Start {
                     token: token.clone(),
-                    kind: MediaKind::Audio,
-                    decoder_policy: DecoderPolicy::Auto,
                     resume_position: Duration::ZERO,
                     resume_playing: false,
                     task: pending_task(cx, Arc::clone(&audio_task_dropped)),
@@ -1788,15 +1621,14 @@ mod pane_tests {
         });
         cx.run_until_parked();
 
-        let video_token = cx.update(|window, cx| {
+        let pdf_token = cx.update(|window, cx| {
             view.update(cx, |view, cx| {
-                // This mirrors selecting a manual Video mode after an Auto
-                // Audio preview has started. `begin_preview` is the shared
-                // mode-switch teardown entry point.
-                view.response_pane.mode = ViewerMode::Video;
+                // A fresh Auto PDF preview uses the same mode-switch teardown
+                // entry point as the audio player.
+                view.response_pane.mode = ViewerMode::Auto;
                 let token = view.response_pane.begin_preview(
                     Arc::clone(&response),
-                    ViewerMode::Video,
+                    ViewerMode::Pdf,
                     window,
                     cx,
                 );
@@ -1804,7 +1636,7 @@ mod pane_tests {
                 assert_eq!(view.response_pane.media.phase(), MediaPhase::Idle);
 
                 // A completion from the cancelled Auto audio preparation
-                // cannot install a driver for the new manual Video mode.
+                // cannot install a driver after switching to PDF.
                 (&mut view.response_pane.media).transition(MediaMessage::Prepared {
                     token: audio_token.clone(),
                     driver: Box::new(FakeMediaDriver),
@@ -1813,40 +1645,8 @@ mod pane_tests {
                 });
                 assert_eq!(view.response_pane.media.phase(), MediaPhase::Idle);
 
-                (&mut view.response_pane.media).transition(MediaMessage::Start {
-                    token: token.clone(),
-                    kind: MediaKind::Video,
-                    decoder_policy: DecoderPolicy::Auto,
-                    resume_position: Duration::ZERO,
-                    resume_playing: false,
-                    task: pending_task(cx, Arc::new(AtomicBool::new(false))),
-                });
-                (&mut view.response_pane.media).transition(MediaMessage::Prepared {
-                    token: token.clone(),
-                    driver: Box::new(FakeMediaDriver),
-                    metadata: media::MediaMetadata::new(None),
-                    task: pending_task(cx, Arc::new(AtomicBool::new(false))),
-                });
-                assert_eq!(view.response_pane.media.phase(), MediaPhase::Paused);
-                token
-            })
-        });
-        cx.run_until_parked();
-        assert!(audio_task_dropped.load(Ordering::Acquire));
-
-        let pdf_token = cx.update(|window, cx| {
-            view.update(cx, |view, cx| {
-                // A fresh Auto PDF preview installs its worker-owned Loading
-                // state before the parser can poll; PDFs have no playback
-                // transition.
-                view.response_pane.mode = ViewerMode::Auto;
-                let token = view.response_pane.begin_preview(
-                    Arc::clone(&response),
-                    ViewerMode::Pdf,
-                    window,
-                    cx,
-                );
-                assert!(!token.matches(&video_token));
+                // PDF installs its worker-owned Loading state before the
+                // parser can poll; PDFs have no playback transition.
                 view.response_pane.pdf.begin_read(token.clone());
                 let worker = PdfWorkerHandle::new(Bytes::from_static(b"not a PDF")).unwrap();
                 view.response_pane.pdf.load(
@@ -1859,17 +1659,19 @@ mod pane_tests {
                 token
             })
         });
+        cx.run_until_parked();
+        assert!(audio_task_dropped.load(Ordering::Acquire));
 
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 // `reset_for_send` is the new-Send teardown path. Stale
-                // video completions cannot revive a stopped preview.
+                // audio completions cannot revive a stopped preview.
                 view.response_pane.reset_for_send(window, cx);
                 assert_eq!(view.response_pane.mode(), ViewerMode::Auto);
-                assert!(!view.response_pane.is_current_preview(&video_token));
+                assert!(!view.response_pane.is_current_preview(&audio_token));
                 assert_eq!(view.response_pane.media.phase(), MediaPhase::Idle);
                 (&mut view.response_pane.media).transition(MediaMessage::Prepared {
-                    token: video_token.clone(),
+                    token: audio_token.clone(),
                     driver: Box::new(FakeMediaDriver),
                     metadata: media::MediaMetadata::new(None),
                     task: pending_task(cx, Arc::new(AtomicBool::new(false))),

@@ -246,7 +246,6 @@ pub(crate) enum ContentKind {
     Xml,
     Image,
     Audio,
-    Video,
     Pdf,
     Bytes,
 }
@@ -307,10 +306,6 @@ pub(crate) fn classify_content_type(headers: &HeaderMap) -> ContentKind {
     if media_type.type_() == mime::AUDIO {
         return ContentKind::Audio;
     }
-    if media_type.type_() == mime::VIDEO {
-        return ContentKind::Video;
-    }
-
     match essence {
         "text/html" => ContentKind::Text(SourceLanguage::Html),
         "text/css" => ContentKind::Text(SourceLanguage::Css),
@@ -670,7 +665,7 @@ mod tests {
             ("image/svg+xml", ContentKind::Text(SourceLanguage::Svg)),
             ("application/pdf", ContentKind::Pdf),
             ("audio/ogg", ContentKind::Audio),
-            ("video/mp4; codecs=avc1", ContentKind::Video),
+            ("video/mp4; codecs=avc1", ContentKind::Bytes),
             ("application/octet-stream", ContentKind::Bytes),
         ] {
             let mut headers = HeaderMap::new();

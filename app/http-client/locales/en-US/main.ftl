@@ -60,7 +60,6 @@ response-view-hex = Hex
 response-view-base64 = Base64
 response-view-image = Image
 response-view-audio = Audio
-response-view-video = Video
 response-view-pdf = PDF
 
 response-media-loading = Preparing media…
@@ -70,11 +69,8 @@ response-media-mute = Mute
 response-media-unmute = Unmute
 response-media-position = { $current } / { $total }
 response-media-runtime-unavailable = Media playback is unavailable on this installation.
-response-media-plugin-missing = A required media plugin is unavailable: { $plugin }
-response-media-unsupported = The response is not a supported media format.
 response-media-decode-failed = The media response could not be decoded.
 response-media-control-failed = The media player could not complete that action.
-response-media-resolution-unsupported = The video resolution { $width } × { $height } exceeds the preview limit.
 
 response-pdf-loading = Preparing PDF…
 response-pdf-previous = Previous

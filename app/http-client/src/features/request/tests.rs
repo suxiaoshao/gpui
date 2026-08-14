@@ -166,6 +166,25 @@ fn accepted_send_clears_the_previous_response_before_worker_poll(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn response_save_disables_send_until_the_save_task_finishes(cx: &mut TestAppContext) {
+    initialize(cx);
+    let (view, cx) = cx.add_window_view(RequestView::new);
+
+    cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            assert!(!view.send_is_disabled());
+
+            let save = cx.spawn(async |_, _| std::future::pending::<()>().await);
+            view.response_pane.install_save_task(save);
+            assert!(view.send_is_disabled());
+
+            view.response_pane.finish_save(Ok(()));
+            assert!(!view.send_is_disabled());
+        });
+    });
+}
+
+#[gpui::test]
 fn clear_response_invalidates_the_current_preview(cx: &mut TestAppContext) {
     initialize(cx);
     let (view, cx) = cx.add_window_view(RequestView::new);

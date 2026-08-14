@@ -4,7 +4,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub mod common;
-pub mod gstreamer;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod settings;
@@ -12,7 +11,7 @@ pub mod settings;
 pub mod windows;
 
 use crate::cli::BundleArgs;
-use crate::cmd::run_cmd_with_env;
+use crate::cmd::run_cmd;
 use crate::context::workspace_root;
 use crate::error::Result;
 use crate::manifest::get_main_binary_name;
@@ -29,13 +28,10 @@ pub fn run(args: BundleArgs) -> Result<()> {
     validate_platform_args(&args);
     let bundle_icon_assets = prepare_platform_bundle(&app_dir)?;
 
-    let build_environment =
-        gstreamer::release_build_environment(args.app, &workspace_dir, &app_dir)?;
-    run_cmd_with_env(
+    run_cmd(
         "cargo",
         &["build", "-p", args.app.package_name(), "--release"],
         Some(&workspace_dir),
-        &build_environment,
     )?;
 
     let manifest_path = app_dir.join("Cargo.toml");
@@ -46,9 +42,6 @@ pub fn run(args: BundleArgs) -> Result<()> {
 
     let out_dir = bundle_out_dir(&workspace_dir, &main_bin_name, args.app)?;
     info!(bundle_out_dir = %out_dir.display(), "using bundle output dir");
-    let runtime_resources = prepare_gstreamer_bundle(args.app, &app_dir, &out_dir, &main_bin_name)?;
-    merge_bundle_resources(&mut bundle_settings, runtime_resources);
-
     #[cfg(target_os = "macos")]
     let bundle_settings = {
         let mut bundle_settings = bundle_settings;
@@ -113,7 +106,6 @@ fn finalize_platform_bundle(
     #[cfg(target_os = "macos")]
     {
         if let Some(app_path) = macos::find_app_bundle(_bundle_dir, _product_name)? {
-            gstreamer::stage_macos_runtime(_args.app, _app_dir, &app_path)?;
             macos::inject_liquid_glass_icon(_app_dir, &app_path, _bundle_icon_assets)?;
             macos::finalize_ad_hoc_codesign(&app_path)?;
         } else {
@@ -244,45 +236,6 @@ fn prepare_linux_bundle_staging(workspace_dir: &Path, main_bin_name: &str) -> Re
     fs::create_dir_all(&staging)?;
     fs::copy(&source, staging.join(main_bin_name))?;
     Ok(staging)
-}
-
-fn merge_bundle_resources(
-    settings: &mut tauri_bundler::BundleSettings,
-    resources: std::collections::HashMap<String, String>,
-) {
-    if resources.is_empty() {
-        return;
-    }
-    settings
-        .resources_map
-        .get_or_insert_with(Default::default)
-        .extend(resources);
-}
-
-fn prepare_gstreamer_bundle(
-    _app: crate::cli::BundleApp,
-    _app_dir: &Path,
-    _out_dir: &Path,
-    _main_bin_name: &str,
-) -> Result<std::collections::HashMap<String, String>> {
-    #[cfg(target_os = "windows")]
-    {
-        return gstreamer::stage_windows_runtime(_app, _app_dir, _out_dir);
-    }
-    #[cfg(target_os = "linux")]
-    {
-        return gstreamer::stage_linux_runtime(
-            _app,
-            _app_dir,
-            _out_dir,
-            &_out_dir.join(_main_bin_name),
-        );
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    {
-        let _ = (_app, _app_dir, _out_dir, _main_bin_name);
-        Ok(Default::default())
-    }
 }
 
 #[cfg(target_os = "windows")]

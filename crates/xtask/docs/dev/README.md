@@ -4,4 +4,4 @@
 
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
-| [#200](https://github.com/suxiaoshao/gpui/issues/200) HTTP Client Response 媒体与 PDF 预览发行交付 | `In progress`；xtask 仅承接 manifest 驱动的 staging/verify CLI | [issue-200/README.md](issue-200/README.md) |
+| [#200](https://github.com/suxiaoshao/gpui/issues/200) HTTP Client GStreamer bundle 链路删除 | `In progress`；xtask 只删除 GStreamer staging/verifier/CLI，不新增 Rodio runtime 职责 | [issue-200/README.md](issue-200/README.md) |
