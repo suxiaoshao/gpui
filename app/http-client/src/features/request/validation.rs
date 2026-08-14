@@ -473,8 +473,11 @@ mod tests {
     fn multipart_issues_are_attached_to_active_dynamic_fields(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let directory = tempfile::tempdir().unwrap();
-            let unsafe_file = directory.path().join("unsafe\nname.bin");
-            std::fs::write(&unsafe_file, b"payload").unwrap();
+            #[cfg(unix)]
+            let file_path = directory.path().join("unsafe\nname.bin");
+            #[cfg(not(unix))]
+            let file_path = directory.path().join("safe-name.bin");
+            std::fs::write(&file_path, b"payload").unwrap();
             let mut draft = valid_draft();
             draft.body = RequestBodyDraft::FormData(FormDataDraft {
                 parts: vec![
@@ -487,7 +490,7 @@ mod tests {
                         enabled: true,
                         name: "file".into(),
                         value: MultipartPartValueDraft::File(MultipartFileDraft {
-                            path: Some(unsafe_file),
+                            path: Some(file_path),
                         }),
                     },
                     MultipartPartDraft {
@@ -538,14 +541,14 @@ mod tests {
                 .resolve(&form, cx)
                 .unwrap()
                 .unwrap();
-            assert_eq!(
-                second_file
-                    .then(MultipartFileDraft::PATH)
-                    .try_errors(&form, cx)
-                    .unwrap()[0]
-                    .code(),
-                "request-file-name-invalid"
-            );
+            let second_file_errors = second_file
+                .then(MultipartFileDraft::PATH)
+                .try_errors(&form, cx)
+                .unwrap();
+            #[cfg(unix)]
+            assert_eq!(second_file_errors[0].code(), "request-file-name-invalid");
+            #[cfg(not(unix))]
+            assert!(second_file_errors.is_empty());
 
             let text_value = parts[2].clone().then(MultipartPartDraft::VALUE);
             let text = text_value
@@ -561,6 +564,15 @@ mod tests {
                 "request-media-type-invalid"
             );
         });
+    }
+
+    #[test]
+    fn disposition_text_rejects_line_breaks_on_all_platforms() {
+        assert_eq!(
+            validate_disposition_text("unsafe\nname.bin"),
+            Err(RequestFieldError::UnsafeDispositionText)
+        );
+        assert!(validate_disposition_text("safe-name.bin").is_ok());
     }
 
     #[gpui::test]

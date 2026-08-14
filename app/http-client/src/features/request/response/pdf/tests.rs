@@ -114,7 +114,7 @@ async fn worker_parses_renders_and_navigates_a_generated_two_page_document() {
 }
 
 #[tokio::test]
-async fn worker_keeps_only_the_latest_page_request_while_rendering() {
+async fn worker_eventually_processes_the_latest_page_request_after_stale_renders() {
     let token = token(3);
     let mut worker = PdfWorkerHandle::new(generated_pdf(4, false).into()).unwrap();
     let events = worker.take_event_receiver().unwrap();
@@ -126,25 +126,40 @@ async fn worker_keeps_only_the_latest_page_request_while_rendering() {
         .unwrap();
     assert!(matches!(initial, PdfWorkerEvent::Loaded { page: 0, .. }));
 
-    // The worker mailbox has capacity one. Regardless of whether it has
-    // already begun one of these renders, the single completion mailbox must
-    // expose only the most recent page/generation to the UI owner.
+    // A render may already be in progress when newer requests replace the
+    // pending mailbox entry. Its completion is allowed to arrive first; the
+    // response owner filters that stale generation. The worker must still
+    // eventually process the latest request.
     worker.render(token.clone(), 1, 1, viewport).unwrap();
     worker.render(token.clone(), 2, 2, viewport).unwrap();
     worker.render(token, 3, 3, viewport).unwrap();
 
-    let latest = tokio::time::timeout(Duration::from_secs(5), events.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(matches!(
-        latest,
-        PdfWorkerEvent::Rendered {
-            page_generation: 3,
-            page: 3,
-            ..
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            match event {
+                PdfWorkerEvent::Rendered {
+                    page_generation: 3,
+                    page: 3,
+                    ..
+                } => break,
+                PdfWorkerEvent::Rendered {
+                    page_generation,
+                    page,
+                    ..
+                } => {
+                    assert!(page_generation < 3);
+                    assert_eq!(page, page_generation as usize);
+                }
+                PdfWorkerEvent::Loaded { .. } => {
+                    panic!("the initial load event should have been consumed")
+                }
+                PdfWorkerEvent::Failed { .. } => panic!("page render unexpectedly failed"),
+            }
         }
-    ));
+    })
+    .await
+    .unwrap();
 }
 
 #[test]
