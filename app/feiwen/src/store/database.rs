@@ -532,7 +532,12 @@ fn backup_live_artifacts(
             .check(copy_point)
             .and_then(|()| std::fs::copy(source, &target).map(|_| ()))
             .and_then(|()| hooks.check(sync_point))
-            .and_then(|()| std::fs::File::open(&target)?.sync_all())
+            .and_then(|()| {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&target)?
+                    .sync_all()
+            })
             .map_err(|error| {
                 DatabaseProblem::at(DatabaseProblemKind::Backup, error).with_backup(backup_dir)
             })?;
