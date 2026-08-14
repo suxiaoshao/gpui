@@ -385,6 +385,42 @@ async fn response_codings_are_generated_and_conflicts_are_rejected() -> Result<(
 }
 
 #[tokio::test]
+async fn distinct_servers_compose_a_cross_origin_redirect_fixture() -> Result<(), Box<dyn Error>> {
+    let source = TestServer::spawn().await?;
+    let target = TestServer::spawn().await?;
+    assert_ne!(source.base_url(), target.base_url());
+
+    let target_url = format!("{}/v1/echo", target.base_url());
+    let redirect = RespondSpec {
+        status: 307,
+        headers: vec![HeaderSpec {
+            name: "location".to_owned(),
+            value: target_url.clone(),
+        }],
+        ..RespondSpec::default()
+    };
+    let client = Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let response = client.post(source.respond_url(&redirect)?).send().await?;
+
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(
+        response.headers().get(header::LOCATION).unwrap().to_str()?,
+        target_url.as_str()
+    );
+    assert_eq!(
+        client.get(target_url).send().await?.status(),
+        StatusCode::OK
+    );
+
+    source.shutdown().await?;
+    target.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn header_and_chunk_delays_are_observable() -> Result<(), Box<dyn Error>> {
     let server = TestServer::spawn().await?;
     let spec = RespondSpec {

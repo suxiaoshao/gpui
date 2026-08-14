@@ -288,6 +288,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cross_origin_redirect_matches_postman_header_policy_on_wire() {
+        let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_address = target_listener.local_addr().unwrap();
+        let target = tokio::spawn(async move {
+            let (mut stream, _) = target_listener.accept().await.unwrap();
+            let request = read_request(&mut stream).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            stream.shutdown().await.unwrap();
+            request
+        });
+
+        let source_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let source_address = source_listener.local_addr().unwrap();
+        let source = tokio::spawn(async move {
+            let (mut stream, _) = source_listener.accept().await.unwrap();
+            let request = read_request(&mut stream).await;
+            let response = format!(
+                "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{target_address}/final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.shutdown().await.unwrap();
+            request
+        });
+
+        let mut request = prepared(
+            Url::parse(&format!("http://{source_address}/start")).unwrap(),
+            PreparedBody::None,
+            BodyContentType::None,
+        );
+        request.method = Method::GET;
+        request.headers.insert(
+            header::HOST,
+            http::HeaderValue::from_static("source.example"),
+        );
+        request.headers.insert(
+            header::AUTHORIZATION,
+            http::HeaderValue::from_static("manual-authorization-data"),
+        );
+        request.headers.insert(
+            header::COOKIE,
+            http::HeaderValue::from_static("session=secret"),
+        );
+        request.headers.insert(
+            "x-api-key",
+            http::HeaderValue::from_static("ordinary-header-data"),
+        );
+        request.headers.insert(
+            "baidu-api-key",
+            http::HeaderValue::from_static("auth-tab-data"),
+        );
+
+        run_to_terminal(request).await.unwrap();
+
+        let first = String::from_utf8_lossy(&source.await.unwrap()).to_ascii_lowercase();
+        assert!(first.contains("host: source.example\r\n"));
+        assert!(first.contains("authorization: manual-authorization-data\r\n"));
+        assert!(first.contains("cookie: session=secret\r\n"));
+        assert!(first.contains("x-api-key: ordinary-header-data\r\n"));
+        assert!(first.contains("baidu-api-key: auth-tab-data\r\n"));
+
+        let second = String::from_utf8_lossy(&target.await.unwrap()).to_ascii_lowercase();
+        assert!(!second.contains("host: source.example\r\n"));
+        assert!(second.contains(&format!("host: {target_address}\r\n")));
+        assert!(!second.contains("authorization:"));
+        assert!(!second.contains("cookie:"));
+        assert!(second.contains("x-api-key: ordinary-header-data\r\n"));
+        assert!(second.contains("baidu-api-key: auth-tab-data\r\n"));
+    }
+
+    #[tokio::test]
     async fn temporary_redirect_rebuilds_multipart_file_stream_for_each_hop() {
         let (url, server) = fixture(vec![
             FixtureResponse {

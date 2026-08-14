@@ -95,7 +95,7 @@ Form breaking 与 consumer 再迁移轮次的实际实施顺序：
 | [HTTP Client Request Form 与 prepared request 实施计划](../../../app/http-client/docs/dev/issue-199/request-form-and-preparation-plan.md) | `Done` | Request Form、五种 Body、Auth、redirect 与 prepared request 已在 `933ee09` 实施并推送；Store 本阶段不适用。 |
 | [HTTP Client 真实 Send 与 Response 实施计划](../../../app/http-client/docs/dev/issue-199/request-send-and-response-plan.md) | `Done` | 已交付单请求 Send/Cancel、私有 Transition、head-first Response、受限 body 收集、安全 viewer 与完成后 Save；实现提交 `24e4a9f` 已推送；116 tests、Check、Clippy、格式与残留扫描通过，实际 UI 未执行。 |
 | [HTTP Client Response 媒体/PDF 历史记录](../../../app/http-client/docs/dev/issue-199/response-media-and-pdf-preview-plan.md) | `Superseded` | 不作为实施依据；#200 规定 Rodio/CPAL/Symphonia 音频迁移、PDF 保留、视频排除与 GStreamer 全链路删除。 |
-| [HTTP 测试服务 producer 实施计划](../../../crates/http-client-test-server/docs/dev/issue-199/http-test-server-plan.md) | `Done` | Hyper HTTP/1 loopback producer、受控 response/abort/echo、CLI 与 15 个自动化测试已交付。 |
+| [HTTP 测试服务 producer 实施计划](../../../crates/http-client-test-server/docs/dev/issue-199/http-test-server-plan.md) | `Done` | Hyper HTTP/1 loopback producer、受控 response/abort/echo、CLI、Postman 重定向观察示例与 16 个自动化测试已交付。 |
 | [HTTP 测试服务 consumer 集成计划](../../../app/http-client/docs/dev/issue-199/http-test-server-integration-plan.md) | `Done` | HTTP Client 已用 dev-only producer 迁移 normal response/abort 测试，保留三项 request-wire raw fixture；transport 15 tests 与 app 161 tests 通过。 |
 | [workspace Store/Operation/Form 适用性调研](workspace-store-operation-form-assessment.md) | 已审阅；MCP runtime 转 #201 | 记录全局候选与“不改Store内部”的结论 |
 | [上一轮root delivery归档](explicit-form-owner-delivery.md) | 历史原样 | 保存此前共享规格、工作包、验证与完成审计，不作为vNext执行入口 |

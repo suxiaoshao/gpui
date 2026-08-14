@@ -9,8 +9,12 @@
 - 根入口：[Issue #199 多轮任务索引](../../../../../docs/dev/issue-199/README.md)
 - 实施引用：producer/consumer 主实现提交 `1559cc8`；workspace feature-unification 稳定性修正
   `735bc41`
-- 最后证据刷新：2026-08-13
+- 最后证据刷新：2026-08-14
 - 待确认问题：无。
+
+后续补充：`examples/postman_redirect.rs` 复用既有 `/v1/respond`、`Location` 与 `/v1/echo`，启动两个
+不同端口的 loopback origin 并输出 302/307 URL，用于在 Postman Console 中观察跨 origin 重定向。
+它不增加第四个服务端接口，也不记录或回显认证 header value。
 
 ### 目标
 
@@ -116,7 +120,8 @@ crates/http-client-test-server/
 │   ├── abort.rs                        [F-1805 Add] connection-level abort body
 │   ├── echo.rs                         [F-1806 Add] 有界 request collector/echo response
 │   └── main.rs                         [F-1807 Add] `--port`、readiness 输出、Ctrl-C
-└── tests/integration.rs                [F-1808 Add] black-box Hyper/Reqwest/raw-TCP 覆盖
+├── tests/integration.rs                [F-1808 Add] black-box Hyper/Reqwest/raw-TCP 覆盖
+└── examples/postman_redirect.rs        [F-1809 Add] 两个 loopback origin 的 302/307 手工对照夹具
 ```
 
 `F-1800` 的 manifest 变更由 Cargo 机械更新 workspace `Cargo.lock`。本计划与 owner/root 索引是状态与
@@ -512,6 +517,7 @@ consumer 均完成后，根 `HTTP-199-05` 已标为 `Done`。
 | T-1807 | R-1806/R-1809 | echo binary、multiple/no Content-Type、64 MiB boundary | exact body；only expected type values；413 无 partial echo |
 | T-1808 | R-1802/R-1808 | HTTP Client consumer: delay/cancel/timeout and both abort phases | Sending/Receiving transitions；before-head `Transport`；mid-body head retained + `ResponseBodyRead` |
 | T-1809 | R-1802/R-1805/R-1809 | HTTP Client consumer: redirect/coding/large repeat/echo upload | manual redirect policy；decode/unsupported behavior；50 MiB cap；outbound bytes/type |
+| T-1810 | R-1802/R-1805 | Postman redirect example：两个 `TestServer` origin + 307 `Location` 到 `/v1/echo` | source/target origin 不同；Location 精确指向 target；target 可达；实际 Postman header 行为由 Console 人工观察 |
 
 实施后的验证顺序：
 
@@ -533,9 +539,9 @@ consumer 均完成后，根 `HTTP-199-05` 已标为 `Done`。
 | 证据 | 实际结果 |
 | --- | --- |
 | 实施 commit/PR | producer/consumer 主实现提交 `1559cc8`；workspace feature-unification 稳定性修正 `735bc41`；本轮未创建 PR |
-| 新增/修改文件与 Cargo.lock resolution | 新增 `contract/server/respond/abort/echo/main` 与 12 个 black-box integration tests；lockfile 只增加本 crate、`httpdate` 及既有 feature 所需的 `futures-util` |
-| 交付的 C/ERR/F/L/ST/R/T/WP ID | `C-1800`–`C-1803`、`ERR-1800`–`ERR-1804`、`F-1800`–`F-1808`、`L-1800`–`L-1804`、`ST-1800`–`ST-1804`、`R-1800`–`R-1809`、`T-1800`–`T-1809`、`WP-1800`–`WP-1809` |
-| 自动化命令与结果 | `cargo test -p http-client-test-server --all-features --locked`：2 library unit + 1 CLI unit + 12 integration，合计 15 passed；严格 Clippy、全 workspace fmt check 与 diff check 通过 |
+| 新增/修改文件与 Cargo.lock resolution | 新增 `contract/server/respond/abort/echo/main`、Postman redirect 对照 example 与 13 个 black-box integration tests；lockfile 只增加本 crate、`httpdate` 及既有 feature 所需的 `futures-util` |
+| 交付的 C/ERR/F/L/ST/R/T/WP ID | `C-1800`–`C-1803`、`ERR-1800`–`ERR-1804`、`F-1800`–`F-1809`、`L-1800`–`L-1804`、`ST-1800`–`ST-1804`、`R-1800`–`R-1809`、`T-1800`–`T-1810`、`WP-1800`–`WP-1809` |
+| 自动化命令与结果 | `cargo test -p http-client-test-server --all-features --locked`：2 library unit + 1 CLI unit + 13 integration，合计 16 passed；严格 Clippy、全 workspace fmt check 与 diff check 通过 |
 | CLI Ctrl-C 场景 | macOS/Unix black-box test 读取 readiness、请求 healthz、发送 SIGINT，并在 3 秒内以 code 0 退出；Windows native Ctrl-C 未在本机执行 |
 | HTTP Client consumer 迁移 | 已完成；最终 transport 聚焦 15/15、app 全量 161/161 通过，详见 consumer 计划 |
 | Owner/root 索引同步 | producer、consumer、owner/root 索引均已同步为 `Done` |

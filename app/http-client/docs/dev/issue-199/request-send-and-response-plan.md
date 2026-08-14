@@ -369,12 +369,12 @@ enum WorkerEvent {
    从而保持 HTTP-199-02 的“显式 Content-Type 优先”契约与重复 header values。跳转改为 GET 后永久删除
    body、`Content-Length`、`Content-Type`、`Transfer-Encoding`，后续跳不得从原快照恢复。
 3. 不调用 `error_for_status`。只跟随 301/302/303/307/308；`follow=false` 或缺少 `Location` 时把当前 3xx
-   当普通最终 Response。`preserve_method=false` 时 303 改 GET（HEAD 保持 HEAD）、301/302 的 POST 改
-   GET、307/308 保持 method/body；`preserve_method=true` 始终保持。相对 Location 基于当前 URL join，
+   当普通最终 Response。`preserve_method=false` 时 301/302/303 均改 GET（HEAD 保持 HEAD）并删除 body，
+   307/308 保持 method/body；`preserve_method=true` 始终保持。相对 Location 基于当前 URL join，
    请求前删除 fragment；无效 Location、重复 URL loop 与 hop exhaustion 映射 `ERR-1602`。
-4. scheme、host 或有效 port 任一变化都算跨 origin。除非
-   `forward_authorization_cross_host=true`，否则删除 Authorization；一旦删除，后续即使回到原 origin
-   也不得从最初 headers 恢复。
+4. scheme、host 或有效 port 任一变化都算跨 origin。删除显式 `Host` 与 `Cookie`；除非
+   `forward_authorization_cross_host=true`，否则同时删除 `Authorization`。其他自定义 header（包括任意
+   名称的 API Key）继续发送；已删除的 header 在后续跳转中不得从最初 headers 恢复。
 5. 只有最终 head 可靠发送
    `HeadReceived { status, version, final_url, HeaderMap, Content-Length }`；中间 3xx 不进入 UI。整个
    redirect chain、最终 body read、content decode 与临时文件写入只包一层 frozen timeout，不能给每一
@@ -542,8 +542,8 @@ Response pane 默认约 320 px、最小 160 px。Response 使用 `TabBar("respon
 **前置：** WP-1600、C-1600、ERR-1600–ERR-1608。
 
 1. 构造显式关闭自动 redirect/decode/referer 的长期 Client，并从每个 `PreparedBody` 产生可重放 body。
-2. 实施 generated/explicit headers 顺序、GET rewrite、五种 redirect status、relative Location、loop/hop、
-   cross-origin Authorization 与 single total timeout。
+2. 实施 generated/explicit headers 顺序、Postman-compatible GET rewrite、五种 redirect status、relative
+   Location、loop/hop、cross-origin Host/Cookie/Authorization 与 single total timeout。
 3. 用 local TCP fixture 覆盖 method、重复 headers、Text/UrlEncoded/Binary/Multipart、文件在 prepare 后失效、
    302 disabled、redirect replay 与 timeout。
 
