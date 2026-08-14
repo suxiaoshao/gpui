@@ -24,7 +24,7 @@ Issue [#175](https://github.com/suxiaoshao/gpui/issues/175) 统一 Jaco 的聊�
 ### Issue 实施计划
 
 以下文件只描述 issue #175 的产品实现。全应用的 form library 迁移另见
-[Jaco gpui-form 类型化双向绑定迁移](../gpui-form-migration.md)。
+[Jaco gpui-form 类型化双向绑定迁移（历史归档）](gpui-form-migration.md)。
 
 - [chat-form-refactor.md](chat-form-refactor.md)
 - [run-settings.md](run-settings.md)

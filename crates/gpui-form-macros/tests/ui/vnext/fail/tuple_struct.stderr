@@ -1,0 +1,5 @@
+error: FormSchema structs must use named fields
+ --> tests/ui/vnext/fail/tuple_struct.rs:2:19
+  |
+2 | struct TupleStruct(String);
+  |                   ^^^^^^^^

@@ -188,17 +188,12 @@ impl ShortcutsSettingsPage {
                 prompts: Vec::new(),
             };
         };
-        let mut prompts = Vec::new();
-        prompts.push(PromptChoice::none(
-            cx.global::<I18n>().t("shortcut-prompt-none"),
-        ));
-        prompts.extend(
-            snapshot
-                .prompts
-                .iter()
-                .filter(|prompt| prompt.enabled)
-                .map(PromptChoice::from_prompt),
-        );
+        let prompts = snapshot
+            .prompts
+            .iter()
+            .filter(|prompt| prompt.enabled)
+            .map(PromptChoice::from_prompt)
+            .collect();
         ShortcutDialogChoices { prompts }
     }
 

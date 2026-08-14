@@ -1,5 +1,5 @@
 use errors::HttpClientResult;
-use features::HttpFormView;
+use features::RequestView;
 use foundation::I18n;
 use gpui::*;
 use gpui_component::Root;
@@ -24,6 +24,7 @@ fn quit(_: &Quit, cx: &mut App) {
 
 fn init(cx: &mut App) {
     gpui_component::init(cx);
+    gpui_tokio::init(cx);
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.activate(true);
     cx.on_action(quit);
@@ -89,7 +90,7 @@ fn main() -> HttpClientResult<()> {
                 ..Default::default()
             },
             |window, cx| {
-                let view = cx.new(|cx| HttpFormView::new(window, cx));
+                let view = cx.new(|cx| RequestView::new(window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             },
         ) {

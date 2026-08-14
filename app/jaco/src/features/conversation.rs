@@ -39,6 +39,7 @@ const TITLE_MAX_CHARS: usize = 48;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CreateConversationRequest {
+    pub(crate) conversation_id: ConversationId,
     pub(crate) project_id: Option<ProjectId>,
     pub(crate) content_parts: Vec<ContentPart>,
     pub(crate) attachments: Vec<ComposerAttachment>,
@@ -64,7 +65,6 @@ pub(crate) struct SendConversationMessageRequest {
 }
 
 pub(crate) struct CreatedConversation {
-    pub(crate) conversation_id: ConversationId,
     pub(crate) run_request: AgentRunRequest,
 }
 
@@ -128,7 +128,7 @@ pub(crate) fn create_conversation(
         request.prompt_snapshot.clone(),
         tool_policy.clone(),
     );
-    let conversation_id = new_id();
+    let conversation_id = request.conversation_id.clone();
     let entry_id = new_id();
     let conversation = NewConversation {
         project_id,
@@ -143,8 +143,7 @@ pub(crate) fn create_conversation(
     let user_item = new_user_message_item(conversation_id.clone(), request.content_parts.clone());
     let attachments = request.attachments.clone();
     let run_input = request;
-    let (sender, receiver) = oneshot::channel();
-    let driver = cx.spawn(async move |cx| {
+    cx.spawn(async move |cx| {
         let result = executor
             .execute(move |repository| {
                 if let Some(path) = scratch_path.as_ref() {
@@ -208,22 +207,9 @@ pub(crate) fn create_conversation(
                 }
             });
         }
-        let result = result
-            .map(|(transaction, run_request)| CreatedConversation {
-                conversation_id: transaction.record.conversation.id,
-                run_request,
-            })
-            .map_err(Into::into);
-        let _ = sender.send(result);
-    });
-    resources::retain_task(driver, cx);
-    cx.spawn(async move |_| {
-        receiver.await.unwrap_or_else(|_| {
-            Err(jaco_db::DbError::Invariant(
-                "conversation create driver ended without a result".to_string(),
-            )
-            .into())
-        })
+        result
+            .map(|(_, run_request)| CreatedConversation { run_request })
+            .map_err(Into::into)
     })
 }
 
@@ -248,8 +234,7 @@ pub(crate) fn send_conversation_message(
     let entry_id = new_id();
     let attachments = request.attachments.clone();
     let content_parts = request.content_parts.clone();
-    let (sender, receiver) = oneshot::channel();
-    let driver = cx.spawn(async move |cx| {
+    cx.spawn(async move |cx| {
         let result = executor
             .execute(move |repository| {
                 let conversation =
@@ -323,20 +308,9 @@ pub(crate) fn send_conversation_message(
                 }
             });
         }
-        let _ = sender.send(
-            result
-                .map(|(_, sent)| sent)
-                .map_err(crate::errors::JacoError::from),
-        );
-    });
-    resources::retain_task(driver, cx);
-    cx.spawn(async move |_| {
-        receiver.await.unwrap_or_else(|_| {
-            Err(jaco_db::DbError::Invariant(
-                "conversation send driver ended without a result".to_string(),
-            )
-            .into())
-        })
+        result
+            .map(|(_, sent)| sent)
+            .map_err(crate::errors::JacoError::from)
     })
 }
 
@@ -694,6 +668,7 @@ mod tests {
         let task = cx.update(|cx| {
             create_conversation(
                 CreateConversationRequest {
+                    conversation_id: new_id(),
                     project_id: None,
                     content_parts: vec![ContentPart::Text {
                         text: "new conversation with missing attachment".to_string(),
@@ -729,6 +704,51 @@ mod tests {
                     .list_sidebar_conversations()
                     .unwrap()
                     .is_empty()
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn dropping_create_conversation_task_cancels_uncommitted_submission(cx: &mut TestAppContext) {
+        let _dir = init_conversations_test(cx);
+        let provider_model = cx.update(|cx| {
+            let repository = test_repository(cx);
+            let provider = repository.insert_provider(provider_for_test()).unwrap();
+            provider_model_choice(&provider.id)
+        });
+        init_conversation_resources(cx);
+        let conversation_id = new_id();
+
+        let task = cx.update(|cx| {
+            create_conversation(
+                CreateConversationRequest {
+                    conversation_id: conversation_id.clone(),
+                    project_id: None,
+                    content_parts: vec![ContentPart::Text {
+                        text: "cancel before persistence".to_string(),
+                    }],
+                    attachments: Vec::new(),
+                    title_seed: "cancel before persistence".to_string(),
+                    skill_requests: Vec::new(),
+                    provider_model,
+                    reasoning_selection: None,
+                    approval_mode: ToolApprovalMode::RequestApproval,
+                    prompt_id: None,
+                    prompt_snapshot: None,
+                    trigger_kind: AgentRunTriggerKind::User,
+                },
+                cx,
+            )
+        });
+        drop(task);
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            assert!(
+                test_repository(cx)
+                    .get_conversation(&conversation_id)
+                    .unwrap()
+                    .is_none()
             );
         });
     }

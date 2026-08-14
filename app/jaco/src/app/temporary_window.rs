@@ -49,14 +49,17 @@ pub(crate) fn open_temporary_window(cx: &mut App) -> Option<WindowHandle<Root>> 
 }
 
 pub(crate) fn show_created_conversation(
-    created: crate::features::conversation::CreatedConversation,
+    conversation_id: jaco_core::ConversationId,
     cx: &mut App,
 ) -> Option<WindowHandle<Root>> {
     if !crate::database::is_ready(cx) {
         crate::app::show_or_create_main_window(cx);
         return None;
     }
-    with_lifecycle_state(cx, |state, cx| state.show_created_conversation(created, cx)).flatten()
+    with_lifecycle_state(cx, |state, cx| {
+        state.show_created_conversation(conversation_id, cx)
+    })
+    .flatten()
 }
 
 pub(crate) fn toggle_temporary_window(cx: &mut App) {
@@ -115,7 +118,7 @@ fn with_lifecycle_state<R>(
 impl TemporaryWindowLifecycleState {
     fn show_created_conversation(
         &mut self,
-        created: crate::features::conversation::CreatedConversation,
+        conversation_id: jaco_core::ConversationId,
         cx: &mut App,
     ) -> Option<WindowHandle<Root>> {
         let window = find_temporary_window(cx).or_else(|| self.create_temporary_window(cx))?;
@@ -131,13 +134,7 @@ impl TemporaryWindowLifecycleState {
             };
             handled = true;
             view.update(cx, |view, cx| {
-                let started = view.open_created_conversation(created, window, cx);
-                if !started {
-                    event!(
-                        Level::DEBUG,
-                        "temporary conversation run was already active"
-                    );
-                }
+                view.open_created_conversation(conversation_id, window, cx);
             });
             reveal = self.prepare_temporary_window(root, window, cx);
         });

@@ -1,5 +1,11 @@
 # Novel Download 开发文档
 
+## 功能与重构计划
+
+| Issue | 状态 | 入口 |
+| --- | --- | --- |
+| [#199](https://github.com/suxiaoshao/gpui/issues/199) Form、私有下载 Transition 与文件事务迁移 | `Done`；39 tests 与定向门禁通过；实现提交 `64b0c4a` 已推送；UI 未执行 | [issue-199/README.md](issue-199/README.md) |
+
 ## 依赖迁移
 
 | 日期 | 迁移批次 | 状态 | 入口 |

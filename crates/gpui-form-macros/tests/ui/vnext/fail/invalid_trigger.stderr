@@ -1,0 +1,5 @@
+error: expected on_mount, on_change, on_blur, on_external, or on_submit
+ --> tests/ui/vnext/fail/invalid_trigger.rs:3:21
+  |
+3 |     #[form(validate(on_dynamic))]
+  |                     ^^^^^^^^^^

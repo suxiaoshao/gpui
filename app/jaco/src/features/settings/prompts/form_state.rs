@@ -1,9 +1,6 @@
-use gpui_form::typed::{SubmitTransform, TransformReport};
 use jaco_core::PromptId;
 
-use super::super::form_validation::{
-    JacoGardeMessageProvider, JacoValidationContext, garde_message,
-};
+use super::super::form_validation::{JacoValidationContext, garde_message};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct PromptValidationDependencies {
@@ -13,13 +10,8 @@ pub(super) struct PromptValidationDependencies {
 
 pub(super) type PromptEditValidationContext = JacoValidationContext<PromptValidationDependencies>;
 
-#[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormSchema, garde::Validate)]
 #[garde(context(PromptEditValidationContext))]
-#[form(
-    store = PromptEditFormStore,
-    validation(adapter = "garde", messages = JacoGardeMessageProvider),
-    transform(adapter = PromptEditTransform)
-)]
 pub(super) struct PromptEditFormInput {
     #[form(required, validate(on_change, on_blur, on_submit))]
     #[garde(custom(validate_prompt_name))]
@@ -56,18 +48,7 @@ fn validate_prompt_name(value: &str, context: &PromptEditValidationContext) -> g
     Ok(())
 }
 
-#[derive(Clone, Debug, Default)]
-pub(super) struct PromptEditTransform;
-
-impl SubmitTransform<PromptEditFormInput> for PromptEditTransform {
-    type Output = PromptEditFormInput;
-
-    fn transform(&self, model: &PromptEditFormInput) -> Result<Self::Output, TransformReport> {
-        Ok(normalize_prompt_input(model))
-    }
-}
-
-fn normalize_prompt_input(model: &PromptEditFormInput) -> PromptEditFormInput {
+pub(super) fn normalize_prompt_input(model: &PromptEditFormInput) -> PromptEditFormInput {
     PromptEditFormInput {
         name: model.name.trim().to_string(),
         content: model.content.trim().to_string(),

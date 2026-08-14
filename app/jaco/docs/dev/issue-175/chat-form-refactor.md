@@ -1,7 +1,7 @@
 # 纯 UI ChatForm 与 ControlSlot 契约
 
 > `ChatForm` 继续是纯 UI。本文件中的旧 form wiring 只记录 issue #175 的实施历史；最终 form API 与迁移步骤统一以
-> [Jaco gpui-form 类型化双向绑定迁移](../gpui-form-migration.md) 为准。
+> [Jaco gpui-form 类型化双向绑定迁移（历史归档）](gpui-form-migration.md) 为准。
 
 本文固定 ChatForm 的纯UI边界、ControlSlot语义、external ChatInput FormStore/controller，以及四个调用方如何
 组合相同控件。ChatForm不得import `gpui_form`、state config/repository/provider catalog或domain submit service。
@@ -258,7 +258,7 @@ skill scope；不得为 project page 另建平行 ChatInput 或 RunSettings draf
 ## 12. 当前所有权边界
 
 本文件描述 issue #175 已落地的 UI/form 边界，并遵循
-[Jaco gpui-form 类型化双向绑定迁移](../gpui-form-migration.md)：generated form store 持有 typed current value，
+[Jaco gpui-form 类型化双向绑定迁移（历史归档）](gpui-form-migration.md)：generated form store 持有 typed current value，
 owning bound control 持有 focus/subscriptions，catalog/options 只更新 control config。当前实现不使用
 child form store、平行 string draft 或 `SubscriptionSet`。
 

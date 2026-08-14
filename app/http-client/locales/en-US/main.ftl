@@ -1,14 +1,150 @@
 app-title = HTTP Client
 
+gpui-form-error-required = This field is required.
+
 button-send = Send
+button-cancel = Cancel
+button-clear-response = Clear Response
+button-save-response = Save Response
 button-add = Add
 button-confirm = Confirm
 button-delete = Delete
+button-select-file = Select File
+button-change-file = Change File
+button-clear-file = Clear File
+button-move-up = Move Up
+button-move-down = Move Down
 
+field-method = Method
 field-url = URL
+field-name = Name
 field-key = Key
 field-value = Value
+field-content-type = Content Type
+field-file = File
+field-username = Username
+field-password = Password
+field-token = Token
+field-location = Location
+field-timeout-ms = Timeout (ms)
 
 tab-params = Params
+tab-authorization = Authorization
 tab-headers = Headers
 tab-body = Body
+tab-settings = Settings
+tab-response-body = Body
+tab-response-headers = Headers
+
+response-title = Response
+response-empty = Send a request to inspect its response.
+response-sending = Sending request…
+response-receiving-known = Receiving response: { $received } of { $total }
+response-receiving-unknown = Receiving response: { $received }
+response-status = Status
+response-final-url = Final URL
+response-protocol = Protocol
+response-head-time = Headers received
+response-total-time = Total time
+response-received-size = Received
+response-stored-size = Stored
+response-header-name = Header
+response-header-value = Value
+response-headers-empty = The response has no headers.
+
+response-view-auto = Auto
+response-view-text = Text
+response-view-json = JSON
+response-view-xml = XML
+response-view-hex = Hex
+response-view-base64 = Base64
+response-view-image = Image
+response-view-audio = Audio
+response-view-pdf = PDF
+
+response-media-loading = Preparing media…
+response-media-play = Play
+response-media-pause = Pause
+response-media-mute = Mute
+response-media-unmute = Unmute
+response-media-position = { $current } / { $total }
+response-media-runtime-unavailable = Media playback is unavailable on this installation.
+response-media-decode-failed = The media response could not be decoded.
+response-media-control-failed = The media player could not complete that action.
+
+response-pdf-loading = Preparing PDF…
+response-pdf-previous = Previous
+response-pdf-next = Next
+response-pdf-page = Page { $current } of { $total }
+response-pdf-invalid = The response is not a valid supported PDF.
+response-pdf-encrypted = Encrypted PDFs are not supported.
+response-pdf-too-large = The PDF exceeds the safe preview limits.
+response-pdf-render-failed = The PDF page could not be rendered.
+
+response-preview-truncated = The preview is truncated. Save the response to inspect all bytes.
+response-decoding-unsupported = This content encoding is not supported. The encoded bytes are preserved.
+response-viewer-mode-unavailable = This view is not available for the response.
+response-viewer-invalid-json = The response is not valid JSON. Showing bounded text instead.
+response-viewer-invalid-image = The response could not be decoded as a supported image.
+response-image-too-large = The image exceeds the safe preview limits.
+response-save-complete = The response was saved.
+response-save-failed = The response could not be saved.
+
+request-problem-transport = The request could not connect to the server.
+request-problem-timeout = The request timed out.
+request-problem-redirect = The redirect chain could not be completed.
+request-problem-request-body = The request body could not be read.
+request-problem-response-read = The response body could not be read completely.
+request-problem-response-decode = The response content could not be decoded completely.
+request-problem-storage = The response could not be stored safely.
+request-problem-too-large-encoded = The encoded response is too large ({ $observed } bytes; limit { $limit } bytes).
+request-problem-too-large-stored = The decoded response is too large ({ $observed } bytes; limit { $limit } bytes).
+request-problem-internal = The request ended because of an internal error.
+
+params-invalid-url-disabled = Enter a valid absolute HTTP or HTTPS URL to edit query parameters.
+
+body-none = None
+body-form-data = form-data
+body-urlencoded = x-www-form-urlencoded
+body-text = Text
+body-binary = binary
+
+text-format-plain = Plain Text
+text-format-json = JSON
+text-format-javascript = JavaScript
+text-format-html = HTML
+text-format-xml = XML
+text-format-css = CSS
+
+multipart-text = Text
+multipart-file = File
+multipart-file-not-selected = No file selected
+
+auth-none = No Auth
+auth-basic = Basic Auth
+auth-bearer = Bearer Token
+auth-api-key = API Key
+auth-location-header = Header
+auth-location-query = Query Params
+auth-generated-override = Generated authorization takes precedence over conflicting request values.
+auth-query-override = API Key authorization overrides the query parameter named “{ $name }”.
+body-content-type-override = This explicit header takes precedence over the Content-Type generated by Body.
+
+settings-follow-redirects = Follow redirects
+settings-follow-original-method = Preserve the original method when following redirects
+settings-timeout-help = Set to 0 for no timeout.
+
+request-url-invalid = Enter a valid absolute URL with a host.
+request-url-scheme-invalid = Only HTTP and HTTPS URLs are supported.
+request-header-name-invalid = Enter a valid HTTP header name.
+request-header-value-invalid = Enter a valid HTTP header value.
+request-media-type-invalid = Enter a valid media type.
+request-multipart-name-required = Enter a name for this multipart part.
+request-multipart-name-invalid = Multipart names cannot contain line breaks or null characters.
+request-file-required = Select a file.
+request-file-unavailable = The selected file is unavailable, unreadable, or not a regular file.
+request-file-name-invalid = File names must not be empty or contain line breaks or null characters.
+request-basic-username-colon = Basic Auth usernames cannot contain a colon.
+request-auth-value-invalid = Enter a value that can be used in an HTTP authorization header.
+request-api-key-name-required = Enter an API key name.
+request-api-key-name-invalid = Enter a valid API key name for the selected location.

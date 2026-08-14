@@ -119,6 +119,7 @@ pub(crate) enum AuthorRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AuthorPredicate {
     Is(AuthorRef),
+    IsNot(AuthorRef),
     In(Vec<AuthorRef>),
     NotIn(Vec<AuthorRef>),
 }
@@ -384,6 +385,7 @@ impl QueryBuilder {
     fn author(&mut self, predicate: &AuthorPredicate) -> String {
         match predicate {
             AuthorPredicate::Is(author) => self.author_ref(author),
+            AuthorPredicate::IsNot(author) => format!("NOT ({})", self.author_ref(author)),
             AuthorPredicate::In(authors) => self.combine_authors(authors, false),
             AuthorPredicate::NotIn(authors) => {
                 format!("NOT ({})", self.combine_authors(authors, false))
@@ -846,6 +848,7 @@ mod tests {
 
         for predicate in [
             AuthorPredicate::Is(AuthorRef::Id(1)),
+            AuthorPredicate::IsNot(AuthorRef::Id(9)),
             AuthorPredicate::In(vec![AuthorRef::Id(1)]),
             AuthorPredicate::NotIn(vec![AuthorRef::Id(9)]),
         ] {

@@ -3,12 +3,11 @@ use crate::{
     components::chat::run_settings::RunSettingsInput,
     features::conversation::attachments::ComposerAttachment,
 };
-#[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
-#[form(store = ChatInputFormStore)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormSchema)]
 pub(crate) struct ChatInputInput {
     pub(crate) composer: ComposerSnapshot,
     pub(crate) attachments: Vec<ComposerAttachment>,
-    #[form(group)]
+    #[form(child)]
     pub(crate) run_settings: RunSettingsInput,
 }
 

@@ -1,12 +1,9 @@
 use super::validation::{canonical_hotkey, validate_shortcut_hotkey};
 use crate::{
     components::chat::run_settings::RunSettingsInput,
-    features::settings::form_validation::{
-        JacoGardeMessageProvider, JacoValidationContext, garde_message,
-    },
+    features::settings::form_validation::{JacoValidationContext, garde_message},
     state::providers::ProviderModelKey,
 };
-use gpui_form::typed::{SubmitTransform, TransformReport};
 use jaco_core::{PromptId, ShortcutInputSource};
 use jaco_db::ShortcutRecord;
 
@@ -20,20 +17,15 @@ pub(super) struct ShortcutValidationDependencies {
 pub(super) type ShortcutEditValidationContext =
     JacoValidationContext<ShortcutValidationDependencies>;
 
-#[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormSchema, garde::Validate)]
 #[garde(context(ShortcutEditValidationContext))]
-#[form(
-    store = ShortcutEditFormStore,
-    validation(adapter = "garde", messages = JacoGardeMessageProvider),
-    transform(adapter = ShortcutEditTransform)
-)]
 pub(super) struct ShortcutEditFormInput {
     #[form(required, validate(on_change, on_blur, on_submit))]
     #[garde(custom(validate_hotkey))]
     pub(super) hotkey: Option<String>,
     #[garde(skip)]
-    pub(super) prompt: ShortcutPromptSelection,
-    #[form(group)]
+    pub(super) prompt: Option<PromptId>,
+    #[form(child)]
     #[garde(skip)]
     pub(super) run_settings: RunSettingsInput,
     #[garde(skip)]
@@ -53,7 +45,7 @@ impl ShortcutEditFormInput {
         });
         Self {
             hotkey: shortcut.map(|shortcut| shortcut.hotkey.clone()),
-            prompt: ShortcutPromptSelection(selected_prompt),
+            prompt: selected_prompt,
             run_settings: RunSettingsInput::new(
                 selected_model,
                 shortcut
@@ -84,18 +76,7 @@ fn validate_hotkey(
     .map_err(|error| garde_message(error.i18n_key(), std::iter::empty()))
 }
 
-#[derive(Clone, Debug, Default)]
-pub(super) struct ShortcutEditTransform;
-
-impl SubmitTransform<ShortcutEditFormInput> for ShortcutEditTransform {
-    type Output = ShortcutEditFormInput;
-
-    fn transform(&self, model: &ShortcutEditFormInput) -> Result<Self::Output, TransformReport> {
-        Ok(normalize_shortcut_input(model))
-    }
-}
-
-fn normalize_shortcut_input(model: &ShortcutEditFormInput) -> ShortcutEditFormInput {
+pub(super) fn normalize_shortcut_input(model: &ShortcutEditFormInput) -> ShortcutEditFormInput {
     let hotkey = model
         .hotkey
         .as_ref()
@@ -108,6 +89,3 @@ fn normalize_shortcut_input(model: &ShortcutEditFormInput) -> ShortcutEditFormIn
         enabled: model.enabled,
     }
 }
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct ShortcutPromptSelection(pub(super) Option<PromptId>);

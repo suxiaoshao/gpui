@@ -8,6 +8,7 @@ sudo apt-get install -y \
   clang \
   gcc \
   g++ \
+  libasound2-dev \
   libfontconfig1-dev \
   libgtk-3-dev \
   libssl-dev \

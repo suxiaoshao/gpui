@@ -2,208 +2,189 @@
 
 [English](guide.md) | [简体中文](guide.zh-CN.md)
 
-> **实现状态：**这份指南描述已经实现的公开 API。
+## 开始之前
 
-`gpui-form-gpui-component` 把原生 `gpui-component` state entity 适配到
-类型化 `gpui-form` 字段。它不会创建另一份业务值，也不拥有应用配置。
+添加 Form runtime、gpui-component 与本 adapter crate：
 
-## 创建并渲染 control
+```toml
+[dependencies]
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-form.workspace = true
+gpui-form-gpui-component.workspace = true
+```
 
-传入 generated field 与创建原生 state 的闭包：
+下文片段使用以下 import。`ModelDelegate`、`TagDelegate` 与 `SlugInputState` 是应用类型。
 
 ```rust,ignore
-use gpui_component::input::{Input, InputState};
-use gpui_form::FormControl as _;
-use gpui_form_gpui_component::FormInput;
+use gpui::{Context, Entity, Subscription, Window};
+use gpui_component::{
+    checkbox::Checkbox,
+    combobox::{Combobox, ComboboxState},
+    input::{Input, InputState},
+    select::{Select, SelectState},
+    switch::Switch,
+};
+use gpui_form::{DynamicPath, Form, FormSchema, ResolveError};
+use gpui_form_gpui_component::{
+    FormCombobox, FormInput, FormIntegerInput, FormSelect, IntegerInput,
+    IntegerInputState,
+};
+```
 
+示例使用普通的 typed draft。schema annotation 只描述一次嵌套；调用点不使用字符串 path，也不管理应用侧
+item ID。
+
+```rust,ignore
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ModelId(String);
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct TagId(String);
+
+#[derive(Clone, FormSchema)]
+struct ProviderDraft {
+    #[form(required)]
+    name: String,
+    model_id: Option<ModelId>,
+    enabled: bool,
+}
+
+#[derive(Clone, FormSchema)]
+struct JobDraft {
+    budget: u64,
+    tag_ids: Vec<TagId>,
+}
+
+#[derive(Clone, FormSchema)]
+struct QueryDraft {
+    #[form(child)]
+    filters: FilterGroup,
+}
+
+#[derive(Clone, FormSchema)]
+struct FilterGroup {
+    #[form(items)]
+    children: Vec<FilterNode>,
+}
+
+#[derive(Clone, FormSchema)]
+struct FilterNode {
+    #[form(child)]
+    kind: FilterNodeKind,
+}
+
+#[derive(Clone, FormSchema)]
+enum FilterNodeKind {
+    Condition(FilterCondition),
+    Group(FilterGroup),
+}
+
+#[derive(Clone, FormSchema)]
+struct FilterCondition {
+    value: String,
+    limit: u64,
+    model_id: Option<ModelId>,
+    tag_ids: Vec<TagId>,
+}
+```
+
+## 创建并定位 form
+
+每个编辑 session 创建一个 strong `Entity<Form<M>>`。`Form::new` 不会失败。静态字段是 total path：直接使用
+`get` 与 `set`。
+
+```rust,ignore
+let form = cx.new(|_| Form::new(ProviderDraft {
+    name: String::new(),
+    model_id: None,
+    enabled: true,
+}));
+
+let name: String = ProviderDraft::NAME.get(&form, cx);
+let changed: bool = ProviderDraft::NAME.set(&form, "Local provider".into(), cx);
+```
+
+collection item、活跃 enum case 与 `Option::Some` value 是 dynamic location。Form 生成它们的 identity。应从
+Form 枚举，再在同一 session 中解析 case 或 optional boundary：
+
+```rust,ignore
+let job_form = cx.new(|_| Form::new(JobDraft {
+    budget: 1_024,
+    tag_ids: Vec::new(),
+}));
+let query_form = cx.new(|_| Form::new(QueryDraft {
+    filters: FilterGroup {
+        children: vec![FilterNode {
+            kind: FilterNodeKind::Condition(FilterCondition {
+                value: String::new(),
+                limit: 10,
+                model_id: None,
+                tag_ids: Vec::new(),
+            }),
+        }],
+    },
+}));
+let children = QueryDraft::ROOT
+    .then(QueryDraft::FILTERS)
+    .then(FilterGroup::CHILDREN);
+let node = children.items(&query_form, cx).into_iter().next().unwrap();
+let condition = node
+    .then(FilterNode::KIND)
+    .case(FilterNodeKind::CONDITION)
+    .resolve(&query_form, cx)?
+    .expect("示例以 condition 开始");
+let value: DynamicPath<QueryDraft, String> =
+    condition.clone().then(FilterCondition::VALUE);
+let current = value.try_get(&query_form, cx)?;
+```
+
+`Ok(None)` 表示当前 enum case 或 optional value 未激活。`ResolveError` 表示 dynamic 起点已经无法使用，例如
+被删除或替换后。两种情况都不能转换成按 index 或业务 ID 查询。
+
+## 绑定 Input
+
+将 total path 传给 `FormInput::new`：
+
+```rust,ignore
 let name_input = FormInput::new(
-    ProviderInputFormStore::name_field(&form),
+    &form,
+    ProviderDraft::NAME,
     |window, cx| InputState::new(window, cx).placeholder("Provider name"),
     window,
     cx,
-)?;
+);
 
 let element = Input::new(&name_input);
 ```
 
-`FormInput` 是普通 Rust value，不是 `Entity<FormInput>`。它只包含普通
-subscriptions 与原生 entity，并 deref 到该 entity：
+`InputEvent::Change` defer typed write；`InputEvent::Blur` 请求配置好的 blur validation。相关 Form value change
+会静默投影回 input；由这个 input 发起的 write 不会回声给它自己。
+
+对已解析的 dynamic path 使用 `try_new`：
 
 ```rust,ignore
-use std::ops::Deref;
-use gpui::{Entity, Subscription};
-
-pub struct FormInput {
-    subscriptions: Vec<Subscription>,
-    input: Entity<InputState>,
-}
-
-impl Deref for FormInput {
-    type Target = Entity<InputState>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.input
-    }
-}
-```
-
-Subscriptions 先于 entity 声明，因此 Rust 会先释放它们。其他有状态 adapter
-采用相同布局。它们不保存 field、`ControlAttachment`、delegate、`Config`、focus
-flag、blur flag 或 validation report；binding 细节只存在于 subscription closure。
-
-重复调用 generated field accessor 是安全的。`FormField` 只是指向同一个 form path
-的轻量类型化 handle，不会创建另一份 value 或 subscription。
-
-## 同步与生命周期
-
-Form 持有唯一权威的类型化值。原生 state 只持有当前 presentation projection，以及
-focus、IME、selection、query、popup、highlighted item 等交互细节。
-
-所有有状态 adapter 都遵循同一套同步规则：
-
-1. Constructor 读取 field，创建原生 state，静默投影初值，并安装双向 subscriptions；
-2. Component event 等 emitting entity 的 update 结束后，再 defer 类型化 form 写入；
-3. Form subscription 响应每个 `FieldChanged` 与 `ModelReplaced` 并重新投影，包括值相等的
-   whole-form lifecycle，以及其他 path 的事件导致当前 projection 变化的情况；只忽略
-   `RuntimeChanged`；
-4. 原生 silent setter 不会再发出 user event，因此 round trip 会自然终止，不需要
-   origin-echo skip 或 value read-back API。
-
-`FormField` 唯一公开的 attachment 创建入口是：
-
-```rust,ignore
-pub fn attach_control(
-    &self,
-    cx: &mut App,
-) -> Result<ControlAttachment<Form, T>, FormFieldError>;
-```
-
-`ControlAttachment` 实现 `Clone`；所有 clone 共享同一个 private lease 与 liveness state。
-Component-event subscription callback 捕获一个 clone，只调用它的
-`defer_set_user_value`、`defer_blur`、`defer_set_issue` 或
-`defer_clear_issue` 窄 intent。这四个方法是唯一公开的 mutation API；weak lifetime、
-source ID 与 control ID 都留在 core 内部。
-
-普通 form-to-control projection closure 只捕获 typed field 与 weak native entity。拥有
-lifecycle-scoped control draft issue 的 typed editor 可以额外捕获同一个 attachment clone，唯一
-用途是在 programmatic silent projection 成功后调用 `defer_clear_issue`；当前内置 adapter 中只有
-exact integer control 使用这一例外。Bound wrapper 的字段仍严格是 subscriptions 在前、native
-state entity 在后，不把 field 或 attachment 存成另一个字段。Wrapper drop 会释放 subscription
-持有的所有 clone；最后一个 clone drop 后，queued intent 失效，control-scoped issue 也不再
-active。
-
-Projected 或 identified path 消失时返回 `FormFieldError::ValueUnavailable`。Callback
-不会发明 fallback，也不会把 component value 保留成第二个权威来源；它会通知 owner，
-由结构页面释放或重建 stale control。
-
-## 验证与错误
-
-Adapter 只转发具体组件能够表达的事件：
-
-| Control | 用户写入 | Blur |
-| --- | --- | --- |
-| `FormInput` | `InputEvent::Change` defer 一个 `String` 写入 | `InputEvent::Blur` 执行 field blur validation |
-| `FormIntegerInput<N>` | 合法的类型化整数编辑；无效文本产生 control issue | 原生 input blur 执行 field blur validation |
-| `FormSelect<D>` | `SelectEvent::Confirm(Option<Value>)` | 不支持：upstream 没有可靠的 composite final-blur |
-| `FormCombobox<D>` | `ComboboxEvent::Change(Vec<Value>)` | 不支持：upstream 没有可靠的 composite final-blur |
-
-`ComboboxEvent::Confirm` 会被明确忽略：`Change` 已经在每次 toggle 时提交当前 selection，
-同时监听两者会把同一 selection 写入两次。
-
-一次非相等 typed field write 先修改 model 与 revision，然后只清除和写入 path 相交的
-required、structural、generated synchronous field bucket，以及相交的 async validation。
-Adapter-wide issue 与 active control issue 都保留。随后执行 Change validation 并发出
-`FieldChanged`。相等 field write 是完整 no-op。Whole-form lifecycle 使用
-`ModelReplaced`；即使 replacement model 比较相等，mounted control 仍会重新投影。
-
-Bound handle 不保存 `focused`、`blurred`、`touched`、`show_error` 或 validation
-report 副本。数据级状态通过 generated field 读取：
-
-```rust,ignore
-use gpui_form::FormFieldId as _;
-
-let field = ProviderInputFormStore::name_field(&form);
-let is_validating = field.is_validating(cx)?;
-let error = field.errors(cx)?.into_iter().next();
-let required = ProviderInputField::Name.schema().is_required();
-```
-
-同一字段被渲染多次时，所有实例都会读取同一份数据级 issue。Submit 失败后由当前页面
-选择需要 focus 的可见 control；form 与 adapter 都不拥有这个选择。
-
-## Select
-
-`FormSelect<D>` 只绑定 `Option<D::Item::Value>`。使用应用拥有的 items 与配置创建
-state：
-
-```rust,ignore
-use gpui_component::select::{Select, SelectState};
-use gpui_form::FormControl as _;
-use gpui_form_gpui_component::FormSelect;
-
-let model_select = FormSelect::new(
-    ProviderInputFormStore::model_id_field(&form),
-    move |window, cx| {
-        SelectState::new(ModelDelegate::new(models), None, window, cx)
-            .searchable(true)
-    },
+let value = condition.clone().then(FilterCondition::VALUE);
+let value_input = FormInput::try_new(
+    &query_form,
+    value,
+    |window, cx| InputState::new(window, cx).placeholder("Condition value"),
     window,
     cx,
 )?;
-
-let element = Select::new(&model_select);
 ```
 
-用户确认时，event 中的 `Option<Value>` 会直接 defer 到 form。Form projection 对
-`Some` 调用 `set_selected_value`，对 `None` 调用 `set_selected_index(None)`。两者
-都使用原生 state 的当前 delegate 解析，并且不会发出 user event。
+在 renderer 中按 dynamic `PathKey` 保存 dynamic adapter。该 location 退休时 drop adapter。如果后续 model
+change 在相同 schema position 新建了另一个 condition，应创建新 adapter；绝不能重定向旧 adapter。
 
-Adapter 不保存 delegate，也不提供 adapter-specific item updater。无法解析的
-`Some(value)` 只会清空原生 selection；typed form value 保持不变，交给应用拥有的
-dynamic validation 处理。
+## 绑定整数 input
 
-## Combobox
-
-`FormCombobox<D>` 只绑定 `Vec<D::Item::Value>`：
+`FormIntegerInput` 把未完成或非法的 editor text 保留在 native state。只有合法的 typed integer 才写入 Form。
 
 ```rust,ignore
-use gpui_component::combobox::{Combobox, ComboboxState};
-use gpui_form::FormControl as _;
-use gpui_form_gpui_component::FormCombobox;
-
-let tags = FormCombobox::new(
-    JobInputFormStore::tag_ids_field(&form),
-    move |window, cx| {
-        ComboboxState::new(TagDelegate::new(tag_options), vec![], window, cx)
-            .multiple(true)
-            .searchable(true)
-    },
-    window,
-    cx,
-)?;
-
-let element = Combobox::new(&tags);
-```
-
-`ComboboxEvent::Change(values)` 把 `values` defer 到 form。每次 form change 都调用
-upstream `ComboboxState::set_selected_values`。该方法使用当前 delegate 解析 value，
-忽略无法解析的 value，保留输入顺序，更新 committed selection 与 snapshot，并且不
-发出 `ComboboxEvent`。因此不会存在过期的 captured delegate 或 value/index mapping。
-
-## 精确整数输入
-
-`FormIntegerInput<N>` 把标准 signed/unsigned integer primitive 绑定到
-`IntegerInputState<N>`。原生 state 持有类型化 `N`、私有文本 editor，以及类型化
-min、max、step policy：
-
-```rust,ignore
-use gpui_form::FormControl as _;
-use gpui_form_gpui_component::{
-    FormIntegerInput, IntegerInput, IntegerInputState,
-};
-
-let budget = FormIntegerInput::new(
-    JobInputFormStore::budget_field(&form),
+let budget_input = FormIntegerInput::new(
+    &job_form,
+    JobDraft::BUDGET,
     |window, cx| {
         IntegerInputState::new(window, cx)
             .min(1_024u64)
@@ -214,91 +195,98 @@ let budget = FormIntegerInput::new(
     cx,
 )?;
 
-let element = IntegerInput::new(&budget);
+let element = IntegerInput::new(&budget_input);
 ```
 
-Wrapper 会在安装 subscriptions 之前验证构造 policy：
-
-- `step <= 0` 返回 `IntegerInputPolicyError::NonPositiveStep`；
-- `min > max` 返回 `IntegerInputPolicyError::ReversedRange`。
-
-Editor change 会被分类为 `Incomplete`、`InvalidSyntax`、`Overflow` 或
-`OutOfRange { min, max }`。这些状态会保留 raw text，发布 lifecycle-scoped
-validation issue，并且不写 form。合法编辑会清除 issue，并 defer 类型化 `N`；随后
-产生的 form event 会把规范文本静默投影到所有实例。程序化 form write 是权威写入：只有
-field read、weak-entity upgrade 与 silent projection 都成功后，它才会替换 stale raw text
-并清除旧 editor issue；投影失败不得清除该 issue。应用写入的值是否违反业务范围，仍由
-model 的 business validation 负责。
-
-Increment/decrement 使用带类型边界的 `checked_add` 与 `checked_sub`。它们不会使用
-`f64`、不会 clamp overflow，也不会丢失大于 `2^53` 的值。Blur 执行 field blur
-validation；无效文本保留在输入框中等待修正。
-
-Adapter 发出稳定 message key 与字符串参数，翻译由应用负责：
-
-- `gpui-form-error-integer-incomplete`；
-- `gpui-form-error-integer-invalid`；
-- `gpui-form-error-integer-overflow`；
-- `gpui-form-error-integer-min`，参数为 `min`；
-- `gpui-form-error-integer-max`，参数为 `max`；
-- `gpui-form-error-integer-range`，参数为 `min` 与 `max`。
-
-## 无状态布尔 element
-
-Upstream `Checkbox` 与 `Switch` 是没有公开 state entity 的 `RenderOnce` element，
-因此不会增加假的 `FormBool` wrapper。直接把它们渲染为 controlled element，并把
-用户值写入 `FormField<bool>`：
+构造函数可以拒绝不合法的 native integer policy，但不会把 total path 变成 resolution error。对 dynamic
+integer path 使用 `FormIntegerInput::try_new`；它的 build error 区分 unavailable path 与非法 integer policy。
 
 ```rust,ignore
-use gpui_component::{checkbox::Checkbox, switch::Switch};
+let limit = condition.clone().then(FilterCondition::LIMIT);
+let limit_input = FormIntegerInput::try_new(
+    &query_form,
+    limit,
+    |window, cx| IntegerInputState::new(window, cx).min(0u64).step(1u64),
+    window,
+    cx,
+)?;
+```
 
-let enabled_field = ProviderInputFormStore::enabled_field(&self.form);
-let enabled = enabled_field
-    .value(cx)
-    .expect("ProviderPage 在 render 期间持有 form");
+## 绑定 Select 与 Combobox
 
-let checkbox_field = enabled_field.clone();
+`FormSelect<D>` 绑定 `Option<D::Item::Value>`，并在 `SelectEvent::Confirm` 后写入：
+
+```rust,ignore
+let model_select = FormSelect::new(
+    &form,
+    ProviderDraft::MODEL_ID,
+    move |window, cx| {
+        SelectState::new(ModelDelegate::new(provider_models), None, window, cx)
+            .searchable(true)
+    },
+    window,
+    cx,
+);
+
+let element = Select::new(&model_select);
+```
+
+`FormCombobox<D>` 绑定 `Vec<D::Item::Value>`，并在 `ComboboxEvent::Change` 时写入：
+
+```rust,ignore
+let tags = FormCombobox::new(
+    &job_form,
+    JobDraft::TAG_IDS,
+    move |window, cx| {
+        ComboboxState::new(TagDelegate::new(job_tag_options), vec![], window, cx)
+            .multiple(true)
+            .searchable(true)
+    },
+    window,
+    cx,
+);
+
+let element = Combobox::new(&tags);
+```
+
+解析出 dynamic `model_id` 或 `tag_ids` path 后使用对应的 `try_new` constructor。即使外层 item 或 case 是
+dynamic，selection value 仍保持 typed。
+
+## 渲染 Checkbox 与 Switch
+
+`Checkbox` 与 `Switch` 没有 state entity，因此应作为 controlled element 渲染。total-path callback 可以通过
+显式 Form 直接写入：
+
+```rust,ignore
+let enabled_path = ProviderDraft::ENABLED;
+let checked = enabled_path.get(&form, cx);
+let form_for_change = form.clone();
+
 let checkbox = Checkbox::new("provider-enabled-checkbox")
-    .label("Enabled with checkbox")
-    .checked(enabled)
+    .checked(checked)
     .on_click(move |checked, _window, cx| {
-        checkbox_field
-            .set_user_value(*checked, cx)
-            .expect("element 挂载期间 ProviderPage 持有 form");
+        enabled_path.set(&form_for_change, *checked, cx);
     });
 
+let switch_form = form.clone();
+let switch_path = ProviderDraft::ENABLED;
 let switch = Switch::new("provider-enabled-switch")
-    .label("Enabled with switch")
-    .checked(enabled)
+    .checked(checked)
     .on_click(move |checked, _window, cx| {
-        enabled_field
-            .set_user_value(*checked, cx)
-            .expect("element 挂载期间 ProviderPage 持有 form");
+        switch_path.set(&switch_form, *checked, cx);
     });
 ```
 
-这些 element callback 并不是从 component-state entity update 中发出，因此可以直接
-写 field。页面对 form 的 observation 会重新渲染两个 controlled value。Change 与
-submit validation 正常工作；这些 element 没有公开 focus handle，因此无法提供原生
-blur validation。
+dynamic boolean 在 render 时使用 `try_get`，在 callback 中使用 `try_set`。从另一个 state entity 的 active
+update 发出的 callback 必须 defer write；这种场景应使用 stateful adapter。
 
-只有当 render 在结构上确定拥有 form 与 path 时才适合使用这里的 `expect`。Projected
-或 dynamic path 在正常流程中可能消失时，应使用 `?` 或显式错误处理。
+## 刷新 option 而不改变 Form
 
-## 修改 options 与组件配置
-
-Options、delegate、placeholder、disabled state、size、accessibility、focus 与
-catalog refresh 都属于应用。原生 state 配置放在构造闭包中，或通过 dereferenced
-entity 修改；只属于 element 的 presentation 在 render 时配置。
-
-替换 items 后，使用原生 setter 显式重新投影当前 form value，或者替换整个 bound
-handle：
+delegate、catalog 与 option snapshot 属于应用。替换 native item 后，使用 native state 当前的 delegate
+重新投影 Form 的权威 selection：
 
 ```rust,ignore
-use gpui_form::{FormFieldId as _, ValidationScope, ValidationTrigger};
-
-let selected_model =
-    ProviderInputFormStore::model_id_field(&form).value(cx)?;
+let selected_model = ProviderDraft::MODEL_ID.get(&form, cx);
 model_select.update(cx, |state, cx| {
     state.set_items(ModelDelegate::new(next_models), window, cx);
     match selected_model.as_ref() {
@@ -307,70 +295,144 @@ model_select.update(cx, |state, cx| {
     }
 });
 
-let selected_tags =
-    ProviderInputFormStore::tag_ids_field(&form).value(cx)?;
+let selected_tags = JobDraft::TAG_IDS.get(&job_form, cx);
 tags.update(cx, |state, cx| {
     state.set_items(TagDelegate::new(next_tags), window, cx);
     state.set_selected_values(&selected_tags, window, cx);
 });
-
-form.update(cx, |form, cx| {
-    form.validate(
-        ValidationTrigger::Dynamic,
-        ValidationScope::Field(ProviderInputField::ModelId.path()),
-        cx,
-    );
-});
 ```
 
-Native item update 与当前 form value 的重投影必须作为一次 refresh 立即连续完成。不能等待后续
-form value event：修改 options 本身不会写 form，因此不保证产生 `FieldChanged`。
+option refresh 不得选择 fallback、修改 Form data、开始 validation 或持久化配置。dynamic location 不再解析时，
+应 teardown adapter，不能选择 replacement。
 
-Adapter 不会因为 item refresh 而选择 fallback、修改 form data、持久化配置或自动执行
-dynamic validation。直接调用原生 setter 只改变 presentation projection；业务写入使用
-`FormField::set`、`replace`、`reset` 或 `rebase`。
+Form 会抑制 Combobox 提交 selection 后立刻发生的 self-echo，但不会改变 `gpui-component` 自己的
+collection-selection 语义：`set_selected_values` 仍必须从完整 source 解析所有 committed value，即使 search
+filter 正在生效。该行为由独立的
+[gpui-component#2652](https://github.com/longbridge/gpui-component/issues/2652) 跟踪。
 
-## 实现其他有状态 adapter
+## 渲染 validation feedback
 
-Core `FormControl<T>` 统一一次构造与绑定，但不统一 component configuration：
+Form 持有 validation fact；页面持有可见性、本地化、布局与 focus 决策。total 与 dynamic path 保持不同的
+failure mode：
 
 ```rust,ignore
-use std::ops::Deref;
-use gpui::{Context, Entity, Window};
-use gpui_form::{FormField, FormStore};
+let errors = ProviderDraft::NAME.errors(&form, cx);
 
-pub trait FormControl<T>: Deref<Target = Entity<Self::State>> + Sized
-where
-    T: Clone + PartialEq + 'static,
-{
-    type State: 'static;
-    type Error;
-
-    fn new<Form, Owner, Build>(
-        field: FormField<Form, T>,
-        build: Build,
-        window: &mut Window,
-        cx: &mut Context<Owner>,
-    ) -> Result<Self, Self::Error>
-    where
-        Form: FormStore,
-        Owner: 'static,
-        Build: FnOnce(&mut Window, &mut Context<Self::State>) -> Self::State;
+let value = condition.clone().then(FilterCondition::VALUE);
+match value.try_errors(&query_form, cx) {
+    Ok(errors) => render_errors(errors),
+    Err(error) => teardown_missing_control(error),
 }
 ```
 
-实现返回普通 handle，字段只包含 `Vec<Subscription>` 与 `Entity<State>`。Field 与
-attachment 数据 capture 到 subscriptions；component-to-form write 使用 attachment 的
-deferred intent；每个 `FieldChanged` 与 `ModelReplaced` 都必须静默回投影，只忽略
-`RuntimeChanged`。普通 projection closure 只捕获 field 与 weak native entity；拥有
-lifecycle-scoped control draft issue 的 typed editor 可以额外捕获同一个 attachment clone，而且
-唯一用途是在 programmatic projection 成功后清除该 issue；当前内置 adapter 中只有 exact integer
-control 使用这一例外。临时 editor 数据必须留在原生 state，weak lifetime 处理留在 core。不要
-增加 adapter `Config`、field/attachment 字段、focus 镜像、delegate 副本、origin-echo skip、
-authoritative-value read-back API 或公开的 source/control ID。
+native editor issue（例如未完成的 integer text）仍附着于对应 control。合法 edit 会清除它自身过时的 editor
+issue。validation-only change 不会 reset native value，也不会擦除无关 editor state。
+
+只有页面拥有的渲染需要时才 observe Form：
+
+```rust,ignore
+let form_observer = cx.observe(&form, |_, _, cx| cx.notify());
+```
+
+内置 adapter 与 custom binding 都独立于该 observer 同步。不要让每个 adapter 订阅 `FormEvent`。
+
+## 接入 custom component
+
+### Stateless controlled element
+
+如果 component 没有独立 state entity，使用与 `Checkbox`、`Switch` 相同的 render 时读取、callback 中写入模式。
+
+### Stateful adapter
+
+如果存在 native state entity，则 core binding 拥有 Form 到 control 的投影。adapter 持有 native entity、其
+native event subscription 与一个 non-`Clone` `ControlBinding`。native callback 捕获可 clone 的 typed
+`ControlWriter`。
+
+```rust,ignore
+use std::ops::Deref;
+use gpui_form::{
+    ControlBinding, ControlProjection, ControlWriter, Form, FormSchema,
+    IntoTotalPath,
+};
+
+pub struct FormSlugInput {
+    subscriptions: Vec<Subscription>,
+    _binding: ControlBinding,
+    state: Entity<SlugInputState>,
+}
+
+impl Deref for FormSlugInput {
+    type Target = Entity<SlugInputState>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl FormSlugInput {
+    pub fn new<M, P, Owner>(
+        form: &Entity<Form<M>>,
+        path: P,
+        build: impl FnOnce(String, &mut Window, &mut Context<SlugInputState>)
+            -> SlugInputState,
+        window: &mut Window,
+        cx: &mut Context<Owner>,
+    ) -> Self
+    where
+        M: FormSchema,
+        P: IntoTotalPath<M, String>,
+        Owner: 'static,
+    {
+        let path = path.into_total_path();
+        let initial = path.get(form, cx);
+        let state = cx.new(|state_cx| build(initial, window, state_cx));
+
+        let (binding, writer): (ControlBinding, ControlWriter<M, String>) =
+            path.bind_control_in(
+                form,
+                &state,
+                |state, projection, window, cx| match projection {
+                    ControlProjection::Value(value) => {
+                        state.set_value_silently(value, window, cx);
+                    }
+                    ControlProjection::Retired => {
+                        state.set_retired(window, cx);
+                    }
+                },
+                window,
+                cx,
+            );
+
+        let native_subscription = cx.subscribe_in(
+            &state,
+            window,
+            move |_, _, event: &SlugInputEvent, window, cx| match event {
+                SlugInputEvent::Change(value) => {
+                    writer.defer_set(value.clone(), window, cx);
+                }
+                SlugInputEvent::Blur => writer.defer_blur(window, cx),
+            },
+        );
+
+        Self {
+            subscriptions: vec![native_subscription],
+            _binding: binding,
+            state,
+        }
+    }
+}
+```
+
+silent setter 不得发出 native `Change` event。`ControlProjection` 是穷尽协议：`Value` 更新 state，`Retired`
+将 dynamic control 标记为 unavailable，直到 renderer 移除它。adapter 不持有 form entity、不订阅
+`FormEvent`、不 clone binding、不识别 control，也不实现本地方向 flag。
+
+对 dynamic path，使用 `try_get` 读取、调用 `try_bind_control_in`，并返回 `Result<Self, ResolveError>`。
+只有该 dynamic location 仍处于 active 时，方法才返回 `ControlBinding` 与 `ControlWriter`。drop adapter 即
+drop binding，之后 native callback 无法再修改 Form。
 
 ## 相关文档
 
+- [gpui-form README](../../gpui-form/README.md)
 - [gpui-form 使用指南](../../gpui-form/docs/guide.zh-CN.md)
 - [gpui-form-macros 使用指南](../../gpui-form-macros/docs/guide.zh-CN.md)
-- [实施计划](../dev/typed-bound-controls.md)

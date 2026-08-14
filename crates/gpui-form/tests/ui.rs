@@ -1,5 +1,6 @@
 #[test]
-fn recursive_form_model_contracts_fail_at_compile_time() {
+fn form_schema_contracts_compile_at_the_type_boundary() {
     let tests = trybuild::TestCases::new();
-    tests.compile_fail("tests/ui/fail/*.rs");
+    tests.pass("tests/ui/vnext/pass/*.rs");
+    tests.compile_fail("tests/ui/vnext/fail/*.rs");
 }

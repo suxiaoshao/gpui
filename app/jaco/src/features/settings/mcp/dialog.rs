@@ -9,7 +9,7 @@ use fluent_bundle::FluentArgs;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled,
-    Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, relative,
+    Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
@@ -24,12 +24,14 @@ use gpui_component::{
     switch::Switch,
     v_flex,
 };
-use gpui_form::typed::{
-    FormItemId, FormRevision, FormStore as _, ValidationScope, ValidationTrigger,
+use gpui_form::{
+    DynamicPath, FormEvent, FormSchema, FormVersion, GardeValidator, ItemPath, ModelChange,
+    MutationError, ResolveError, TotalItemsPath, ValidationTrigger,
 };
 use jaco_agent::McpOAuthStatusSnapshot;
 use std::{
     collections::BTreeSet,
+    rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
 };
 use tracing::{Level, event};
@@ -37,12 +39,15 @@ use tracing::{Level, event};
 use super::{
     super::push_settings_error,
     form_rows::{
-        AddMcpRow, McpRowList, RemoveMcpRow, one_input_rows, two_input_rows, validation_error_list,
+        AddMcpRow, McpRowList, MoveRowHandler, RemoveRowHandler, RowMoveHandlers, one_input_rows,
+        two_input_rows, validation_error_list,
     },
     form_state::{
-        McpServerFormComponents, McpServerFormDraft, McpServerFormInput, McpServerFormStore,
+        McpArgRowInput, McpCollectionImpact, McpEnvHeaderRowInput, McpEnvRowInput,
+        McpEnvVarRowInput, McpHeaderRowInput, McpServerFormComponents, McpServerFormDraft,
+        McpServerFormInput,
     },
-    validation::mcp_validation_context,
+    validation::{mcp_validation_context, normalize_mcp_input},
 };
 
 static NEXT_DRAFT_OAUTH_KEY: AtomicU64 = AtomicU64::new(1);
@@ -84,6 +89,7 @@ pub(super) struct McpServerEditDialogState {
     draft_oauth_credential_keys: BTreeSet<state::mcp::oauth::CredentialsKey>,
     sign_out_task: Option<Task<()>>,
     save_task: Option<Task<()>>,
+    _form_subscription: Subscription,
 }
 
 struct McpOAuthDialogTarget {
@@ -97,7 +103,7 @@ struct McpOAuthDialogTarget {
 
 #[derive(Clone)]
 struct McpServerSaveRequest {
-    revision: FormRevision,
+    version: FormVersion,
     output: McpServerFormInput,
     original_server_id: Option<String>,
     server_id: String,
@@ -113,6 +119,13 @@ struct McpOAuthSignOutRequest {
     draft_only: bool,
 }
 
+type RemoveDraftRow<Row> = fn(
+    &mut McpServerFormDraft,
+    ItemPath<McpServerFormInput, Row>,
+    &mut Window,
+    &mut App,
+) -> Result<bool, MutationError>;
+
 struct OAuthSectionLabels {
     title: SharedString,
     description: SharedString,
@@ -127,6 +140,26 @@ struct OAuthSectionLabels {
     sign_out: SharedString,
 }
 
+fn mcp_collection_impact(change: &ModelChange<McpServerFormInput>) -> McpCollectionImpact {
+    fn changed(impact: gpui_form::PathImpact) -> bool {
+        impact.structure_changed() || impact.retired()
+    }
+
+    McpCollectionImpact {
+        args: changed(change.impact(&McpServerFormInput::ROOT.then(McpServerFormInput::ARGS))),
+        env: changed(change.impact(&McpServerFormInput::ROOT.then(McpServerFormInput::ENV))),
+        env_vars: changed(
+            change.impact(&McpServerFormInput::ROOT.then(McpServerFormInput::ENV_VARS)),
+        ),
+        headers: changed(
+            change.impact(&McpServerFormInput::ROOT.then(McpServerFormInput::HEADERS)),
+        ),
+        env_headers: changed(
+            change.impact(&McpServerFormInput::ROOT.then(McpServerFormInput::ENV_HEADERS)),
+        ),
+    }
+}
+
 impl McpServerEditDialogState {
     fn new(
         mode: McpServerEditMode,
@@ -137,7 +170,43 @@ impl McpServerEditDialogState {
         let server_id = mode.original_server_id().unwrap_or_default().to_string();
         let server_for_draft = server.clone().unwrap_or_default();
         let draft = McpServerFormDraft::from_config(server_id, &server_for_draft, window, cx);
-        let components = McpServerFormComponents::bind(&draft.form, window, cx);
+        let components = McpServerFormComponents::try_bind(&draft.form, window, cx)
+            .expect("fresh MCP form rows have unique stable ids");
+        let dialog = cx.entity().downgrade();
+        let dialog_window = window.window_handle();
+        let form_subscription = App::subscribe(
+            cx,
+            &draft.form,
+            move |form, event: &FormEvent<McpServerFormInput>, cx| {
+                let FormEvent::ModelChanged(change) = event else {
+                    return;
+                };
+                let impact = mcp_collection_impact(change);
+                if impact.is_empty() {
+                    return;
+                }
+                let dialog = dialog.clone();
+                cx.defer(move |cx| {
+                    let Some(dialog) = dialog.upgrade() else {
+                        return;
+                    };
+                    let _ = dialog_window.update(cx, |_, window, cx| {
+                        dialog.update(cx, |dialog, cx| {
+                            if let Err(error) = dialog.components.reconcile(
+                                &form,
+                                impact,
+                                window,
+                                cx,
+                            ) {
+                                event!(Level::ERROR, error = ?error, "reconcile MCP form rows failed");
+                                return;
+                            }
+                            cx.notify();
+                        });
+                    });
+                });
+            },
+        );
 
         Self {
             mode,
@@ -153,6 +222,7 @@ impl McpServerEditDialogState {
             draft_oauth_credential_keys: BTreeSet::new(),
             sign_out_task: None,
             save_task: None,
+            _form_subscription: form_subscription,
         }
     }
 
@@ -160,20 +230,12 @@ impl McpServerEditDialogState {
         let input = if !self.mode.is_edit() {
             self.components.server_id.clone()
         } else {
-            match McpServerFormStore::transport_field(&self.draft.form)
-                .value(cx)
-                .unwrap_or(McpTransportKind::Stdio)
-            {
+            match McpServerFormInput::TRANSPORT.get(&self.draft.form, cx) {
                 McpTransportKind::Stdio => self.components.command.clone(),
                 McpTransportKind::StreamableHttp => self.components.url.clone(),
             }
         };
         input.update(cx, |input, cx| input.focus(window, cx));
-    }
-
-    fn rebind_form_components(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let components = McpServerFormComponents::bind(&self.draft.form, window, cx);
-        self.components = components;
     }
 
     fn is_saving(&self, cx: &App) -> bool {
@@ -216,18 +278,24 @@ impl McpServerEditDialogState {
         };
         let form = cx.entity().downgrade();
         let prepared = self.draft.form.update(cx, |form_store, cx| {
-            form_store.set_validation_context(
-                mcp_validation_context(original_server_id.clone(), existing_server_ids.clone()),
+            form_store.replace_validator(
+                GardeValidator::<
+                    McpServerFormInput,
+                    crate::features::settings::form_validation::JacoGardeMessageProvider,
+                >::new(mcp_validation_context(
+                    original_server_id.clone(),
+                    existing_server_ids.clone(),
+                )),
                 cx,
             );
-            let revision = form_store.revision();
             form_store
-                .prepare_submit(cx)
-                .map(|output| (revision, output))
+                .prepare(cx)
+                .map(|prepared| prepared.map(|value| normalize_mcp_input(&value)))
         });
-        let Ok((revision, output)) = prepared else {
+        let Ok(prepared) = prepared else {
             return false;
         };
+        let (version, output) = prepared.into_parts();
         let server_id = output.server_id(original_server_id.as_deref());
         let server = output.clone().merge_into_config(original_config.as_ref());
         let saved_server = server.clone();
@@ -253,7 +321,7 @@ impl McpServerEditDialogState {
             ),
         );
         let request = McpServerSaveRequest {
-            revision,
+            version,
             output,
             original_server_id,
             server_id,
@@ -315,8 +383,8 @@ impl McpServerEditDialogState {
         let saved_server_id = request.server_id.clone();
         match result {
             Ok(()) => {
-                self.draft.form.update(cx, |form, cx| {
-                    form.rebase_if_revision(request.revision, request.output, cx);
+                let rebased = self.draft.form.update(cx, |form, cx| {
+                    form.rebase_if_current(request.version, request.output, cx)
                 });
                 if let Some(original_server_id) = request.original_server_id {
                     disconnect_server(original_server_id, window, cx);
@@ -333,7 +401,15 @@ impl McpServerEditDialogState {
                         .with_type(NotificationType::Success),
                     cx,
                 );
-                window.close_dialog(cx);
+                if rebased {
+                    window.close_dialog(cx);
+                } else {
+                    self.mode = McpServerEditMode::Edit {
+                        original_server_id: saved_server_id,
+                    };
+                    self.original_config = Some(saved_server);
+                    cx.notify();
+                }
             }
             Err(err) => {
                 let title = cx.global::<I18n>().t("mcp-notify-save-failed");
@@ -388,9 +464,7 @@ impl McpServerEditDialogState {
     }
 
     fn render_transport_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
-        let transport = McpServerFormStore::transport_field(&self.draft.form)
-            .value(cx)
-            .unwrap_or(McpTransportKind::Stdio);
+        let transport = McpServerFormInput::TRANSPORT.get(&self.draft.form, cx);
         ToggleGroup::new("mcp-dialog-transport")
             .segmented()
             .outline()
@@ -409,9 +483,7 @@ impl McpServerEditDialogState {
             ])
             .on_click(cx.listener(|this, states: &Vec<bool>, window, cx| {
                 let transport = transport_from_toggle_states(
-                    McpServerFormStore::transport_field(&this.draft.form)
-                        .value(cx)
-                        .unwrap_or(McpTransportKind::Stdio),
+                    McpServerFormInput::TRANSPORT.get(&this.draft.form, cx),
                     states,
                 );
                 this.draft.set_transport(transport, window, cx);
@@ -422,35 +494,105 @@ impl McpServerEditDialogState {
     }
 
     fn on_add_mcp_row(&mut self, action: &AddMcpRow, window: &mut Window, cx: &mut Context<Self>) {
-        match action.list {
+        let result = match action.list {
             McpRowList::Args => self.draft.add_arg_row(window, cx),
             McpRowList::Env => self.draft.add_env_row(window, cx),
             McpRowList::EnvVars => self.draft.add_env_var_row(window, cx),
             McpRowList::Headers => self.draft.add_header_row(window, cx),
             McpRowList::EnvHeaders => self.draft.add_env_header_row(window, cx),
+        };
+        if let Err(error) = result {
+            event!(Level::ERROR, error = ?error, "add MCP form row failed");
+            return;
         }
-        self.rebind_form_components(window, cx);
         self.revalidate_form(ValidationTrigger::Change, window, cx);
         cx.notify();
     }
 
-    fn on_remove_mcp_row(
-        &mut self,
-        action: &RemoveMcpRow,
-        window: &mut Window,
+    fn remove_row_handler<Row>(
+        row: ItemPath<McpServerFormInput, Row>,
+        remove: RemoveDraftRow<Row>,
         cx: &mut Context<Self>,
-    ) {
-        let row_id = FormItemId::new(action.row_id);
-        match action.list {
-            McpRowList::Args => self.draft.remove_arg_row(row_id, window, cx),
-            McpRowList::Env => self.draft.remove_env_row(row_id, window, cx),
-            McpRowList::EnvVars => self.draft.remove_env_var_row(row_id, window, cx),
-            McpRowList::Headers => self.draft.remove_header_row(row_id, window, cx),
-            McpRowList::EnvHeaders => self.draft.remove_env_header_row(row_id, window, cx),
-        }
-        self.rebind_form_components(window, cx);
-        self.revalidate_form(ValidationTrigger::Change, window, cx);
-        cx.notify();
+    ) -> RemoveRowHandler
+    where
+        Row: FormSchema,
+    {
+        let dialog = cx.entity().downgrade();
+        Rc::new(move |window, cx| {
+            let row = row.clone();
+            let _ = dialog.update(cx, |dialog, cx| {
+                match remove(&mut dialog.draft, row, window, cx) {
+                    Ok(false) => {
+                        event!(Level::DEBUG, "ignored stale MCP row removal callback");
+                    }
+                    Ok(true) => {
+                        dialog.revalidate_form(ValidationTrigger::Change, window, cx);
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        event!(Level::ERROR, error = ?error, "remove MCP form row failed");
+                    }
+                }
+            });
+        })
+    }
+
+    fn row_move_handlers<Row>(
+        collection: TotalItemsPath<McpServerFormInput, Row>,
+        rows: &[ItemPath<McpServerFormInput, Row>],
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> RowMoveHandlers
+    where
+        Row: FormSchema,
+    {
+        let current = rows[index].clone();
+        let up = index.checked_sub(1).map(|previous| {
+            Self::move_row_handler(
+                collection.clone(),
+                current.clone(),
+                rows[previous].clone(),
+                cx,
+            )
+        });
+        let down = rows
+            .get(index + 1)
+            .map(|next| Self::move_row_handler(collection, next.clone(), current.clone(), cx));
+        RowMoveHandlers { up, down }
+    }
+
+    fn move_row_handler<Row>(
+        collection: TotalItemsPath<McpServerFormInput, Row>,
+        row: ItemPath<McpServerFormInput, Row>,
+        anchor: ItemPath<McpServerFormInput, Row>,
+        cx: &mut Context<Self>,
+    ) -> MoveRowHandler
+    where
+        Row: FormSchema,
+    {
+        let dialog = cx.entity().downgrade();
+        Rc::new(move |window, cx| {
+            let collection = collection.clone();
+            let row = row.clone();
+            let anchor = anchor.clone();
+            let _ = dialog.update(cx, |dialog, cx| {
+                match dialog
+                    .draft
+                    .move_row_before(collection, &row, &anchor, window, cx)
+                {
+                    Ok(false) => {
+                        event!(Level::DEBUG, "ignored stale MCP row move callback");
+                    }
+                    Ok(true) => {
+                        dialog.revalidate_form(ValidationTrigger::Change, window, cx);
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        event!(Level::ERROR, error = ?error, "move MCP form row failed");
+                    }
+                }
+            });
+        })
     }
 
     fn set_oauth_enabled(&mut self, enabled: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -627,9 +769,7 @@ impl McpServerEditDialogState {
         let dialog = cx.entity().downgrade();
         let authorize_dialog = dialog.clone();
         let sign_out_dialog = dialog.clone();
-        let enabled = McpServerFormStore::oauth_enabled_field(&self.draft.form)
-            .value(cx)
-            .unwrap_or(false);
+        let enabled = McpServerFormInput::OAUTH_ENABLED.get(&self.draft.form, cx);
         let status = self.oauth_status(cx);
         let authorized = matches!(status, McpOAuthStatusSnapshot::Authorized { .. });
         let signing_in = matches!(status, McpOAuthStatusSnapshot::SigningIn);
@@ -778,10 +918,7 @@ impl McpServerEditDialogState {
     }
 
     fn oauth_status(&self, cx: &App) -> McpOAuthStatusSnapshot {
-        if !McpServerFormStore::oauth_enabled_field(&self.draft.form)
-            .value(cx)
-            .unwrap_or(false)
-        {
+        if !McpServerFormInput::OAUTH_ENABLED.get(&self.draft.form, cx) {
             return McpOAuthStatusSnapshot::SignedOut;
         }
         let Some(target) = self.draft_oauth_target(cx) else {
@@ -822,25 +959,18 @@ impl McpServerEditDialogState {
             config.mcp_servers.keys().cloned().collect::<Vec<_>>()
         });
         self.draft.form.update(cx, |form, cx| {
-            form.set_validation_context(
-                mcp_validation_context(original_server_id, existing_server_ids),
+            form.replace_validator(
+                GardeValidator::<
+                    McpServerFormInput,
+                    crate::features::settings::form_validation::JacoGardeMessageProvider,
+                >::new(mcp_validation_context(
+                    original_server_id,
+                    existing_server_ids,
+                )),
                 cx,
             );
-            form.validate(trigger, ValidationScope::Form, cx);
+            form.validate(trigger, cx);
         });
-    }
-
-    fn validation_summary_messages(&self, cx: &App) -> Vec<SharedString> {
-        self.draft
-            .form
-            .read(cx)
-            .validation_report()
-            .issues()
-            .iter()
-            .map(|issue| {
-                crate::features::settings::form_validation::validation_message(&issue.message, cx)
-            })
-            .collect()
     }
 }
 
@@ -895,8 +1025,7 @@ impl Render for McpServerEditDialogState {
             url_errors,
             bearer_token_env_var_errors,
         ) = {
-            let form = self.draft.form.read(cx);
-            let value = form.value();
+            let value = McpServerFormInput::ROOT.get(&self.draft.form, cx);
             (
                 value.transport,
                 self.components.server_id.clone(),
@@ -909,23 +1038,23 @@ impl Render for McpServerEditDialogState {
                 value.transport == McpTransportKind::StreamableHttp,
                 self.components.bearer_token_env_var.clone(),
                 false,
-                validation_errors_at(form, &gpui_form::typed::FieldPath::field("server_id"), cx),
-                validation_errors_at(form, &gpui_form::typed::FieldPath::field("command"), cx),
-                validation_errors_at(form, &gpui_form::typed::FieldPath::field("cwd"), cx),
-                validation_errors_at(form, &gpui_form::typed::FieldPath::field("url"), cx),
-                validation_errors_at(
-                    form,
-                    &gpui_form::typed::FieldPath::field("bearer_token_env_var"),
+                validation_messages(
+                    McpServerFormInput::SERVER_ID.errors(&self.draft.form, cx),
+                    cx,
+                ),
+                validation_messages(McpServerFormInput::COMMAND.errors(&self.draft.form, cx), cx),
+                validation_messages(McpServerFormInput::CWD.errors(&self.draft.form, cx), cx),
+                validation_messages(McpServerFormInput::URL.errors(&self.draft.form, cx), cx),
+                validation_messages(
+                    McpServerFormInput::BEARER_TOKEN_ENV_VAR.errors(&self.draft.form, cx),
                     cx,
                 ),
             )
         };
-        let validation_summary_messages = self.validation_summary_messages(cx);
         let scroll_handle = self.content_scroll_handle.clone();
 
         div()
             .on_action(cx.listener(Self::on_add_mcp_row))
-            .on_action(cx.listener(Self::on_remove_mcp_row))
             .w_full()
             .h_full()
             .relative()
@@ -938,9 +1067,6 @@ impl Render for McpServerEditDialogState {
                     .overflow_y_scroll()
                     .gap_4()
                     .pr_2()
-                    .when(!validation_summary_messages.is_empty(), |this| {
-                        this.child(render_validation_summary(validation_summary_messages, cx))
-                    })
                     .child(form_field(
                         name_label,
                         Input::new(&server_id_input).w_full().into_any_element(),
@@ -967,26 +1093,46 @@ impl Render for McpServerEditDialogState {
                             .child(list_field_with_errors(
                                 {
                                     let rows = {
-                                        let form = self.draft.form.read(cx);
-                                        form.value()
-                                            .args
+                                        let items = live_mcp_items(
+                                            McpServerFormInput::ARGS.items(&self.draft.form, cx),
+                                            "args",
+                                        );
+                                        items
                                             .iter()
-                                            .map(|item| {
-                                                (
-                                                    item.row_id,
-                                                    self.components
-                                                        .args
-                                                        .get(&item.row_id)
-                                                        .expect("MCP arg row control exists")
-                                                        .clone(),
-                                                    validation_item_errors(
-                                                        form,
-                                                        "args",
-                                                        item.row_id,
-                                                        &["value"],
-                                                        cx,
-                                                    ),
-                                                )
+                                            .enumerate()
+                                            .filter_map(|(index, item)| {
+                                                let key = item.key();
+                                                let moves = Self::row_move_handlers(
+                                                    McpServerFormInput::ROOT
+                                                        .then(McpServerFormInput::ARGS),
+                                                    &items,
+                                                    index,
+                                                    cx,
+                                                );
+                                                let remove = Self::remove_row_handler(
+                                                    item.clone(),
+                                                    McpServerFormDraft::remove_arg_row,
+                                                    cx,
+                                                );
+                                                let Some(row) = self.components.args.get(&key)
+                                                else {
+                                                    event!(Level::ERROR, row = ?key, "MCP arg row control is missing");
+                                                    return None;
+                                                };
+                                                let errors = dynamic_validation_messages(
+                                                    row.item
+                                                        .clone()
+                                                        .then(McpArgRowInput::VALUE),
+                                                    &self.draft.form,
+                                                    cx,
+                                                )?;
+                                                Some((
+                                                    key,
+                                                    row.input.clone(),
+                                                    errors,
+                                                    moves,
+                                                    remove,
+                                                ))
                                             })
                                             .collect::<Vec<_>>()
                                     };
@@ -1006,33 +1152,51 @@ impl Render for McpServerEditDialogState {
                             .child(list_field_with_errors(
                                 {
                                     let rows = {
-                                        let form = self.draft.form.read(cx);
-                                        form.value()
-                                            .env
+                                        let items = live_mcp_items(
+                                            McpServerFormInput::ENV.items(&self.draft.form, cx),
+                                            "env",
+                                        );
+                                        items
                                             .iter()
-                                            .map(|item| {
-                                                (
-                                                    item.row_id,
-                                                    self.components
-                                                        .env
-                                                        .get(&item.row_id)
-                                                        .expect("MCP env row controls exist")
-                                                        .0
-                                                        .clone(),
-                                                    self.components
-                                                        .env
-                                                        .get(&item.row_id)
-                                                        .expect("MCP env row controls exist")
-                                                        .1
-                                                        .clone(),
-                                                    validation_item_errors(
-                                                        form,
-                                                        "env",
-                                                        item.row_id,
-                                                        &["key", "value"],
-                                                        cx,
-                                                    ),
-                                                )
+                                            .enumerate()
+                                            .filter_map(|(index, item)| {
+                                                let key = item.key();
+                                                let moves = Self::row_move_handlers(
+                                                    McpServerFormInput::ROOT
+                                                        .then(McpServerFormInput::ENV),
+                                                    &items,
+                                                    index,
+                                                    cx,
+                                                );
+                                                let remove = Self::remove_row_handler(
+                                                    item.clone(),
+                                                    McpServerFormDraft::remove_env_row,
+                                                    cx,
+                                                );
+                                                let Some(row) = self.components.env.get(&key)
+                                                else {
+                                                    event!(Level::ERROR, row = ?key, "MCP env row controls are missing");
+                                                    return None;
+                                                };
+                                                let key_errors = dynamic_validation_messages(
+                                                    row.item.clone().then(McpEnvRowInput::KEY),
+                                                    &self.draft.form,
+                                                    cx,
+                                                )?;
+                                                let value_errors = dynamic_validation_messages(
+                                                    row.item.clone().then(McpEnvRowInput::VALUE),
+                                                    &self.draft.form,
+                                                    cx,
+                                                )?;
+                                                Some((
+                                                    key,
+                                                    row.key.clone(),
+                                                    key_errors,
+                                                    row.value.clone(),
+                                                    value_errors,
+                                                    moves,
+                                                    remove,
+                                                ))
                                             })
                                             .collect::<Vec<_>>()
                                     };
@@ -1052,26 +1216,47 @@ impl Render for McpServerEditDialogState {
                             .child(list_field_with_errors(
                                 {
                                     let rows = {
-                                        let form = self.draft.form.read(cx);
-                                        form.value()
-                                            .env_vars
+                                        let items = live_mcp_items(
+                                            McpServerFormInput::ENV_VARS
+                                                .items(&self.draft.form, cx),
+                                            "env_vars",
+                                        );
+                                        items
                                             .iter()
-                                            .map(|item| {
-                                                (
-                                                    item.row_id,
-                                                    self.components
-                                                        .env_vars
-                                                        .get(&item.row_id)
-                                                        .expect("MCP env var row control exists")
-                                                        .clone(),
-                                                    validation_item_errors(
-                                                        form,
-                                                        "env_vars",
-                                                        item.row_id,
-                                                        &["value"],
-                                                        cx,
-                                                    ),
-                                                )
+                                            .enumerate()
+                                            .filter_map(|(index, item)| {
+                                                let key = item.key();
+                                                let moves = Self::row_move_handlers(
+                                                    McpServerFormInput::ROOT
+                                                        .then(McpServerFormInput::ENV_VARS),
+                                                    &items,
+                                                    index,
+                                                    cx,
+                                                );
+                                                let remove = Self::remove_row_handler(
+                                                    item.clone(),
+                                                    McpServerFormDraft::remove_env_var_row,
+                                                    cx,
+                                                );
+                                                let Some(row) = self.components.env_vars.get(&key)
+                                                else {
+                                                    event!(Level::ERROR, row = ?key, "MCP env-var row control is missing");
+                                                    return None;
+                                                };
+                                                let errors = dynamic_validation_messages(
+                                                    row.item
+                                                        .clone()
+                                                        .then(McpEnvVarRowInput::VALUE),
+                                                    &self.draft.form,
+                                                    cx,
+                                                )?;
+                                                Some((
+                                                    key,
+                                                    row.input.clone(),
+                                                    errors,
+                                                    moves,
+                                                    remove,
+                                                ))
                                             })
                                             .collect::<Vec<_>>()
                                     };
@@ -1120,33 +1305,56 @@ impl Render for McpServerEditDialogState {
                             .child(list_field_with_errors(
                                 {
                                     let rows = {
-                                        let form = self.draft.form.read(cx);
-                                        form.value()
-                                            .headers
+                                        let items = live_mcp_items(
+                                            McpServerFormInput::HEADERS
+                                                .items(&self.draft.form, cx),
+                                            "headers",
+                                        );
+                                        items
                                             .iter()
-                                            .map(|item| {
-                                                (
-                                                    item.row_id,
-                                                    self.components
-                                                        .headers
-                                                        .get(&item.row_id)
-                                                        .expect("MCP header row controls exist")
-                                                        .0
-                                                        .clone(),
-                                                    self.components
-                                                        .headers
-                                                        .get(&item.row_id)
-                                                        .expect("MCP header row controls exist")
-                                                        .1
-                                                        .clone(),
-                                                    validation_item_errors(
-                                                        form,
-                                                        "headers",
-                                                        item.row_id,
-                                                        &["name", "value"],
-                                                        cx,
-                                                    ),
-                                                )
+                                            .enumerate()
+                                            .filter_map(|(index, item)| {
+                                                let key = item.key();
+                                                let moves = Self::row_move_handlers(
+                                                    McpServerFormInput::ROOT
+                                                        .then(McpServerFormInput::HEADERS),
+                                                    &items,
+                                                    index,
+                                                    cx,
+                                                );
+                                                let remove = Self::remove_row_handler(
+                                                    item.clone(),
+                                                    McpServerFormDraft::remove_header_row,
+                                                    cx,
+                                                );
+                                                let Some(row) = self.components.headers.get(&key)
+                                                else {
+                                                    event!(Level::ERROR, row = ?key, "MCP header row controls are missing");
+                                                    return None;
+                                                };
+                                                let name_errors = dynamic_validation_messages(
+                                                    row.item
+                                                        .clone()
+                                                        .then(McpHeaderRowInput::NAME),
+                                                    &self.draft.form,
+                                                    cx,
+                                                )?;
+                                                let value_errors = dynamic_validation_messages(
+                                                    row.item
+                                                        .clone()
+                                                        .then(McpHeaderRowInput::VALUE),
+                                                    &self.draft.form,
+                                                    cx,
+                                                )?;
+                                                Some((
+                                                    key,
+                                                    row.key.clone(),
+                                                    name_errors,
+                                                    row.value.clone(),
+                                                    value_errors,
+                                                    moves,
+                                                    remove,
+                                                ))
                                             })
                                             .collect::<Vec<_>>()
                                     };
@@ -1166,33 +1374,57 @@ impl Render for McpServerEditDialogState {
                             .child(list_field_with_errors(
                                 {
                                     let rows = {
-                                        let form = self.draft.form.read(cx);
-                                        form.value()
-                                            .env_headers
+                                        let items = live_mcp_items(
+                                            McpServerFormInput::ENV_HEADERS
+                                                .items(&self.draft.form, cx),
+                                            "env_headers",
+                                        );
+                                        items
                                             .iter()
-                                            .map(|item| {
-                                                (
-                                                    item.row_id,
-                                                    self.components
-                                                        .env_headers
-                                                        .get(&item.row_id)
-                                                        .expect("MCP env header row controls exist")
-                                                        .0
-                                                        .clone(),
-                                                    self.components
-                                                        .env_headers
-                                                        .get(&item.row_id)
-                                                        .expect("MCP env header row controls exist")
-                                                        .1
-                                                        .clone(),
-                                                    validation_item_errors(
-                                                        form,
-                                                        "env_headers",
-                                                        item.row_id,
-                                                        &["name", "env_var"],
-                                                        cx,
-                                                    ),
-                                                )
+                                            .enumerate()
+                                            .filter_map(|(index, item)| {
+                                                let key = item.key();
+                                                let moves = Self::row_move_handlers(
+                                                    McpServerFormInput::ROOT
+                                                        .then(McpServerFormInput::ENV_HEADERS),
+                                                    &items,
+                                                    index,
+                                                    cx,
+                                                );
+                                                let remove = Self::remove_row_handler(
+                                                    item.clone(),
+                                                    McpServerFormDraft::remove_env_header_row,
+                                                    cx,
+                                                );
+                                                let Some(row) =
+                                                    self.components.env_headers.get(&key)
+                                                else {
+                                                    event!(Level::ERROR, row = ?key, "MCP env-header row controls are missing");
+                                                    return None;
+                                                };
+                                                let name_errors = dynamic_validation_messages(
+                                                    row.item
+                                                        .clone()
+                                                        .then(McpEnvHeaderRowInput::NAME),
+                                                    &self.draft.form,
+                                                    cx,
+                                                )?;
+                                                let env_var_errors = dynamic_validation_messages(
+                                                    row.item
+                                                        .clone()
+                                                        .then(McpEnvHeaderRowInput::ENV_VAR),
+                                                    &self.draft.form,
+                                                    cx,
+                                                )?;
+                                                Some((
+                                                    key,
+                                                    row.key.clone(),
+                                                    name_errors,
+                                                    row.value.clone(),
+                                                    env_var_errors,
+                                                    moves,
+                                                    remove,
+                                                ))
                                             })
                                             .collect::<Vec<_>>()
                                     };
@@ -1638,38 +1870,41 @@ fn form_field(
         .into_any_element()
 }
 
-fn validation_errors_at(
-    form: &super::form_state::McpServerFormStore,
-    path: &gpui_form::typed::FieldPath,
-    cx: &App,
-) -> Vec<SharedString> {
-    form.errors_at(path)
+fn validation_messages(issues: Vec<gpui_form::ValidationIssue>, cx: &App) -> Vec<SharedString> {
+    issues
         .into_iter()
         .map(|issue| {
-            crate::features::settings::form_validation::validation_message(&issue.message, cx)
+            crate::features::settings::form_validation::validation_message(issue.message(), cx)
         })
         .collect()
 }
 
-fn validation_item_errors(
-    form: &super::form_state::McpServerFormStore,
-    array: &'static str,
-    id: FormItemId,
-    fields: &[&'static str],
+fn live_mcp_items<Row: FormSchema>(
+    items: Vec<ItemPath<McpServerFormInput, Row>>,
+    _list: &'static str,
+) -> Vec<ItemPath<McpServerFormInput, Row>> {
+    items
+}
+
+fn dynamic_validation_messages<T: Clone + PartialEq + 'static>(
+    path: DynamicPath<McpServerFormInput, T>,
+    form: &Entity<gpui_form::Form<McpServerFormInput>>,
     cx: &App,
-) -> Vec<SharedString> {
-    fields
-        .iter()
-        .flat_map(|field| {
-            validation_errors_at(
-                form,
-                &gpui_form::typed::FieldPath::field(array)
-                    .join_item(id)
-                    .join_field(field),
-                cx,
-            )
-        })
-        .collect()
+) -> Option<Vec<SharedString>> {
+    match path.try_errors(form, cx) {
+        Ok(issues) => Some(validation_messages(issues, cx)),
+        Err(ResolveError::Retired { .. } | ResolveError::MissingItem { .. }) => {
+            event!(
+                Level::DEBUG,
+                "ignored retired MCP validation path during row projection"
+            );
+            None
+        }
+        Err(error) => {
+            event!(Level::ERROR, error = ?error, "resolve MCP validation path failed");
+            None
+        }
+    }
 }
 
 fn list_field_with_errors(
@@ -1695,42 +1930,17 @@ fn section_label(label: impl Into<SharedString>, cx: &mut App) -> AnyElement {
         .into_any_element()
 }
 
-fn render_validation_summary(messages: Vec<SharedString>, cx: &mut App) -> AnyElement {
-    v_flex()
-        .w_full()
-        .gap_2()
-        .rounded(cx.theme().radius)
-        .border_1()
-        .border_color(cx.theme().danger.opacity(0.55))
-        .bg(cx.theme().tokens.danger.background.opacity(0.08))
-        .p_3()
-        .child(
-            Label::new(cx.global::<I18n>().t("mcp-validation-summary"))
-                .text_sm()
-                .font_medium()
-                .text_color(cx.theme().danger),
-        )
-        .children(messages.into_iter().map(|message| {
-            Label::new(message)
-                .text_xs()
-                .line_height(relative(1.35))
-                .text_color(cx.theme().danger)
-        }))
-        .into_any_element()
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
 
     use crate::{
-        features::settings::mcp::form_state::McpServerFormStore,
+        features::settings::mcp::form_state::{McpArgRowInput, McpServerFormInput},
         foundation, state,
         state::config::{McpOAuthTomlConfig, McpServerTomlConfig},
     };
     use gpui::{AppContext as _, Entity, Render, TestAppContext, VisualTestContext, WindowHandle};
     use gpui_component::input::{InputEvent, InputState};
-    use gpui_form::typed::{FieldPath, FormStore as _};
     use jaco_agent::McpOAuthStatusSnapshot;
     use tempfile::{TempDir, tempdir};
 
@@ -1871,17 +2081,21 @@ mod tests {
             cx.new(|cx| McpServerEditDialogState::new(McpServerEditMode::Create, None, window, cx))
         });
         let arg_input = cx.update(|_, cx| {
-            let dialog = form.read(cx);
-            let row_id = McpServerFormStore::args_field(&dialog.draft.form)
-                .value(cx)
-                .unwrap()[0]
-                .row_id;
-            dialog
-                .components
-                .args
-                .get(&row_id)
-                .expect("MCP arg row control exists")
-                .clone()
+            let (draft_form, arg_input) = {
+                let dialog = form.read(cx);
+                let draft_form = dialog.draft.form.clone();
+                let row_key = McpServerFormInput::ARGS.items(&draft_form, cx)[0].key();
+                let input = dialog
+                    .components
+                    .args
+                    .get(&row_key)
+                    .expect("MCP arg row control exists")
+                    .input
+                    .clone();
+                (draft_form, input)
+            };
+            let _ = draft_form;
+            arg_input
         });
         set_input_value(arg_input, "   ", &mut cx);
         cx.run_until_parked();
@@ -1889,43 +2103,158 @@ mod tests {
         cx.update(|window, cx| {
             assert!(!form.update(cx, |form, cx| form.save(window, cx)));
 
-            let dialog = form.read(cx);
-            let draft_form = dialog.draft.form.read(cx);
-            let arg_id = draft_form.value().args[0].row_id;
+            let draft_form = form.read(cx).draft.form.clone();
+            let arg = McpServerFormInput::ARGS.items(&draft_form, cx).remove(0);
             assert_eq!(
-                draft_form
-                    .errors_at(&FieldPath::field("server_id"))
+                McpServerFormInput::SERVER_ID
+                    .errors(&draft_form, cx)
                     .first()
-                    .map(|error| error.code.as_ref()),
+                    .map(|error| error.code()),
                 Some("required")
             );
             assert_eq!(
-                draft_form
-                    .errors_at(&FieldPath::field("command"))
+                McpServerFormInput::COMMAND
+                    .errors(&draft_form, cx)
                     .first()
-                    .map(|error| error.code.as_ref()),
+                    .map(|error| error.code()),
                 Some("garde")
             );
 
             assert_eq!(
-                draft_form
-                    .errors_at(
-                        &FieldPath::field("args")
-                            .join_item(arg_id)
-                            .join_field("value"),
-                    )
+                arg.then(McpArgRowInput::VALUE)
+                    .try_errors(&draft_form, cx)
+                    .unwrap()
                     .first()
-                    .map(|error| error.code.as_ref()),
+                    .map(|error| error.code()),
                 Some("garde")
             );
             assert!(
-                draft_form
-                    .errors_at(&FieldPath::field("command"))
+                McpServerFormInput::COMMAND
+                    .errors(&draft_form, cx)
                     .iter()
-                    .any(|error| error.code == "garde")
+                    .any(|error| error.code() == "garde")
             );
-            let summary = dialog.validation_summary_messages(cx);
-            assert!(summary.len() >= 3, "summary={summary:?}");
+        });
+    }
+
+    #[gpui::test]
+    fn same_parent_reorder_reuses_mcp_row_control_owner(cx: &mut TestAppContext) {
+        let _dir = init_dialog_test(cx);
+        let window = open_test_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let dialog = cx.update(|window, cx| {
+            cx.new(|cx| {
+                McpServerEditDialogState::new(
+                    McpServerEditMode::Create,
+                    Some(McpServerTomlConfig {
+                        transport: McpTransportKind::Stdio,
+                        command: Some("mcp".to_string()),
+                        args: vec!["first".to_string()],
+                        ..Default::default()
+                    }),
+                    window,
+                    cx,
+                )
+            })
+        });
+
+        cx.update(|window, cx| {
+            dialog.update(cx, |dialog, cx| {
+                dialog.draft.add_arg_row(window, cx).unwrap();
+            });
+        });
+        cx.run_until_parked();
+
+        let (first, second, control_ids) = cx.update(|_, cx| {
+            let dialog = dialog.read(cx);
+            let items = McpServerFormInput::ARGS.items(&dialog.draft.form, cx);
+            let control_ids = items
+                .iter()
+                .map(|item| {
+                    let key = item.key();
+                    (key.clone(), dialog.components.args[&key].input.entity_id())
+                })
+                .collect::<std::collections::HashMap<_, _>>();
+            (items[0].clone(), items[1].clone(), control_ids)
+        });
+
+        cx.update(|window, cx| {
+            dialog.update(cx, |dialog, cx| {
+                assert!(
+                    dialog
+                        .draft
+                        .move_row_before(
+                            McpServerFormInput::ROOT.then(McpServerFormInput::ARGS),
+                            &second,
+                            &first,
+                            window,
+                            cx,
+                        )
+                        .unwrap()
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|_, cx| {
+            let dialog = dialog.read(cx);
+            let items = McpServerFormInput::ARGS.items(&dialog.draft.form, cx);
+            assert_eq!(items[0].key(), second.key());
+            assert_eq!(items[1].key(), first.key());
+            for item in items {
+                let key = item.key();
+                assert_eq!(
+                    dialog.components.args[&key].input.entity_id(),
+                    control_ids[&key]
+                );
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn retired_remove_callback_cannot_remove_reinserted_row(cx: &mut TestAppContext) {
+        let _dir = init_dialog_test(cx);
+        let window = open_test_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let dialog = cx.update(|window, cx| {
+            cx.new(|cx| McpServerEditDialogState::new(McpServerEditMode::Create, None, window, cx))
+        });
+
+        let (remove, old_key) = cx.update(|_, cx| {
+            dialog.update(cx, |dialog, cx| {
+                let row = McpServerFormInput::ARGS
+                    .items(&dialog.draft.form, cx)
+                    .remove(0);
+                let key = row.key();
+                (
+                    McpServerEditDialogState::remove_row_handler(
+                        row,
+                        super::super::form_state::McpServerFormDraft::remove_arg_row,
+                        cx,
+                    ),
+                    key,
+                )
+            })
+        });
+
+        cx.update(|window, cx| remove(window, cx));
+        cx.update(|window, cx| {
+            dialog.update(cx, |dialog, cx| {
+                dialog.draft.add_arg_row(window, cx).unwrap();
+            });
+        });
+        cx.run_until_parked();
+        let new_key = cx.update(|_, cx| {
+            let form = dialog.read(cx).draft.form.clone();
+            McpServerFormInput::ARGS.items(&form, cx).remove(0).key()
+        });
+        assert_ne!(old_key, new_key);
+
+        cx.update(|window, cx| remove(window, cx));
+        cx.update(|_, cx| {
+            let form = dialog.read(cx).draft.form.clone();
+            assert_eq!(McpServerFormInput::ROOT.get(&form, cx).args.len(), 1);
+            assert_eq!(McpServerFormInput::ARGS.items(&form, cx)[0].key(), new_key);
         });
     }
 

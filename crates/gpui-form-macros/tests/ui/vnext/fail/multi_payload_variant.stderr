@@ -1,0 +1,5 @@
+error: FormSchema enums support only unit and single-payload tuple variants
+ --> tests/ui/vnext/fail/multi_payload_variant.rs:3:9
+  |
+3 |     Pair(String, String),
+  |         ^^^^^^^^^^^^^^^^

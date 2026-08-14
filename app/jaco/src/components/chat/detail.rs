@@ -45,6 +45,8 @@ pub(crate) struct ConversationDetailPage {
     message_text_states: Vec<MessageTextState>,
     expanded_agent_runs: HashMap<AgentRunId, bool>,
     runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
+    pending_submission: Option<conversation::runtime::ConversationSubmissionTicket>,
+    owned_run: Option<conversation::runtime::ConversationSubmissionTicket>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -64,6 +66,9 @@ impl AgentRunStatusSource for ConversationAgentRunStatus {
     fn status(&self, cx: &App) -> AgentRunControlStatus {
         match self.runtime.read(cx).run_status(&self.conversation_id) {
             conversation::runtime::ConversationRunStatus::Idle => AgentRunControlStatus::Idle,
+            conversation::runtime::ConversationRunStatus::Submitting => {
+                AgentRunControlStatus::Submitting
+            }
             conversation::runtime::ConversationRunStatus::Running => AgentRunControlStatus::Running,
             conversation::runtime::ConversationRunStatus::Stopping => {
                 AgentRunControlStatus::Stopping
@@ -179,6 +184,8 @@ impl ConversationDetailPage {
             message_text_states: Vec::new(),
             expanded_agent_runs: HashMap::new(),
             runtime,
+            pending_submission: None,
+            owned_run: None,
             _subscriptions: vec![
                 chat_form_subscription,
                 runtime_subscription,
@@ -206,11 +213,6 @@ impl ConversationDetailPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.chat_form.read(cx).submission_pending(cx)
-            || self.runtime.read(cx).is_running(&self.conversation_id)
-        {
-            return;
-        }
         if !matches!(
             self.conversation.read(cx).operation(),
             ConversationOperation::Ready(ready) if ready.data().is_some()
@@ -226,51 +228,17 @@ impl ConversationDetailPage {
             reasoning_selection: submit.reasoning_selection,
             approval_mode: submit.approval_mode,
         };
-        let task = conversation::send_conversation_message(request, cx);
-        let page = cx.entity().downgrade();
-        let completion = window.spawn(cx, async move |cx| {
-            let result = task.await;
-            let _ = page.update_in(cx, |page, window, cx| {
-                page.chat_form.update(cx, |chat_form, cx| {
-                    chat_form.finish_submission(cx);
-                });
-                match result {
-                    Ok(sent) => {
-                        page.chat_form.update(cx, |chat_form, cx| {
-                            chat_form.clear_after_submit(window, cx);
-                        });
-                        page.timeline.set_follow_mode(FollowMode::Tail);
-                        page.timeline.scroll_to_end();
-                        let start = page
-                            .runtime
-                            .update(cx, |runtime, cx| runtime.start_run(sent.run_request, cx));
-                        if let Err(error) = start {
-                            let title = cx.global::<I18n>().t("conversation-run-failed");
-                            push_conversation_notification(
-                                window,
-                                cx,
-                                title,
-                                error,
-                                NotificationType::Error,
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        let title = cx.global::<I18n>().t("conversation-send-failed");
-                        push_conversation_notification(
-                            window,
-                            cx,
-                            title,
-                            err.to_string(),
-                            NotificationType::Error,
-                        );
-                    }
-                }
-            });
-        });
-        self.chat_form.update(cx, |chat_form, cx| {
-            chat_form.begin_submission(completion, cx);
-        });
+        match self
+            .runtime
+            .update(cx, |runtime, cx| runtime.submit_message(request, cx))
+        {
+            Ok(ticket) => self.pending_submission = Some(ticket),
+            Err(conversation::runtime::ConversationSubmissionError::Busy) => {}
+            Err(conversation::runtime::ConversationSubmissionError::Unavailable(error)) => {
+                let title = cx.global::<I18n>().t("conversation-send-failed");
+                push_conversation_notification(window, cx, title, error, NotificationType::Error);
+            }
+        }
     }
 
     fn handle_runtime_event(
@@ -281,9 +249,18 @@ impl ConversationDetailPage {
         cx: &mut Context<Self>,
     ) {
         let event_conversation_id = match event {
-            conversation::runtime::ConversationRuntimeEvent::RunStarted { conversation_id }
-            | conversation::runtime::ConversationRuntimeEvent::RunFinished { conversation_id } => {
-                conversation_id
+            conversation::runtime::ConversationRuntimeEvent::SubmissionCommitted {
+                ticket, ..
+            }
+            | conversation::runtime::ConversationRuntimeEvent::SubmissionFailed {
+                ticket, ..
+            }
+            | conversation::runtime::ConversationRuntimeEvent::RunLaunchFailed { ticket, .. } => {
+                ticket.conversation_id()
+            }
+            conversation::runtime::ConversationRuntimeEvent::RunStarted { ticket }
+            | conversation::runtime::ConversationRuntimeEvent::RunFinished { ticket } => {
+                ticket.conversation_id()
             }
         };
         if event_conversation_id != &self.conversation_id {
@@ -294,22 +271,67 @@ impl ConversationDetailPage {
             chat_form.refresh_primary_action(cx);
         });
         cx.notify();
-        if matches!(
-            event,
-            conversation::runtime::ConversationRuntimeEvent::RunFinished { .. }
-        ) {
-            runtime.update(cx, |runtime, cx| {
-                if let Some(error) = runtime.take_last_error(&self.conversation_id) {
-                    let title = cx.global::<I18n>().t("conversation-run-failed");
-                    push_conversation_notification(
-                        window,
-                        cx,
-                        title,
-                        error,
-                        NotificationType::Error,
-                    );
-                }
-            });
+        match event {
+            conversation::runtime::ConversationRuntimeEvent::SubmissionCommitted {
+                ticket,
+                kind: conversation::runtime::ConversationSubmissionKind::Message,
+            } if self.pending_submission.as_ref() == Some(ticket) => {
+                self.chat_form.update(cx, |chat_form, cx| {
+                    chat_form.clear_after_submit(window, cx);
+                });
+                self.timeline.set_follow_mode(FollowMode::Tail);
+                self.timeline.scroll_to_end();
+            }
+            conversation::runtime::ConversationRuntimeEvent::SubmissionFailed {
+                ticket,
+                kind: conversation::runtime::ConversationSubmissionKind::Message,
+                error,
+            } if self.pending_submission.as_ref() == Some(ticket) => {
+                self.pending_submission = None;
+                let title = cx.global::<I18n>().t("conversation-send-failed");
+                push_conversation_notification(
+                    window,
+                    cx,
+                    title,
+                    error.clone(),
+                    NotificationType::Error,
+                );
+            }
+            conversation::runtime::ConversationRuntimeEvent::RunLaunchFailed { ticket, error }
+                if self.pending_submission.as_ref() == Some(ticket) =>
+            {
+                self.pending_submission = None;
+                let title = cx.global::<I18n>().t("conversation-run-failed");
+                push_conversation_notification(
+                    window,
+                    cx,
+                    title,
+                    error.clone(),
+                    NotificationType::Error,
+                );
+            }
+            conversation::runtime::ConversationRuntimeEvent::RunStarted { ticket }
+                if self.pending_submission.as_ref() == Some(ticket) =>
+            {
+                self.owned_run = self.pending_submission.take();
+            }
+            conversation::runtime::ConversationRuntimeEvent::RunFinished { ticket }
+                if take_matching_ticket(&mut self.owned_run, ticket) =>
+            {
+                runtime.update(cx, |runtime, cx| {
+                    if let Some(error) = runtime.take_last_error(&self.conversation_id) {
+                        let title = cx.global::<I18n>().t("conversation-run-failed");
+                        push_conversation_notification(
+                            window,
+                            cx,
+                            title,
+                            error,
+                            NotificationType::Error,
+                        );
+                    }
+                });
+            }
+            _ => {}
         }
     }
 
@@ -1004,9 +1026,27 @@ fn sync_timeline_list(
     );
 }
 
+fn take_matching_ticket<T: PartialEq>(owned: &mut Option<T>, candidate: &T) -> bool {
+    if owned.as_ref() != Some(candidate) {
+        return false;
+    }
+    owned.take();
+    true
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MessageTextUpdate, message_text_update};
+    use super::{MessageTextUpdate, message_text_update, take_matching_ticket};
+
+    #[test]
+    fn run_error_ticket_is_consumed_only_by_its_owner() {
+        let mut owned = Some(7_u64);
+
+        assert!(!take_matching_ticket(&mut owned, &8));
+        assert_eq!(owned, Some(7));
+        assert!(take_matching_ticket(&mut owned, &7));
+        assert_eq!(owned, None);
+    }
 
     #[test]
     fn message_text_update_detects_unchanged_source() {

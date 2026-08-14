@@ -72,13 +72,8 @@ pub(in crate::features::settings::provider) fn localized_api_mode_choices(
     ]
 }
 
-#[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormSchema, garde::Validate)]
 #[garde(context(super::ProviderValidationContext))]
-#[form(
-    store = CustomOpenAiProviderFormStore,
-    validation(adapter = "garde", messages = super::JacoGardeMessageProvider),
-    transform(adapter = super::CustomOpenAiProviderTransform)
-)]
 pub(in crate::features::settings::provider) struct CustomOpenAiProviderFormInput {
     #[garde(skip)]
     pub(super) enabled: bool,
@@ -93,5 +88,5 @@ pub(in crate::features::settings::provider) struct CustomOpenAiProviderFormInput
     pub(super) base_url: String,
     #[form(validate(on_change, on_submit))]
     #[garde(skip)]
-    pub(super) api_mode: ProviderApiMode,
+    pub(super) api_mode: Option<ProviderApiMode>,
 }

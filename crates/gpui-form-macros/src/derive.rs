@@ -1,2 +1,5 @@
 mod attributes;
-pub(crate) mod expand;
+mod expand;
+mod model;
+
+pub(crate) use expand::expand;

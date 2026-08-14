@@ -1,3 +1,4 @@
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, RenderOnce,
     SharedString, Styled, Window, div, point, px,
@@ -103,6 +104,7 @@ impl FeiwenTitleBar {
     fn query_actions(&self, cx: &mut App) -> impl IntoElement {
         let i18n = cx.global::<I18n>();
         let searching = self.query_view.read(cx).is_searching();
+        let can_search = self.query_view.read(cx).can_search(cx);
         h_flex()
             .gap_2()
             .child(
@@ -110,14 +112,28 @@ impl FeiwenTitleBar {
                     .icon(FeiwenIconName::RotateCcw)
                     .label(i18n.t("query-reset-button"))
                     .small()
-                    .disabled(searching)
                     .on_click({
                         let query_view = self.query_view.clone();
-                        move |_, _, cx| {
-                            query_view.update(cx, |view, cx| view.request_reset(cx));
+                        move |_, window, cx| {
+                            query_view.update(cx, |view, cx| view.request_reset(window, cx));
                         }
                     }),
             )
+            .when(searching, |this| {
+                this.child(
+                    Button::new("titlebar-query-cancel")
+                        .danger()
+                        .icon(FeiwenIconName::CircleStop)
+                        .label(i18n.t("query-cancel-button"))
+                        .small()
+                        .on_click({
+                            let query_view = self.query_view.clone();
+                            move |_, _, cx| {
+                                query_view.update(cx, |view, cx| view.request_cancel(cx));
+                            }
+                        }),
+                )
+            })
             .child(
                 Button::new("titlebar-query-search")
                     .primary()
@@ -125,7 +141,7 @@ impl FeiwenTitleBar {
                     .label(i18n.t("query-search-button"))
                     .small()
                     .loading(searching)
-                    .disabled(searching)
+                    .disabled(!can_search)
                     .on_click({
                         let query_view = self.query_view.clone();
                         move |_, _, cx| {
@@ -137,13 +153,13 @@ impl FeiwenTitleBar {
 
     fn fetch_actions(&self, cx: &mut App) -> impl IntoElement {
         let i18n = cx.global::<I18n>();
-        let running = self.fetch_view.read(cx).is_running(cx);
+        let can_start = self.fetch_view.read(cx).can_start(cx);
         Button::new("titlebar-fetch-start")
             .primary()
             .small()
             .icon(FeiwenIconName::CirclePlay)
             .label(i18n.t("fetch-submit-button"))
-            .disabled(running)
+            .disabled(!can_start)
             .on_click({
                 let fetch_view = self.fetch_view.clone();
                 move |_, _, cx| {

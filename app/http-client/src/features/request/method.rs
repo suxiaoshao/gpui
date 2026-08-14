@@ -4,7 +4,7 @@ use gpui_component::{
     select::{SelectDelegate, SelectItem},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum HttpMethod {
     #[default]
     Get,
@@ -41,6 +41,20 @@ impl HttpMethod {
             HttpMethod::Options => "OPTIONS",
             HttpMethod::Trace => "TRACE",
             HttpMethod::Connect => "CONNECT",
+        }
+    }
+
+    pub fn to_http_method(self) -> http::Method {
+        match self {
+            Self::Get => http::Method::GET,
+            Self::Post => http::Method::POST,
+            Self::Put => http::Method::PUT,
+            Self::Delete => http::Method::DELETE,
+            Self::Patch => http::Method::PATCH,
+            Self::Head => http::Method::HEAD,
+            Self::Options => http::Method::OPTIONS,
+            Self::Trace => http::Method::TRACE,
+            Self::Connect => http::Method::CONNECT,
         }
     }
 }

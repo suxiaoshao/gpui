@@ -1,0 +1,5 @@
+error: #[form(child)] requires Child or Option<Child>
+ --> tests/ui/vnext/fail/malformed_optional_child.rs:6:19
+  |
+6 |     value: Option<String, bool>,
+  |                   ^^^^^^^^^^^^

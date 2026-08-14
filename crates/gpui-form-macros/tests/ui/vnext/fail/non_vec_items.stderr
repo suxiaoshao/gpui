@@ -1,0 +1,5 @@
+error: #[form(items)] requires Vec<Item>
+ --> tests/ui/vnext/fail/non_vec_items.rs:4:11
+  |
+4 |     rows: String,
+  |           ^^^^^^

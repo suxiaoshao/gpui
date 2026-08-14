@@ -1,8 +1,8 @@
 use std::ops::Deref;
 
-use gpui::{AppContext as _, Context, Entity, EventEmitter, Subscription, Window};
+use gpui::{AppContext as _, Context, Entity, Subscription, Window};
 use gpui_component::input::{InputEvent, InputState};
-use gpui_form::typed::{FormField, FormStore};
+use gpui_form::{ControlBinding, ControlProjection, FieldDef, Form, FormSchema};
 
 use super::ProviderFormField;
 
@@ -31,101 +31,83 @@ impl ProviderSecretValue {
     }
 }
 
-impl gpui_form::typed::RequiredValue for ProviderSecretValue {
+impl gpui_form::RequiredValue for ProviderSecretValue {
     fn is_missing(&self) -> bool {
         self.value.trim().is_empty()
     }
 }
 
-/// Owning control for a provider secret. Its lifetime owns both projection
-/// subscriptions, so dropping the control detaches it from the shared form.
-pub(in crate::features::settings::provider) struct ProviderSecretInputState<Form>
-where
-    Form: FormStore,
-{
-    subscriptions: Vec<Subscription>,
+/// Owning control for a provider secret. The binding owns form projection;
+/// native input callbacks only retain its writer capability.
+pub(in crate::features::settings::provider) struct ProviderSecretInput {
+    _binding: ControlBinding,
+    _subscription: Subscription,
     input: Entity<InputState>,
-    _marker: std::marker::PhantomData<Form>,
 }
 
-impl<Form> ProviderSecretInputState<Form>
-where
-    Form: FormStore + EventEmitter<gpui_form::typed::FormEvent<Form::Field>>,
-{
-    pub(in crate::features::settings::provider) fn new<Owner>(
-        field: FormField<Form, ProviderSecretValue>,
+impl ProviderSecretInput {
+    pub(in crate::features::settings::provider) fn new<M, Owner>(
+        form: &Entity<Form<M>>,
+        field: FieldDef<M, ProviderSecretValue>,
         placeholder: String,
         window: &mut Window,
         cx: &mut Context<Owner>,
-    ) -> Result<Self, gpui_form_gpui_component::FormControlError>
+    ) -> Self
     where
+        M: FormSchema,
         Owner: 'static,
     {
-        let value = field
-            .value(cx)
-            .map_err(gpui_form_gpui_component::FormControlError::from)?;
+        let value = field.get(form, cx);
         let state = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
                 .placeholder(placeholder)
         });
         state.update(cx, |input, cx| input.set_value(value.value, window, cx));
-        let attachment = field.attach_control(cx)?;
-        let form_state = state.clone();
-        let projected_field = field.clone();
-        let form_subscription = field.subscribe_in(window, cx, move |_owner, window, cx| {
-            let state = form_state.clone();
-            let field = projected_field.clone();
-            cx.defer_in(window, move |_owner, window, cx| {
-                let Ok(value) = field.value(cx) else { return };
-                state.update(cx, |input, cx| {
-                    input.set_value(value.value, window, cx);
-                });
-            });
-        })?;
-        let component_attachment = attachment;
-        let input_subscription = cx.subscribe_in(
+        let (binding, writer) = field.bind_control_in(
+            form,
+            &state,
+            |input, projection, window, cx| match projection {
+                ControlProjection::Value(value) => input.set_value(value.value, window, cx),
+                ControlProjection::Retired => {}
+            },
+            window,
+            cx,
+        );
+        let weak_form = form.downgrade();
+        let input_field = field;
+        let input_writer = writer;
+        let subscription = cx.subscribe_in(
             &state,
             window,
             move |_owner, state, event: &InputEvent, window, cx| match event {
                 InputEvent::Change => {
                     let text = state.read(cx).value().to_string();
-                    let Ok(mut value) = field.value(cx) else {
+                    let Some(form) = weak_form.upgrade() else {
                         return;
                     };
+                    let mut value = input_field.get(&form, cx);
                     value.value = text;
                     value.changed = true;
-                    component_attachment.defer_set_user_value(value, window, cx);
+                    input_writer.defer_set(value, window, cx);
                 }
-                InputEvent::Blur => component_attachment.defer_blur(window, cx),
+                InputEvent::Blur => input_writer.defer_blur(window, cx),
                 InputEvent::Focus | InputEvent::PressEnter { .. } => {}
             },
         );
 
-        Ok(Self {
-            subscriptions: vec![form_subscription, input_subscription],
+        Self {
+            _binding: binding,
+            _subscription: subscription,
             input: state,
-            _marker: std::marker::PhantomData,
-        })
+        }
     }
 }
 
-impl<Form> Deref for ProviderSecretInputState<Form>
-where
-    Form: FormStore,
-{
+impl Deref for ProviderSecretInput {
     type Target = Entity<InputState>;
 
     fn deref(&self) -> &Self::Target {
         &self.input
-    }
-}
-
-impl<Form> Drop for ProviderSecretInputState<Form>
-where
-    Form: FormStore,
-{
-    fn drop(&mut self) {
-        self.subscriptions.clear();
     }
 }

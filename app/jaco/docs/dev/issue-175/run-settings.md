@@ -2,7 +2,7 @@
 
 > 当前实现已经采用最终所有权：generated parent form store 持有 typed current values，owning bound controls
 > 持有 component interaction，catalog 持有 options/capability；完整迁移 gate 见
-> [Jaco gpui-form 类型化双向绑定迁移](../gpui-form-migration.md)。
+> [Jaco gpui-form 类型化双向绑定迁移（历史归档）](gpui-form-migration.md)。
 
 RunSettings 负责 model、reasoning、Token Budget 和 Tool Access。`RunSettingsInput` 作为父 form 中的
 typed group；form-agnostic UI control states 和 controller 只投影该 group。ChatForm 只接收

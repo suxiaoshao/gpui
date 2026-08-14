@@ -172,20 +172,38 @@ pub fn inject_liquid_glass_icon(
     let plist = app_path.join("Contents/Info.plist");
     update_bundle_icon_name(&plist, icon_name)?;
 
-    if command_exists("codesign") {
-        let codesign_args: Vec<&OsStr> = vec![
-            OsStr::new("--force"),
-            OsStr::new("--deep"),
-            OsStr::new("--sign"),
-            OsStr::new("-"),
-            app_path.as_os_str(),
-        ];
-        run_cmd_os("codesign", &codesign_args, None)?;
-    }
-
     let _ = fs::remove_dir_all(&tmp_dir);
     info!(app_path = %app_path.display(), "已注入 Liquid Glass 图标");
     Ok(())
+}
+
+/// Applies the development signature after every bundle mutation has completed.
+///
+/// Runtime staging and rpath rewriting invalidate any signature produced by the
+/// bundler. Call this only after icon injection and native runtime staging.
+pub(crate) fn finalize_ad_hoc_codesign(app_path: &Path) -> Result<()> {
+    if !command_exists("codesign") {
+        return Err(XtaskError::msg(
+            "codesign is required to finalize a macOS application bundle",
+        ));
+    }
+
+    let args: Vec<&OsStr> = vec![
+        OsStr::new("--force"),
+        OsStr::new("--deep"),
+        OsStr::new("--sign"),
+        OsStr::new("-"),
+        app_path.as_os_str(),
+    ];
+    run_cmd_os("codesign", &args, None)?;
+
+    let verify_args: Vec<&OsStr> = vec![
+        OsStr::new("--verify"),
+        OsStr::new("--deep"),
+        OsStr::new("--strict"),
+        app_path.as_os_str(),
+    ];
+    run_cmd_os("codesign", &verify_args, None)
 }
 
 fn stage_liquid_glass_icon_dir(

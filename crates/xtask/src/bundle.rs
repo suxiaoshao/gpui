@@ -1,4 +1,6 @@
 use std::env;
+#[cfg(target_os = "linux")]
+use std::fs;
 use std::path::{Path, PathBuf};
 
 pub mod common;
@@ -38,9 +40,8 @@ pub fn run(args: BundleArgs) -> Result<()> {
     bundle_icon_assets.apply_to_bundle_settings(&mut bundle_settings);
     let product_name = package_settings.product_name.clone();
 
-    let out_dir = bundle_out_dir(&workspace_dir, &main_bin_name)?;
+    let out_dir = bundle_out_dir(&workspace_dir, &main_bin_name, args.app)?;
     info!(bundle_out_dir = %out_dir.display(), "using bundle output dir");
-
     #[cfg(target_os = "macos")]
     let bundle_settings = {
         let mut bundle_settings = bundle_settings;
@@ -106,6 +107,7 @@ fn finalize_platform_bundle(
     {
         if let Some(app_path) = macos::find_app_bundle(_bundle_dir, _product_name)? {
             macos::inject_liquid_glass_icon(_app_dir, &app_path, _bundle_icon_assets)?;
+            macos::finalize_ad_hoc_codesign(&app_path)?;
         } else {
             warn!("未找到 .app 包，跳过 Liquid Glass 图标注入");
         }
@@ -175,14 +177,65 @@ fn default_package_types() -> Vec<PackageType> {
 }
 
 #[cfg(target_os = "windows")]
-fn bundle_out_dir(workspace_dir: &Path, main_bin_name: &str) -> Result<PathBuf> {
+fn bundle_out_dir(
+    workspace_dir: &Path,
+    main_bin_name: &str,
+    app: crate::cli::BundleApp,
+) -> Result<PathBuf> {
     let target_root = windows::resolve_target_root(workspace_dir);
+    let _ = app;
     windows::prepare_windows_bundle_staging(&target_root, main_bin_name)
 }
 
-#[cfg(not(target_os = "windows"))]
-fn bundle_out_dir(workspace_dir: &Path, _main_bin_name: &str) -> Result<PathBuf> {
+#[cfg(target_os = "linux")]
+fn bundle_out_dir(
+    workspace_dir: &Path,
+    main_bin_name: &str,
+    _app: crate::cli::BundleApp,
+) -> Result<PathBuf> {
+    prepare_linux_bundle_staging(workspace_dir, main_bin_name)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+fn bundle_out_dir(
+    workspace_dir: &Path,
+    _main_bin_name: &str,
+    _app: crate::cli::BundleApp,
+) -> Result<PathBuf> {
     Ok(workspace_dir.join("target/release"))
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_linux_bundle_staging(workspace_dir: &Path, main_bin_name: &str) -> Result<PathBuf> {
+    let target_root = env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                workspace_dir.join(path)
+            }
+        })
+        .unwrap_or_else(|| workspace_dir.join("target"));
+    let source = target_root.join("release").join(main_bin_name);
+    if !source.is_file() {
+        return Err(crate::error::XtaskError::msg(format!(
+            "failed to find built Linux binary {}",
+            source.display()
+        )));
+    }
+    let staging = target_root.join("xtask-bundle/release");
+    if staging.exists() {
+        fs::remove_dir_all(&staging).map_err(|err| {
+            crate::error::XtaskError::msg(format!(
+                "failed to clean Linux bundle staging {}: {err}",
+                staging.display()
+            ))
+        })?;
+    }
+    fs::create_dir_all(&staging)?;
+    fs::copy(&source, staging.join(main_bin_name))?;
+    Ok(staging)
 }
 
 #[cfg(target_os = "windows")]

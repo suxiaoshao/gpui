@@ -91,11 +91,11 @@ SortSpec
 | 作者 | 在集合中 | `MultiSelectCombobox<AuthorOption>` | `AuthorPredicate::In(selected_authors)` |
 | 作者 | 不在集合中 | `MultiSelectCombobox<AuthorOption>` | `AuthorPredicate::NotIn(selected_authors)` |
 | 字数 | 等于、不等于、大于、大于等于、小于、小于等于 | `NumberInput` placeholder `输入数字` | `Predicate::Number { WordCount, NumberOp }` |
-| 字数 | 介于范围 | `NumericRangeInput`，两个 `NumberInput`：`最小值`、`最大值` | `NumberOp::Between { min, max }` |
+| 字数 | 介于范围 | 两个 `NumberInput`：`最小值`、`最大值` | `NumberOp::Between { min, max }` |
 | 阅读数 | 等于、不等于、大于、大于等于、小于、小于等于 | `NumberInput` | `Predicate::Number { ReadCount, NumberOp }` |
-| 阅读数 | 介于范围 | `NumericRangeInput` | `NumberOp::Between { min, max }` |
+| 阅读数 | 介于范围 | 两个 `NumberInput`：`最小值`、`最大值` | `NumberOp::Between { min, max }` |
 | 回复数 | 等于、不等于、大于、大于等于、小于、小于等于 | `NumberInput` | `Predicate::Number { ReplyCount, NumberOp }` |
-| 回复数 | 介于范围 | `NumericRangeInput` | `NumberOp::Between { min, max }` |
+| 回复数 | 介于范围 | 两个 `NumberInput`：`最小值`、`最大值` | `NumberOp::Between { min, max }` |
 | 是否受限 | 是否 | `Select`，选项 `是`、`否` | `Predicate::Bool { IsLimit, true/false }` |
 | 标签 | 有交集 | `MultiSelectCombobox<TagOption>` | `TagsPredicate::Intersects(selected_tags)` |
 | 标签 | 包含全部 | `MultiSelectCombobox<TagOption>` | `TagsPredicate::ContainsAll(selected_tags)` |
@@ -112,7 +112,7 @@ ID 类字段不在筛选字段选择器中单独暴露；编号只作为作者�
 - 字段为空：字段 Select 显示 `请选择字段`，条件和值禁用。
 - 字段变化：清空条件和值，条件 Select 切换到该字段的合法选项。
 - 条件为空：条件 Select 显示 `请选择条件`，值区域禁用并显示 `先选择条件`。
-- 条件变化：清空值，并由矩阵切换 `ConditionValueEditor` variant。
+- 条件变化：由矩阵切换当前 `ConditionValueEditor` variant，但不清空该字段其他条件使用的值；只有当前条件的 operand 参与显示、校验与查询编译。
 - 排除 Switch：每行固定显示，label 为 `排除`；开启后该行背景使用轻微 danger tint，表达 NOT。
 - 删除按钮使用 `IconName::Delete`，只有图标按钮，tooltip `删除条件`。
 - 行内错误显示在值区域下方，使用 `IconName::TriangleAlert` + danger 文本。
@@ -149,7 +149,7 @@ ID 类字段不在筛选字段选择器中单独暴露；编号只作为作者�
 
 - 每条排序项包含：拖拽手柄、优先级编号、排序字段 Select、方向 Select、删除。
 - 方向 Select 固定选项：`升序`、`降序`。
-- 添加排序默认字段为 `标题`，默认方向为 `升序`。
+- 添加排序时字段保持未选择，默认方向为 `升序`；提交前必须选择排序字段。
 - 拖拽手柄使用 `IconName::EllipsisVertical`，通过 GPUI `on_drag` / `drag_over` / `on_drop` 重排排序优先级。
 - 删除使用 `IconName::Delete`。
 - 拖拽到自身时不改变顺序；拖拽到其他排序项时将源排序项移动到目标排序项位置。
@@ -183,7 +183,7 @@ ID 类字段不在筛选字段选择器中单独暴露；编号只作为作者�
 - `MultiSelectCombobox<T>`：多选、搜索过滤、下拉列表、已选 chip、chip 删除、空结果。
 - `EntityPicker<T>`：单选实体选择器，支持搜索、编号/名称双行展示、选中值摘要。
 - `ConditionValueEditor`：根据字段和条件选择具体值输入器。
-- `NumericRangeInput`：两个 `NumberInput` 组合，统一处理 min/max。
+- 范围条件直接组合两个绑定到 typed Form path 的 `NumberInput`，不维护额外的范围组件状态。
 
 这些组件先放在 `app/feiwen/src/features/query/` 目录下，不进入 `gpui-component`。
 

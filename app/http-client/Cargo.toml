@@ -19,6 +19,9 @@ HTTP requests.
 """
 category = "DeveloperTool"
 
+[package.metadata.bundle.deb]
+depends = ["libasound2"]
+
 [dependencies]
 gpui.workspace = true
 gpui_platform.workspace = true
@@ -26,14 +29,69 @@ gpui-component = { workspace = true, features = [
   "tree-sitter-languages",
 ] }
 gpui-component-assets.workspace = true
+gpui-form.workspace = true
+gpui-form-gpui-component.workspace = true
+gpui-operation = { workspace = true, features = ["tracing"] }
+gpui-tokio.workspace = true
 fluent-bundle = "0.16.0"
 unic-langid = "0.9.6"
 sys-locale = "0.3.2"
 
 url = "2.5.8"
+http = "1.4.2"
+mime = "0.3.17"
+mime_guess = "2.0.5"
+base64 = { version = "0.23.0", default-features = false, features = ["std"] }
+async-channel = "2.5.0"
+async-compression = { version = "0.4.42", default-features = false, features = [
+  "tokio",
+  "brotli",
+  "gzip",
+  "zlib",
+  "zstd",
+] }
+bytes = "1.12.0"
+bytemuck = { version = "1.25.0", features = ["extern_crate_alloc"] }
+encoding_rs = "0.8.35"
+futures-util = "0.3.33"
+hayro = "0.7.1"
+image = { version = "0.25.10", default-features = false, features = [
+  "gif",
+  "jpeg",
+  "png",
+  "webp",
+] }
+rodio = { version = "=0.22.2", default-features = false, features = [
+  "playback",
+  "symphonia-aac",
+  "symphonia-flac",
+  "symphonia-isomp4",
+  "symphonia-mkv",
+  "symphonia-mp3",
+  "symphonia-ogg",
+  "symphonia-pcm",
+  "symphonia-vorbis",
+  "symphonia-wav",
+] }
+reqwest = { version = "0.13.4", default-features = false, features = [
+  "rustls",
+  "http2",
+  "multipart",
+  "stream",
+  "system-proxy",
+] }
+serde_json = "1.0.151"
+tempfile = "3.27.0"
 thiserror = "2.0.19"
+tokio = { version = "1.53.1", features = ["fs", "io-util", "time"] }
+tokio-util = { version = "0.7.19", features = ["io"] }
 
 # log
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
 dirs-next = "2.0.0"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+http-client-test-server = { path = "../../crates/http-client-test-server" }
+tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread"] }

@@ -1,0 +1,5 @@
+error: unsupported FormSchema field option
+ --> tests/ui/vnext/fail/removed_array.rs:3:12
+  |
+3 |     #[form(array(id = "id"))]
+  |            ^^^^^

@@ -1,121 +1,187 @@
-use gpui::*;
+use gpui::{
+    App, Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Window, div, px,
+};
 use gpui_component::{
-    ActiveTheme,
-    input::{Input, InputEvent, InputState},
-    select::SelectItem,
+    ActiveTheme as _,
+    input::{Input, InputState},
+    select::{SelectItem, SelectState},
+    v_flex,
+};
+use gpui_form::{ControlBinding, ControlProjection, DynamicPath, Form};
+use gpui_form_gpui_component::FormInput;
+
+use crate::{
+    features::request::{
+        controls::FormScalarSelect,
+        draft::{RequestDraft, TextBodyDraft, TextBodyFormat},
+    },
+    foundation::I18n,
 };
 
-use crate::features::request::body::{HttpBodyEvent, HttpBodyForm};
-
-#[derive(Default, Clone, Copy, PartialEq)]
-pub enum TextType {
-    #[default]
-    Plaintext,
-    Json,
-    Html,
-    Xml,
-    Javascript,
-    Css,
+#[derive(Clone)]
+struct TextFormatOption {
+    value: TextBodyFormat,
+    title: SharedString,
 }
 
-impl TextType {
-    fn language(&self) -> &'static str {
-        match self {
-            TextType::Plaintext => "plaintext",
-            TextType::Json => "json",
-            TextType::Html => "html",
-            TextType::Xml => "xml",
-            TextType::Javascript => "javascript",
-            TextType::Css => "css",
-        }
-    }
-}
-
-impl SelectItem for TextType {
-    type Value = TextType;
+impl SelectItem for TextFormatOption {
+    type Value = TextBodyFormat;
 
     fn title(&self) -> SharedString {
-        match self {
-            TextType::Plaintext => "Plain Text".into(),
-            TextType::Json => "JSON".into(),
-            TextType::Html => "HTML".into(),
-            TextType::Xml => "XML".into(),
-            TextType::Javascript => "JavaScript".into(),
-            TextType::Css => "CSS".into(),
-        }
+        self.title.clone()
     }
 
     fn value(&self) -> &Self::Value {
-        self
+        &self.value
     }
 }
 
-#[derive(Default, Clone)]
-pub struct HttpText {
-    pub(crate) text: String,
-    pub(crate) text_type: TextType,
-}
+type TextFormatOptions = Vec<TextFormatOption>;
 
-pub struct HttpTextView {
-    form: Entity<HttpBodyForm>,
-    input_state: Entity<InputState>,
-    _subscription: Vec<Subscription>,
+const TEXT_BODY_FORMATS: [TextBodyFormat; 6] = [
+    TextBodyFormat::PlainText,
+    TextBodyFormat::Json,
+    TextBodyFormat::JavaScript,
+    TextBodyFormat::Html,
+    TextBodyFormat::Xml,
+    TextBodyFormat::Css,
+];
+
+pub(super) struct HttpTextView {
+    format_preset: FormScalarSelect<RequestDraft, TextFormatOptions, TextBodyFormat>,
+    content: FormInput,
+    _syntax_binding: ControlBinding,
 }
 
 impl HttpTextView {
-    pub(crate) fn new(
-        form: Entity<HttpBodyForm>,
+    pub(super) fn new(
+        form: Entity<Form<RequestDraft>>,
+        text: DynamicPath<RequestDraft, TextBodyDraft>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let text = form.read(cx).text.text.to_string();
-        let text_type = form.read(cx).text.text_type;
-        let input_state = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .code_editor(text_type.language()) // Language for syntax highlighting
-                .line_number(true) // Show line numbers
-                .searchable(true) // Enable search functionality
-                .default_value(text)
-        });
-        let _subscription = vec![
-            cx.subscribe_in(&form, window, Self::subcription_in),
-            cx.subscribe_in(&input_state, window, |this, state, event, _window, cx| {
-                if let InputEvent::Change = event {
-                    let text = state.read(cx).value().to_string();
-                    this.form.update(cx, |_form, cx| {
-                        cx.emit(HttpBodyEvent::SetText(text));
-                    });
-                }
-            }),
-        ];
+        let format_path = text.clone().then(TextBodyDraft::FORMAT);
+        let content_path = text.then(TextBodyDraft::CONTENT);
+        let initial_format = format_path.try_get(&form, cx).unwrap_or_default();
+        let content = FormInput::try_new(
+            &form,
+            content_path,
+            move |window, cx| {
+                InputState::new(window, cx)
+                    .multi_line(true)
+                    .code_editor(initial_format.editor_language())
+                    .line_number(true)
+                    .searchable(true)
+            },
+            window,
+            cx,
+        )
+        .expect("the Text case was resolved immediately before its controls were built");
+        let options = text_format_options(cx);
+        let format_preset = FormScalarSelect::try_new(
+            &form,
+            format_path.clone(),
+            move |window, cx| SelectState::new(options, None, window, cx),
+            window,
+            cx,
+        )
+        .expect("the Text format path is active while its view is being built");
+        let content_state = (*content).clone();
+        let (syntax_binding, _writer) = format_path
+            .try_bind_control_in(
+                &form,
+                &content_state,
+                |state, projection, _window, cx| match projection {
+                    ControlProjection::Value(format) => {
+                        state.set_highlighter(format.editor_language(), cx);
+                    }
+                    ControlProjection::Retired => {}
+                },
+                window,
+                cx,
+            )
+            .expect("the Text format path is active while its view is being built");
         Self {
-            form,
-            input_state,
-            _subscription,
-        }
-    }
-    fn subcription_in(
-        &mut self,
-        _subscriber: &Entity<HttpBodyForm>,
-        emitter: &HttpBodyEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let HttpBodyEvent::SetTextType(text_type) = emitter {
-            self.input_state.update(cx, |state, cx| {
-                state.set_highlighter(text_type.language(), cx);
-            });
+            format_preset,
+            content,
+            _syntax_binding: syntax_binding,
         }
     }
 }
 
 impl Render for HttpTextView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div().p_2().flex_1().child(
-            Input::new(&self.input_state)
-                .h_full()
-                .font_family(cx.theme().mono_font_family.clone()),
-        )
+        v_flex()
+            .p_2()
+            .gap_2()
+            .flex_1()
+            .min_h(px(0.))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .w(px(180.))
+                    .child(self.format_preset.element()),
+            )
+            .child(
+                div().flex_1().min_h(px(0.)).overflow_hidden().child(
+                    Input::new(&self.content)
+                        .size_full()
+                        .font_family(cx.theme().mono_font_family.clone()),
+                ),
+            )
+    }
+}
+
+fn text_format_options(cx: &App) -> TextFormatOptions {
+    let i18n = cx.global::<I18n>();
+    TEXT_BODY_FORMATS
+        .into_iter()
+        .map(|value| TextFormatOption {
+            value,
+            title: i18n.t(text_format_i18n_key(value)).into(),
+        })
+        .collect()
+}
+
+const fn text_format_i18n_key(format: TextBodyFormat) -> &'static str {
+    match format {
+        TextBodyFormat::PlainText => "text-format-plain",
+        TextBodyFormat::Json => "text-format-json",
+        TextBodyFormat::JavaScript => "text-format-javascript",
+        TextBodyFormat::Html => "text-format-html",
+        TextBodyFormat::Xml => "text-format-xml",
+        TextBodyFormat::Css => "text-format-css",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_format_selector_has_only_supported_fixed_formats() {
+        assert_eq!(
+            TEXT_BODY_FORMATS,
+            [
+                TextBodyFormat::PlainText,
+                TextBodyFormat::Json,
+                TextBodyFormat::JavaScript,
+                TextBodyFormat::Html,
+                TextBodyFormat::Xml,
+                TextBodyFormat::Css,
+            ]
+        );
+        assert_eq!(
+            TEXT_BODY_FORMATS.map(TextBodyFormat::media_type),
+            [
+                "text/plain",
+                "application/json",
+                "application/javascript",
+                "text/html",
+                "application/xml",
+                "text/css",
+            ]
+        );
     }
 }

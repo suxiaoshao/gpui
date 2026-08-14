@@ -25,6 +25,9 @@ gpui.workspace = true
 gpui_platform.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
+gpui-form.workspace = true
+gpui-form-gpui-component.workspace = true
+gpui-operation = { workspace = true, features = ["tracing"] }
 fluent-bundle = "0.16.0"
 unic-langid = "0.9.6"
 sys-locale = "0.3.2"
@@ -36,11 +39,11 @@ thiserror = "2.0.19"
 reqwest = { version = "0.13.4", features = [
     "gzip",
     "charset",
-    "query"
+    "query",
+    "rustls"
 ], default-features = false }
 
 # parser
-nom = "8.0.0"
 scraper = "0.27.0"
 
 # async
@@ -51,7 +54,11 @@ async-compat = "0.2.5"
 # path
 dirs-next = "2.0.0"
 smol = "2.0.2"
+tempfile = "3.27.0"
 
 # log
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

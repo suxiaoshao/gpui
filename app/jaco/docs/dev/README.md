@@ -8,6 +8,7 @@
 | [#173](https://github.com/suxiaoshao/gpui/issues/173) ConversationEntry 与 AgentRun 分层重建 | 实现完成，自动化、bundle、隔离数据启动与窗口交互 smoke 均已验证 | [issue-173/README.md](issue-173/README.md) |
 | [#175](https://github.com/suxiaoshao/gpui/issues/175) 纯 UI ChatForm、快捷键运行设置与临时窗口 | 设计、实现、自动化测试、残留 API 和文档一致性审计已完成；已完成 home、provider、shortcut 定向 UI smoke，临时窗口全局快捷键与有数据列表流程待人工验证 | [设计（中文）](issue-175/design.zh-CN.md)、[Design (English)](issue-175/design.md)、[文档索引](issue-175/README.zh-CN.md) |
 | [#177](https://github.com/suxiaoshao/gpui/issues/177) Jaco 启动状态初始化、同步与刷新 | Store + Operation 接入已实施并通过自动化验证；UI 场景待人工测试，跨范围问题保留在草稿 | [issue-177/README.md](issue-177/README.md) |
+| [#199](https://github.com/suxiaoshao/gpui/issues/199) Form 多轮迁移与 Conversation runtime | `Done`；Form consumer 迁移及 Conversation 私有 Transition 已交付；实际 UI、打包与跨平台 CI 未执行 | [issue-199/README.md](issue-199/README.md) |
 
 ## 跨功能迁移
 
@@ -22,6 +23,5 @@
   parse-time highlight theme，因此主题切换验收受上游
   [`UPSTREAM-TEXT-15`](../../../../docs/dev/migrations/gpui-1a246efd-component-5b45bcb/upstream-text-theme.md)
   阻断；Jaco 不添加主题监听或重解析 workaround。
-- [Jaco gpui-form 类型化双向绑定迁移](gpui-form-migration.md)：源码、自动化验证、依赖升级、
-  `trybuild` compile-fail harness、residual audit 与定向 Computer Use smoke 已完成；临时窗口
-  全局快捷键与有数据列表键盘流程仍需人工验证。
+- [Jaco gpui-form 类型化双向绑定迁移（Issue #175 历史归档）](issue-175/gpui-form-migration.md)：
+  由 PR #176 交付，旧 API 计划已被 [Issue #199](issue-199/README.md) 取代。

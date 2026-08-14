@@ -1,0 +1,5 @@
+error: `required` is only supported on leaf fields
+ --> tests/ui/vnext/fail/container_validation.rs:3:19
+  |
+3 |     #[form(child, required)]
+  |                   ^^^^^^^^

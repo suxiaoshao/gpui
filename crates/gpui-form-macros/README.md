@@ -2,77 +2,110 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-`gpui-form-macros` provides `#[derive(FormStore)]` for `gpui-form`. It generates
-a typed form store, field identities and schema, typed field access, validation
-traversal, and submit-preparation glue from an ordinary Rust model.
+`gpui-form-macros` provides `#[derive(FormSchema)]`, the schema declaration
+layer of `gpui-form`. Derive it for an editable Rust model; the runtime crate
+then creates one `Entity<Form<M>>` editing session for that model.
 
-> **Implementation status:** this README documents the implemented public API.
-> See the [implementation plan](dev/form-store-derive.md) for verification
-> evidence.
+Applications normally depend on `gpui-form`, which re-exports the derive:
 
-## Usage
+```toml
+[dependencies]
+gpui.workspace = true
+gpui-form.workspace = true
+```
+
+## Static descriptors, explicit form ownership
+
+The derive creates one static, typed descriptor per field. A descriptor is
+schema data only: it never owns a `Form`, a weak form reference, a value, or a
+control. Pass the current strong `Entity<Form<M>>` explicitly whenever a path
+is read or changed.
 
 ```rust,ignore
-use gpui::AppContext as _;
-use gpui_form::FormStore as _;
+use gpui::Entity;
+use gpui_form::{Form, FormSchema};
 
-#[derive(Clone, Debug, PartialEq, gpui_form::FormStore)]
-struct ProviderInput {
-    #[form(required, validate(on_change, on_blur))]
+#[derive(Clone, FormSchema)]
+struct ProviderDraft {
     name: String,
     retry_limit: u32,
 }
 
-let form = cx.new(|cx| {
-    ProviderInputFormStore::from_value(
-        ProviderInput {
-            name: String::new(),
-            retry_limit: 3,
-        },
-        cx,
-    )
+let form: Entity<Form<ProviderDraft>> = cx.new(|_| {
+    Form::new(ProviderDraft {
+        name: "primary".to_owned(),
+        retry_limit: 3,
+    })
 });
 
-let name = ProviderInputFormStore::name_field(&form);
-name.set("OpenAI".to_owned(), cx)?;
-
-let output = form.update(cx, |form, cx| form.prepare_submit(cx))?;
-assert_eq!(output.name, "OpenAI");
+let name: String = ProviderDraft::NAME.get(&form, cx);
+let changed: bool = ProviderDraft::NAME.set(&form, "backup".to_owned(), cx);
 ```
 
-This generates `ProviderInputFormStore`, `ProviderInputField`, static field
-schema and paths, and type-preserving accessors. `required` always participates
-in submit validation; `validate(...)` adds earlier triggers.
+`ProviderDraft::NAME` is a `FieldDef<ProviderDraft, String>`, which is also a
+total path. A total path has no runtime-dependent boundary, so `get` and `set`
+are infallible. `set` returns whether the model actually changed.
 
-The generated store contains one internal, doc-hidden
-`FormRuntime<Model, ValidationContext>`; callers do not access that runtime
-directly. Validation and submit behavior are selected by the
-`FormStore::ValidationAdapter` and
-`FormStore::SubmitTransform` associated types; both require `Default + 'static`
-and are constructed only when validation or transformation runs, rather than
-being stored as instances. Validation queries such as `validation_report()` and
-`errors_at(path)` return owned snapshots.
+## Describe nested shapes
 
-The derive also supports Garde or custom validation adapters, submit
-transforms, generic models, nested groups, and stable-ID arrays. Nested models
-derive `FormStore` independently but do not create child form entities;
-generated `*_in`, `*_item`, and `*_item_in` accessors remain typed lenses over
-the one root form value. The macro generates only pure model projections and
-recursive stable-path schema resolution; the core `FormField` transaction owns
-commit, validation, events, and notification exactly once. Array containers,
-direct item roots, and item leaves therefore keep distinct schema ownership.
+Use attributes only where a field introduces structure:
 
-Use `#[form(store = ValueEditorStore)]` when the generated store needs an
-explicit name. This overrides only the store name; the field enum remains named
-after the model (`ModelField`).
+| Attribute | Model shape | Generated descriptor |
+| --- | --- | --- |
+| `#[form(child)]` | nested `FormSchema`, including `Option<Child>` | `ChildDef` |
+| `#[form(items)]` | `Vec<Item>` where `Item: FormSchema` | `ItemsDef` |
+| `#[form(required)]` | leaf field | required validation metadata |
+| `#[form(validate(...))]` | leaf field | validation trigger metadata |
 
-The macro does not generate UI controls, component configuration, raw drafts,
-codecs, focus/touched/blurred state, submit tasks, busy flags, retry policy, or
-persistence. Controls belong to adapter crates, while request lifecycle and
-persistence belong to the application.
+Required children compose into total paths with `then`. Collection items,
+active enum cases, and active optional children produce dynamic paths. Dynamic
+paths use `try_get` and `try_set`, because the runtime location can retire.
 
-## Documentation
+```rust,ignore
+let city = ProfileDraft::ADDRESS.then(AddressDraft::CITY);
+let city: String = city.get(&form, cx);
+```
 
-- [User guide](docs/guide.md)
-- [使用指南（中文）](docs/guide.zh-CN.md)
-- [Documentation index](docs/README.md)
+The full guide covers optional and enum resolvers, recursive collections,
+validation, and submission:
+
+- [English guide](docs/guide.md)
+- [中文指南](docs/guide.zh-CN.md)
+
+## Runtime-owned item identity
+
+Models do not carry form navigation IDs and do not implement an identity trait
+for this derive. The Form session creates an opaque occurrence whenever an item,
+enum case, or optional payload becomes active. Applications obtain typed item
+paths only by enumerating a collection or by using collection mutation methods.
+
+This makes recursive typed trees possible without string paths or application
+counters. Reordering an item in the same parent preserves its identity; removal
+and re-insertion, reactivating a case or optional payload, and cross-parent
+movement create a fresh occurrence. A retired dynamic path reports a resolution
+error instead of silently targeting a later value.
+
+## Validation and accepted snapshots
+
+`#[form(validate(...))]` may opt a field into `on_mount`, `on_change`,
+`on_blur`, `on_external`, or `on_submit`. `on_external` is for a changed
+catalog or other application-owned dependency; it is not related to a dynamic
+path. Unless a trigger is declared, normal business validation runs at submit.
+
+Validators receive one snapshot-bound request and read its model through
+`request.model()`. A prepared submission carries an opaque, session-bound
+`FormVersion`. After application-owned I/O completes, use that version with
+`rebase_if_current`; an old response then cannot overwrite newer edits or a
+different form session.
+
+## Compile-time diagnostics
+
+The derive rejects unsupported declarations near the model definition:
+
+- generic structs or enums, tuple structs, and unions;
+- `#[form(items)]` on anything other than a supported `Vec<Item>` schema;
+- struct-like enum variants or variants with multiple payload fields; and
+- the removed `#[form(identity)]` attribute.
+
+Supported enum variants are unit variants or variants with one concrete tuple
+payload implementing `FormSchema`. See the guide for complete examples.

@@ -1,3 +1,4 @@
+pub(crate) mod resource;
 pub(crate) mod titlebar;
 mod workspace;
 

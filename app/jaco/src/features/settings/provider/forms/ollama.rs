@@ -1,10 +1,5 @@
-#[derive(Clone, Debug, PartialEq, gpui_form::FormStore, garde::Validate)]
+#[derive(Clone, Debug, PartialEq, gpui_form::FormSchema, garde::Validate)]
 #[garde(context(super::ProviderValidationContext))]
-#[form(
-    store = OllamaProviderFormStore,
-    validation(adapter = "garde", messages = super::JacoGardeMessageProvider),
-    transform(adapter = super::OllamaProviderTransform)
-)]
 pub(in crate::features::settings::provider) struct OllamaProviderFormInput {
     #[garde(skip)]
     pub(super) enabled: bool,

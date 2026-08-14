@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use gpui::{App, Entity, Task};
+use gpui::{App, Entity};
 
 use super::project_control::ProjectControlState;
 
@@ -45,7 +45,7 @@ impl<T> ControlSlot<T> {
 
 #[derive(Clone, Default)]
 pub(crate) struct AttachmentControlState {
-    pub(crate) form: Option<Entity<crate::components::chat::input::ChatInputFormStore>>,
+    pub(crate) attachments: Vec<crate::features::conversation::attachments::ComposerAttachment>,
 }
 
 #[derive(Clone, Default)]
@@ -55,6 +55,7 @@ pub(crate) struct AddAttachmentControl;
 pub(crate) enum AgentRunControlStatus {
     #[default]
     Idle,
+    Submitting,
     Running,
     Stopping,
 }
@@ -65,27 +66,14 @@ pub(crate) trait AgentRunStatusSource {
 
 #[derive(Default)]
 pub(crate) struct PrimaryActionControlState {
-    submission_task: Option<Task<()>>,
     agent_run_status: Option<Rc<dyn AgentRunStatusSource>>,
 }
 
 impl PrimaryActionControlState {
-    pub(crate) fn submission_pending(&self) -> bool {
-        self.submission_task.is_some()
-    }
-
     pub(crate) fn agent_status(&self, cx: &App) -> AgentRunControlStatus {
         self.agent_run_status
             .as_ref()
             .map_or(AgentRunControlStatus::Idle, |source| source.status(cx))
-    }
-
-    pub(crate) fn begin_submission(&mut self, task: Task<()>) {
-        self.submission_task = Some(task);
-    }
-
-    pub(crate) fn finish_submission(&mut self) {
-        self.submission_task.take();
     }
 
     pub(crate) fn set_agent_run_status(&mut self, source: Rc<dyn AgentRunStatusSource>) {

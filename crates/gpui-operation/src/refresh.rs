@@ -266,7 +266,7 @@ fn trace_ignored<Message>(phase: Phase) {
     );
 
     #[cfg(not(feature = "tracing"))]
-    let _ = phase;
+    let _ = (phase, std::any::type_name::<Message>());
 }
 
 // ── Complete runtime enum transitions ──────────────────────────────────

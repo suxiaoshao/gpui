@@ -1,5 +1,15 @@
 # Workspace development plans
 
+## Feature plans
+
+| Issue | 状态 | 入口 |
+| --- | --- | --- |
+| [#200](https://github.com/suxiaoshao/gpui/issues/200) HTTP Client Response 音频迁移与 GStreamer 删除 | `In progress`；Rodio/CPAL/Symphonia 替换 GStreamer，保留 PDF、删除视频与全部 GStreamer 产品/打包链路 | [issue-200/README.md](issue-200/README.md) |
+| [#199](https://github.com/suxiaoshao/gpui/issues/199) form owner、app store/form/operation 与 Transition 重构 | `Done`；显式 owner v2、Form vNext、Feiwen、Jaco（含 Conversation 私有 Transition）与 HTTP Client 基础单请求已交付；历史媒体计划已由 #200 的 Rodio 迁移取代，MCP runtime 已移交 #201 | [issue-199/README.md](issue-199/README.md) |
+| [#175](https://github.com/suxiaoshao/gpui/issues/175) previous typed form delivery | Issue/PR 已完成；form API 计划被 #199 取代 | [issue-175/README.md](issue-175/README.md) |
+
+## Framework migrations
+
 这里仅登记跨 workspace 的迁移批次。每次框架迁移使用独立的目标版本或 Git hash 标识，
 不会用一个无版本文件覆盖历史计划；具体 app/crate 的实现内容放在各自的 `docs/dev`。
 
@@ -9,6 +19,9 @@
 
 ## 目录约定
 
+- `docs/dev/issue-<number>/README.md`：跨 owner feature/refactor 的总指导、状态、顺序与命名专题文档索引；多轮任务的执行细节写入独立文件。
+- `app/<name>/docs/dev/issue-<number>/README.md`、
+  `crates/<name>/docs/dev/issue-<number>/README.md`：同一 issue 的 owner状态与专题文档索引；历史单轮README保持原样归档。
 - `docs/dev/migrations/<target-id>/README.md`：只保存跨 workspace 的顺序、发布门和子计划索引。
 - `docs/dev/migrations/<target-id>/workspace.md`：root manifest/toolchain、dependency graph 与最终 CI 门。
 - `docs/dev/migrations/<target-id>/dependency-evidence.md`：共享依赖与上游证据。

@@ -1,10 +1,15 @@
-# gpui-form-macros documentation
+# `gpui-form-macros` documentation
 
-## Library documentation
+This documentation describes the current `#[derive(FormSchema)]` workflow. The
+macro creates typed schema definitions; the `gpui-form` runtime uses those
+definitions with a single `Form<M>` editing session.
 
-- [User guide (English)](guide.md)
-- [使用指南（中文）](guide.zh-CN.md)
+## Start here
 
-The guide documents generated stores and fields, custom names, generic/`where`
-preservation, Garde context/I18n selection, stable array path mapping, and
-compile-time diagnostics.
+- [README](../README.md) is the shortest complete loop: a flat model,
+  `Form::new`, `Entity<Form<M>>`, root field read/write, `prepare`, and
+  conditional rebase after persistence.
+- [Guide](guide.md) builds that loop into nested children, optional values,
+  recursive items, enum cases, topology mutations, validators, and conditional
+  rebase after persistence.
+- [中文指南](guide.zh-CN.md) mirrors the guide in Chinese.
