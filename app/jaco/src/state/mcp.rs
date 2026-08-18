@@ -655,6 +655,7 @@ impl McpRuntimeStore {
 pub(crate) fn init(cx: &mut App) -> JacoResult<()> {
     let store = cx.new(McpRuntimeStore::new);
     cx.set_global(McpRuntimeGlobal(store));
+    oauth::init_credential_cleanup(cx);
     Ok(())
 }
 

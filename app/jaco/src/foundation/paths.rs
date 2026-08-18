@@ -30,12 +30,21 @@ pub(crate) fn database_file() -> JacoResult<PathBuf> {
 }
 
 pub(crate) fn normalize_lexically(path: PathBuf) -> PathBuf {
+    let is_absolute = path.is_absolute();
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
             std::path::Component::CurDir => {}
             std::path::Component::ParentDir => {
-                normalized.pop();
+                if normalized
+                    .components()
+                    .next_back()
+                    .is_some_and(|component| matches!(component, std::path::Component::Normal(_)))
+                {
+                    normalized.pop();
+                } else if !is_absolute {
+                    normalized.push(component.as_os_str());
+                }
             }
             other => normalized.push(other.as_os_str()),
         }
@@ -68,7 +77,9 @@ fn root_from(
     unavailable: JacoError,
 ) -> JacoResult<PathBuf> {
     if let Some(override_dir) = override_dir.filter(|value| !value.is_empty()) {
-        return Ok(normalize_lexically(PathBuf::from(override_dir)));
+        return std::path::absolute(PathBuf::from(override_dir))
+            .map(normalize_lexically)
+            .map_err(JacoError::from);
     }
     base.ok_or(unavailable)
         .map(|base| normalize_lexically(base.join(APP_NAME)))
@@ -80,7 +91,9 @@ mod tests {
 
     #[test]
     fn override_paths_share_root() {
-        let root = PathBuf::from("/tmp/jaco/../isolated");
+        let current_dir = std::env::current_dir().expect("resolve current directory");
+        let root = current_dir.join("tmp/jaco/../isolated");
+        let expected = normalize_lexically(current_dir.join("tmp/isolated"));
         let (config, data) = roots_from(
             Some(root.into_os_string()),
             Some(PathBuf::from("/config")),
@@ -88,28 +101,79 @@ mod tests {
         )
         .expect("resolve override roots");
 
-        assert_eq!(config, PathBuf::from("/tmp/isolated"));
+        assert_eq!(config, expected);
         assert_eq!(data, config);
         assert_eq!(
             config.join(CONFIG_FILE_NAME),
-            PathBuf::from("/tmp/isolated/config.toml")
+            expected.join(CONFIG_FILE_NAME)
         );
-        assert_eq!(
-            config.join(STATE_FILE_NAME),
-            PathBuf::from("/tmp/isolated/state.toml")
-        );
+        assert_eq!(config.join(STATE_FILE_NAME), expected.join(STATE_FILE_NAME));
         assert_eq!(
             data.join(jaco_db::DATABASE_FILE),
-            PathBuf::from("/tmp/isolated/jaco.sqlite3")
+            expected.join(jaco_db::DATABASE_FILE)
         );
     }
 
     #[test]
     fn override_does_not_require_platform_bases() {
-        let (config, data) = roots_from(Some(OsString::from("/isolated")), None, None)
+        let expected = std::env::current_dir()
+            .expect("resolve current directory")
+            .join("isolated");
+        let (config, data) = roots_from(Some(expected.clone().into_os_string()), None, None)
             .expect("override replaces both platform bases");
 
-        assert_eq!(config, PathBuf::from("/isolated"));
+        assert_eq!(config, expected);
+        assert_eq!(data, config);
+    }
+
+    #[test]
+    fn relative_override_paths_resolve_from_current_directory() {
+        let current_dir = std::env::current_dir().expect("resolve current directory");
+        let expected = normalize_lexically(current_dir.join("isolated"));
+        let (config, data) = roots_from(
+            Some(OsString::from("./isolated")),
+            Some(PathBuf::from("/config")),
+            Some(PathBuf::from("/data")),
+        )
+        .expect("resolve relative override roots");
+
+        assert_eq!(config, expected);
+        assert_eq!(data, expected);
+        assert!(config.is_absolute());
+    }
+
+    #[test]
+    fn parent_relative_override_paths_preserve_parent_directory() {
+        let current_dir = std::env::current_dir().expect("resolve current directory");
+        let expected = normalize_lexically(current_dir.join("../isolated"));
+        let (config, data) = roots_from(
+            Some(OsString::from("../isolated")),
+            Some(PathBuf::from("/config")),
+            Some(PathBuf::from("/data")),
+        )
+        .expect("resolve parent-relative override roots");
+
+        assert_eq!(config, expected);
+        assert_eq!(data, expected);
+        assert!(config.is_absolute());
+    }
+
+    #[test]
+    fn relative_lexical_normalization_preserves_unresolved_parent() {
+        assert_eq!(
+            normalize_lexically(PathBuf::from("../../isolated")),
+            PathBuf::from("../../isolated")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn drive_relative_override_becomes_absolute() {
+        let (config, data) = roots_from(Some(OsString::from(r"C:isolated")), None, None)
+            .expect("resolve drive-relative override root");
+
+        assert!(config.is_absolute());
+        assert!(config.ends_with("isolated"));
         assert_eq!(data, config);
     }
 

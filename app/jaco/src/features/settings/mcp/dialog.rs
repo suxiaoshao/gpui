@@ -9,7 +9,7 @@ use fluent_bundle::FluentArgs;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled,
-    Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, relative,
+    Subscription, Task, Window, div, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
@@ -437,21 +437,18 @@ impl McpServerEditDialogState {
         }
         let credential_count = credential_keys.len();
         let window_handle = window.window_handle();
-        let task = cx.spawn(async move |_dialog, cx| {
-            let mut failure_count = 0usize;
-            for key in &credential_keys {
-                if state::mcp::oauth::delete_credentials_if_unreferenced_in_app(key, cx)
-                    .await
-                    .is_err()
+        state::mcp::oauth::schedule_credential_cleanup(
+            credential_keys,
+            move |result, cx| {
+                if credential_cleanup_outcome(result.failure_count)
+                    != CredentialCleanupOutcome::WarnOnly
                 {
-                    failure_count += 1;
+                    return;
                 }
-            }
-            if credential_cleanup_outcome(failure_count) == CredentialCleanupOutcome::WarnOnly {
                 event!(
                     Level::ERROR,
                     credential_count,
-                    failure_count,
+                    failure_count = result.failure_count,
                     "MCP OAuth credential cleanup failed after config commit"
                 );
                 let _ = window_handle.update(cx, |_, window, cx| {
@@ -465,9 +462,9 @@ impl McpServerEditDialogState {
                         cx,
                     );
                 });
-            }
-        });
-        crate::app::tasks::retain_application(task, cx);
+            },
+            cx,
+        );
     }
 
     fn finish_oauth_after_save(
@@ -769,26 +766,21 @@ impl McpServerEditDialogState {
             return;
         }
         let credential_count = credential_keys.len();
-        let task = cx.spawn(async move |_dialog, cx| {
-            let mut failure_count = 0usize;
-            for key in &credential_keys {
-                if state::mcp::oauth::delete_credentials_if_unreferenced_in_app(key, cx)
-                    .await
-                    .is_err()
-                {
-                    failure_count += 1;
+        state::mcp::oauth::schedule_credential_cleanup(
+            credential_keys,
+            move |result, _cx| {
+                if result.failure_count == 0 {
+                    return;
                 }
-            }
-            if failure_count > 0 {
                 event!(
                     Level::ERROR,
                     credential_count,
-                    failure_count,
+                    failure_count = result.failure_count,
                     "MCP draft OAuth credential cleanup failed"
                 );
-            }
-        });
-        crate::app::tasks::retain_application(task, cx);
+            },
+            cx,
+        );
     }
 
     fn clear_draft_oauth_authorization(&mut self, cx: &mut Context<Self>) {
@@ -1613,16 +1605,6 @@ fn confirm_mcp_server_edit_dialog(
     form.update(cx, |form, cx| form.save(window, cx))
 }
 
-async fn delete_oauth_credentials(
-    credential_keys: &[state::mcp::oauth::CredentialsKey],
-    cx: &mut gpui::AsyncWindowContext,
-) -> Result<(), String> {
-    for credential_key in credential_keys {
-        state::mcp::oauth::delete_credentials(credential_key, cx).await?;
-    }
-    Ok(())
-}
-
 async fn delete_oauth_credentials_for_sign_out(
     request: McpOAuthSignOutRequest,
     cx: &mut gpui::AsyncWindowContext,
@@ -1673,12 +1655,7 @@ fn configured_oauth_status(server: &McpServerTomlConfig) -> McpOAuthStatusSnapsh
     }
 }
 
-pub(super) fn open_mcp_server_delete_confirm(
-    server_id: String,
-    page: WeakEntity<super::McpSettingsPage>,
-    window: &mut Window,
-    cx: &mut App,
-) {
+pub(super) fn open_mcp_server_delete_confirm(server_id: String, window: &mut Window, cx: &mut App) {
     let mut args = FluentArgs::new();
     args.set("server", server_id.clone());
     let title = cx.global::<I18n>().t("mcp-delete-title");
@@ -1705,39 +1682,30 @@ pub(super) fn open_mcp_server_delete_confirm(
             let delete_failed_title = delete_failed_title.clone();
             let config_result = state::config::delete_mcp_server(cx, &server_id);
             let Err(error) = config_result else {
-                let page_for_task = page.clone();
-                let task = window.spawn(cx, async move |cx| {
-                    let credentials_result =
-                        delete_oauth_credentials(&credential_keys_to_delete, cx).await;
-                    if let Err(err) = cx.update(|window, cx| {
-                        let (message, notification_type) = match credentials_result {
-                            Ok(()) => (None, NotificationType::Success),
-                            Err(error) => (Some(error.to_string()), NotificationType::Warning),
+                disconnect_server(server_id, window, cx);
+                let window_handle = window.window_handle();
+                state::mcp::oauth::schedule_credential_cleanup(
+                    credential_keys_to_delete,
+                    move |result, cx| {
+                        let (message, notification_type) = if result.failure_count == 0 {
+                            (None, NotificationType::Success)
+                        } else {
+                            (result.first_error, NotificationType::Warning)
                         };
-                        disconnect_server(server_id.clone(), window, cx);
                         let mut notification = Notification::new()
                             .title(deleted_title.clone())
                             .with_type(notification_type);
                         if let Some(message) = message {
                             notification = notification.message(message);
                         }
-                        window.push_notification(notification, cx);
-                    }) {
-                        event!(Level::ERROR, error = ?err, "finish mcp server delete failed");
-                    }
-                    if let Err(err) = page_for_task.update(cx, |page, cx| {
-                        page.delete_task = None;
-                        cx.notify();
-                    }) {
-                        event!(Level::ERROR, error = ?err, "clear mcp server delete task failed");
-                    }
-                });
-                if let Err(err) = page.update(cx, |page, cx| {
-                    page.delete_task = Some(task);
-                    cx.notify();
-                }) {
-                    event!(Level::ERROR, error = ?err, "store mcp server delete task failed");
-                }
+                        if let Err(err) = window_handle.update(cx, |_, window, cx| {
+                            window.push_notification(notification, cx);
+                        }) {
+                            event!(Level::ERROR, error = ?err, "finish mcp server delete failed");
+                        }
+                    },
+                    cx,
+                );
                 return;
             };
             push_settings_error(window, cx, delete_failed_title.clone(), error);

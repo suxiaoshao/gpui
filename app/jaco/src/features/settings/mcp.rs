@@ -45,7 +45,6 @@ impl Select<state::config::ConfigOperation> for SelectMcpConfig {
 pub(super) struct McpSettingsPage {
     search_input: Entity<InputState>,
     selected_server_id: Option<String>,
-    delete_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -72,7 +71,6 @@ impl McpSettingsPage {
         Self {
             search_input,
             selected_server_id: None,
-            delete_task: None,
             _subscriptions,
         }
     }
@@ -170,10 +168,7 @@ impl McpSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.delete_task.is_some() {
-            return;
-        }
-        dialog::open_mcp_server_delete_confirm(server_id, cx.entity().downgrade(), window, cx);
+        dialog::open_mcp_server_delete_confirm(server_id, window, cx);
     }
 
     fn toggle_server_enabled(
