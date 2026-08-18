@@ -1,10 +1,10 @@
 use crate::{
-    app::APP_NAME,
+    app::file_watch::{self, FileWatchBinding},
     errors::{JacoError, JacoResult},
-    foundation::persistence,
+    foundation::{paths, persistence},
 };
-use gpui::{App, AppContext, Task};
-use gpui_operation::{Complete, Refresh, Repair, Settle, Transition, repair};
+use gpui::{App, AppContext, Context, Entity, Global, Subscription, Task};
+use gpui_operation::{Complete, Load, Refresh, Repair, Settle, Transition, repair};
 use gpui_store::{Select, Store};
 use jaco_core::{
     AppLanguage, AppSettingsPayload, AppThemeMode, AppThemeSettings, ProjectId, ProviderId,
@@ -13,12 +13,12 @@ use jaco_core::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    ffi::OsString,
     fs,
     io::ErrorKind,
     ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 mod mcp;
@@ -28,16 +28,12 @@ pub(crate) use mcp::McpToolApprovalMode;
 pub(crate) use mcp::{
     McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind, delete_mcp_server,
     is_reserved_mcp_header, is_valid_mcp_env_var_name, is_valid_mcp_server_id,
-    set_mcp_server_enabled, upsert_mcp_server,
+    set_mcp_server_enabled, upsert_mcp_server_if_unchanged,
 };
 
-const CONFIG_FILE_NAME: &str = "config.toml";
-pub(crate) const CONFIG_DIR_ENV: &str = "JACO_CONFIG_DIR";
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub(crate) struct JacoConfig {
-    pub(crate) storage: StorageConfig,
     pub(crate) app_settings: AppSettingsConfig,
     pub(crate) chat_form: ChatFormConfig,
     pub(crate) mcp_servers: BTreeMap<String, McpServerTomlConfig>,
@@ -46,6 +42,29 @@ pub(crate) struct JacoConfig {
 pub(crate) type ConfigOperation =
     repair::Operation<ConfigData, ConfigProblem, ConfigRepair, Task<()>>;
 pub(crate) type JacoConfigStore = Store<ConfigOperation>;
+
+struct ConfigFileObserver {
+    _binding: Option<FileWatchBinding>,
+    _config_subscription: Option<Subscription>,
+    probe_task: Option<Task<()>>,
+    pending_dirty: bool,
+}
+
+#[derive(Clone)]
+struct ConfigFileObserverGlobal {
+    _observer: Entity<ConfigFileObserver>,
+}
+
+impl Global for ConfigFileObserverGlobal {}
+
+#[derive(Clone)]
+struct ConfigProbeStart {
+    source_bytes: Option<Vec<u8>>,
+}
+
+type ConfigProbeResult = Result<ConfigData, ConfigProblem>;
+
+const MISSING_CONFIRMATION_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ConfigGateStatus {
@@ -72,13 +91,6 @@ pub(crate) struct ConfigData {
     value: JacoConfig,
     path: PathBuf,
     source_bytes: Vec<u8>,
-    data_dir: PathBuf,
-}
-
-impl ConfigData {
-    pub(crate) fn data_dir(&self) -> &Path {
-        &self.data_dir
-    }
 }
 
 impl Deref for ConfigData {
@@ -109,8 +121,6 @@ pub(crate) enum ConfigProblem {
     Read { path: PathBuf, message: String },
     #[error("could not parse {path}: {message}")]
     Parse { path: PathBuf, message: String },
-    #[error("could not derive the database target from {path}: {message}")]
-    Target { path: PathBuf, message: String },
     #[error("another Jaco process is writing {path}: {message}")]
     Locked {
         path: PathBuf,
@@ -150,7 +160,6 @@ impl ConfigProblem {
         match self {
             Self::Read { path, .. }
             | Self::Parse { path, .. }
-            | Self::Target { path, .. }
             | Self::Locked { path, .. }
             | Self::ExternalChange { path, .. }
             | Self::Write { path, .. }
@@ -172,7 +181,6 @@ impl ConfigProblem {
             ConfigRepair::BackupAndCreateDefault => matches!(
                 self,
                 Self::Parse { .. }
-                    | Self::Target { .. }
                     | Self::Backup {
                         intent: ConfigBackupIntent::CreateDefault,
                         ..
@@ -215,12 +223,6 @@ pub(crate) enum ConfigRepair {
     RetryWrite,
     BackupAndCreateDefault,
     BackupAndOverwritePending,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(default)]
-pub(crate) struct StorageConfig {
-    pub(crate) data_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -284,29 +286,9 @@ pub(crate) struct JacoAppSettings {
     payload: AppSettingsPayload,
 }
 
-impl PartialEq for JacoConfig {
-    fn eq(&self, other: &Self) -> bool {
-        self.storage == other.storage
-            && self.app_settings == other.app_settings
-            && self.chat_form == other.chat_form
-            && self.mcp_servers == other.mcp_servers
-    }
-}
-
 impl JacoConfig {
     pub(crate) fn path() -> JacoResult<PathBuf> {
-        Ok(Self::config_dir()?.join(CONFIG_FILE_NAME))
-    }
-
-    pub(crate) fn config_dir() -> JacoResult<PathBuf> {
-        let dir = match override_dir_from_env(CONFIG_DIR_ENV) {
-            Some(dir) => dir,
-            None => dirs_next::config_dir()
-                .ok_or(JacoError::ConfigDirUnavailable)?
-                .join(APP_NAME),
-        };
-        fs::create_dir_all(&dir)?;
-        Ok(dir)
+        paths::config_file()
     }
 
     pub(crate) fn app_settings_payload(&self) -> AppSettingsPayload {
@@ -358,14 +340,6 @@ impl JacoAppSettings {
     }
 }
 
-fn override_dir_from_env(name: &str) -> Option<PathBuf> {
-    override_dir_from_value(std::env::var_os(name))
-}
-
-fn override_dir_from_value(value: Option<OsString>) -> Option<PathBuf> {
-    value.filter(|value| !value.is_empty()).map(PathBuf::from)
-}
-
 pub(crate) fn store(cx: &impl AppContext) -> JacoConfigStore {
     JacoConfigStore::global(cx)
 }
@@ -376,15 +350,6 @@ pub(crate) fn read<R>(cx: &impl AppContext, f: impl FnOnce(&JacoConfig) -> R) ->
             .data()
             .expect("config command requires ConfigOperation data")
             .value)
-    })
-}
-
-pub(crate) fn data_dir(cx: &impl AppContext) -> JacoResult<PathBuf> {
-    store(cx).read(cx, |operation| {
-        operation
-            .data()
-            .map(|data| data.data_dir.clone())
-            .ok_or_else(|| JacoError::Config("config is not ready".to_string()))
     })
 }
 
@@ -482,6 +447,228 @@ pub(crate) fn init(cx: &mut App) -> JacoResult<()> {
     Ok(())
 }
 
+pub(crate) fn init_file_observer(cx: &mut App) {
+    if cx.has_global::<ConfigFileObserverGlobal>() {
+        return;
+    }
+    let targets = JacoConfig::path()
+        .ok()
+        .and_then(|path| match file_watch::exact_file(path) {
+            Ok(target) => Some(vec![target]),
+            Err(problem) => {
+                file_watch::report_problem(problem, cx);
+                None
+            }
+        })
+        .unwrap_or_default();
+    let observer = cx.new(|cx| {
+        let mut observer = ConfigFileObserver {
+            _binding: None,
+            _config_subscription: None,
+            probe_task: None,
+            pending_dirty: false,
+        };
+        observer._binding = Some(file_watch::bind(
+            targets,
+            cx,
+            |observer: &mut ConfigFileObserver, cx| {
+                observer.on_dirty(cx);
+            },
+        ));
+        observer._config_subscription = Some(store(cx).observe(cx, |observer, operation, cx| {
+            observer.on_config_operation_changed(operation, cx);
+        }));
+        observer
+    });
+    cx.set_global(ConfigFileObserverGlobal {
+        _observer: observer.clone(),
+    });
+    observer.update(cx, |observer, cx| observer.start_probe(cx));
+}
+
+pub(crate) fn shutdown_file_observer(cx: &mut App) {
+    let Some(observer) = cx
+        .try_global::<ConfigFileObserverGlobal>()
+        .map(|global| global._observer.clone())
+    else {
+        return;
+    };
+    observer.update(cx, |observer, _| {
+        observer.probe_task.take();
+        observer._binding.take();
+        observer._config_subscription.take();
+        observer.pending_dirty = false;
+    });
+}
+
+impl ConfigFileObserver {
+    fn on_dirty(&mut self, cx: &mut Context<Self>) {
+        if crate::app::is_shutting_down() {
+            return;
+        }
+        if self.probe_task.is_some() || store(cx).read(cx, ConfigOperation::is_running) {
+            self.pending_dirty = true;
+            return;
+        }
+        self.start_probe(cx);
+    }
+
+    fn on_config_operation_changed(&mut self, operation: &ConfigOperation, cx: &mut Context<Self>) {
+        if !crate::app::is_shutting_down()
+            && !operation.is_running()
+            && self.probe_task.is_none()
+            && self.pending_dirty
+        {
+            let observer = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                let _ = observer.update(cx, |observer, cx| observer.consume_pending(cx));
+            });
+        }
+    }
+
+    fn start_probe(&mut self, cx: &mut Context<Self>) {
+        if crate::app::is_shutting_down() {
+            return;
+        }
+        if self.probe_task.is_some() {
+            self.pending_dirty = true;
+            return;
+        }
+        let (operation_running, source_bytes, path) = store(cx).read(cx, |operation| {
+            let data = operation.data();
+            let path = data
+                .map(|data| data.path.clone())
+                .or_else(|| {
+                    operation
+                        .problem()
+                        .map(|problem| problem.path().to_path_buf())
+                })
+                .filter(|path| !path.as_os_str().is_empty())
+                .or_else(|| JacoConfig::path().ok());
+            (
+                operation.is_running(),
+                data.map(|data| data.source_bytes.clone()),
+                path,
+            )
+        });
+        if operation_running {
+            self.pending_dirty = true;
+            return;
+        }
+        let start = ConfigProbeStart { source_bytes };
+        let task = cx.spawn(async move |observer, cx| {
+            if crate::app::is_shutting_down() {
+                return;
+            }
+            let result = match path {
+                Some(path) => {
+                    let first_path = path.clone();
+                    match smol::unblock(move || read_for_observer(&first_path)).await {
+                        Ok(Some(data)) => Ok(data),
+                        Ok(None) => {
+                            cx.background_executor()
+                                .timer(MISSING_CONFIRMATION_DELAY)
+                                .await;
+                            if crate::app::is_shutting_down() {
+                                return;
+                            }
+                            smol::unblock(move || load_or_create(&path)).await
+                        }
+                        Err(problem) => Err(problem),
+                    }
+                }
+                None => Err(ConfigProblem::ResolveDirectory {
+                    message: "configuration directory is unavailable".to_string(),
+                }),
+            };
+            let _ = observer.update(cx, |observer, cx| {
+                observer.finish_probe(start, result, cx);
+            });
+        });
+        self.probe_task = Some(task);
+    }
+
+    fn finish_probe(
+        &mut self,
+        start: ConfigProbeStart,
+        result: ConfigProbeResult,
+        cx: &mut Context<Self>,
+    ) {
+        self.probe_task.take();
+        if crate::app::is_shutting_down() {
+            return;
+        }
+        let (operation_running, current_source_bytes) = store(cx).read(cx, |operation| {
+            (
+                operation.is_running(),
+                operation.data().map(|data| data.source_bytes.clone()),
+            )
+        });
+        if operation_running || current_source_bytes != start.source_bytes {
+            self.pending_dirty = true;
+            self.consume_pending(cx);
+            return;
+        }
+        if result
+            .as_ref()
+            .ok()
+            .is_some_and(|data| Some(&data.source_bytes) == current_source_bytes.as_ref())
+        {
+            self.consume_pending(cx);
+            return;
+        }
+        apply_observed_probe(result, cx);
+    }
+
+    fn consume_pending(&mut self, cx: &mut Context<Self>) {
+        if self.pending_dirty
+            && self.probe_task.is_none()
+            && !store(cx).read(cx, ConfigOperation::is_running)
+        {
+            self.pending_dirty = false;
+            self.start_probe(cx);
+        }
+    }
+}
+
+fn apply_observed_probe(result: ConfigProbeResult, cx: &mut App) {
+    if crate::app::is_shutting_down() {
+        return;
+    }
+    let task = cx.spawn(async move |cx| {
+        cx.update(|cx| {
+            if crate::app::is_shutting_down() {
+                return;
+            }
+            store(cx).update(cx, |operation| {
+                if matches!(
+                    operation,
+                    ConfigOperation::Loading(_)
+                        | ConfigOperation::Refreshing(_)
+                        | ConfigOperation::RepairingUnavailable(_)
+                        | ConfigOperation::RepairingDegraded(_)
+                ) {
+                    operation.transition(Complete(result));
+                }
+            });
+        });
+    });
+    store(cx).update(cx, |operation| match operation {
+        ConfigOperation::Idle(_) => operation.transition(Load(task)),
+        ConfigOperation::Ready(_) => operation.transition(Refresh(task)),
+        ConfigOperation::Unavailable(_) | ConfigOperation::Degraded(_) => {
+            operation.transition(Repair {
+                repair: ConfigRepair::Reload,
+                task,
+            });
+        }
+        ConfigOperation::Loading(_)
+        | ConfigOperation::Refreshing(_)
+        | ConfigOperation::RepairingUnavailable(_)
+        | ConfigOperation::RepairingDegraded(_) => {}
+    });
+}
+
 fn initial_operation(result: Result<ConfigData, ConfigProblem>) -> ConfigOperation {
     let mut operation = ConfigOperation::new();
     operation.transition(Settle(result));
@@ -495,8 +682,7 @@ pub(crate) fn install_for_test(cx: &mut App, path: PathBuf, config: JacoConfig) 
             .expect("test config must encode")
             .into_bytes()
     });
-    let data = data_from_value(path, config, source_bytes)
-        .map_err(|error| JacoError::Config(error.to_string()))?;
+    let data = data_from_value(path, config, source_bytes);
     JacoConfigStore::install_global(cx, initial_operation(Ok(data)));
     Ok(())
 }
@@ -532,8 +718,7 @@ fn commit_update(
         .map_err(|error| JacoError::Config(format!("encode config: {error}")))?
         .into_bytes();
     let pending = Arc::new(PendingConfig {
-        data: data_from_value(current.path.clone(), value, bytes.clone())
-            .map_err(|error| JacoError::Config(error.to_string()))?,
+        data: data_from_value(current.path.clone(), value, bytes.clone()),
         bytes,
     });
     let result = write_pending(&current, pending);
@@ -548,32 +733,76 @@ fn commit_update(
 }
 
 fn load_for_operation(path: &Path) -> Result<ConfigData, ConfigProblem> {
+    load_or_create(path)
+}
+
+fn read_for_observer(path: &Path) -> Result<Option<ConfigData>, ConfigProblem> {
+    match fs::read(path) {
+        Ok(source) => decode_data(path, source).map(Some),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(ConfigProblem::Read {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        }),
+    }
+}
+
+fn load_or_create(path: &Path) -> Result<ConfigData, ConfigProblem> {
     match fs::read(path) {
         Ok(source) => decode_data(path, source),
         Err(error) if error.kind() == ErrorKind::NotFound => {
+            let parent = path.parent().ok_or_else(|| ConfigProblem::Write {
+                path: path.to_path_buf(),
+                message: "configuration path has no parent".to_string(),
+                pending: default_pending(path),
+            })?;
+            fs::create_dir_all(parent).map_err(|error| ConfigProblem::Write {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+                pending: default_pending(path),
+            })?;
             let value = JacoConfig::default();
             let bytes = toml::to_string_pretty(&value)
                 .map_err(|error| ConfigProblem::Write {
                     path: path.to_path_buf(),
                     message: error.to_string(),
                     pending: Arc::new(PendingConfig {
-                        data: data_from_value(path.to_path_buf(), value.clone(), Vec::new())
-                            .expect("default config target must be valid"),
+                        data: data_from_value(path.to_path_buf(), value.clone(), Vec::new()),
                         bytes: Vec::new(),
                     }),
                 })?
                 .into_bytes();
             let pending = Arc::new(PendingConfig {
-                data: data_from_value(path.to_path_buf(), value, bytes.clone())?,
+                data: data_from_value(path.to_path_buf(), value, bytes.clone()),
                 bytes,
             });
-            write_pending_at(path, None, pending)
+            match write_pending_at(path, None, pending) {
+                Ok(data) => Ok(data),
+                Err(ConfigProblem::ExternalChange { .. }) => fs::read(path)
+                    .map_err(|error| ConfigProblem::Read {
+                        path: path.to_path_buf(),
+                        message: error.to_string(),
+                    })
+                    .and_then(|source| decode_data(path, source)),
+                Err(problem) => Err(problem),
+            }
         }
         Err(error) => Err(ConfigProblem::Read {
             path: path.to_path_buf(),
             message: error.to_string(),
         }),
     }
+}
+
+fn default_pending(path: &Path) -> Arc<PendingConfig> {
+    let value = JacoConfig::default();
+    let bytes = toml::to_string_pretty(&value)
+        .expect("default config must encode")
+        .into_bytes();
+    Arc::new(PendingConfig {
+        data: data_from_value(path.to_path_buf(), value, bytes.clone()),
+        bytes,
+    })
 }
 
 fn decode_data(path: &Path, source: Vec<u8>) -> Result<ConfigData, ConfigProblem> {
@@ -585,35 +814,15 @@ fn decode_data(path: &Path, source: Vec<u8>) -> Result<ConfigData, ConfigProblem
         path: path.to_path_buf(),
         message: error.to_string(),
     })?;
-    data_from_value(path.to_path_buf(), value, source)
+    Ok(data_from_value(path.to_path_buf(), value, source))
 }
 
-fn data_from_value(
-    path: PathBuf,
-    value: JacoConfig,
-    source_bytes: Vec<u8>,
-) -> Result<ConfigData, ConfigProblem> {
-    let parent = path.parent().ok_or_else(|| ConfigProblem::Target {
-        path: path.clone(),
-        message: "configuration path has no parent".to_string(),
-    })?;
-    let data_dir = match value.storage.data_dir.as_ref() {
-        Some(data_dir) if data_dir.is_absolute() => data_dir.clone(),
-        Some(data_dir) => normalize_lexically(parent.join(data_dir)),
-        None => parent.to_path_buf(),
-    };
-    if data_dir.as_os_str().is_empty() {
-        return Err(ConfigProblem::Target {
-            path,
-            message: "database directory is empty".to_string(),
-        });
-    }
-    Ok(ConfigData {
+fn data_from_value(path: PathBuf, value: JacoConfig, source_bytes: Vec<u8>) -> ConfigData {
+    ConfigData {
         value,
         path,
         source_bytes,
-        data_dir,
-    })
+    }
 }
 
 fn write_pending(
@@ -650,7 +859,11 @@ fn write_pending_at(
                 }
             }
         })?;
-    data_from_value(path.to_path_buf(), pending.data.value.clone(), committed)
+    Ok(data_from_value(
+        path.to_path_buf(),
+        pending.data.value.clone(),
+        committed,
+    ))
 }
 
 pub(crate) fn request_reload(cx: &mut App) {
@@ -668,7 +881,6 @@ pub(crate) fn request_reload(cx: &mut App) {
     let path = path
         .filter(|path| !path.as_os_str().is_empty())
         .or_else(|| JacoConfig::path().ok());
-    let completion_store = config_store.clone();
     let task = cx.spawn(async move |cx| {
         let result = smol::unblock(move || {
             path.ok_or_else(|| ConfigProblem::ResolveDirectory {
@@ -678,7 +890,7 @@ pub(crate) fn request_reload(cx: &mut App) {
         })
         .await;
         cx.update(|cx| {
-            completion_store.update(cx, |operation| {
+            store(cx).update(cx, |operation| {
                 if matches!(
                     operation,
                     ConfigOperation::Refreshing(_)
@@ -763,7 +975,6 @@ pub(crate) fn request_repair(repair: ConfigRepair, cx: &mut App) -> JacoResult<(
         },
     };
     let config_store = store(cx);
-    let completion_store = config_store.clone();
     let task = cx.spawn(async move |cx| {
         let result = smol::unblock(move || match attempt {
             RepairAttempt::Reload { path } => load_for_operation(&path),
@@ -788,7 +999,7 @@ pub(crate) fn request_repair(repair: ConfigRepair, cx: &mut App) -> JacoResult<(
         })
         .await;
         cx.update(|cx| {
-            completion_store.update(cx, |operation| {
+            store(cx).update(cx, |operation| {
                 if matches!(
                     operation,
                     ConfigOperation::RepairingUnavailable(_)
@@ -827,14 +1038,13 @@ fn backup_and_replace(
                     path: path.to_path_buf(),
                     message: error.to_string(),
                     pending: Arc::new(PendingConfig {
-                        data: data_from_value(path.to_path_buf(), value.clone(), Vec::new())
-                            .expect("default config target must be valid"),
+                        data: data_from_value(path.to_path_buf(), value.clone(), Vec::new()),
                         bytes: Vec::new(),
                     }),
                 })?
                 .into_bytes();
             Arc::new(PendingConfig {
-                data: data_from_value(path.to_path_buf(), value, bytes.clone())?,
+                data: data_from_value(path.to_path_buf(), value, bytes.clone()),
                 bytes,
             })
         }
@@ -850,9 +1060,11 @@ fn backup_and_replace(
         path: path.to_path_buf(),
         message: error.to_string(),
     })?;
-    let parent = path.parent().ok_or_else(|| ConfigProblem::Target {
+    let parent = path.parent().ok_or_else(|| ConfigProblem::Backup {
         path: path.to_path_buf(),
         message: "configuration path has no parent".to_string(),
+        intent,
+        pending: Some(pending.clone()),
     })?;
     let backup_path = persistence::next_available_path(parent, "config.invalid", "toml");
     persistence::copy_new_synced(&original, &backup_path).map_err(|error| {
@@ -879,7 +1091,11 @@ fn backup_and_replace(
                 pending: Some(pending.clone()),
             }
         })?;
-    data_from_value(path.to_path_buf(), pending.data.value.clone(), committed)
+    Ok(data_from_value(
+        path.to_path_buf(),
+        pending.data.value.clone(),
+        committed,
+    ))
 }
 
 fn write_pending_after_backup(
@@ -894,20 +1110,6 @@ fn write_pending_after_backup(
         intent: ConfigBackupIntent::OverwritePending,
         pending: Some(pending),
     })
-}
-
-fn normalize_lexically(path: PathBuf) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                normalized.pop();
-            }
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    normalized
 }
 
 #[cfg(test)]

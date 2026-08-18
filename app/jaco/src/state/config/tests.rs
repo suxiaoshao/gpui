@@ -1,12 +1,10 @@
 use super::*;
 use gpui::TestAppContext;
+use std::{cell::Cell, rc::Rc};
 
 #[test]
 fn toml_config_preserves_public_field_shape() {
     let config = JacoConfig {
-        storage: StorageConfig {
-            data_dir: Some(PathBuf::from("data")),
-        },
         app_settings: AppSettingsConfig {
             language: AppLanguage::Chinese,
             temporary_hotkey: Some("cmd+shift+j".to_string()),
@@ -24,7 +22,7 @@ fn toml_config_preserves_public_field_shape() {
     };
 
     let source = toml::to_string_pretty(&config).unwrap();
-    assert!(source.contains("[storage]"));
+    assert!(!source.contains("[storage]"));
     assert!(source.contains("[app_settings]"));
     assert!(source.contains("[chat_form.model]"));
     assert!(!source.contains("source_bytes"));
@@ -47,13 +45,61 @@ fn malformed_config_is_unavailable_without_default_data() {
 #[test]
 fn missing_config_is_atomically_created_as_ready() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("config.toml");
+    let path = dir.path().join("nested/config.toml");
 
     let data = load_for_operation(&path).unwrap();
 
     assert_eq!(&data.value, &JacoConfig::default());
     assert_eq!(data.source_bytes, fs::read(&path).unwrap());
     assert!(!data.source_bytes.is_empty());
+}
+
+#[test]
+fn observer_persistent_delete_requires_confirmation_before_default_recreation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(
+        &path,
+        toml::to_string_pretty(&JacoConfig::default()).unwrap(),
+    )
+    .unwrap();
+    fs::remove_file(&path).unwrap();
+
+    assert!(read_for_observer(&path).unwrap().is_none());
+    assert!(!path.exists());
+
+    let recreated = load_or_create(&path).unwrap();
+    assert_eq!(recreated.value, JacoConfig::default());
+    assert_eq!(recreated.source_bytes, fs::read(path).unwrap());
+}
+
+#[test]
+fn observer_transient_remove_uses_replacement_that_wins_confirmation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(
+        &path,
+        toml::to_string_pretty(&JacoConfig::default()).unwrap(),
+    )
+    .unwrap();
+    fs::remove_file(&path).unwrap();
+
+    assert!(read_for_observer(&path).unwrap().is_none());
+
+    let replacement = JacoConfig {
+        app_settings: AppSettingsConfig {
+            language: AppLanguage::Chinese,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let replacement_bytes = toml::to_string_pretty(&replacement).unwrap().into_bytes();
+    fs::write(&path, &replacement_bytes).unwrap();
+
+    let observed = load_or_create(&path).unwrap();
+    assert_eq!(observed.value, replacement);
+    assert_eq!(observed.source_bytes, replacement_bytes);
+    assert_eq!(fs::read(path).unwrap(), replacement_bytes);
 }
 
 #[test]
@@ -88,21 +134,13 @@ fn initial_operation_is_settled_before_installation() {
 }
 
 #[test]
-fn relative_data_dir_uses_config_parent_without_canonicalize() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("config.toml");
-    let value = JacoConfig {
-        storage: StorageConfig {
-            data_dir: Some(PathBuf::from("nested/../database")),
-        },
-        ..Default::default()
-    };
-    let bytes = toml::to_string_pretty(&value).unwrap().into_bytes();
-    fs::write(&path, &bytes).unwrap();
-
-    let data = load_for_operation(&path).unwrap();
-
-    assert_eq!(data.data_dir, dir.path().join("database"));
+fn legacy_storage_table_is_ignored_and_not_written_back() {
+    let config: JacoConfig = toml::from_str("[storage]\ndata_dir = 'legacy'\n").unwrap();
+    assert!(
+        !toml::to_string_pretty(&config)
+            .unwrap()
+            .contains("[storage]")
+    );
 }
 
 #[test]
@@ -121,7 +159,7 @@ fn external_change_before_replace_preserves_disk_and_pending() {
     };
     let bytes = toml::to_string_pretty(&value).unwrap().into_bytes();
     let pending = Arc::new(PendingConfig {
-        data: data_from_value(path.clone(), value, bytes.clone()).unwrap(),
+        data: data_from_value(path.clone(), value, bytes.clone()),
         bytes,
     });
 
@@ -280,5 +318,247 @@ fn locked_synchronous_commit_degrades_with_old_and_pending_data(cx: &mut TestApp
                 Some(("provider-1", "gpt-5"))
             );
         });
+    });
+}
+
+#[gpui::test]
+fn mcp_fragment_cas_rejects_changed_entry_without_publishing_or_writing(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let baseline = McpServerTomlConfig {
+        display_name: Some("baseline".to_string()),
+        command: Some("mcp".to_string()),
+        ..Default::default()
+    };
+    let externally_changed = McpServerTomlConfig {
+        display_name: Some("external".to_string()),
+        command: Some("mcp".to_string()),
+        ..Default::default()
+    };
+    let mut initial = JacoConfig::default();
+    initial
+        .mcp_servers
+        .insert("server".to_string(), externally_changed);
+    let bytes = toml::to_string_pretty(&initial).unwrap().into_bytes();
+    fs::write(&path, &bytes).unwrap();
+
+    cx.update(|cx| {
+        install_for_test(cx, path.clone(), initial).unwrap();
+        let result = upsert_mcp_server_if_unchanged(
+            cx,
+            Some("server"),
+            Some(&baseline),
+            "server".to_string(),
+            McpServerTomlConfig {
+                display_name: Some("draft".to_string()),
+                command: Some("mcp".to_string()),
+                ..Default::default()
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(JacoError::ConfigEditConflict(
+                crate::errors::ConfigEditConflict::Changed { .. }
+            ))
+        ));
+        assert!(store(cx).read(cx, |operation| matches!(
+            operation,
+            ConfigOperation::Ready(_)
+        )));
+    });
+
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[gpui::test]
+fn mcp_fragment_cas_preserves_unrelated_external_entries(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let baseline = McpServerTomlConfig {
+        display_name: Some("baseline".to_string()),
+        command: Some("mcp".to_string()),
+        ..Default::default()
+    };
+    let unrelated = McpServerTomlConfig {
+        display_name: Some("unrelated".to_string()),
+        command: Some("mcp".to_string()),
+        ..Default::default()
+    };
+    let mut initial = JacoConfig::default();
+    initial
+        .mcp_servers
+        .insert("server".to_string(), baseline.clone());
+    initial
+        .mcp_servers
+        .insert("other".to_string(), unrelated.clone());
+    fs::write(&path, toml::to_string_pretty(&initial).unwrap()).unwrap();
+
+    cx.update(|cx| {
+        install_for_test(cx, path.clone(), initial).unwrap();
+        upsert_mcp_server_if_unchanged(
+            cx,
+            Some("server"),
+            Some(&baseline),
+            "renamed".to_string(),
+            McpServerTomlConfig {
+                display_name: Some("saved".to_string()),
+                command: Some("mcp".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    });
+
+    let saved = JacoConfig::load_from_path_for_test(&path).unwrap();
+    assert!(!saved.mcp_servers.contains_key("server"));
+    assert_eq!(saved.mcp_servers.get("other"), Some(&unrelated));
+    assert_eq!(
+        saved
+            .mcp_servers
+            .get("renamed")
+            .and_then(|server| server.display_name.as_deref()),
+        Some("saved")
+    );
+}
+
+#[gpui::test]
+fn mcp_fragment_cas_classifies_removed_and_occupied_entries(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let server = McpServerTomlConfig {
+        command: Some("mcp".to_string()),
+        ..Default::default()
+    };
+    let mut initial = JacoConfig::default();
+    initial
+        .mcp_servers
+        .insert("occupied".to_string(), server.clone());
+    let bytes = toml::to_string_pretty(&initial).unwrap().into_bytes();
+    fs::write(&path, &bytes).unwrap();
+
+    cx.update(|cx| {
+        install_for_test(cx, path.clone(), initial).unwrap();
+        let occupied =
+            upsert_mcp_server_if_unchanged(cx, None, None, "occupied".to_string(), server.clone());
+        assert!(matches!(
+            occupied,
+            Err(JacoError::ConfigEditConflict(
+                crate::errors::ConfigEditConflict::IdOccupied { .. }
+            ))
+        ));
+
+        let removed = upsert_mcp_server_if_unchanged(
+            cx,
+            Some("removed"),
+            Some(&server),
+            "removed".to_string(),
+            server.clone(),
+        );
+        assert!(matches!(
+            removed,
+            Err(JacoError::ConfigEditConflict(
+                crate::errors::ConfigEditConflict::Removed { .. }
+            ))
+        ));
+    });
+
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[gpui::test]
+fn observed_same_bytes_do_not_publish_config(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let initial = JacoConfig::default();
+    let bytes = toml::to_string_pretty(&initial).unwrap().into_bytes();
+    fs::write(&path, &bytes).unwrap();
+    let deliveries = Rc::new(Cell::new(0));
+
+    let observer = cx.update(|cx| {
+        install_for_test(cx, path.clone(), initial.clone()).unwrap();
+        let observed_deliveries = deliveries.clone();
+        cx.new(|cx| ConfigFileObserver {
+            _binding: None,
+            _config_subscription: Some(store(cx).observe(cx, move |_, _, _| {
+                observed_deliveries.set(observed_deliveries.get() + 1);
+            })),
+            probe_task: None,
+            pending_dirty: false,
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(deliveries.get(), 1);
+
+    cx.update(|cx| {
+        observer.update(cx, |observer, cx| {
+            observer.finish_probe(
+                ConfigProbeStart {
+                    source_bytes: Some(bytes.clone()),
+                },
+                Ok(data_from_value(path, initial, bytes)),
+                cx,
+            );
+        });
+    });
+    cx.run_until_parked();
+
+    assert_eq!(deliveries.get(), 1);
+}
+
+#[gpui::test]
+fn observed_invalid_config_retains_last_good_data(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let initial = JacoConfig {
+        app_settings: AppSettingsConfig {
+            language: AppLanguage::Chinese,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    fs::write(&path, toml::to_string_pretty(&initial).unwrap()).unwrap();
+
+    cx.update(|cx| {
+        install_for_test(cx, path.clone(), initial).unwrap();
+        apply_observed_probe(
+            Err(ConfigProblem::Parse {
+                path,
+                message: "invalid".to_string(),
+            }),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        store(cx).read(cx, |operation| {
+            let ConfigOperation::Degraded(degraded) = operation else {
+                panic!("expected degraded config");
+            };
+            assert_eq!(degraded.data().app_settings.language, AppLanguage::Chinese);
+            assert!(matches!(degraded.problem(), ConfigProblem::Parse { .. }));
+        });
+    });
+}
+
+#[gpui::test]
+fn observer_shutdown_drops_owned_task_and_subscription(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        let observer = cx.new(|_| ConfigFileObserver {
+            _binding: None,
+            _config_subscription: Some(Subscription::new(|| {})),
+            probe_task: Some(Task::ready(())),
+            pending_dirty: true,
+        });
+        cx.set_global(ConfigFileObserverGlobal {
+            _observer: observer.clone(),
+        });
+
+        shutdown_file_observer(cx);
+
+        let observer = observer.read(cx);
+        assert!(observer._config_subscription.is_none());
+        assert!(observer.probe_task.is_none());
+        assert!(!observer.pending_dirty);
     });
 }

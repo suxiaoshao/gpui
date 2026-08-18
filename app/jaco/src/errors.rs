@@ -1,9 +1,27 @@
+use std::path::PathBuf;
+
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum ConfigEditConflict {
+    #[error("MCP server `{server_id}` changed outside Jaco")]
+    Changed { server_id: String },
+    #[error("MCP server `{server_id}` was removed outside Jaco")]
+    Removed { server_id: String },
+    #[error("MCP server id `{server_id}` is already occupied")]
+    IdOccupied { server_id: String },
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum JacoError {
     #[error("could not resolve jaco config directory")]
     ConfigDirUnavailable,
+    #[error("could not resolve jaco data directory")]
+    DataDirUnavailable,
+    #[error("could not create jaco data directory {path}: {message}")]
+    CreateDataDir { path: PathBuf, message: String },
     #[error("config error: {0}")]
     Config(String),
+    #[error(transparent)]
+    ConfigEditConflict(#[from] ConfigEditConflict),
     #[error("log file not found")]
     LogFileNotFound,
     #[error("file system error: {0}")]

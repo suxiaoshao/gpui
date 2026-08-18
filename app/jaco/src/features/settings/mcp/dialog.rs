@@ -1,6 +1,6 @@
 use crate::{
     components::delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
-    errors::JacoResult,
+    errors::{JacoError, JacoResult},
     foundation::{I18n, assets::IconName},
     state,
     state::config::{McpServerTomlConfig, McpTransportKind, is_valid_mcp_server_id},
@@ -106,6 +106,7 @@ struct McpServerSaveRequest {
     version: FormVersion,
     output: McpServerFormInput,
     original_server_id: Option<String>,
+    expected_original: Option<McpServerTomlConfig>,
     server_id: String,
     server: McpServerTomlConfig,
     saved_auth: McpOAuthStatusSnapshot,
@@ -117,6 +118,24 @@ struct McpOAuthSignOutRequest {
     server_id: String,
     credential_key: state::mcp::oauth::CredentialsKey,
     draft_only: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CredentialCleanupOutcome {
+    Complete,
+    WarnOnly,
+}
+
+fn credential_cleanup_plan<T, E>(config_result: &Result<(), E>, keys: Vec<T>) -> Option<Vec<T>> {
+    (config_result.is_ok() && !keys.is_empty()).then_some(keys)
+}
+
+fn credential_cleanup_outcome(failure_count: usize) -> CredentialCleanupOutcome {
+    if failure_count == 0 {
+        CredentialCleanupOutcome::Complete
+    } else {
+        CredentialCleanupOutcome::WarnOnly
+    }
 }
 
 type RemoveDraftRow<Row> = fn(
@@ -276,7 +295,6 @@ impl McpServerEditDialogState {
             McpServerEditMode::Create => "mcp-notify-server-created",
             McpServerEditMode::Edit { .. } => "mcp-notify-server-saved",
         };
-        let form = cx.entity().downgrade();
         let prepared = self.draft.form.update(cx, |form_store, cx| {
             form_store.replace_validator(
                 GardeValidator::<
@@ -324,52 +342,22 @@ impl McpServerEditDialogState {
             version,
             output,
             original_server_id,
+            expected_original: original_config,
             server_id,
             server,
             saved_auth,
             credential_keys_to_delete,
             success_title_key,
         };
-        let task = window.spawn(cx, async move |cx| {
-            let result = delete_oauth_credentials_for_save(request, cx).await;
-            let _ =
-                match form.update_in(cx, |form, window, cx| form.finish_save(result, window, cx)) {
-                    Ok(result) => result,
-                    Err(err) => {
-                        event!(Level::ERROR, error = ?err, "finish mcp server save failed");
-                        Err(err.to_string())
-                    }
-                };
-        });
-        self.save_task = Some(task);
-        cx.notify();
-        false
-    }
-
-    fn finish_save(
-        &mut self,
-        result: Result<McpServerSaveRequest, String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        self.save_task.take();
-        let request = match result {
-            Ok(request) => request,
-            Err(err) => {
-                let title = cx.global::<I18n>().t("mcp-notify-save-failed");
-                push_settings_error(window, cx, title, err.clone());
-                cx.notify();
-                return Err(err);
-            }
-        };
-
-        let result = state::config::upsert_mcp_server(
+        let result = state::config::upsert_mcp_server_if_unchanged(
             cx,
             request.original_server_id.as_deref(),
+            request.expected_original.as_ref(),
             request.server_id.clone(),
             request.server.clone(),
         );
-        self.finish_config_save(request, result, window, cx)
+        let _ = self.finish_config_save(request, result, window, cx);
+        false
     }
 
     fn finish_config_save(
@@ -381,6 +369,8 @@ impl McpServerEditDialogState {
     ) -> Result<(), String> {
         let saved_server = request.server.clone();
         let saved_server_id = request.server_id.clone();
+        let credential_cleanup =
+            credential_cleanup_plan(&result, request.credential_keys_to_delete.clone());
         match result {
             Ok(()) => {
                 let rebased = self.draft.form.update(cx, |form, cx| {
@@ -410,17 +400,74 @@ impl McpServerEditDialogState {
                     self.original_config = Some(saved_server);
                     cx.notify();
                 }
+                if let Some(credential_keys) = credential_cleanup {
+                    self.schedule_oauth_cleanup(credential_keys, window, cx);
+                }
             }
             Err(err) => {
-                let title = cx.global::<I18n>().t("mcp-notify-save-failed");
                 let message = err.to_string();
-                push_settings_error(window, cx, title, err);
+                if matches!(err, JacoError::ConfigEditConflict(_)) {
+                    window.push_notification(
+                        Notification::new()
+                            .title(cx.global::<I18n>().t("mcp-notify-save-conflict-title"))
+                            .message(cx.global::<I18n>().t("mcp-notify-save-conflict-message"))
+                            .with_type(NotificationType::Error),
+                        cx,
+                    );
+                } else {
+                    let title = cx.global::<I18n>().t("mcp-notify-save-failed");
+                    push_settings_error(window, cx, title, err);
+                }
                 cx.notify();
                 return Err(message);
             }
         }
         cx.notify();
         Ok(())
+    }
+
+    fn schedule_oauth_cleanup(
+        &self,
+        credential_keys: Vec<state::mcp::oauth::CredentialsKey>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if credential_keys.is_empty() {
+            return;
+        }
+        let credential_count = credential_keys.len();
+        let window_handle = window.window_handle();
+        let task = cx.spawn(async move |_dialog, cx| {
+            let mut failure_count = 0usize;
+            for key in &credential_keys {
+                if state::mcp::oauth::delete_credentials_if_unreferenced_in_app(key, cx)
+                    .await
+                    .is_err()
+                {
+                    failure_count += 1;
+                }
+            }
+            if credential_cleanup_outcome(failure_count) == CredentialCleanupOutcome::WarnOnly {
+                event!(
+                    Level::ERROR,
+                    credential_count,
+                    failure_count,
+                    "MCP OAuth credential cleanup failed after config commit"
+                );
+                let _ = window_handle.update(cx, |_, window, cx| {
+                    window.push_notification(
+                        Notification::new()
+                            .title(
+                                cx.global::<I18n>()
+                                    .t("mcp-notify-credential-cleanup-failed"),
+                            )
+                            .with_type(NotificationType::Warning),
+                        cx,
+                    );
+                });
+            }
+        });
+        crate::app::tasks::retain_application(task, cx);
     }
 
     fn finish_oauth_after_save(
@@ -715,9 +762,33 @@ impl McpServerEditDialogState {
 
     fn cleanup_draft_oauth_credentials(&mut self, cx: &mut Context<Self>) {
         self.clear_draft_oauth_authorization(cx);
-        for credential_key in std::mem::take(&mut self.draft_oauth_credential_keys) {
-            state::mcp::oauth::delete_credentials_detached(&credential_key, cx);
+        let credential_keys = std::mem::take(&mut self.draft_oauth_credential_keys)
+            .into_iter()
+            .collect::<Vec<_>>();
+        if credential_keys.is_empty() {
+            return;
         }
+        let credential_count = credential_keys.len();
+        let task = cx.spawn(async move |_dialog, cx| {
+            let mut failure_count = 0usize;
+            for key in &credential_keys {
+                if state::mcp::oauth::delete_credentials_if_unreferenced_in_app(key, cx)
+                    .await
+                    .is_err()
+                {
+                    failure_count += 1;
+                }
+            }
+            if failure_count > 0 {
+                event!(
+                    Level::ERROR,
+                    credential_count,
+                    failure_count,
+                    "MCP draft OAuth credential cleanup failed"
+                );
+            }
+        });
+        crate::app::tasks::retain_application(task, cx);
     }
 
     fn clear_draft_oauth_authorization(&mut self, cx: &mut Context<Self>) {
@@ -1552,14 +1623,6 @@ async fn delete_oauth_credentials(
     Ok(())
 }
 
-async fn delete_oauth_credentials_for_save(
-    request: McpServerSaveRequest,
-    cx: &mut gpui::AsyncWindowContext,
-) -> Result<McpServerSaveRequest, String> {
-    delete_oauth_credentials(&request.credential_keys_to_delete, cx).await?;
-    Ok(request)
-}
-
 async fn delete_oauth_credentials_for_sign_out(
     request: McpOAuthSignOutRequest,
     cx: &mut gpui::AsyncWindowContext,
@@ -1945,7 +2008,8 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use super::{
-        McpServerEditDialogState, McpServerEditMode, McpTransportKind, can_authorize_oauth_values,
+        CredentialCleanupOutcome, McpServerEditDialogState, McpServerEditMode, McpTransportKind,
+        can_authorize_oauth_values, credential_cleanup_outcome, credential_cleanup_plan,
         oauth_credential_key_for_server, oauth_credential_keys_to_delete,
         transport_from_toggle_states,
     };
@@ -1963,6 +2027,34 @@ mod tests {
         assert_eq!(
             transport_from_toggle_states(McpTransportKind::StreamableHttp, &[false, false]),
             McpTransportKind::StreamableHttp
+        );
+    }
+
+    #[test]
+    fn credential_cleanup_is_planned_only_after_config_commit() {
+        assert_eq!(
+            credential_cleanup_plan(&Err("config conflict"), vec!["old", "draft"]),
+            None
+        );
+        assert_eq!(
+            credential_cleanup_plan(&Ok::<(), &str>(()), vec!["old", "draft"]),
+            Some(vec!["old", "draft"])
+        );
+        assert_eq!(
+            credential_cleanup_plan(&Ok::<(), &str>(()), Vec::<&str>::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn credential_cleanup_failure_is_warning_only() {
+        assert_eq!(
+            credential_cleanup_outcome(0),
+            CredentialCleanupOutcome::Complete
+        );
+        assert_eq!(
+            credential_cleanup_outcome(1),
+            CredentialCleanupOutcome::WarnOnly
         );
     }
 

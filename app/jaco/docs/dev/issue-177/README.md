@@ -7,6 +7,11 @@
 `480d4c025e41f19efea82624ece7beffab2268af` 及当时的新 `gpui-store` /
 `gpui-operation` 实现为规划基线。
 
+> 后续边界说明：[#178](../issue-178/README.md) 已删除 `storage.data_dir`、
+> Config → Database target/rebind 与 `AwaitingConfig`。数据库目标现在只在启动时从平台 data dir
+> 解析一次；Config 的外部刷新不会替换数据库 target 或 session。本文下方相关设计只保留为 #177
+> 交付时的历史记录。
+
 Conversation Index、Conversation Detail/Timeline 以及剩余 Operation UI 已按
 [Conversation 领域边界与剩余 Operation UI 接入计划](conversation-domain-and-operation-plan.md)
 完成后续重构。该文档取代本文对应部分的目标设计；本文中的 `ConversationIndexStore`、
@@ -99,8 +104,8 @@ Conversation 内部精确消息转换、跨窗口增量同步、非 Ready 事件
   路径不写入 Data、Config、DB或 journal。
 - side-effect repair 不向用户提供 Cancel；取消仍保留给依赖切换、Session teardown 和 owner
   销毁等内部生命周期。
-- `storage.data_dir` 保存成功后立即切换 DatabaseSession，不要求重启。相对路径以
-  `config.toml` 所在目录为基准做词法归一化，不调用 `canonicalize`。
+- `storage.data_dir` 与动态 DatabaseSession 切换是本轮交付时的历史决定，已由
+  [#178](../issue-178/README.md) 的固定 data-dir 数据库目标取代。
 - 当前 Skill 来源优先级固定为 `ProjectLocal > Global`。它们分别映射现有序列化
   `SkillSourceKind::{Project, User}`，不重命名磁盘/API 值。跨来源同名项直接由高优先级覆盖；
   同一来源内按稳定路径顺序保留第一个并记录 warning，不让用户替应用选择。

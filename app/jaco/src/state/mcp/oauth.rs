@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use gpui::{App, AsyncApp, AsyncWindowContext, TaskExt as _};
+use gpui::{AsyncApp, AsyncWindowContext};
 use jaco_agent::McpOAuthStatusSnapshot;
 use rmcp::transport::{
     StoredCredentials,
@@ -13,7 +13,9 @@ use tokio::{
 };
 use url::Url;
 
-use crate::state::config::{McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind};
+use crate::state::config::{
+    self, JacoConfig, McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind,
+};
 
 const CREDENTIALS_USERNAME: &str = "mcp-oauth";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -97,6 +99,16 @@ pub(crate) fn credentials_key_for_server(
     CredentialsKey::new(server_id, server_url, oauth).map(Some)
 }
 
+pub(crate) fn credentials_key_is_referenced(key: &CredentialsKey, config: &JacoConfig) -> bool {
+    config.mcp_servers.iter().any(|(server_id, server)| {
+        credentials_key_for_server(server_id, server)
+            .ok()
+            .flatten()
+            .as_ref()
+            == Some(key)
+    })
+}
+
 pub(crate) fn credentials_key_for_oauth_value(
     server_id: &str,
     server_url: &str,
@@ -134,9 +146,40 @@ pub(crate) async fn delete_credentials(
     task.await.map_err(|err| err.to_string())
 }
 
-pub(crate) fn delete_credentials_detached(key: &CredentialsKey, cx: &mut App) {
+pub(crate) async fn delete_credentials_in_app(
+    key: &CredentialsKey,
+    cx: &mut AsyncApp,
+) -> Result<(), String> {
     let key = key.as_str().to_string();
-    cx.delete_credentials(&key).detach_and_log_err(cx);
+    cx.update(move |cx| cx.delete_credentials(&key))
+        .await
+        .map_err(|err| err.to_string())
+}
+
+pub(crate) async fn delete_credentials_if_unreferenced_in_app(
+    key: &CredentialsKey,
+    cx: &mut AsyncApp,
+) -> Result<bool, String> {
+    let should_skip = cx.update(|cx| {
+        config::store(cx).read(cx, |operation| {
+            credential_cleanup_should_skip(key, operation)
+        })
+    });
+    if should_skip {
+        return Ok(false);
+    }
+    delete_credentials_in_app(key, cx).await?;
+    Ok(true)
+}
+
+fn credential_cleanup_should_skip(
+    key: &CredentialsKey,
+    operation: &config::ConfigOperation,
+) -> bool {
+    operation.is_running()
+        || operation
+            .data()
+            .is_none_or(|config| credentials_key_is_referenced(key, config))
 }
 
 pub(crate) async fn read_credentials(
@@ -553,10 +596,15 @@ fn canonical_server_uri(url: &Url) -> String {
 mod tests {
     use super::{
         CallbackListenerConfig, authorization_url_with_resource, callback_url_from_request,
-        canonical_server_uri, credentials_key_for_server, legacy_credentials_key_for_test,
+        canonical_server_uri, credential_cleanup_should_skip, credentials_key_for_server,
+        credentials_key_is_referenced, legacy_credentials_key_for_test,
         resolve_callback_listener_config,
     };
-    use crate::state::config::{McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind};
+    use crate::state::config::{
+        self, JacoConfig, McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind,
+    };
+    use gpui::{Task, TestAppContext};
+    use gpui_operation::{Refresh, Transition};
     use url::Url;
 
     #[test]
@@ -586,6 +634,45 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_ne!(first, audience_key);
+    }
+
+    #[test]
+    fn draft_cancel_and_post_commit_cleanup_skip_latest_config_references() {
+        let server = oauth_server("https://example.com/mcp", None);
+        let key = credentials_key_for_server("server-a", &server)
+            .unwrap()
+            .unwrap();
+        let mut config = JacoConfig::default();
+        config.mcp_servers.insert("server-a".to_string(), server);
+
+        assert!(credentials_key_is_referenced(&key, &config));
+        config.mcp_servers.clear();
+        assert!(!credentials_key_is_referenced(&key, &config));
+    }
+
+    #[gpui::test]
+    fn credential_cleanup_skips_running_config_with_unreferenced_retained_data(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let server = oauth_server("https://example.com/mcp", None);
+        let key = credentials_key_for_server("server-a", &server)
+            .unwrap()
+            .unwrap();
+
+        cx.update(|cx| {
+            config::install_for_test(cx, path, JacoConfig::default()).unwrap();
+            config::store(cx).update(cx, |operation| {
+                operation.transition(Refresh(Task::ready(())));
+            });
+
+            config::store(cx).read(cx, |operation| {
+                assert!(operation.is_running());
+                assert!(operation.data().is_some());
+                assert!(credential_cleanup_should_skip(&key, operation));
+            });
+        });
     }
 
     #[test]

@@ -160,7 +160,8 @@ fallback、不自动重试，保留临时历史可恢复性，并记录结构化
 
 ## 8. 隔离桌面验收
 
-1. 使用 `/tmp/jaco-issue-175-qa` 作为 `JACO_CONFIG_DIR` 和 storage data dir，避免读取用户真实 DB/config。
+1. 使用 `/tmp/jaco-issue-175-qa` 作为 `JACO_CONFIG_DIR`；[#178](../issue-178/README.md)
+   已让该测试 override 同时隔离 config、state 与 data root，无需再配置 `storage.data_dir`，从而避免读取用户真实 DB/config。
 2. bundle 后通过 Computer Use 确认启动的是当前工作树 `target/release/bundle/macos/Jaco.app`。
 3. 在另一 app 中触发 selection/clipboard Shortcut：Jaco 主窗口不得创建或置前；popup 中出现新
    Conversation 并立即运行。

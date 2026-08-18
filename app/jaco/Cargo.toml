@@ -100,6 +100,7 @@ async-trait = "0.1.91"
 gpui-tokio.workspace = true
 smol = "2.0.2"
 tokio = { version = "1.53.1", features = ["io-util", "net", "sync", "time"] }
+notify-debouncer-full = "0.7.0"
 
 # config
 http = "1.4.2"

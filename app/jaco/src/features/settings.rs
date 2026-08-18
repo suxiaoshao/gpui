@@ -6,7 +6,7 @@ use crate::{
     components::resource::{
         CriticalResourceAction, CriticalResourceProblem, CriticalResourcesView,
     },
-    database::{DatabasePhase, DatabaseResource},
+    database::DatabasePhase,
     foundation::{I18n, assets::IconName},
     state,
 };
@@ -457,21 +457,19 @@ fn settings_config_resource_view(cx: &App) -> CriticalResourcesView {
 }
 
 fn settings_database_resource_view(cx: &App) -> CriticalResourcesView {
-    let snapshot = crate::database::store(cx).read(cx, |resource| match resource {
-        DatabaseResource::AwaitingConfig => None,
-        DatabaseResource::Bound { operation, .. } => Some((
-            operation.phase(),
-            operation.is_running(),
-            operation.problem().map(ToString::to_string),
-            operation
-                .problem()
-                .is_some_and(crate::database::DatabaseProblem::can_create_fresh),
-        )),
-    });
-    let Some((phase, running, message, can_create_fresh)) = snapshot else {
-        return CriticalResourcesView::loading(cx.global::<I18n>().t("critical-database-loading"));
-    };
-    if matches!(phase, DatabasePhase::Idle | DatabasePhase::Loading) {
+    let (phase, running, message, can_create_fresh) =
+        crate::database::store(cx).read(cx, |resource| {
+            let operation = &resource.operation;
+            (
+                operation.phase(),
+                operation.is_running(),
+                operation.problem().map(ToString::to_string),
+                operation
+                    .problem()
+                    .is_some_and(crate::database::DatabaseProblem::can_create_fresh),
+            )
+        });
+    if matches!(phase, DatabasePhase::Idle) {
         return CriticalResourcesView::loading(cx.global::<I18n>().t("critical-database-loading"));
     }
     if matches!(phase, DatabasePhase::Ready) {
@@ -966,7 +964,6 @@ mod tests {
         assert!(database_operation_phase_has_data(DatabasePhase::Ready));
         assert!(database_operation_phase_has_data(DatabasePhase::Refreshing));
         assert!(!database_operation_phase_has_data(DatabasePhase::Idle));
-        assert!(!database_operation_phase_has_data(DatabasePhase::Loading));
         assert!(!database_operation_phase_has_data(DatabasePhase::Retiring));
         assert!(!database_operation_phase_has_data(
             DatabasePhase::Unavailable

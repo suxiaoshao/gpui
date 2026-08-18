@@ -9,7 +9,10 @@ use jaco_core::{ProjectId, ProjectKind, ProjectMetadata, new_id};
 use jaco_db::{NewProject, ProjectRecord};
 use tokio::sync::oneshot;
 
-use crate::{database, errors::JacoResult, foundation::I18n, state::config};
+use crate::{database, errors::JacoResult, foundation::I18n};
+
+#[cfg(not(test))]
+use crate::foundation::paths;
 
 const SCRATCH_PROJECTS_DIR: &str = "scratch-projects";
 const NO_PROJECT_SCRATCH_REASON: &str = "no-project";
@@ -334,7 +337,7 @@ pub(crate) fn prepare_anonymous_scratch_project(
     cx: &App,
 ) -> JacoResult<(ProjectId, PathBuf, NewProject)> {
     let id = new_id();
-    let path = config::data_dir(cx)?.join(SCRATCH_PROJECTS_DIR).join(&id);
+    let path = scratch_data_dir(cx)?.join(SCRATCH_PROJECTS_DIR).join(&id);
     let mut metadata = empty_project_metadata();
     metadata.scratch_reason = Some(NO_PROJECT_SCRATCH_REASON.to_string());
     Ok((
@@ -349,6 +352,16 @@ pub(crate) fn prepare_anonymous_scratch_project(
             metadata,
         },
     ))
+}
+
+#[cfg(not(test))]
+fn scratch_data_dir(_cx: &App) -> JacoResult<PathBuf> {
+    paths::data_dir()
+}
+
+#[cfg(test)]
+fn scratch_data_dir(cx: &App) -> JacoResult<PathBuf> {
+    Ok(database::store(cx).read(cx, |resource| resource.target.data_dir.clone()))
 }
 
 fn spawn_project_mutation<R>(
@@ -416,9 +429,23 @@ fn empty_project_metadata() -> ProjectMetadata {
 
 #[cfg(test)]
 mod tests {
-    use super::{empty_project_metadata, project_display_name, project_kind_is_normal};
+    use super::{
+        empty_project_metadata, project_display_name, project_kind_is_normal, scratch_data_dir,
+    };
+    use crate::database;
+    use gpui::TestAppContext;
     use jaco_core::ProjectKind;
     use std::path::Path;
+
+    #[gpui::test]
+    fn scratch_test_data_dir_uses_fixed_database_target(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| database::install_for_test(cx, dir.path()));
+
+        let data_dir = cx.update(|cx| scratch_data_dir(cx).unwrap());
+
+        assert_eq!(data_dir, dir.path());
+    }
 
     #[test]
     fn project_display_name_uses_path_last_component() {

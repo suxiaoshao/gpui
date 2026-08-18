@@ -27,8 +27,11 @@ use crate::{
     database,
     errors::JacoResult,
     foundation::I18n,
-    state::{config, projects, providers::ProviderModelChoice},
+    state::{projects, providers::ProviderModelChoice},
 };
+
+#[cfg(not(test))]
+use crate::foundation::paths;
 
 use self::attachments::{
     ComposerAttachment, cleanup_stored_attachment_files, prepare_message_attachments_in,
@@ -113,7 +116,7 @@ pub(crate) fn create_conversation(
             Err(error) => return Task::ready(Err(error)),
         },
     };
-    let data_dir = match config::data_dir(cx) {
+    let data_dir = match conversation_data_dir(cx) {
         Ok(path) => path,
         Err(error) => return Task::ready(Err(error)),
     };
@@ -222,7 +225,7 @@ pub(crate) fn send_conversation_message(
             Ok(provider) => provider,
             Err(error) => return Task::ready(Err(error.into())),
         };
-    let data_dir = match config::data_dir(cx) {
+    let data_dir = match conversation_data_dir(cx) {
         Ok(path) => path,
         Err(error) => return Task::ready(Err(error)),
     };
@@ -312,6 +315,16 @@ pub(crate) fn send_conversation_message(
             .map(|(_, sent)| sent)
             .map_err(crate::errors::JacoError::from)
     })
+}
+
+#[cfg(not(test))]
+fn conversation_data_dir(_cx: &App) -> JacoResult<PathBuf> {
+    paths::data_dir()
+}
+
+#[cfg(test)]
+fn conversation_data_dir(cx: &App) -> JacoResult<PathBuf> {
+    Ok(database::store(cx).read(cx, |resource| resource.target.data_dir.clone()))
 }
 
 fn follow_up_prompt_snapshot(
@@ -531,6 +544,16 @@ mod tests {
     };
     use jaco_db::{NewConversation, NewProject, NewPrompt, NewProvider, ProjectRecord};
     use tempfile::{TempDir, tempdir};
+
+    #[gpui::test]
+    fn test_data_dir_uses_fixed_database_target(cx: &mut TestAppContext) {
+        let dir = tempdir().unwrap();
+        cx.update(|cx| database::install_for_test(cx, dir.path()));
+
+        let data_dir = cx.update(|cx| conversation_data_dir(cx).unwrap());
+
+        assert_eq!(data_dir, dir.path());
+    }
 
     #[test]
     fn conversation_title_uses_first_non_empty_line() {
@@ -871,9 +894,8 @@ mod tests {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
             database::install_for_test(cx, dir.path());
-            let mut config =
+            let config =
                 JacoConfig::load_from_path_for_test(&dir.path().join("config.toml")).unwrap();
-            config.storage.data_dir = Some(dir.path().join("data"));
             crate::state::config::install_for_test(cx, dir.path().join("config.toml"), config)
                 .unwrap();
             crate::foundation::i18n::init(cx);

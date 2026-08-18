@@ -15,7 +15,6 @@ use crate::{
         chat::input::{COMPOSER_EDITOR_KEY_CONTEXT, ChatInputSubmit},
         resource::{CriticalResourceAction, CriticalResourceProblem, CriticalResourcesView},
     },
-    database::DatabaseResource,
     features::conversation,
     foundation::{I18n, assets::IconName},
     state,
@@ -939,19 +938,16 @@ impl Render for TemporaryWindow {
 }
 
 fn temporary_database_resource_view(cx: &App) -> CriticalResourcesView {
-    let snapshot = crate::database::store(cx).read(cx, |resource| match resource {
-        DatabaseResource::AwaitingConfig => None,
-        DatabaseResource::Bound { operation, .. } => Some((
+    let (running, message, can_create_fresh) = crate::database::store(cx).read(cx, |resource| {
+        let operation = &resource.operation;
+        (
             operation.is_running(),
             operation.problem().map(ToString::to_string),
             operation
                 .problem()
                 .is_some_and(crate::database::DatabaseProblem::can_create_fresh),
-        )),
+        )
     });
-    let Some((running, message, can_create_fresh)) = snapshot else {
-        return CriticalResourcesView::loading(cx.global::<I18n>().t("critical-database-loading"));
-    };
     let mut actions = vec![CriticalResourceAction::RefreshDatabase];
     if can_create_fresh {
         actions.push(CriticalResourceAction::BackupAndCreateFreshDatabase);

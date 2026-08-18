@@ -18,6 +18,24 @@ pub(crate) enum SkillCatalogScope {
     Project { root: PathBuf },
 }
 
+pub(crate) fn watch_roots(scope: &SkillCatalogScope) -> Vec<PathBuf> {
+    watch_roots_from(scope, dirs_next::home_dir())
+}
+
+fn watch_roots_from(scope: &SkillCatalogScope, home_dir: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut roots = global_watch_root_from(home_dir)
+        .into_iter()
+        .collect::<Vec<_>>();
+    if let SkillCatalogScope::Project { root } = scope {
+        roots.push(root.join(".agents/skills"));
+    }
+    roots
+}
+
+fn global_watch_root_from(home_dir: Option<PathBuf>) -> Option<PathBuf> {
+    home_dir.map(|home| home.join(".agents/skills"))
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SkillCatalogData {
     entries: Vec<GlobalSkillEntry>,
@@ -204,6 +222,35 @@ fn skill_source_rank(source_kind: SkillSourceKind) -> u8 {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn watch_roots_follow_catalog_scope() {
+        let home = PathBuf::from("/home/test");
+        assert_eq!(
+            global_watch_root_from(Some(home.clone())),
+            Some(home.join(".agents/skills"))
+        );
+        assert_eq!(global_watch_root_from(None), None);
+
+        let project = PathBuf::from("/work/project");
+        assert_eq!(
+            watch_roots_from(&SkillCatalogScope::Global, Some(home.clone())),
+            vec![home.join(".agents/skills")]
+        );
+        assert_eq!(
+            watch_roots_from(
+                &SkillCatalogScope::Project {
+                    root: project.clone(),
+                },
+                Some(home.clone()),
+            ),
+            vec![home.join(".agents/skills"), project.join(".agents/skills")]
+        );
+        assert_eq!(
+            watch_roots_from(&SkillCatalogScope::Project { root: project }, None,),
+            vec![PathBuf::from("/work/project/.agents/skills")]
+        );
+    }
 
     #[test]
     fn catalog_entries_include_searchable_metadata() {

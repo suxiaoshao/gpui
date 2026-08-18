@@ -5,8 +5,6 @@ use std::{
     sync::Arc,
 };
 
-#[cfg(test)]
-use gpui::App;
 use gpui::{ClipboardEntry, ClipboardItem, Image, ImageFormat};
 use jaco_core::{
     AttachmentKind, AttachmentMetadata, AttachmentSource, AttachmentStorageKind, ConversationId,
@@ -15,8 +13,6 @@ use jaco_db::NewAttachment;
 use tracing::{Level, event};
 
 use crate::errors::{JacoError, JacoResult};
-#[cfg(test)]
-use crate::state::config;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ComposerAttachmentKind {
@@ -111,21 +107,6 @@ pub(crate) fn add_attachments_from_paths(
         }
     }
     Ok(result)
-}
-
-#[cfg(test)]
-pub(crate) fn prepare_message_attachments(
-    conversation_id: &ConversationId,
-    storage_prefix: &str,
-    attachments: &[ComposerAttachment],
-    cx: &App,
-) -> JacoResult<PreparedMessageAttachments> {
-    prepare_message_attachments_in(
-        config::data_dir(cx)?,
-        conversation_id,
-        storage_prefix,
-        attachments,
-    )
 }
 
 pub(crate) fn prepare_message_attachments_in(
@@ -671,12 +652,8 @@ mod tests {
         assert_eq!(image.bytes(), bytes);
     }
 
-    #[gpui::test]
-    fn prepare_message_attachments_writes_generated_image_to_conversation_store(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        use crate::state::{JacoConfig, config};
-
+    #[test]
+    fn prepare_message_attachments_writes_generated_image_to_conversation_store() {
         let temp_root = std::env::temp_dir()
             .canonicalize()
             .unwrap_or_else(|_| std::env::temp_dir());
@@ -684,15 +661,6 @@ mod tests {
             .prefix("jaco-attachments-")
             .tempdir_in(temp_root)
             .unwrap();
-        cx.update(|cx| {
-            let mut config =
-                JacoConfig::load_from_path_for_test(&dir.path().join("config.toml")).unwrap();
-            config.storage.data_dir = Some(dir.path().join("data"));
-            let config_path = dir.path().join("config.toml");
-            std::fs::write(&config_path, toml::to_string_pretty(&config).unwrap()).unwrap();
-            config::install_for_test(cx, config_path, config).unwrap();
-        });
-
         let bytes = vec![137, 80, 78, 71];
         let attachment = generated_image_attachment(
             "clipboard.png".to_string(),
@@ -702,9 +670,13 @@ mod tests {
             0,
         );
         let conversation_id = "conversation-1".to_string();
-        let prepared = cx.update(|cx| {
-            prepare_message_attachments(&conversation_id, "item-1", &[attachment], cx).unwrap()
-        });
+        let prepared = prepare_message_attachments_in(
+            dir.path().join("data"),
+            &conversation_id,
+            "item-1",
+            &[attachment],
+        )
+        .unwrap();
 
         assert_eq!(prepared.stored_paths.len(), 1);
         let stored_path = &prepared.stored_paths[0];
