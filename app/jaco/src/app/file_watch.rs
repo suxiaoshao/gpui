@@ -1201,8 +1201,9 @@ mod tests {
             exact_file(PathBuf::from("config.toml")),
             Err(FileWatchProblem::InvalidTarget { .. })
         ));
-        let target = exact_file(PathBuf::from("/tmp/a/../config.toml")).unwrap();
-        assert_eq!(target.logical_path, PathBuf::from("/tmp/config.toml"));
+        let temp = tempfile::tempdir().unwrap();
+        let target = exact_file(temp.path().join("a/../config.toml")).unwrap();
+        assert_eq!(target.logical_path, temp.path().join("config.toml"));
     }
 
     #[test]

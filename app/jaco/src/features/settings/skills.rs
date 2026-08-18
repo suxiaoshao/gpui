@@ -15,8 +15,8 @@ use gpui_component::{
 };
 use gpui_operation::{Complete, Load, Refresh, Retry, Transition};
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    collections::BTreeSet,
+    path::{Path, PathBuf},
 };
 
 use super::push_settings_error;
@@ -45,13 +45,34 @@ fn take_pending_skill_refresh(pending: &mut bool) -> bool {
     std::mem::take(pending)
 }
 
+fn expanded_skill_content(
+    expanded: &BTreeSet<PathBuf>,
+    skill_file_path: &Path,
+    content: Option<&skills::LoadedSkillContent>,
+) -> Option<SkillContentPanelState> {
+    if !expanded.contains(skill_file_path) {
+        return None;
+    }
+
+    Some(
+        content
+            .map(|content| SkillContentPanelState::Loaded {
+                content: content.content.clone().into(),
+                content_sha256: content.content_sha256.clone().into(),
+            })
+            .unwrap_or_else(|| SkillContentPanelState::Failed {
+                message: "skill detail is unavailable".into(),
+            }),
+    )
+}
+
 pub(super) struct SkillsSettingsPage {
     search_input: Entity<InputState>,
     skill_catalog: skills::SkillCatalogOperation,
     list: ListState,
     rows: Vec<SkillCatalogRow>,
     items: Vec<PathBuf>,
-    expanded: BTreeMap<PathBuf, SkillContentPanelState>,
+    expanded: BTreeSet<PathBuf>,
     _watch_binding: FileWatchBinding,
     pending_dirty: bool,
     _subscriptions: Vec<Subscription>,
@@ -72,7 +93,7 @@ impl SkillsSettingsPage {
             list: ListState::new(0, ListAlignment::Top, px(2048.)).measure_all(),
             rows: Vec::new(),
             items: Vec::new(),
-            expanded: BTreeMap::new(),
+            expanded: BTreeSet::new(),
             _watch_binding: watch_binding,
             pending_dirty: false,
             _subscriptions: vec![search_subscription],
@@ -162,7 +183,7 @@ impl SkillsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.expanded.remove(&skill_file_path).is_some() {
+        if self.expanded.remove(&skill_file_path) {
             self.sync_list_items(cx, Some(&skill_file_path));
             return;
         }
@@ -178,18 +199,7 @@ impl SkillsSettingsPage {
             return;
         };
 
-        let next_state = self
-            .skill_catalog
-            .data()
-            .and_then(|data| data.details().get(&skill_file_path))
-            .map(|content| SkillContentPanelState::Loaded {
-                content: content.content.clone().into(),
-                content_sha256: content.content_sha256.clone().into(),
-            })
-            .unwrap_or_else(|| SkillContentPanelState::Failed {
-                message: "skill detail is unavailable".into(),
-            });
-        self.expanded.insert(skill_file_path.clone(), next_state);
+        self.expanded.insert(skill_file_path.clone());
         self.sync_list_items(cx, Some(&skill_file_path));
     }
 
@@ -204,7 +214,7 @@ impl SkillsSettingsPage {
             .iter()
             .map(|entry| entry.skill_file_path.clone())
             .collect::<BTreeSet<_>>();
-        self.expanded.retain(|path, _| all_paths.contains(path));
+        self.expanded.retain(|path| all_paths.contains(path));
 
         let rows = skill_catalog_rows(entries, cx.global::<I18n>());
         let query = self.current_query(cx);
@@ -292,7 +302,13 @@ impl SkillsSettingsPage {
         let Some(row) = self.rows.iter().find(|row| row.key == path).cloned() else {
             return div().into_any_element();
         };
-        let content = self.expanded.get(&path).cloned();
+        let content = expanded_skill_content(
+            &self.expanded,
+            &path,
+            self.skill_catalog
+                .data()
+                .and_then(|data| data.details().get(&path)),
+        );
         let toggle_page = page.clone();
         let scroll_page = page.clone();
         SkillCatalogEntryView::new(row, content)
@@ -410,11 +426,13 @@ fn sync_skill_list(
 mod tests {
     use super::sync_skill_list;
     use super::{
-        SkillWatchRefreshRequest, skill_watch_refresh_request, take_pending_skill_refresh,
+        SkillWatchRefreshRequest, expanded_skill_content, skill_watch_refresh_request,
+        take_pending_skill_refresh,
     };
+    use crate::features::{settings::skills::rows::SkillContentPanelState, skills};
     use gpui::{ListAlignment, ListState, Task, px};
     use gpui_operation::{Complete, Load, Refresh, Transition, refresh};
-    use std::path::PathBuf;
+    use std::{collections::BTreeSet, path::PathBuf};
 
     #[derive(Debug, PartialEq, Eq)]
     struct TestProblem;
@@ -490,6 +508,35 @@ mod tests {
             Some(&CatalogSnapshot {
                 data: vec!["rust", "gpui"],
                 rows: vec!["rust", "gpui"],
+            })
+        );
+    }
+
+    #[test]
+    fn expanded_skill_content_uses_latest_loaded_detail() {
+        let path = PathBuf::from("/tmp/example/SKILL.md");
+        let expanded = BTreeSet::from([path.clone()]);
+        let initial = skills::LoadedSkillContent {
+            content: "initial content".to_owned(),
+            content_sha256: "initial-hash".to_owned(),
+        };
+        let refreshed = skills::LoadedSkillContent {
+            content: "refreshed content".to_owned(),
+            content_sha256: "refreshed-hash".to_owned(),
+        };
+
+        assert_eq!(
+            expanded_skill_content(&expanded, &path, Some(&initial)),
+            Some(SkillContentPanelState::Loaded {
+                content: "initial content".into(),
+                content_sha256: "initial-hash".into(),
+            })
+        );
+        assert_eq!(
+            expanded_skill_content(&expanded, &path, Some(&refreshed)),
+            Some(SkillContentPanelState::Loaded {
+                content: "refreshed content".into(),
+                content_sha256: "refreshed-hash".into(),
             })
         );
     }
