@@ -79,19 +79,16 @@ impl McpConnector {
 }
 
 pub struct McpClientHandler {
-    server_id: String,
+    identity: McpSessionIdentity,
     event_tx: Option<mpsc::UnboundedSender<McpRuntimeEvent>>,
 }
 
 impl McpClientHandler {
     pub fn new(
-        server_id: impl Into<String>,
+        identity: McpSessionIdentity,
         event_tx: Option<mpsc::UnboundedSender<McpRuntimeEvent>>,
     ) -> Self {
-        Self {
-            server_id: server_id.into(),
-            event_tx,
-        }
+        Self { identity, event_tx }
     }
 }
 
@@ -106,7 +103,7 @@ impl ClientHandler for McpClientHandler {
         };
         if let Some(sender) = &self.event_tx {
             let _ = sender.send(McpRuntimeEvent::ToolsChanged {
-                server_id: self.server_id.clone(),
+                identity: self.identity.clone(),
                 tools: tools.iter().map(tool_snapshot).collect(),
             });
         }
@@ -115,13 +112,14 @@ impl ClientHandler for McpClientHandler {
 
 pub(super) async fn connect_mcp_server(
     config: McpServerRuntimeConfig,
+    identity: McpSessionIdentity,
     event_tx: Option<mpsc::UnboundedSender<McpRuntimeEvent>>,
 ) -> Result<McpServerSession> {
     let server_id = config.server.server_id.clone();
     let display_name = config.server.display_name.clone();
     let transport_kind = transport_kind(&config.server.transport);
     let startup_timeout = config.startup_timeout;
-    let handler = McpClientHandler::new(server_id.clone(), event_tx.clone());
+    let handler = McpClientHandler::new(identity.clone(), event_tx.clone());
     let service = match &config.server.transport {
         McpServerTransport::Stdio(stdio) => {
             let mut command = tokio::process::Command::new(&stdio.command);
@@ -146,7 +144,7 @@ pub(super) async fn connect_mcp_server(
                     )));
                 }
                 let auth_manager =
-                    authorization_manager_for_http(&server_id, http, event_tx.clone())
+                    authorization_manager_for_http(&identity, http, event_tx.clone())
                         .await
                         .map_err(|err| {
                             AgentRuntimeError::Mcp(format!(
@@ -220,7 +218,7 @@ fn http_transport_config(
 }
 
 async fn authorization_manager_for_http(
-    server_id: &str,
+    identity: &McpSessionIdentity,
     transport: &McpStreamableHttpTransport,
     event_tx: Option<mpsc::UnboundedSender<McpRuntimeEvent>>,
 ) -> Result<AuthorizationManager> {
@@ -231,7 +229,7 @@ async fn authorization_manager_for_http(
     let credentials = serde_json::from_value::<StoredCredentials>(credentials_value.clone())
         .map_err(|err| AgentRuntimeError::Mcp(err.to_string()))?;
     let credential_store =
-        MirroringCredentialStore::new(server_id.to_string(), transport.url.clone(), event_tx);
+        MirroringCredentialStore::new(identity.clone(), transport.url.clone(), event_tx);
     credential_store
         .seed(credentials)
         .await
@@ -256,20 +254,20 @@ async fn authorization_manager_for_http(
 #[derive(Clone)]
 pub(super) struct MirroringCredentialStore {
     inner: InMemoryCredentialStore,
-    server_id: String,
+    identity: McpSessionIdentity,
     server_url: String,
     event_tx: Option<mpsc::UnboundedSender<McpRuntimeEvent>>,
 }
 
 impl MirroringCredentialStore {
     pub(super) fn new(
-        server_id: String,
+        identity: McpSessionIdentity,
         server_url: String,
         event_tx: Option<mpsc::UnboundedSender<McpRuntimeEvent>>,
     ) -> Self {
         Self {
             inner: InMemoryCredentialStore::new(),
-            server_id,
+            identity,
             server_url,
             event_tx,
         }
@@ -290,7 +288,7 @@ impl MirroringCredentialStore {
             .map_err(|err| AuthError::InternalError(err.to_string()))?;
         let _ = sender.send(McpRuntimeEvent::OAuthCredentialsChanged(Box::new(
             McpOAuthCredentialsSnapshot {
-                server_id: self.server_id.clone(),
+                identity: self.identity.clone(),
                 server_url: self.server_url.clone(),
                 credentials: credentials_value,
                 status: oauth_status_from_credentials(credentials),

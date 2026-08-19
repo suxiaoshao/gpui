@@ -32,7 +32,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-use config_hash::mcp_server_fingerprint;
+pub use config_hash::mcp_server_fingerprint;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -106,6 +106,7 @@ impl std::fmt::Debug for McpStreamableHttpTransport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpServerRuntimeConfig {
     pub server: McpServerConfig,
+    pub generation: u64,
     pub required: bool,
     pub startup_timeout: Duration,
     pub tool_timeout: Duration,
@@ -130,13 +131,16 @@ pub enum McpSessionPruneMode {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum McpRuntimeEvent {
-    ServerStatusChanged(Box<McpServerStatusSnapshot>),
+    ServerStatusChanged {
+        identity: McpSessionIdentity,
+        status: Box<McpServerStatusSnapshot>,
+    },
     ToolsChanged {
-        server_id: String,
+        identity: McpSessionIdentity,
         tools: Vec<McpToolSnapshot>,
     },
     OAuthChanged {
-        server_id: String,
+        identity: McpSessionIdentity,
         status: McpOAuthStatusSnapshot,
     },
     OAuthCredentialsChanged(Box<McpOAuthCredentialsSnapshot>),
@@ -144,7 +148,7 @@ pub enum McpRuntimeEvent {
 
 #[derive(Clone, PartialEq)]
 pub struct McpOAuthCredentialsSnapshot {
-    pub server_id: String,
+    pub identity: McpSessionIdentity,
     pub server_url: String,
     pub credentials: serde_json::Value,
     pub status: McpOAuthStatusSnapshot,
@@ -153,7 +157,7 @@ pub struct McpOAuthCredentialsSnapshot {
 impl std::fmt::Debug for McpOAuthCredentialsSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpOAuthCredentialsSnapshot")
-            .field("server_id", &self.server_id)
+            .field("identity", &self.identity)
             .field("server_url", &self.server_url)
             .field("credentials", &"[REDACTED]")
             .field("status", &self.status)
@@ -162,10 +166,13 @@ impl std::fmt::Debug for McpOAuthCredentialsSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct McpSessionKey {
+pub struct McpSessionIdentity {
     pub server_id: String,
     pub fingerprint: String,
+    pub generation: u64,
 }
+
+type McpSessionKey = McpSessionIdentity;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct McpToolSnapshot {
@@ -241,6 +248,7 @@ pub struct McpServerSession {
 #[derive(Default)]
 pub struct McpSessionManager {
     sessions: BTreeMap<McpSessionKey, McpServerSession>,
+    latest_generations: BTreeMap<String, u64>,
     connector: McpConnector,
     event_tx: Option<mpsc::UnboundedSender<McpRuntimeEvent>>,
 }
@@ -266,49 +274,107 @@ impl McpSessionManager {
         &mut self,
         registry: &mut ToolRegistry,
         configs: Vec<McpServerRuntimeConfig>,
+        authority_generations: BTreeMap<String, u64>,
         prune_mode: McpSessionPruneMode,
     ) -> Result<McpPreparedTools> {
-        let active_fingerprints = configs
+        self.accept_config_generations(&configs, &authority_generations)?;
+        self.close_superseded_generations().await;
+
+        let active_sessions = configs
             .iter()
             .map(|config| {
                 (
                     config.server.server_id.clone(),
-                    mcp_server_fingerprint(config),
+                    McpSessionIdentity {
+                        server_id: config.server.server_id.clone(),
+                        fingerprint: mcp_server_fingerprint(config),
+                        generation: config.generation,
+                    },
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        let replaced_keys = self
+            .sessions
+            .keys()
+            .filter(|key| {
+                active_sessions
+                    .get(&key.server_id)
+                    .is_some_and(|active| active != *key)
+            })
+            .cloned()
+            .collect();
+        self.close_session_keys(replaced_keys).await;
         if prune_mode == McpSessionPruneMode::PruneStale {
-            self.close_stale_sessions(&active_fingerprints).await;
+            self.close_stale_sessions(&active_sessions, &authority_generations)
+                .await;
         }
 
         let mut statuses = Vec::new();
         for config in configs {
-            let fingerprint = mcp_server_fingerprint(&config);
+            let identity = McpSessionIdentity {
+                server_id: config.server.server_id.clone(),
+                fingerprint: mcp_server_fingerprint(&config),
+                generation: config.generation,
+            };
             match self
-                .register_tools_for_server(registry, config, fingerprint)
+                .register_tools_for_server(registry, config, identity)
                 .await
             {
                 Ok(status) => statuses.push(status),
-                Err(err) => {
-                    return Err(err);
-                }
+                Err(err) => return Err(err),
             }
         }
 
         Ok(McpPreparedTools { statuses })
     }
 
+    fn accept_config_generations(
+        &mut self,
+        configs: &[McpServerRuntimeConfig],
+        authority_generations: &BTreeMap<String, u64>,
+    ) -> Result<()> {
+        for (server_id, generation) in authority_generations {
+            if self
+                .latest_generations
+                .get(server_id)
+                .is_some_and(|latest| generation < latest)
+            {
+                let latest = self.latest_generations[server_id];
+                return Err(AgentRuntimeError::Mcp(format!(
+                    "MCP server `{server_id}` runtime generation {} was superseded by generation {}",
+                    generation, latest
+                )));
+            }
+        }
+        for config in configs {
+            let server_id = &config.server.server_id;
+            if authority_generations.get(server_id) != Some(&config.generation) {
+                return Err(AgentRuntimeError::Mcp(format!(
+                    "MCP server `{server_id}` runtime generation {} is outside the accepted configuration snapshot",
+                    config.generation
+                )));
+            }
+        }
+        for (server_id, generation) in authority_generations {
+            self.latest_generations
+                .entry(server_id.clone())
+                .and_modify(|latest| *latest = (*latest).max(*generation))
+                .or_insert(*generation);
+        }
+        Ok(())
+    }
+
     async fn register_tools_for_server(
         &mut self,
         registry: &mut ToolRegistry,
         config: McpServerRuntimeConfig,
-        fingerprint: String,
+        identity: McpSessionIdentity,
     ) -> Result<McpServerStatusSnapshot> {
         let required = config.required;
         let server_id = config.server.server_id.clone();
         let display_name = config.server.display_name.clone();
         let transport = transport_kind(&config.server.transport);
-        let result = self.ensure_session(config.clone(), fingerprint).await;
+        let result = self.ensure_session(config.clone(), identity).await;
         let session = match result {
             Ok(session) => session,
             Err(err) if required => return Err(err),
@@ -333,12 +399,9 @@ impl McpSessionManager {
     async fn ensure_session(
         &mut self,
         config: McpServerRuntimeConfig,
-        fingerprint: String,
+        identity: McpSessionIdentity,
     ) -> Result<&mut McpServerSession> {
-        let key = McpSessionKey {
-            server_id: config.server.server_id.clone(),
-            fingerprint,
-        };
+        let key = identity;
         if self.sessions.contains_key(&key) {
             let refresh_result = {
                 let session = self.sessions.get_mut(&key).expect("session key exists");
@@ -346,9 +409,10 @@ impl McpSessionManager {
             };
             match refresh_result {
                 Ok(refreshed_status) => {
-                    self.emit(McpRuntimeEvent::ServerStatusChanged(Box::new(
-                        refreshed_status,
-                    )));
+                    self.emit(McpRuntimeEvent::ServerStatusChanged {
+                        identity: key.clone(),
+                        status: Box::new(refreshed_status),
+                    });
                     return Ok(self.sessions.get_mut(&key).expect("session key exists"));
                 }
                 Err(_) => {
@@ -362,10 +426,11 @@ impl McpSessionManager {
             }
         }
 
-        let session = connect_mcp_server(config, self.event_tx.clone()).await?;
-        self.emit(McpRuntimeEvent::ServerStatusChanged(Box::new(
-            session.status.clone(),
-        )));
+        let session = connect_mcp_server(config, key.clone(), self.event_tx.clone()).await?;
+        self.emit(McpRuntimeEvent::ServerStatusChanged {
+            identity: key.clone(),
+            status: Box::new(session.status.clone()),
+        });
         self.sessions.insert(key.clone(), session);
         Ok(self
             .sessions
@@ -403,9 +468,32 @@ impl McpSessionManager {
         Ok(())
     }
 
-    async fn close_stale_sessions(&mut self, active_fingerprints: &BTreeMap<String, String>) {
-        let stale_keys = stale_session_keys(self.sessions.keys(), active_fingerprints);
-        for key in stale_keys {
+    async fn close_stale_sessions(
+        &mut self,
+        active_sessions: &BTreeMap<String, McpSessionIdentity>,
+        authority_generations: &BTreeMap<String, u64>,
+    ) {
+        let stale_keys =
+            stale_session_keys(self.sessions.keys(), active_sessions, authority_generations);
+        self.close_session_keys(stale_keys).await;
+    }
+
+    async fn close_superseded_generations(&mut self) {
+        let stale_keys = self
+            .sessions
+            .keys()
+            .filter(|key| {
+                self.latest_generations
+                    .get(&key.server_id)
+                    .is_some_and(|generation| key.generation < *generation)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        self.close_session_keys(stale_keys).await;
+    }
+
+    async fn close_session_keys(&mut self, keys: Vec<McpSessionKey>) {
+        for key in keys {
             if let Some(mut session) = self.sessions.remove(&key) {
                 let _ = session
                     .service
@@ -413,6 +501,15 @@ impl McpSessionManager {
                     .await;
             }
         }
+    }
+
+    pub async fn advance_server_generation(&mut self, server_id: &str, generation: u64) {
+        let latest = self
+            .latest_generations
+            .entry(server_id.to_string())
+            .or_insert(generation);
+        *latest = (*latest).max(generation);
+        self.close_superseded_generations().await;
     }
 
     pub async fn disconnect_server(&mut self, server_id: &str) {
@@ -441,12 +538,14 @@ impl McpSessionManager {
 
 fn stale_session_keys<'a>(
     keys: impl Iterator<Item = &'a McpSessionKey>,
-    active_fingerprints: &BTreeMap<String, String>,
+    active_sessions: &BTreeMap<String, McpSessionIdentity>,
+    authority_generations: &BTreeMap<String, u64>,
 ) -> Vec<McpSessionKey> {
-    keys.filter(|key| {
-        active_fingerprints
+    keys.filter(|key| match active_sessions.get(&key.server_id) {
+        Some(active) => active != *key,
+        None => authority_generations
             .get(&key.server_id)
-            .is_none_or(|fingerprint| fingerprint != &key.fingerprint)
+            .is_some_and(|generation| key.generation <= *generation),
     })
     .cloned()
     .collect()
@@ -495,6 +594,7 @@ mod tests {
                 env: BTreeMap::new(),
                 cwd: None,
             },
+            generation: 0,
             required: false,
             startup_timeout: Duration::from_secs(30),
             tool_timeout: Duration::from_secs(300),
@@ -513,22 +613,44 @@ mod tests {
             McpSessionKey {
                 server_id: "alpha".to_string(),
                 fingerprint: "same".to_string(),
+                generation: 1,
             },
             McpSessionKey {
                 server_id: "beta".to_string(),
                 fingerprint: "old".to_string(),
+                generation: 1,
             },
             McpSessionKey {
                 server_id: "removed".to_string(),
                 fingerprint: "gone".to_string(),
+                generation: 1,
             },
         ];
         let active = BTreeMap::from([
-            ("alpha".to_string(), "same".to_string()),
-            ("beta".to_string(), "new".to_string()),
+            (
+                "alpha".to_string(),
+                McpSessionIdentity {
+                    server_id: "alpha".to_string(),
+                    fingerprint: "same".to_string(),
+                    generation: 1,
+                },
+            ),
+            (
+                "beta".to_string(),
+                McpSessionIdentity {
+                    server_id: "beta".to_string(),
+                    fingerprint: "new".to_string(),
+                    generation: 1,
+                },
+            ),
+        ]);
+        let authority_generations = BTreeMap::from([
+            ("alpha".to_string(), 1),
+            ("beta".to_string(), 1),
+            ("removed".to_string(), 1),
         ]);
 
-        let stale = stale_session_keys(keys.iter(), &active);
+        let stale = stale_session_keys(keys.iter(), &active, &authority_generations);
 
         assert_eq!(
             stale,
@@ -536,12 +658,32 @@ mod tests {
                 McpSessionKey {
                     server_id: "beta".to_string(),
                     fingerprint: "old".to_string(),
+                    generation: 1,
                 },
                 McpSessionKey {
                     server_id: "removed".to_string(),
                     fingerprint: "gone".to_string(),
+                    generation: 1,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn stale_prune_snapshot_does_not_close_unrepresented_new_server() {
+        let new_session = McpSessionKey {
+            server_id: "new".to_string(),
+            fingerprint: "new-fingerprint".to_string(),
+            generation: 0,
+        };
+
+        assert!(
+            stale_session_keys(
+                std::iter::once(&new_session),
+                &BTreeMap::new(),
+                &BTreeMap::from([("old".to_string(), 1)]),
+            )
+            .is_empty()
         );
     }
 
@@ -558,6 +700,69 @@ mod tests {
             mcp_server_fingerprint(&first),
             mcp_server_fingerprint(&second)
         );
+    }
+
+    #[test]
+    fn server_generation_is_not_part_of_config_fingerprint() {
+        let first = stdio_runtime_config("server", "echo");
+        let mut after_aba = first.clone();
+        after_aba.generation = 2;
+
+        assert_eq!(
+            mcp_server_fingerprint(&first),
+            mcp_server_fingerprint(&after_aba)
+        );
+        assert_ne!(first.generation, after_aba.generation);
+    }
+
+    #[tokio::test]
+    async fn prepare_then_advance_keeps_same_generation_and_rejects_older_work() {
+        let mut manager = McpSessionManager::new();
+        let mut current = stdio_runtime_config("server", "echo");
+        current.generation = 4;
+
+        manager
+            .accept_config_generations(
+                std::slice::from_ref(&current),
+                &BTreeMap::from([("server".to_string(), 4)]),
+            )
+            .expect("accept current prepare");
+        manager.advance_server_generation("server", 4).await;
+        manager
+            .accept_config_generations(
+                std::slice::from_ref(&current),
+                &BTreeMap::from([("server".to_string(), 4)]),
+            )
+            .expect("same generation remains current");
+
+        let mut stale = current;
+        stale.generation = 3;
+        assert!(
+            manager
+                .accept_config_generations(
+                    std::slice::from_ref(&stale),
+                    &BTreeMap::from([("server".to_string(), 3)]),
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("superseded")
+        );
+    }
+
+    #[tokio::test]
+    async fn advance_then_prepare_accepts_the_advanced_generation() {
+        let mut manager = McpSessionManager::new();
+        manager.advance_server_generation("server", 9).await;
+        let mut current = stdio_runtime_config("server", "echo");
+        current.generation = 9;
+
+        manager
+            .accept_config_generations(
+                std::slice::from_ref(&current),
+                &BTreeMap::from([("server".to_string(), 9)]),
+            )
+            .expect("prepare at advanced generation");
+        assert_eq!(manager.latest_generations.get("server"), Some(&9));
     }
 
     #[test]
@@ -579,8 +784,13 @@ mod tests {
     #[tokio::test]
     async fn mirroring_credential_store_emits_credentials_changed_on_save() {
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let identity = McpSessionIdentity {
+            server_id: "server".to_string(),
+            fingerprint: "fingerprint".to_string(),
+            generation: 7,
+        };
         let store = MirroringCredentialStore::new(
-            "server".to_string(),
+            identity.clone(),
             "https://example.com/mcp".to_string(),
             Some(event_tx),
         );
@@ -597,7 +807,7 @@ mod tests {
 
         match event_rx.recv().await.unwrap() {
             McpRuntimeEvent::OAuthCredentialsChanged(snapshot) => {
-                assert_eq!(snapshot.server_id, "server");
+                assert_eq!(snapshot.identity, identity);
                 assert_eq!(snapshot.server_url, "https://example.com/mcp");
                 assert_eq!(
                     snapshot.status,

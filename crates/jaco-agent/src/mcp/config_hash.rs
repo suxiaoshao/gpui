@@ -21,7 +21,7 @@ struct McpServerRuntimeFingerprint<'a> {
     oauth_credentials: Option<&'a serde_json::Value>,
 }
 
-pub(crate) fn mcp_server_fingerprint(config: &McpServerRuntimeConfig) -> String {
+pub fn mcp_server_fingerprint(config: &McpServerRuntimeConfig) -> String {
     let oauth_credentials = match &config.server.transport {
         McpServerTransport::StreamableHttp(http) => http.oauth_credentials.as_ref(),
         McpServerTransport::Stdio(_) => None,

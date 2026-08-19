@@ -187,6 +187,7 @@ impl McpServerTomlConfig {
             .unwrap_or(inherited_default_approval_mode);
         Ok(McpServerRuntimeConfig {
             server: self.to_agent_config(server_id)?,
+            generation: 0,
             required: self.required,
             startup_timeout: Duration::from_millis(
                 self.startup_timeout_ms

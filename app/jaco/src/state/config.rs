@@ -631,6 +631,7 @@ impl ConfigFileObserver {
             operation_running,
             operation_phase,
             same_source_recovery_permitted,
+            external_change_pending,
             current_source_bytes,
         ) = store(cx).read(cx, |operation| {
             (
@@ -641,6 +642,13 @@ impl ConfigFileObserver {
                     ConfigOperation::Degraded(degraded)
                         if degraded.problem().permits_same_source_recovery()
                 ),
+                match operation {
+                    ConfigOperation::Degraded(degraded) => match degraded.problem() {
+                        ConfigProblem::ExternalChange { pending, .. } => Some(pending.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                },
                 operation.data().map(|data| data.source_bytes.clone()),
             )
         });
@@ -656,12 +664,21 @@ impl ConfigFileObserver {
             self.consume_pending(cx);
             return;
         }
-        if !same_source_recovery_permitted
-            && result
-                .as_ref()
-                .ok()
-                .is_some_and(|data| Some(&data.source_bytes) == current_source_bytes.as_ref())
-        {
+        let observed_same_source = result
+            .as_ref()
+            .ok()
+            .is_some_and(|data| Some(&data.source_bytes) == current_source_bytes.as_ref());
+        if let Some(pending) = external_change_pending {
+            if observed_same_source {
+                let current = result.expect("same-source probe result must be valid");
+                self.invalidate_probe_basis();
+                retry_pending_after_observed_restore(current, pending, cx);
+                return;
+            }
+            self.consume_pending(cx);
+            return;
+        }
+        if observed_same_source && !same_source_recovery_permitted {
             self.consume_pending(cx);
             return;
         }
@@ -677,6 +694,39 @@ impl ConfigFileObserver {
             self.start_probe(cx);
         }
     }
+}
+
+fn retry_pending_after_observed_restore(
+    current: ConfigData,
+    pending: Arc<PendingConfig>,
+    cx: &mut App,
+) {
+    let attempt = cx.background_spawn(async move { write_pending(&current, pending) });
+    let task = cx.spawn(async move |cx| {
+        let result = attempt.await;
+        cx.update(|cx| {
+            if crate::app::is_shutting_down() {
+                return;
+            }
+            store(cx).update(cx, |operation| {
+                if matches!(operation, ConfigOperation::RepairingDegraded(_)) {
+                    operation.transition(Complete(result));
+                }
+            });
+        });
+    });
+    store(cx).update(cx, |operation| {
+        if matches!(
+            operation,
+            ConfigOperation::Degraded(degraded)
+                if matches!(degraded.problem(), ConfigProblem::ExternalChange { .. })
+        ) {
+            operation.transition(Repair {
+                repair: ConfigRepair::RetryWrite,
+                task,
+            });
+        }
+    });
 }
 
 fn apply_observed_probe(result: ConfigProbeResult, cx: &mut App) {

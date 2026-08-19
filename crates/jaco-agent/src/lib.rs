@@ -11,8 +11,9 @@ pub use mcp::{
     McpConfigLayer, McpConnector, McpOAuthCredentialsSnapshot, McpOAuthStatusSnapshot,
     McpPreparedTools, McpRuntimeEvent, McpServerConfig, McpServerConnectionState,
     McpServerInfoSnapshot, McpServerRuntimeConfig, McpServerStatusSnapshot, McpServerTransport,
-    McpServerTransportKindSnapshot, McpSessionManager, McpSessionPruneMode, McpStdioTransport,
-    McpStreamableHttpTransport, McpToolRegistrationOptions, McpToolSnapshot,
+    McpServerTransportKindSnapshot, McpSessionIdentity, McpSessionManager, McpSessionPruneMode,
+    McpStdioTransport, McpStreamableHttpTransport, McpToolRegistrationOptions, McpToolSnapshot,
+    mcp_server_fingerprint,
 };
 pub use persistence::AgentPersistence;
 pub use persistence::PersistingCompletionModel;

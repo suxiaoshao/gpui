@@ -625,6 +625,218 @@ fn observed_restored_last_good_bytes_recovers_degraded_config(cx: &mut TestAppCo
 }
 
 #[gpui::test]
+fn observed_restored_source_retries_external_change_pending(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let initial = JacoConfig::default();
+    let initial_bytes = toml::to_string_pretty(&initial).unwrap().into_bytes();
+    fs::write(&path, &initial_bytes).unwrap();
+    let pending_model = ChatFormModelConfig {
+        provider_id: "provider-1".to_string(),
+        model_id: "gpt-5".to_string(),
+    };
+    let mut pending_value = initial.clone();
+    pending_value.chat_form.model = Some(pending_model.clone());
+    let pending_bytes = toml::to_string_pretty(&pending_value).unwrap().into_bytes();
+
+    let observer = cx.update(|cx| {
+        install_for_test(cx, path.clone(), initial.clone()).unwrap();
+        let observer = cx.new(|cx| {
+            let mut observer = ConfigFileObserver {
+                _binding: None,
+                _config_subscription: None,
+                probe_task: None,
+                probe_basis_epoch: 0,
+                pending_dirty: false,
+            };
+            observer._config_subscription = Some(store(cx).observe(
+                cx,
+                |observer: &mut ConfigFileObserver, operation, cx| {
+                    observer.on_config_operation_changed(operation, cx);
+                },
+            ));
+            observer
+        });
+        cx.set_global(ConfigFileObserverGlobal {
+            _observer: observer.clone(),
+        });
+        observer
+    });
+    cx.run_until_parked();
+
+    fs::write(&path, b"# external edit\n").unwrap();
+    cx.update(|cx| {
+        let result = update_chat_form_config(cx, |config| {
+            config.model = Some(pending_model);
+        });
+        assert!(result.is_err());
+        assert!(store(cx).read(cx, |operation| matches!(
+            operation,
+            ConfigOperation::Degraded(degraded)
+                if matches!(degraded.problem(), ConfigProblem::ExternalChange { .. })
+        )));
+    });
+
+    fs::write(&path, &initial_bytes).unwrap();
+    cx.update(|cx| {
+        observer.update(cx, |observer, cx| {
+            observer.finish_probe(
+                ConfigProbeStart {
+                    basis_epoch: observer.probe_basis_epoch,
+                    operation_phase: repair::Phase::Degraded,
+                    source_bytes: Some(initial_bytes.clone()),
+                },
+                Ok(data_from_value(
+                    path.clone(),
+                    initial.clone(),
+                    initial_bytes.clone(),
+                )),
+                cx,
+            );
+        });
+        store(cx).read(cx, |operation| {
+            assert!(matches!(operation, ConfigOperation::RepairingDegraded(_)));
+            assert_eq!(operation.active_repair(), Some(&ConfigRepair::RetryWrite));
+        });
+    });
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        store(cx).read(cx, |operation| {
+            let ConfigOperation::Ready(ready) = operation else {
+                panic!("expected pending config to be committed");
+            };
+            assert_eq!(ready.data().value, pending_value);
+            assert_eq!(ready.data().source_bytes, pending_bytes);
+        });
+    });
+    assert_eq!(fs::read(path).unwrap(), pending_bytes);
+}
+
+#[gpui::test]
+fn observed_external_change_retry_preserves_pending_after_another_race(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let initial = JacoConfig::default();
+    let initial_bytes = toml::to_string_pretty(&initial).unwrap().into_bytes();
+    fs::write(&path, &initial_bytes).unwrap();
+    let pending_model = ChatFormModelConfig {
+        provider_id: "provider-1".to_string(),
+        model_id: "gpt-5".to_string(),
+    };
+
+    let observer = cx.update(|cx| {
+        install_for_test(cx, path.clone(), initial.clone()).unwrap();
+        let observer = cx.new(|cx| {
+            let mut observer = ConfigFileObserver {
+                _binding: None,
+                _config_subscription: None,
+                probe_task: None,
+                probe_basis_epoch: 0,
+                pending_dirty: false,
+            };
+            observer._config_subscription = Some(store(cx).observe(
+                cx,
+                |observer: &mut ConfigFileObserver, operation, cx| {
+                    observer.on_config_operation_changed(operation, cx);
+                },
+            ));
+            observer
+        });
+        cx.set_global(ConfigFileObserverGlobal {
+            _observer: observer.clone(),
+        });
+        observer
+    });
+    cx.run_until_parked();
+
+    fs::write(&path, b"# first external edit\n").unwrap();
+    cx.update(|cx| {
+        assert!(
+            update_chat_form_config(cx, |config| {
+                config.model = Some(pending_model.clone());
+            })
+            .is_err()
+        );
+    });
+
+    fs::write(&path, &initial_bytes).unwrap();
+    cx.update(|cx| {
+        observer.update(cx, |observer, cx| {
+            observer.finish_probe(
+                ConfigProbeStart {
+                    basis_epoch: observer.probe_basis_epoch,
+                    operation_phase: repair::Phase::Degraded,
+                    source_bytes: Some(initial_bytes.clone()),
+                },
+                Ok(data_from_value(
+                    path.clone(),
+                    initial.clone(),
+                    initial_bytes.clone(),
+                )),
+                cx,
+            );
+        });
+        assert!(store(cx).read(cx, |operation| matches!(
+            operation,
+            ConfigOperation::RepairingDegraded(_)
+        )));
+    });
+
+    let raced_bytes = b"# second external edit\n".to_vec();
+    fs::write(&path, &raced_bytes).unwrap();
+    cx.update(|cx| {
+        observer.update(cx, |observer, cx| {
+            observer.on_dirty(cx);
+            assert!(observer.pending_dirty);
+        });
+    });
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        observer.update(cx, |observer, cx| {
+            assert!(!observer.pending_dirty);
+            observer.finish_probe(
+                ConfigProbeStart {
+                    basis_epoch: observer.probe_basis_epoch,
+                    operation_phase: repair::Phase::Degraded,
+                    source_bytes: Some(initial_bytes.clone()),
+                },
+                Ok(data_from_value(
+                    path.clone(),
+                    initial.clone(),
+                    raced_bytes.clone(),
+                )),
+                cx,
+            );
+            observer.finish_probe(
+                ConfigProbeStart {
+                    basis_epoch: observer.probe_basis_epoch,
+                    operation_phase: repair::Phase::Degraded,
+                    source_bytes: Some(initial_bytes.clone()),
+                },
+                Err(ConfigProblem::Parse {
+                    path: path.clone(),
+                    message: "invalid external edit".to_string(),
+                }),
+                cx,
+            );
+        });
+        store(cx).read(cx, |operation| {
+            let ConfigOperation::Degraded(degraded) = operation else {
+                panic!("expected the second conflict to remain degraded");
+            };
+            assert_eq!(degraded.data().source_bytes, initial_bytes);
+            let ConfigProblem::ExternalChange { pending, .. } = degraded.problem() else {
+                panic!("expected another external-change problem");
+            };
+            assert_eq!(pending.data.chat_form.model, Some(pending_model));
+        });
+    });
+    assert_eq!(fs::read(path).unwrap(), raced_bytes);
+}
+
+#[gpui::test]
 fn stale_probe_cannot_clear_failed_save_problem(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
