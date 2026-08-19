@@ -483,6 +483,7 @@ fn observed_same_bytes_do_not_publish_config(cx: &mut TestAppContext) {
                 observed_deliveries.set(observed_deliveries.get() + 1);
             })),
             probe_task: None,
+            probe_basis_epoch: 0,
             pending_dirty: false,
         })
     });
@@ -493,6 +494,8 @@ fn observed_same_bytes_do_not_publish_config(cx: &mut TestAppContext) {
         observer.update(cx, |observer, cx| {
             observer.finish_probe(
                 ConfigProbeStart {
+                    basis_epoch: 0,
+                    operation_phase: repair::Phase::Ready,
                     source_bytes: Some(bytes.clone()),
                 },
                 Ok(data_from_value(path, initial, bytes)),
@@ -542,12 +545,163 @@ fn observed_invalid_config_retains_last_good_data(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn observed_restored_last_good_bytes_recovers_degraded_config(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let initial = JacoConfig {
+        app_settings: AppSettingsConfig {
+            language: AppLanguage::Chinese,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let bytes = toml::to_string_pretty(&initial).unwrap().into_bytes();
+    fs::write(&path, &bytes).unwrap();
+
+    let observer = cx.update(|cx| {
+        install_for_test(cx, path.clone(), initial.clone()).unwrap();
+        cx.new(|_| ConfigFileObserver {
+            _binding: None,
+            _config_subscription: None,
+            probe_task: None,
+            probe_basis_epoch: 0,
+            pending_dirty: false,
+        })
+    });
+
+    cx.update(|cx| {
+        observer.update(cx, |observer, cx| {
+            observer.finish_probe(
+                ConfigProbeStart {
+                    basis_epoch: 0,
+                    operation_phase: repair::Phase::Ready,
+                    source_bytes: Some(bytes.clone()),
+                },
+                Err(ConfigProblem::Parse {
+                    path: path.clone(),
+                    message: "invalid".to_string(),
+                }),
+                cx,
+            );
+        });
+    });
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        store(cx).read(cx, |operation| {
+            assert!(matches!(operation, ConfigOperation::Degraded(_)));
+        });
+        observer.update(cx, |observer, cx| {
+            observer.finish_probe(
+                ConfigProbeStart {
+                    basis_epoch: 0,
+                    operation_phase: repair::Phase::Degraded,
+                    source_bytes: Some(bytes.clone()),
+                },
+                Ok(data_from_value(
+                    path.clone(),
+                    initial.clone(),
+                    bytes.clone(),
+                )),
+                cx,
+            );
+        });
+        store(cx).read(cx, |operation| {
+            assert!(matches!(operation, ConfigOperation::RepairingDegraded(_)));
+        });
+    });
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        store(cx).read(cx, |operation| {
+            let ConfigOperation::Ready(ready) = operation else {
+                panic!("expected restored config to be ready");
+            };
+            assert_eq!(ready.data().app_settings.language, AppLanguage::Chinese);
+            assert_eq!(ready.data().source_bytes, bytes);
+            assert!(operation.problem().is_none());
+        });
+    });
+}
+
+#[gpui::test]
+fn stale_probe_cannot_clear_failed_save_problem(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let initial = JacoConfig::default();
+    let bytes = toml::to_string_pretty(&initial).unwrap().into_bytes();
+    fs::write(&path, &bytes).unwrap();
+
+    let observer = cx.update(|cx| {
+        install_for_test(cx, path.clone(), initial.clone()).unwrap();
+        let observer = cx.new(|_| ConfigFileObserver {
+            _binding: None,
+            _config_subscription: None,
+            probe_task: None,
+            probe_basis_epoch: 0,
+            pending_dirty: false,
+        });
+        cx.set_global(ConfigFileObserverGlobal {
+            _observer: observer.clone(),
+        });
+        observer
+    });
+    let stale_start = ConfigProbeStart {
+        basis_epoch: 0,
+        operation_phase: repair::Phase::Ready,
+        source_bytes: Some(bytes.clone()),
+    };
+    let _lock = persistence::FileLock::acquire(&path.with_extension("toml.lock")).unwrap();
+
+    cx.update(|cx| {
+        let result = update_chat_form_config(cx, |config| {
+            config.model = Some(ChatFormModelConfig {
+                provider_id: "provider-1".to_string(),
+                model_id: "gpt-5".to_string(),
+            });
+        });
+        assert!(result.is_err());
+
+        observer.update(cx, |observer, cx| {
+            observer.finish_probe(
+                stale_start,
+                Ok(data_from_value(path.clone(), initial, bytes.clone())),
+                cx,
+            );
+        });
+    });
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        store(cx).read(cx, |operation| {
+            let ConfigOperation::Degraded(degraded) = operation else {
+                panic!("expected failed save to remain degraded");
+            };
+            let ConfigProblem::Locked { pending, .. } = degraded.problem() else {
+                panic!("expected failed save problem to be retained");
+            };
+            assert_eq!(degraded.data().source_bytes, bytes);
+            assert_eq!(
+                pending
+                    .data
+                    .chat_form
+                    .model
+                    .as_ref()
+                    .map(|model| (model.provider_id.as_str(), model.model_id.as_str())),
+                Some(("provider-1", "gpt-5"))
+            );
+        });
+    });
+}
+
+#[gpui::test]
 fn observer_shutdown_drops_owned_task_and_subscription(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let observer = cx.new(|_| ConfigFileObserver {
             _binding: None,
             _config_subscription: Some(Subscription::new(|| {})),
             probe_task: Some(Task::ready(())),
+            probe_basis_epoch: 0,
             pending_dirty: true,
         });
         cx.set_global(ConfigFileObserverGlobal {

@@ -47,6 +47,7 @@ struct ConfigFileObserver {
     _binding: Option<FileWatchBinding>,
     _config_subscription: Option<Subscription>,
     probe_task: Option<Task<()>>,
+    probe_basis_epoch: u64,
     pending_dirty: bool,
 }
 
@@ -59,6 +60,8 @@ impl Global for ConfigFileObserverGlobal {}
 
 #[derive(Clone)]
 struct ConfigProbeStart {
+    basis_epoch: u64,
+    operation_phase: repair::Phase,
     source_bytes: Option<Vec<u8>>,
 }
 
@@ -156,6 +159,10 @@ pub(crate) enum ConfigProblem {
 }
 
 impl ConfigProblem {
+    fn permits_same_source_recovery(&self) -> bool {
+        matches!(self, Self::Read { .. } | Self::Parse { .. })
+    }
+
     pub(crate) fn path(&self) -> &Path {
         match self {
             Self::Read { path, .. }
@@ -466,6 +473,7 @@ pub(crate) fn init_file_observer(cx: &mut App) {
             _binding: None,
             _config_subscription: None,
             probe_task: None,
+            probe_basis_epoch: 0,
             pending_dirty: false,
         };
         observer._binding = Some(file_watch::bind(
@@ -501,7 +509,22 @@ pub(crate) fn shutdown_file_observer(cx: &mut App) {
     });
 }
 
+fn invalidate_file_observer_probe(cx: &mut App) {
+    let Some(observer) = cx
+        .try_global::<ConfigFileObserverGlobal>()
+        .map(|global| global._observer.clone())
+    else {
+        return;
+    };
+    observer.update(cx, |observer, _| observer.invalidate_probe_basis());
+}
+
 impl ConfigFileObserver {
+    fn invalidate_probe_basis(&mut self) {
+        self.probe_basis_epoch = self.probe_basis_epoch.wrapping_add(1);
+        self.probe_task.take();
+    }
+
     fn on_dirty(&mut self, cx: &mut Context<Self>) {
         if crate::app::is_shutting_down() {
             return;
@@ -534,28 +557,34 @@ impl ConfigFileObserver {
             self.pending_dirty = true;
             return;
         }
-        let (operation_running, source_bytes, path) = store(cx).read(cx, |operation| {
-            let data = operation.data();
-            let path = data
-                .map(|data| data.path.clone())
-                .or_else(|| {
-                    operation
-                        .problem()
-                        .map(|problem| problem.path().to_path_buf())
-                })
-                .filter(|path| !path.as_os_str().is_empty())
-                .or_else(|| JacoConfig::path().ok());
-            (
-                operation.is_running(),
-                data.map(|data| data.source_bytes.clone()),
-                path,
-            )
-        });
+        let (operation_running, operation_phase, source_bytes, path) =
+            store(cx).read(cx, |operation| {
+                let data = operation.data();
+                let path = data
+                    .map(|data| data.path.clone())
+                    .or_else(|| {
+                        operation
+                            .problem()
+                            .map(|problem| problem.path().to_path_buf())
+                    })
+                    .filter(|path| !path.as_os_str().is_empty())
+                    .or_else(|| JacoConfig::path().ok());
+                (
+                    operation.is_running(),
+                    operation.phase(),
+                    data.map(|data| data.source_bytes.clone()),
+                    path,
+                )
+            });
         if operation_running {
             self.pending_dirty = true;
             return;
         }
-        let start = ConfigProbeStart { source_bytes };
+        let start = ConfigProbeStart {
+            basis_epoch: self.probe_basis_epoch,
+            operation_phase,
+            source_bytes,
+        };
         let task = cx.spawn(async move |observer, cx| {
             if crate::app::is_shutting_down() {
                 return;
@@ -598,21 +627,40 @@ impl ConfigFileObserver {
         if crate::app::is_shutting_down() {
             return;
         }
-        let (operation_running, current_source_bytes) = store(cx).read(cx, |operation| {
+        let (
+            operation_running,
+            operation_phase,
+            same_source_recovery_permitted,
+            current_source_bytes,
+        ) = store(cx).read(cx, |operation| {
             (
                 operation.is_running(),
+                operation.phase(),
+                matches!(
+                    operation,
+                    ConfigOperation::Degraded(degraded)
+                        if degraded.problem().permits_same_source_recovery()
+                ),
                 operation.data().map(|data| data.source_bytes.clone()),
             )
         });
-        if operation_running || current_source_bytes != start.source_bytes {
+        if start.basis_epoch != self.probe_basis_epoch {
+            self.consume_pending(cx);
+            return;
+        }
+        if operation_running
+            || operation_phase != start.operation_phase
+            || current_source_bytes != start.source_bytes
+        {
             self.pending_dirty = true;
             self.consume_pending(cx);
             return;
         }
-        if result
-            .as_ref()
-            .ok()
-            .is_some_and(|data| Some(&data.source_bytes) == current_source_bytes.as_ref())
+        if !same_source_recovery_permitted
+            && result
+                .as_ref()
+                .ok()
+                .is_some_and(|data| Some(&data.source_bytes) == current_source_bytes.as_ref())
         {
             self.consume_pending(cx);
             return;
@@ -721,6 +769,7 @@ fn commit_update(
         data: data_from_value(current.path.clone(), value, bytes.clone()),
         bytes,
     });
+    invalidate_file_observer_probe(cx);
     let result = write_pending(&current, pending);
     let error = result
         .as_ref()
@@ -881,6 +930,7 @@ pub(crate) fn request_reload(cx: &mut App) {
     let path = path
         .filter(|path| !path.as_os_str().is_empty())
         .or_else(|| JacoConfig::path().ok());
+    invalidate_file_observer_probe(cx);
     let task = cx.spawn(async move |cx| {
         let result = smol::unblock(move || {
             path.ok_or_else(|| ConfigProblem::ResolveDirectory {
@@ -974,6 +1024,7 @@ pub(crate) fn request_repair(repair: ConfigRepair, cx: &mut App) -> JacoResult<(
                 .ok_or_else(|| JacoError::Config("pending config is unavailable".to_string()))?,
         },
     };
+    invalidate_file_observer_probe(cx);
     let config_store = store(cx);
     let task = cx.spawn(async move |cx| {
         let result = smol::unblock(move || match attempt {
