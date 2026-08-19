@@ -193,6 +193,19 @@ impl PersistenceContext {
         }
     }
 
+    pub(super) fn emit_conversation_timeline_changes(
+        &self,
+        changes: Vec<jaco_core::ConversationChange>,
+    ) {
+        if changes.is_empty() {
+            return;
+        }
+        self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
+            conversation_id: self.conversation_id.clone(),
+            changes,
+        });
+    }
+
     pub(super) fn emit_conversation_commit_with_changes<T>(
         &self,
         commit: &jaco_db::ConversationCommit<T>,

@@ -256,6 +256,8 @@ mod tests {
         args.set("error", "expected table");
         args.set("message", "could not initialize");
         args.set("duration", "1s");
+        args.set("name", "read_file");
+        args.set("id", "invocation-1");
 
         assert_ne!(
             I18n::for_locale_tag("en-US").t_with_args("status-data-dir", &args),
@@ -313,6 +315,80 @@ mod tests {
         ] {
             assert_ne!(I18n::for_locale_tag("en-US").t(key), key);
             assert_ne!(I18n::for_locale_tag("zh-CN").t(key), key);
+        }
+
+        for key in [
+            "conversation-tool-invocation-title",
+            "conversation-tool-source-local",
+            "conversation-tool-source-mcp",
+            "conversation-tool-source-provider-hosted",
+            "conversation-tool-status-requested",
+            "conversation-tool-status-awaiting-approval",
+            "conversation-tool-status-running",
+            "conversation-tool-status-succeeded",
+            "conversation-tool-status-failed",
+            "conversation-tool-status-denied",
+            "conversation-tool-status-canceled",
+            "conversation-tool-duration",
+            "conversation-tool-duration-updated",
+            "conversation-tool-unavailable",
+            "conversation-tool-field-model-name",
+            "conversation-tool-field-original-name",
+            "conversation-tool-field-namespace",
+            "conversation-tool-field-source",
+            "conversation-tool-field-server",
+            "conversation-tool-field-invocation-id",
+            "conversation-tool-field-call-id",
+            "conversation-tool-field-arguments",
+            "conversation-tool-field-access",
+            "conversation-tool-field-approval",
+            "conversation-tool-access-kind-read",
+            "conversation-tool-access-kind-write",
+            "conversation-tool-access-kind-execute",
+            "conversation-tool-access-kind-network",
+            "conversation-tool-access-target",
+            "conversation-tool-access-normalized-path",
+            "conversation-tool-access-within-project",
+            "conversation-tool-access-reason-key",
+            "conversation-tool-value-yes",
+            "conversation-tool-value-no",
+            "conversation-tool-field-created-at",
+            "conversation-tool-field-started-at",
+            "conversation-tool-field-completed-at",
+            "conversation-tool-field-updated-at",
+            "conversation-tool-field-text-output",
+            "conversation-tool-field-structured-output",
+            "conversation-tool-field-error",
+            "conversation-tool-error-code",
+            "conversation-tool-error-message",
+            "conversation-tool-error-retryable",
+            "conversation-tool-error-provider",
+            "conversation-tool-approval-pending",
+            "conversation-tool-approval-approved",
+            "conversation-tool-approval-denied",
+            "conversation-tool-approval-expired",
+            "conversation-tool-approval-canceled",
+            "conversation-tool-approval-request-reason",
+            "conversation-tool-approval-requested-at",
+            "conversation-tool-approval-decision",
+            "conversation-tool-approval-decided-by",
+            "conversation-tool-approval-decision-reason",
+            "conversation-tool-approval-decided-at",
+            "conversation-tool-approval-expires-at",
+            "conversation-tool-preview-truncated",
+            "conversation-tool-raw-hidden",
+            "conversation-tool-expand",
+            "conversation-tool-collapse",
+            "conversation-tool-copy-preview",
+            "conversation-tool-unresolved",
+        ] {
+            for locale in ["en-US", "zh-CN"] {
+                assert_ne!(
+                    I18n::for_locale_tag(locale).t_with_args(key, &args),
+                    key,
+                    "missing tool invocation i18n key {key} for {locale}"
+                );
+            }
         }
     }
 }

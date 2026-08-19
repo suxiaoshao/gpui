@@ -7,20 +7,25 @@ use gpui::{App, Entity, Window};
 use gpui_component::text::TextViewState;
 use jaco_core::{
     AgentRun, AgentRunId, Conversation, ConversationAttachment, ConversationEntry,
-    ConversationEntryId, ToolInvocationId,
+    ConversationEntryId, ToolInvocation, ToolInvocationId,
 };
 
 use crate::foundation::conversation_format as format;
 
 use super::attachments;
+use super::copy_button::OnCopy;
 use super::message::{
-    AgentTurnRow, OnApprovalDecision, OnCopy, OnToggleAgent, TimelineRow, TimelineRowKey,
-    UserMessageRow,
+    AgentTurnRow, OnApprovalDecision, OnToggleAgent, TimelineRow, TimelineRowKey, UserMessageRow,
+};
+use super::tool_invocation::{
+    AgentDetailItem, OnToggleToolInvocation, ToolInvocationDetail, ToolInvocationPreviewCacheEntry,
+    is_tool_lifecycle_entry, project_agent_details,
 };
 
 #[derive(Clone)]
 pub(super) struct TimelineCallbacks {
     on_toggle: OnToggleAgent,
+    on_toggle_tool_invocation: OnToggleToolInvocation,
     on_copy: OnCopy,
     on_approval_decision: OnApprovalDecision,
 }
@@ -65,6 +70,9 @@ impl ConversationTimelineRows {
         attachments: &[ConversationAttachment],
         text_state: Option<Entity<TextViewState>>,
     ) -> Option<TimelineRowKey> {
+        if is_tool_lifecycle_entry(&entry) {
+            return None;
+        }
         let attachments_by_id = attachments::attachments_by_id(attachments);
         for row in &mut self.rows {
             match row {
@@ -76,14 +84,17 @@ impl ConversationTimelineRows {
                     return Some(row.key());
                 }
                 TimelineRow::Agent(agent)
-                    if agent.items.iter().any(|current| current.id == entry.id) =>
+                    if agent
+                        .items
+                        .iter()
+                        .any(|current| current.contains_entry_id(&entry.id)) =>
                 {
                     if let Some(current) = agent
                         .items
                         .iter_mut()
-                        .find(|current| current.id == entry.id)
+                        .find(|current| current.contains_entry_id(&entry.id))
                     {
-                        *current = entry.clone();
+                        *current = AgentDetailItem::Entry(entry.clone());
                     }
                     if let Some(text_state) = text_state {
                         agent.text_states.insert(entry.id.clone(), text_state);
@@ -111,42 +122,101 @@ impl ConversationTimelineRows {
         agent.run = Some(run);
         Some(row.key())
     }
+
+    pub(super) fn update_tool_invocation(
+        &mut self,
+        detail: ToolInvocationDetail,
+    ) -> Option<TimelineRowKey> {
+        let row = self.rows.iter_mut().find(|row| {
+            matches!(
+                row,
+                TimelineRow::Agent(agent)
+                    if agent.items.iter().any(|item| {
+                        matches!(item, AgentDetailItem::ToolInvocation(current) if current.id == detail.id)
+                    })
+            )
+        })?;
+        let TimelineRow::Agent(agent) = row else {
+            unreachable!("tool invocation rows are always agent rows")
+        };
+        let current = agent.items.iter_mut().find(|item| {
+            matches!(item, AgentDetailItem::ToolInvocation(current) if current.id == detail.id)
+        })?;
+        if !matches!(current, AgentDetailItem::ToolInvocation(current) if current.agent_run_id == detail.agent_run_id)
+        {
+            return None;
+        }
+        *current = AgentDetailItem::ToolInvocation(detail);
+        Some(row.key())
+    }
+
+    pub(super) fn row_key_for_tool_invocation(
+        &self,
+        id: &ToolInvocationId,
+    ) -> Option<TimelineRowKey> {
+        self.rows.iter().find_map(|row| {
+            match row {
+            TimelineRow::Agent(agent)
+                if agent.items.iter().any(|item| {
+                    matches!(item, AgentDetailItem::ToolInvocation(detail) if &detail.id == id)
+                }) =>
+            {
+                Some(row.key())
+            }
+            TimelineRow::User(_) | TimelineRow::Agent(_) => None,
+        }
+        })
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_rows(
     snapshot: &Conversation,
     active_agent_run_id: Option<&AgentRunId>,
     expanded_agent_runs: &HashMap<AgentRunId, bool>,
+    expanded_tool_invocations: &HashMap<ToolInvocationId, bool>,
+    previews: &HashMap<ToolInvocationId, ToolInvocationPreviewCacheEntry>,
+    approval_decidable: &HashSet<ToolInvocationId>,
     text_states: &HashMap<ConversationEntryId, Entity<TextViewState>>,
     callbacks: TimelineCallbacks,
 ) -> Vec<TimelineRow> {
     let attachments_by_id = attachments::attachments_by_id(&snapshot.attachments);
-    let (pending_rows, mut run_items) =
-        collect_pending_rows(&snapshot.entries, &snapshot.runs, active_agent_run_id);
+    let (pending_rows, mut run_items) = collect_pending_rows(
+        &snapshot.entries,
+        &snapshot.runs,
+        &snapshot.tool_invocations,
+        active_agent_run_id,
+    );
     let run_by_id = snapshot
         .runs
         .iter()
         .cloned()
         .map(|run| (run.id.clone(), run))
         .collect::<HashMap<_, _>>();
+    let mut invocations_by_run = group_invocations_by_run(&snapshot.tool_invocations);
 
     pending_rows
         .into_iter()
         .map(|row| match row {
             PendingTimelineRow::User(item) => TimelineRow::User(Box::new(UserMessageRow {
                 text_state: text_states.get(&item.id).cloned(),
-                image_attachments: attachments::user_image_attachments(&item, &attachments_by_id),
-                item,
+                image_attachments: attachments::user_image_attachments(item, &attachments_by_id),
+                item: item.clone(),
                 on_copy: callbacks.on_copy.clone(),
             })),
             PendingTimelineRow::Agent(run_id) => {
                 let items = run_items.remove(&run_id).unwrap_or_default();
+                let invocations = invocations_by_run.remove(&run_id).unwrap_or_default();
                 let run = run_by_id.get(&run_id).cloned();
                 TimelineRow::Agent(Box::new(agent_turn_row(
                     Some(run_id),
                     run,
                     items,
+                    invocations,
                     expanded_agent_runs,
+                    expanded_tool_invocations,
+                    previews,
+                    approval_decidable,
                     text_states,
                     callbacks.clone(),
                 )))
@@ -155,7 +225,11 @@ pub(super) fn build_rows(
                 None,
                 None,
                 vec![item],
+                Vec::new(),
                 expanded_agent_runs,
+                expanded_tool_invocations,
+                previews,
+                approval_decidable,
                 text_states,
                 callbacks.clone(),
             ))),
@@ -163,35 +237,81 @@ pub(super) fn build_rows(
         .collect()
 }
 
+fn group_invocations_by_run(
+    invocations: &[ToolInvocation],
+) -> HashMap<AgentRunId, Vec<&ToolInvocation>> {
+    invocations.iter().fold(
+        HashMap::<AgentRunId, Vec<&ToolInvocation>>::new(),
+        |mut by_run, invocation| {
+            by_run
+                .entry(invocation.agent_run_id.clone())
+                .or_default()
+                .push(invocation);
+            by_run
+        },
+    )
+}
+
 fn row_keys(rows: &[TimelineRow]) -> Vec<TimelineRowKey> {
     rows.iter().map(TimelineRow::key).collect()
 }
 
-enum PendingTimelineRow {
-    User(ConversationEntry),
+enum PendingTimelineRow<'a> {
+    User(&'a ConversationEntry),
     Agent(AgentRunId),
-    LooseAgent(ConversationEntry),
+    LooseAgent(&'a ConversationEntry),
 }
 
-fn collect_pending_rows(
-    items: &[ConversationEntry],
+fn collect_pending_rows<'a>(
+    items: &'a [ConversationEntry],
     runs: &[AgentRun],
+    invocations: &[ToolInvocation],
     active_agent_run_id: Option<&AgentRunId>,
 ) -> (
-    Vec<PendingTimelineRow>,
-    HashMap<AgentRunId, Vec<ConversationEntry>>,
+    Vec<PendingTimelineRow<'a>>,
+    HashMap<AgentRunId, Vec<&'a ConversationEntry>>,
 ) {
     let run_by_id = runs
         .iter()
         .map(|run| (run.id.clone(), run))
         .collect::<HashMap<_, _>>();
-    let mut run_items: HashMap<AgentRunId, Vec<ConversationEntry>> = HashMap::new();
+    let mut run_items: HashMap<AgentRunId, Vec<&ConversationEntry>> = HashMap::new();
     let mut pending_rows = Vec::new();
     let mut seen_runs = HashSet::new();
+    let runs_with_entries = items
+        .iter()
+        .filter_map(|item| item.agent_run_id.clone())
+        .collect::<HashSet<_>>();
+    let runs_with_invocations = invocations
+        .iter()
+        .map(|invocation| invocation.agent_run_id.clone())
+        .collect::<HashSet<_>>();
+    let invocation_only_runs_by_trigger = runs
+        .iter()
+        .filter(|run| {
+            runs_with_invocations.contains(&run.id) && !runs_with_entries.contains(&run.id)
+        })
+        .fold(
+            HashMap::<ConversationEntryId, Vec<AgentRunId>>::new(),
+            |mut by_trigger, run| {
+                by_trigger
+                    .entry(run.trigger_entry_id.clone())
+                    .or_default()
+                    .push(run.id.clone());
+                by_trigger
+            },
+        );
 
     for item in items {
         if format::is_user_message(item) {
-            pending_rows.push(PendingTimelineRow::User(item.clone()));
+            pending_rows.push(PendingTimelineRow::User(item));
+            if let Some(run_ids) = invocation_only_runs_by_trigger.get(&item.id) {
+                for run_id in run_ids {
+                    if seen_runs.insert(run_id.clone()) {
+                        pending_rows.push(PendingTimelineRow::Agent(run_id.clone()));
+                    }
+                }
+            }
             continue;
         }
 
@@ -199,12 +319,18 @@ fn collect_pending_rows(
             if seen_runs.insert(agent_run_id.clone()) {
                 pending_rows.push(PendingTimelineRow::Agent(agent_run_id.clone()));
             }
-            run_items
-                .entry(agent_run_id)
-                .or_default()
-                .push(item.clone());
+            run_items.entry(agent_run_id).or_default().push(item);
         } else {
-            pending_rows.push(PendingTimelineRow::LooseAgent(item.clone()));
+            pending_rows.push(PendingTimelineRow::LooseAgent(item));
+        }
+    }
+
+    for run in runs {
+        if runs_with_invocations.contains(&run.id)
+            && !runs_with_entries.contains(&run.id)
+            && seen_runs.insert(run.id.clone())
+        {
+            pending_rows.push(PendingTimelineRow::Agent(run.id.clone()));
         }
     }
 
@@ -220,11 +346,16 @@ fn collect_pending_rows(
     (pending_rows, run_items)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn agent_turn_row(
     run_id: Option<AgentRunId>,
     run: Option<AgentRun>,
-    items: Vec<ConversationEntry>,
+    items: Vec<&ConversationEntry>,
+    invocations: Vec<&ToolInvocation>,
     expanded_agent_runs: &HashMap<AgentRunId, bool>,
+    expanded_tool_invocations: &HashMap<ToolInvocationId, bool>,
+    previews: &HashMap<ToolInvocationId, ToolInvocationPreviewCacheEntry>,
+    approval_decidable: &HashSet<ToolInvocationId>,
     text_states: &HashMap<ConversationEntryId, Entity<TextViewState>>,
     callbacks: TimelineCallbacks,
 ) -> AgentTurnRow {
@@ -234,6 +365,14 @@ fn agent_turn_row(
         .and_then(|run_id| expanded_agent_runs.get(run_id).copied())
         .unwrap_or(default_expanded);
 
+    let items = project_agent_details(
+        items,
+        invocations,
+        expanded_tool_invocations,
+        previews,
+        approval_decidable,
+    );
+
     AgentTurnRow {
         run_id,
         run,
@@ -241,6 +380,7 @@ fn agent_turn_row(
         text_states: text_states.clone(),
         expanded,
         on_toggle: callbacks.on_toggle,
+        on_toggle_tool_invocation: callbacks.on_toggle_tool_invocation,
         on_copy: callbacks.on_copy,
         on_approval_decision: callbacks.on_approval_decision,
     }
@@ -249,11 +389,13 @@ fn agent_turn_row(
 #[allow(clippy::type_complexity)]
 pub(super) fn callbacks(
     on_toggle: impl Fn(AgentRunId, &mut Window, &mut App) + 'static,
+    on_toggle_tool_invocation: impl Fn(ToolInvocationId, &mut Window, &mut App) + 'static,
     on_copy: impl Fn(String, &mut Window, &mut App) -> bool + 'static,
     on_approval_decision: impl Fn(ToolInvocationId, bool, &mut Window, &mut App) + 'static,
 ) -> TimelineCallbacks {
     TimelineCallbacks {
         on_toggle: Rc::new(on_toggle),
+        on_toggle_tool_invocation: Rc::new(on_toggle_tool_invocation),
         on_copy: Rc::new(on_copy),
         on_approval_decision: Rc::new(on_approval_decision),
     }
@@ -265,8 +407,10 @@ mod tests {
     use jaco_core::{
         AgentEngineKind, AgentRunInput, AgentRunOutput, AgentRunStatus, AgentRunTriggerKind,
         AgentRuntimeSnapshot, AgentStoppedReason, ContentPart, ConversationEntryPayload,
-        ConversationEntryStatus, ProviderSettingsPayload, RunErrorPayload, RunSettingsSnapshot,
-        ToolApprovalMode, ToolApprovalPolicy, ToolNameStrategy, ToolPolicySnapshot, TranscriptRole,
+        ConversationEntryStatus, ProviderRawPayload, ProviderSettingsPayload, RunErrorPayload,
+        RunSettingsSnapshot, ToolApprovalMode, ToolApprovalPolicy, ToolArguments,
+        ToolExecutionPolicy, ToolInvocationInput, ToolInvocationOutput, ToolInvocationStatus,
+        ToolNameStrategy, ToolPolicySnapshot, ToolResultEntry, ToolSource, TranscriptRole,
         conservative_model_capabilities,
     };
     use time::OffsetDateTime;
@@ -311,7 +455,7 @@ mod tests {
             ),
         ];
 
-        let (pending_rows, run_items) = collect_pending_rows(&items, &[], None);
+        let (pending_rows, run_items) = collect_pending_rows(&items, &[], &[], None);
         let keys = pending_rows
             .iter()
             .map(|row| match row {
@@ -345,14 +489,14 @@ mod tests {
         let active_run = active_run(run_id.clone());
 
         let (pending_rows, run_items) =
-            collect_pending_rows(&[], std::slice::from_ref(&active_run), Some(&run_id));
+            collect_pending_rows(&[], std::slice::from_ref(&active_run), &[], Some(&run_id));
         assert_eq!(pending_rows.len(), 1);
         assert!(matches!(&pending_rows[0], PendingTimelineRow::Agent(id) if id == &run_id));
         assert!(run_items.is_empty());
 
         let mut terminal_run = active_run.clone();
         terminal_run.status = AgentRunStatus::Completed;
-        let (pending_rows, _) = collect_pending_rows(&[], &[terminal_run], Some(&run_id));
+        let (pending_rows, _) = collect_pending_rows(&[], &[terminal_run], &[], Some(&run_id));
         assert!(pending_rows.is_empty());
 
         let entry = entry(
@@ -364,11 +508,288 @@ mod tests {
                 summary: None,
             },
         );
+        let entries = [entry];
         let (pending_rows, run_items) =
-            collect_pending_rows(&[entry], &[active_run], Some(&run_id));
+            collect_pending_rows(&entries, &[active_run], &[], Some(&run_id));
         assert_eq!(pending_rows.len(), 1);
         assert!(matches!(&pending_rows[0], PendingTimelineRow::Agent(id) if id == &run_id));
         assert_eq!(run_items.get(&run_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn invocation_only_run_is_inserted_after_its_trigger_user_row() {
+        let run_id = AgentRunId::from("run-with-orphan-invocation");
+        let run = active_run(run_id.clone());
+        let trigger = entry(
+            "trigger-entry",
+            1,
+            None,
+            ConversationEntryPayload::Message {
+                role: TranscriptRole::User,
+                content: vec![ContentPart::Text {
+                    text: "run a tool".to_string(),
+                }],
+            },
+        );
+        let invocation = tool_invocation("invocation-orphan", run_id.clone());
+
+        let entries = [trigger];
+        let (pending_rows, run_items) = collect_pending_rows(&entries, &[run], &[invocation], None);
+        let keys = pending_rows
+            .iter()
+            .map(|row| match row {
+                PendingTimelineRow::User(item) => format!("user:{}", item.id),
+                PendingTimelineRow::Agent(run_id) => format!("agent:{run_id}"),
+                PendingTimelineRow::LooseAgent(item) => format!("loose:{}", item.id),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            keys,
+            vec![
+                "user:trigger-entry".to_string(),
+                "agent:run-with-orphan-invocation".to_string(),
+            ]
+        );
+        assert!(run_items.is_empty());
+    }
+
+    #[test]
+    fn snapshot_first_orphan_is_reanchored_to_one_lifecycle_block() {
+        let run_id = AgentRunId::from("run-reanchored");
+        let invocation = tool_invocation("invocation-reanchored", run_id.clone());
+        let no_expansion = HashMap::new();
+        let no_previews = HashMap::new();
+        let no_actions = HashSet::new();
+
+        let orphan = project_agent_details(
+            &[],
+            std::slice::from_ref(&invocation),
+            &no_expansion,
+            &no_previews,
+            &no_actions,
+        );
+        assert!(matches!(
+            orphan.as_slice(),
+            [AgentDetailItem::ToolInvocation(detail)] if detail.id == "invocation-reanchored"
+        ));
+
+        let mut lifecycle = entry(
+            "entry-reanchored-call",
+            1,
+            Some(run_id),
+            ConversationEntryPayload::ToolCall(jaco_core::ToolCallEntry {
+                tool_invocation_id: Some("invocation-reanchored".to_string()),
+                call_id: "call-invocation-reanchored".to_string(),
+                source: ToolSource::Local,
+                name: "read_file".to_string(),
+                runtime_tool_name: "read_file".to_string(),
+                arguments: ToolArguments {
+                    value: serde_json::json!({"path": "src/main.rs"}),
+                },
+            }),
+        );
+        lifecycle.tool_invocation_id = Some("invocation-reanchored".to_string());
+        let anchored = project_agent_details(
+            std::slice::from_ref(&lifecycle),
+            std::slice::from_ref(&invocation),
+            &no_expansion,
+            &no_previews,
+            &no_actions,
+        );
+        assert!(matches!(
+            anchored.as_slice(),
+            [AgentDetailItem::ToolInvocation(detail)] if detail.id == "invocation-reanchored"
+        ));
+        assert_eq!(anchored[0].stable_id_suffix(), orphan[0].stable_id_suffix());
+    }
+
+    #[test]
+    fn terminal_entry_batch_then_snapshot_stays_one_invocation_block() {
+        let run_id = AgentRunId::from("run-terminal-batch");
+        let invocation_id = "invocation-terminal-batch";
+        let invocation = tool_invocation(invocation_id, run_id.clone());
+        let mut call_entry = entry(
+            "entry-terminal-call",
+            1,
+            Some(run_id.clone()),
+            ConversationEntryPayload::ToolCall(jaco_core::ToolCallEntry {
+                tool_invocation_id: Some(invocation_id.to_string()),
+                call_id: format!("call-{invocation_id}"),
+                source: ToolSource::Local,
+                name: "read_file".to_string(),
+                runtime_tool_name: "read_file".to_string(),
+                arguments: ToolArguments {
+                    value: serde_json::json!({"path": "src/main.rs"}),
+                },
+            }),
+        );
+        call_entry.tool_invocation_id = Some(invocation_id.to_string());
+        let mut result_entry = entry(
+            "entry-terminal-result",
+            2,
+            Some(run_id),
+            ConversationEntryPayload::ToolResult(ToolResultEntry {
+                tool_invocation_id: Some(invocation_id.to_string()),
+                call_id: format!("call-{invocation_id}"),
+                content: vec![ContentPart::Text {
+                    text: "terminal output".to_string(),
+                }],
+                is_error: false,
+                structured_output: None,
+                raw_output: None,
+            }),
+        );
+        result_entry.tool_invocation_id = Some(invocation_id.to_string());
+        let entries = vec![call_entry, result_entry];
+        let items = project_agent_details(
+            &entries,
+            std::slice::from_ref(&invocation),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| matches!(item, AgentDetailItem::ToolInvocation(detail) if detail.id == invocation_id))
+                .count(),
+            1
+        );
+        assert!(
+            !items
+                .iter()
+                .any(|item| matches!(item, AgentDetailItem::UnresolvedToolLifecycle(_)))
+        );
+    }
+
+    #[test]
+    fn availability_update_replaces_same_invocation_and_preserves_sibling_action() {
+        let run_a = AgentRunId::from("run-action-a");
+        let run_b = AgentRunId::from("run-action-b");
+        let invocation_a = tool_invocation("invocation-action-a", run_a.clone());
+        let invocation_b = tool_invocation("invocation-action-b", run_b);
+        let mut detail_a = super::super::tool_invocation::project_tool_invocation_detail(
+            &invocation_a,
+            true,
+            None,
+            false,
+        );
+        let mut detail_b = super::super::tool_invocation::project_tool_invocation_detail(
+            &invocation_b,
+            true,
+            None,
+            true,
+        );
+        detail_a.approval_decidable = true;
+        detail_b.approval_decidable = true;
+        let callbacks = callbacks(|_, _, _| {}, |_, _, _| {}, |_, _, _| true, |_, _, _, _| {});
+        let row = agent_turn_row(
+            Some(run_a.clone()),
+            None,
+            Vec::new(),
+            Vec::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            callbacks,
+        );
+        let mut row = row;
+        row.items = vec![
+            AgentDetailItem::ToolInvocation(detail_a.clone()),
+            AgentDetailItem::ToolInvocation(detail_b.clone()),
+        ];
+        let mut rows = ConversationTimelineRows::new(vec![TimelineRow::Agent(Box::new(row))]);
+
+        detail_a.approval_decidable = false;
+        let key = rows
+            .update_tool_invocation(detail_a.clone())
+            .expect("availability update should find invocation block");
+        assert_eq!(key, TimelineRowKey::Agent(run_a.to_string()));
+        let TimelineRow::Agent(agent) = rows.row(0).unwrap() else {
+            panic!("expected agent row");
+        };
+        assert!(matches!(
+            &agent.items[0],
+            AgentDetailItem::ToolInvocation(detail) if !detail.approval_decidable
+        ));
+        assert!(matches!(
+            &agent.items[1],
+            AgentDetailItem::ToolInvocation(detail) if detail.id == "invocation-action-b" && detail.approval_decidable
+        ));
+    }
+
+    #[test]
+    fn collapsed_projection_borrows_large_tool_payloads_and_retains_only_metadata() {
+        let run_id = AgentRunId::from("run-large-tool");
+        let invocation_id = "invocation-large-tool".to_string();
+        let mut invocation = tool_invocation(&invocation_id, run_id.clone());
+        invocation.input.arguments.value =
+            serde_json::json!({ "large": "argument-marker".repeat(64 * 1_024) });
+        invocation.output = Some(ToolInvocationOutput {
+            content: vec![ContentPart::Text {
+                text: "large-result-marker".repeat(64 * 1_024),
+            }],
+            structured_output: None,
+            raw_output: Some(ProviderRawPayload {
+                provider_kind: "synthetic".to_string(),
+                value: serde_json::json!({ "raw": "provider-raw-marker".repeat(64 * 1_024) }),
+            }),
+            is_error: false,
+        });
+        let mut lifecycle = entry(
+            "entry-large-tool-result",
+            1,
+            Some(run_id.clone()),
+            ConversationEntryPayload::ToolResult(ToolResultEntry {
+                tool_invocation_id: Some(invocation_id.clone()),
+                call_id: "call-invocation-large-tool".to_string(),
+                content: vec![ContentPart::Text {
+                    text: "entry-result-marker".repeat(64 * 1_024),
+                }],
+                is_error: false,
+                structured_output: None,
+                raw_output: Some(ProviderRawPayload {
+                    provider_kind: "synthetic".to_string(),
+                    value: serde_json::json!({ "raw": "entry-raw-marker".repeat(64 * 1_024) }),
+                }),
+            }),
+        );
+        lifecycle.tool_invocation_id = Some(invocation_id.clone());
+        let entries = vec![lifecycle];
+        let invocations = vec![invocation];
+        let run = active_run(run_id.clone());
+
+        let (_, mut entries_by_run) =
+            collect_pending_rows(&entries, std::slice::from_ref(&run), &invocations, None);
+        let mut invocations_by_run = group_invocations_by_run(&invocations);
+        assert!(std::ptr::eq(
+            entries_by_run.get(&run_id).unwrap()[0],
+            &entries[0]
+        ));
+        assert!(std::ptr::eq(
+            invocations_by_run.get(&run_id).unwrap()[0],
+            &invocations[0]
+        ));
+
+        let projected = project_agent_details(
+            entries_by_run.remove(&run_id).unwrap(),
+            invocations_by_run.remove(&run_id).unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+
+        assert_eq!(projected.len(), 1);
+        let AgentDetailItem::ToolInvocation(detail) = &projected[0] else {
+            panic!("collapsed lifecycle must project to one lightweight invocation item");
+        };
+        assert_eq!(detail.id, invocation_id);
+        assert!(!detail.expanded);
+        assert!(detail.preview.is_none());
+        assert_eq!(detail.runtime_tool_name.text, "read_file");
     }
 
     #[test]
@@ -449,12 +870,16 @@ mod tests {
                 }],
             },
         );
-        let callbacks = callbacks(|_, _, _| {}, |_, _, _| true, |_, _, _, _| {});
+        let callbacks = callbacks(|_, _, _| {}, |_, _, _| {}, |_, _, _| true, |_, _, _, _| {});
         let row = agent_turn_row(
             Some(run_id.clone()),
             Some(active_run(run_id.clone())),
-            vec![final_entry.clone()],
+            vec![&final_entry],
+            Vec::new(),
             &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
             &HashMap::new(),
             callbacks,
         );
@@ -515,6 +940,40 @@ mod tests {
             },
             output: None,
             error: None,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            started_at: Some(OffsetDateTime::UNIX_EPOCH),
+            completed_at: None,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    fn tool_invocation(id: &str, agent_run_id: AgentRunId) -> ToolInvocation {
+        ToolInvocation {
+            id: id.to_string(),
+            agent_run_id,
+            provider_step_id: None,
+            call_id: format!("call-{id}"),
+            source: ToolSource::Local,
+            namespace: None,
+            server_id: None,
+            tool_name: "read_file".to_string(),
+            runtime_tool_name: "read_file".to_string(),
+            status: ToolInvocationStatus::Running,
+            input: ToolInvocationInput {
+                source: ToolSource::Local,
+                namespace: None,
+                tool_name: "read_file".to_string(),
+                runtime_tool_name: "read_file".to_string(),
+                call_id: format!("call-{id}"),
+                arguments: ToolArguments {
+                    value: serde_json::json!({"path": "src/main.rs"}),
+                },
+                approval_policy: ToolApprovalPolicy::Never,
+                execution_policy: ToolExecutionPolicy::Foreground,
+            },
+            output: None,
+            error: None,
+            approval: None,
             created_at: OffsetDateTime::UNIX_EPOCH,
             started_at: Some(OffsetDateTime::UNIX_EPOCH),
             completed_at: None,

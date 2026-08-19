@@ -1,12 +1,16 @@
 mod attachments;
+mod copy_button;
 mod message;
 mod timeline;
 mod tool_blocks;
+mod tool_invocation;
 
 use std::{
     collections::{HashMap, HashSet},
+    ops::Range,
     path::Path,
     rc::Rc,
+    sync::Arc,
 };
 
 use gpui::{prelude::FluentBuilder as _, *};
@@ -44,9 +48,14 @@ pub(crate) struct ConversationDetailPage {
     timeline_rows: timeline::ConversationTimelineRows,
     message_text_states: Vec<MessageTextState>,
     expanded_agent_runs: HashMap<AgentRunId, bool>,
+    expanded_tool_invocations: HashMap<ToolInvocationId, bool>,
+    tool_invocation_previews:
+        HashMap<ToolInvocationId, tool_invocation::ToolInvocationPreviewCacheEntry>,
     runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
     pending_submission: Option<conversation::runtime::ConversationSubmissionTicket>,
     owned_run: Option<conversation::runtime::ConversationSubmissionTicket>,
+    #[cfg(test)]
+    last_tool_invocation_remeasure: Option<Range<usize>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -183,9 +192,13 @@ impl ConversationDetailPage {
             timeline_rows,
             message_text_states: Vec::new(),
             expanded_agent_runs: HashMap::new(),
+            expanded_tool_invocations: HashMap::new(),
+            tool_invocation_previews: HashMap::new(),
             runtime,
             pending_submission: None,
             owned_run: None,
+            #[cfg(test)]
+            last_tool_invocation_remeasure: None,
             _subscriptions: vec![
                 chat_form_subscription,
                 runtime_subscription,
@@ -262,6 +275,10 @@ impl ConversationDetailPage {
             | conversation::runtime::ConversationRuntimeEvent::RunFinished { ticket } => {
                 ticket.conversation_id()
             }
+            conversation::runtime::ConversationRuntimeEvent::ToolApprovalAvailabilityChanged {
+                conversation_id,
+                ..
+            } => conversation_id,
         };
         if event_conversation_id != &self.conversation_id {
             return;
@@ -333,6 +350,21 @@ impl ConversationDetailPage {
             }
             _ => {}
         }
+
+        match event {
+            conversation::runtime::ConversationRuntimeEvent::ToolApprovalAvailabilityChanged {
+                agent_run_id,
+                tool_invocation_id,
+                ..
+            } => self.update_tool_approval_availability(agent_run_id, tool_invocation_id, cx),
+            conversation::runtime::ConversationRuntimeEvent::RunStarted { .. }
+            | conversation::runtime::ConversationRuntimeEvent::RunFinished { .. } => {
+                self.refresh_tool_approval_availability(cx);
+            }
+            conversation::runtime::ConversationRuntimeEvent::SubmissionCommitted { .. }
+            | conversation::runtime::ConversationRuntimeEvent::SubmissionFailed { .. }
+            | conversation::runtime::ConversationRuntimeEvent::RunLaunchFailed { .. } => {}
+        }
     }
 
     fn handle_conversation_model_event(
@@ -343,8 +375,13 @@ impl ConversationDetailPage {
         match event {
             ConversationModelEvent::Reloaded => {
                 self.refresh_chat_form_context(cx);
+                self.sync_tool_invocation_ui_state(cx);
                 self.sync_message_text_states(cx);
                 self.sync_timeline(cx, None);
+                // A reload can change the height of a row in the unchanged key prefix while
+                // also adding or removing a later row. `splice` only invalidates the changed
+                // suffix, so explicitly invalidate every retained row after the rebuild.
+                self.timeline.remeasure();
             }
             ConversationModelEvent::Changed(effects) => {
                 for effect in effects {
@@ -371,10 +408,14 @@ impl ConversationDetailPage {
                 self.sync_attachment_rows(attachment_id, cx);
             }
             ConversationEffect::RunChanged { run_id } => self.update_timeline_run(run_id, cx),
-            ConversationEffect::ProviderStepChanged { .. }
-            | ConversationEffect::ToolInvocationChanged { .. } => {}
+            ConversationEffect::ProviderStepChanged { .. } => {}
+            ConversationEffect::ToolInvocationChanged { tool_invocation_id } => {
+                self.update_timeline_tool_invocation(tool_invocation_id, cx);
+            }
             ConversationEffect::Deleted => {
                 self.message_text_states.clear();
+                self.expanded_tool_invocations.clear();
+                self.tool_invocation_previews.clear();
                 self.sync_timeline(cx, None);
             }
         }
@@ -413,6 +454,14 @@ impl ConversationDetailPage {
                     });
                 }
             },
+            {
+                let page = page.clone();
+                move |tool_invocation_id, window, cx| {
+                    let _ = page.update(cx, |page, cx| {
+                        page.toggle_tool_invocation(tool_invocation_id.clone(), window, cx);
+                    });
+                }
+            },
             copy_to_clipboard,
             {
                 let page = page.clone();
@@ -434,10 +483,28 @@ impl ConversationDetailPage {
                     .runtime
                     .read(cx)
                     .active_agent_run_id(&self.conversation_id);
+                let approval_decidable = {
+                    let runtime = self.runtime.read(cx);
+                    snapshot
+                        .tool_invocations
+                        .iter()
+                        .filter(|invocation| {
+                            runtime.can_decide_tool_invocation(
+                                &self.conversation_id,
+                                &invocation.agent_run_id,
+                                &invocation.id,
+                            )
+                        })
+                        .map(|invocation| invocation.id.clone())
+                        .collect::<HashSet<_>>()
+                };
                 timeline::build_rows(
                     snapshot,
                     active_agent_run_id.as_ref(),
                     &self.expanded_agent_runs,
+                    &self.expanded_tool_invocations,
+                    &self.tool_invocation_previews,
+                    &approval_decidable,
                     &self.message_text_state_map(),
                     callbacks,
                 )
@@ -464,6 +531,9 @@ impl ConversationDetailPage {
                     .entries
                     .iter()
                     .filter_map(|item| {
+                        if tool_invocation::is_tool_lifecycle_entry(item) {
+                            return None;
+                        }
                         let source = format::item_markdown(item);
                         (!source.is_empty()).then(|| (item.id.clone(), source))
                     })
@@ -496,7 +566,10 @@ impl ConversationDetailPage {
                     .iter()
                     .find(|entry| &entry.id == item_id)
             })
-            .map(format::item_markdown);
+            .and_then(|entry| {
+                (!tool_invocation::is_tool_lifecycle_entry(entry))
+                    .then(|| format::item_markdown(entry))
+            });
         match source {
             Some(source) if !source.is_empty() => {
                 self.ensure_message_text_state(item_id.clone(), &source, cx);
@@ -509,7 +582,7 @@ impl ConversationDetailPage {
     }
 
     fn update_timeline_entry(&mut self, item_id: &ConversationEntryId, cx: &mut Context<Self>) {
-        let Some((entry, attachments)) = self
+        let entry_update = self
             .conversation
             .read(cx)
             .operation()
@@ -520,12 +593,20 @@ impl ConversationDetailPage {
                     .entries
                     .iter()
                     .find(|entry| &entry.id == item_id)
-                    .cloned()
-                    .map(|entry| (entry, conversation.attachments.clone()))
-            })
-        else {
-            self.sync_timeline(cx, None);
-            return;
+                    .map(|entry| {
+                        if tool_invocation::is_tool_lifecycle_entry(entry) {
+                            None
+                        } else {
+                            Some((entry.clone(), conversation.attachments.clone()))
+                        }
+                    })
+            });
+        let (entry, attachments) = match entry_update {
+            Some(Some(update)) => update,
+            Some(None) | None => {
+                self.sync_timeline(cx, None);
+                return;
+            }
         };
         let text_state = self
             .message_text_states
@@ -592,14 +673,13 @@ impl ConversationDetailPage {
         }
     }
 
-    fn remeasure_timeline_row(&self, key: &message::TimelineRowKey) {
-        if let Some(row_ix) = self
-            .timeline_rows
-            .keys()
-            .iter()
-            .position(|current| current == key)
-        {
-            self.timeline.remeasure_items(row_ix..row_ix + 1);
+    fn remeasure_timeline_row(&mut self, key: &message::TimelineRowKey) {
+        if let Some(range) = timeline_row_remeasure_range(self.timeline_rows.keys(), key) {
+            #[cfg(test)]
+            {
+                self.last_tool_invocation_remeasure = Some(range.clone());
+            }
+            self.timeline.remeasure_items(range);
         }
     }
 
@@ -720,6 +800,231 @@ impl ConversationDetailPage {
                 runtime.deny_tool_invocation(self.conversation_id.clone(), tool_invocation_id, cx);
             }
         });
+    }
+
+    fn toggle_tool_invocation(
+        &mut self,
+        id: ToolInvocationId,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let expanded = !self
+            .expanded_tool_invocations
+            .get(&id)
+            .copied()
+            .unwrap_or(false);
+        let row_key = self.timeline_rows.row_key_for_tool_invocation(&id);
+        self.timeline.set_follow_mode(FollowMode::Normal);
+        self.expanded_tool_invocations.insert(id.clone(), expanded);
+        if expanded {
+            self.ensure_tool_invocation_preview(&id, cx);
+        }
+        self.sync_timeline(cx, row_key);
+        cx.notify();
+    }
+
+    fn ensure_tool_invocation_preview(
+        &mut self,
+        id: &ToolInvocationId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(revision) = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .and_then(|snapshot| {
+                snapshot
+                    .tool_invocations
+                    .iter()
+                    .find(|invocation| &invocation.id == id)
+                    .map(|invocation| invocation.updated_at)
+            })
+        else {
+            self.tool_invocation_previews.remove(id);
+            return false;
+        };
+
+        if self
+            .tool_invocation_previews
+            .get(id)
+            .is_some_and(|cached| cached.revision == revision)
+        {
+            return false;
+        }
+
+        let Some(preview) = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .and_then(|snapshot| {
+                snapshot
+                    .tool_invocations
+                    .iter()
+                    .find(|invocation| &invocation.id == id)
+                    .map(tool_invocation::build_tool_invocation_preview)
+            })
+            .map(Arc::new)
+        else {
+            self.tool_invocation_previews.remove(id);
+            return false;
+        };
+        self.tool_invocation_previews.insert(
+            id.clone(),
+            tool_invocation::ToolInvocationPreviewCacheEntry { revision, preview },
+        );
+        true
+    }
+
+    fn update_timeline_tool_invocation(&mut self, id: &ToolInvocationId, cx: &mut Context<Self>) {
+        let Some((revision, agent_run_id)) = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .and_then(|snapshot| {
+                snapshot
+                    .tool_invocations
+                    .iter()
+                    .find(|invocation| &invocation.id == id)
+                    .map(|invocation| (invocation.updated_at, invocation.agent_run_id.clone()))
+            })
+        else {
+            self.expanded_tool_invocations.remove(id);
+            self.tool_invocation_previews.remove(id);
+            self.sync_timeline(cx, None);
+            return;
+        };
+
+        if self
+            .tool_invocation_previews
+            .get(id)
+            .is_some_and(|cached| cached.revision != revision)
+        {
+            self.tool_invocation_previews.remove(id);
+        }
+        let expanded = self
+            .expanded_tool_invocations
+            .get(id)
+            .copied()
+            .unwrap_or(false);
+        if expanded {
+            self.ensure_tool_invocation_preview(id, cx);
+        }
+        let preview = expanded.then(|| {
+            self.tool_invocation_previews
+                .get(id)
+                .filter(|cached| cached.revision == revision)
+                .map(|cached| cached.preview.clone())
+        });
+        let broker_decidable = self.runtime.read(cx).can_decide_tool_invocation(
+            &self.conversation_id,
+            &agent_run_id,
+            id,
+        );
+        let Some(detail) = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .and_then(|snapshot| {
+                snapshot
+                    .tool_invocations
+                    .iter()
+                    .find(|invocation| &invocation.id == id)
+                    .map(|invocation| {
+                        tool_invocation::project_tool_invocation_detail(
+                            invocation,
+                            expanded,
+                            preview.flatten(),
+                            broker_decidable,
+                        )
+                    })
+            })
+        else {
+            self.sync_timeline(cx, None);
+            return;
+        };
+        let Some(row_key) = self.timeline_rows.update_tool_invocation(detail) else {
+            self.sync_timeline(cx, None);
+            return;
+        };
+        self.remeasure_timeline_row(&row_key);
+        cx.notify();
+    }
+
+    fn sync_tool_invocation_ui_state(&mut self, cx: &mut Context<Self>) {
+        let current_ids = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .map(|snapshot| {
+                snapshot
+                    .tool_invocations
+                    .iter()
+                    .map(|invocation| invocation.id.clone())
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let expanded_ids = reconcile_tool_invocation_ui_state(
+            &mut self.expanded_tool_invocations,
+            &mut self.tool_invocation_previews,
+            &current_ids,
+        );
+        for id in expanded_ids {
+            self.ensure_tool_invocation_preview(&id, cx);
+        }
+    }
+
+    fn refresh_tool_approval_availability(&mut self, cx: &mut Context<Self>) {
+        let invocation_ids = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .map(|snapshot| {
+                snapshot
+                    .tool_invocations
+                    .iter()
+                    .map(|invocation| invocation.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for id in invocation_ids {
+            self.update_timeline_tool_invocation(&id, cx);
+        }
+    }
+
+    fn update_tool_approval_availability(
+        &mut self,
+        agent_run_id: &AgentRunId,
+        id: &ToolInvocationId,
+        cx: &mut Context<Self>,
+    ) {
+        let matches_run = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .is_some_and(|snapshot| {
+                snapshot.tool_invocations.iter().any(|invocation| {
+                    &invocation.id == id && &invocation.agent_run_id == agent_run_id
+                })
+            });
+        if matches_run {
+            self.update_timeline_tool_invocation(id, cx);
+        } else {
+            self.sync_timeline(cx, None);
+        }
     }
 
     fn toggle_agent_run(
@@ -1026,6 +1331,15 @@ fn sync_timeline_list(
     );
 }
 
+fn timeline_row_remeasure_range(
+    keys: &[message::TimelineRowKey],
+    key: &message::TimelineRowKey,
+) -> Option<Range<usize>> {
+    keys.iter()
+        .position(|current| current == key)
+        .map(|row_ix| row_ix..row_ix + 1)
+}
+
 fn take_matching_ticket<T: PartialEq>(owned: &mut Option<T>, candidate: &T) -> bool {
     if owned.as_ref() != Some(candidate) {
         return false;
@@ -1034,9 +1348,800 @@ fn take_matching_ticket<T: PartialEq>(owned: &mut Option<T>, candidate: &T) -> b
     true
 }
 
+fn reconcile_tool_invocation_ui_state<T>(
+    expanded: &mut HashMap<ToolInvocationId, bool>,
+    previews: &mut HashMap<ToolInvocationId, T>,
+    current_ids: &HashSet<ToolInvocationId>,
+) -> Vec<ToolInvocationId> {
+    expanded.retain(|id, _| current_ids.contains(id));
+    previews.clear();
+    expanded
+        .iter()
+        .filter_map(|(id, is_expanded)| is_expanded.then_some(id.clone()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MessageTextUpdate, message_text_update, take_matching_ticket};
+    use std::{
+        collections::{HashMap, HashSet},
+        path::Path,
+        sync::Arc,
+    };
+
+    use super::{
+        ConversationDetailPage, ConversationModel, ConversationOperation, MessageTextUpdate,
+        conversation,
+        message::{TimelineRow, TimelineRowKey},
+        message_text_update, reconcile_tool_invocation_ui_state, take_matching_ticket,
+        timeline_row_remeasure_range,
+        tool_invocation::{
+            AgentDetailItem, ToolInvocationDetail, ToolInvocationPreview,
+            tool_inspection_evidence_for_test,
+        },
+    };
+    use crate::database;
+    use gpui::{AppContext as _, TestAppContext};
+    use jaco_core::{
+        AgentEngineKind, AgentRunInput, AgentRunStatus, AgentRunTriggerKind, AgentRuntimeSnapshot,
+        AgentStoppedReason, ApprovalRequestPayload, ContentPart, ConversationChange,
+        ConversationChanges, ConversationEntryPayload, ConversationEntryStatus,
+        ConversationMetadata, ConversationSettingsSnapshot, ConversationStatusCode,
+        ConversationStatusEntry, ProjectKind, ProjectMetadata, ProviderRawPayload,
+        ProviderSettingsPayload, RunSettingsSnapshot, StructuredOutput, ToolAccessKind,
+        ToolAccessRequestPayload, ToolApprovalMode, ToolApprovalPolicy, ToolArguments,
+        ToolExecutionPolicy, ToolInvocationId, ToolInvocationInput, ToolInvocationOutput,
+        ToolInvocationStatus, ToolNameStrategy, ToolPolicySnapshot, ToolSource, TranscriptRole,
+        conservative_model_capabilities,
+    };
+    use jaco_db::{
+        AgentRunFinalEntry, FinishAgentRun, FreshStore, NewAgentRun, NewConversation,
+        NewConversationEntry, NewProject, NewToolInvocation, NewToolInvocationApproval,
+    };
+
+    struct ReloadToolFixture {
+        conversation_id: String,
+        agent_run_id: String,
+        expanded_invocation_id: ToolInvocationId,
+        collapsed_invocation_id: ToolInvocationId,
+        inspectable_invocation_id: ToolInvocationId,
+        lifecycle_entry_ids: Vec<String>,
+    }
+
+    #[gpui::test]
+    fn db_reopen_and_real_reload_rebuilds_tool_invocation_page_state(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = seed_reload_tool_fixture(directory.path());
+
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::components::chat::input::init(cx);
+            database::install_for_test(cx, directory.path());
+            crate::foundation::i18n::init(cx);
+            crate::state::providers::init(cx);
+        });
+        cx.run_until_parked();
+
+        let runtime = cx.update(|cx| conversation::runtime::create(cx).unwrap());
+        cx.run_until_parked();
+        let model = cx.update(|cx| {
+            let executor = database::ready_executor(cx).unwrap();
+            cx.new(|_| ConversationModel::new(fixture.conversation_id.clone(), executor))
+        });
+        cx.update(|cx| model.update(cx, |model, cx| model.refresh(cx)));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(matches!(
+                model.read(cx).operation(),
+                ConversationOperation::Ready(ready) if ready.data().is_some()
+            ));
+        });
+        let inspection_before_reload = cx.update(|cx| {
+            let snapshot = model
+                .read(cx)
+                .operation()
+                .data()
+                .and_then(Option::as_ref)
+                .expect("loaded conversation");
+            let invocation = snapshot
+                .tool_invocations
+                .iter()
+                .find(|invocation| invocation.id == fixture.inspectable_invocation_id)
+                .expect("inspectable invocation");
+            tool_inspection_evidence_for_test(invocation)
+        });
+        assert!(inspection_before_reload.truncated);
+        assert!(inspection_before_reload.provider_raw_hidden);
+        assert!(
+            inspection_before_reload
+                .copy_text
+                .contains("Provider raw payload is hidden")
+        );
+        assert!(
+            !inspection_before_reload
+                .copy_text
+                .contains("raw-provider-secret")
+        );
+
+        let page = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.new(|cx| {
+                    ConversationDetailPage::new_without_focus(
+                        model.clone(),
+                        runtime.clone(),
+                        window,
+                        cx,
+                    )
+                })
+            })
+            .unwrap()
+        });
+        cx.update(|cx| {
+            page.update(cx, |page, _window, _cx| {
+                for lifecycle_id in &fixture.lifecycle_entry_ids {
+                    assert!(
+                        !page
+                            .message_text_states
+                            .iter()
+                            .any(|state| &state.id == lifecycle_id),
+                        "tool lifecycle entry must not create TextViewState: {lifecycle_id}"
+                    );
+                }
+            })
+            .unwrap();
+        });
+        let stale_invocation_id = "removed-between-reloads".to_string();
+        let (old_expanded_preview, initial_row_keys) = cx.update(|cx| {
+            page.update(cx, |page, window, cx| {
+                page.toggle_tool_invocation(fixture.expanded_invocation_id.clone(), window, cx);
+                page.toggle_tool_invocation(fixture.collapsed_invocation_id.clone(), window, cx);
+                page.toggle_tool_invocation(fixture.collapsed_invocation_id.clone(), window, cx);
+                page.expanded_tool_invocations
+                    .insert(stale_invocation_id.clone(), true);
+
+                assert_eq!(
+                    page.expanded_tool_invocations
+                        .get(&fixture.expanded_invocation_id),
+                    Some(&true)
+                );
+                assert_eq!(
+                    page.expanded_tool_invocations
+                        .get(&fixture.collapsed_invocation_id),
+                    Some(&false)
+                );
+                assert!(
+                    page.tool_invocation_previews
+                        .contains_key(&fixture.collapsed_invocation_id)
+                );
+                let preview = page
+                    .tool_invocation_previews
+                    .get(&fixture.expanded_invocation_id)
+                    .unwrap()
+                    .preview
+                    .clone();
+                assert_eq!(preview.access_requests[0].target.text, "old-target");
+                (preview, page.timeline_rows.keys().to_vec())
+            })
+            .unwrap()
+        });
+
+        let updated_invocation = cx.update(|cx| {
+            database::with_ready_repository(cx, |repository| {
+                let current = repository
+                    .get_tool_invocation(&fixture.expanded_invocation_id)?
+                    .expect("expanded invocation exists");
+                let mut approval = current.approval.expect("expanded approval exists");
+                approval.request.access_requests = vec![tool_access_request("new-target")];
+                let updated_invocation = repository.record_tool_invocation_approval(
+                    &fixture.expanded_invocation_id,
+                    approval,
+                    ToolInvocationStatus::AwaitingApproval,
+                )?;
+                Ok(updated_invocation)
+            })
+            .unwrap()
+        });
+
+        cx.update(|cx| {
+            page.update(cx, |page, _window, _cx| {
+                page.last_tool_invocation_remeasure = None;
+            })
+            .unwrap();
+            model.update(cx, |model, cx| {
+                model.apply_changes(
+                    ConversationChanges(vec![ConversationChange::ToolInvocationChanged {
+                        invocation: Box::new(updated_invocation.clone()),
+                    }]),
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        let changed_preview = cx.update(|cx| {
+            page.update(cx, |page, _window, _cx| {
+                let rebuilt = page
+                    .tool_invocation_previews
+                    .get(&fixture.expanded_invocation_id)
+                    .expect("changed event rebuilds expanded preview");
+                assert_eq!(rebuilt.revision, updated_invocation.updated_at);
+                assert_eq!(rebuilt.preview.access_requests[0].target.text, "new-target");
+                assert!(!Arc::ptr_eq(&rebuilt.preview, &old_expanded_preview));
+                let owning_row_key = page
+                    .timeline_rows
+                    .row_key_for_tool_invocation(&fixture.expanded_invocation_id)
+                    .expect("expanded invocation owning row");
+                let owning_row_ix = page
+                    .timeline_rows
+                    .keys()
+                    .iter()
+                    .position(|key| key == &owning_row_key)
+                    .expect("owning row index");
+                assert_eq!(
+                    page.last_tool_invocation_remeasure,
+                    Some(owning_row_ix..owning_row_ix + 1)
+                );
+                rebuilt.preview.clone()
+            })
+            .unwrap()
+        });
+
+        let appended_entry_id = cx.update(|cx| {
+            database::with_ready_repository(cx, |repository| {
+                let appended_entry =
+                    repository.append_conversation_entry(NewConversationEntry {
+                        conversation_id: fixture.conversation_id.clone(),
+                        status: ConversationEntryStatus::Completed,
+                        agent_run_id: None,
+                        provider_step_id: None,
+                        tool_invocation_id: None,
+                        provider_item_id: None,
+                        payload: ConversationEntryPayload::Message {
+                            role: TranscriptRole::User,
+                            content: vec![ContentPart::Text {
+                                text: "later row changes the timeline key suffix".to_string(),
+                            }],
+                        },
+                    })?;
+                Ok(appended_entry.id.clone())
+            })
+            .unwrap()
+        });
+
+        cx.update(|cx| model.update(cx, |model, cx| model.refresh(cx)));
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            let snapshot = model
+                .read(cx)
+                .operation()
+                .data()
+                .and_then(Option::as_ref)
+                .expect("reloaded conversation");
+            let reloaded = snapshot
+                .tool_invocations
+                .iter()
+                .find(|invocation| invocation.id == fixture.expanded_invocation_id)
+                .expect("reloaded expanded invocation");
+            assert_eq!(
+                reloaded.approval.as_ref().unwrap().request.access_requests[0].target,
+                "new-target"
+            );
+            let inspectable = snapshot
+                .tool_invocations
+                .iter()
+                .find(|invocation| invocation.id == fixture.inspectable_invocation_id)
+                .expect("reloaded inspectable invocation");
+            assert_eq!(
+                tool_inspection_evidence_for_test(inspectable),
+                inspection_before_reload
+            );
+
+            page.update(cx, |page, _window, _cx| {
+                assert_eq!(
+                    &page.timeline_rows.keys()[..initial_row_keys.len()],
+                    initial_row_keys.as_slice()
+                );
+                assert!(matches!(
+                    page.timeline_rows.keys().last(),
+                    Some(TimelineRowKey::User(id)) if id == &appended_entry_id
+                ));
+                assert_eq!(
+                    page.expanded_tool_invocations
+                        .get(&fixture.expanded_invocation_id),
+                    Some(&true)
+                );
+                assert_eq!(
+                    page.expanded_tool_invocations
+                        .get(&fixture.collapsed_invocation_id),
+                    Some(&false)
+                );
+                assert!(
+                    !page
+                        .expanded_tool_invocations
+                        .contains_key(&stale_invocation_id)
+                );
+                assert!(
+                    !page
+                        .tool_invocation_previews
+                        .contains_key(&fixture.collapsed_invocation_id)
+                );
+
+                let rebuilt = page
+                    .tool_invocation_previews
+                    .get(&fixture.expanded_invocation_id)
+                    .expect("expanded preview is rebuilt");
+                assert_eq!(rebuilt.revision, updated_invocation.updated_at);
+                assert_eq!(rebuilt.preview.access_requests[0].target.text, "new-target");
+                assert!(!Arc::ptr_eq(&rebuilt.preview, &changed_preview));
+
+                let detail = tool_detail(page, &fixture.expanded_invocation_id);
+                assert_eq!(detail.agent_run_id, fixture.agent_run_id);
+                assert_eq!(detail.status, ToolInvocationStatus::AwaitingApproval);
+                assert!(!detail.approval_decidable);
+                for lifecycle_id in &fixture.lifecycle_entry_ids {
+                    assert!(
+                        !page
+                            .message_text_states
+                            .iter()
+                            .any(|state| &state.id == lifecycle_id),
+                        "reloaded tool lifecycle entry must not create TextViewState: {lifecycle_id}"
+                    );
+                }
+                let owning_row_key = page
+                    .timeline_rows
+                    .row_key_for_tool_invocation(&fixture.expanded_invocation_id)
+                    .expect("expanded invocation owning row");
+                let owning_row_ix = page
+                    .timeline_rows
+                    .keys()
+                    .iter()
+                    .position(|key| key == &owning_row_key)
+                    .expect("owning row index");
+                assert_eq!(
+                    timeline_row_remeasure_range(page.timeline_rows.keys(), &owning_row_key),
+                    Some(owning_row_ix..owning_row_ix + 1)
+                );
+            })
+            .unwrap();
+        });
+
+        let preserved_state = cx.update(|cx| {
+            page.update(cx, |page, _window, _cx| {
+                (
+                    page.expanded_tool_invocations.clone(),
+                    page.tool_invocation_previews
+                        .get(&fixture.expanded_invocation_id)
+                        .expect("expanded preview cache")
+                        .preview
+                        .clone(),
+                    page.timeline_rows.keys().to_vec(),
+                )
+            })
+            .unwrap()
+        });
+        let fresh_runtime_event =
+            conversation::runtime::ConversationRuntimeEvent::ToolApprovalAvailabilityChanged {
+                conversation_id: fixture.conversation_id.clone(),
+                agent_run_id: fixture.agent_run_id.clone(),
+                tool_invocation_id: fixture.expanded_invocation_id.clone(),
+            };
+        cx.update(|cx| {
+            page.update(cx, |page, window, cx| {
+                page.handle_runtime_event(&runtime, &fresh_runtime_event, window, cx);
+                assert!(!tool_detail(page, &fixture.expanded_invocation_id).approval_decidable);
+                assert_tool_ui_state_preserved(
+                    page,
+                    &fixture.expanded_invocation_id,
+                    &preserved_state,
+                );
+            })
+            .unwrap();
+        });
+
+        let run_ticket = cx.update(|cx| {
+            runtime.update(cx, |runtime, _cx| {
+                runtime.install_tool_approval_authorities_for_test(
+                    fixture.conversation_id.clone(),
+                    fixture.agent_run_id.clone(),
+                    &[
+                        fixture.expanded_invocation_id.clone(),
+                        fixture.collapsed_invocation_id.clone(),
+                    ],
+                )
+            })
+        });
+        for invocation_id in [
+            &fixture.expanded_invocation_id,
+            &fixture.collapsed_invocation_id,
+        ] {
+            let event =
+                conversation::runtime::ConversationRuntimeEvent::ToolApprovalAvailabilityChanged {
+                    conversation_id: fixture.conversation_id.clone(),
+                    agent_run_id: fixture.agent_run_id.clone(),
+                    tool_invocation_id: invocation_id.clone(),
+                };
+            cx.update(|cx| {
+                page.update(cx, |page, window, cx| {
+                    page.handle_runtime_event(&runtime, &event, window, cx);
+                })
+                .unwrap();
+            });
+        }
+        cx.update(|cx| {
+            page.update(cx, |page, _window, _cx| {
+                assert!(tool_detail(page, &fixture.expanded_invocation_id).approval_decidable);
+                assert!(tool_detail(page, &fixture.collapsed_invocation_id).approval_decidable);
+                assert_tool_ui_state_preserved(
+                    page,
+                    &fixture.expanded_invocation_id,
+                    &preserved_state,
+                );
+            })
+            .unwrap();
+        });
+
+        let run_finished = cx.update(|cx| {
+            runtime.update(cx, |runtime, _cx| {
+                runtime.finish_run_event_for_test(run_ticket)
+            })
+        });
+        cx.update(|cx| {
+            page.update(cx, |page, window, cx| {
+                page.handle_runtime_event(&runtime, &run_finished, window, cx);
+                assert!(!tool_detail(page, &fixture.expanded_invocation_id).approval_decidable);
+                assert!(!tool_detail(page, &fixture.collapsed_invocation_id).approval_decidable);
+                assert_tool_ui_state_preserved(
+                    page,
+                    &fixture.expanded_invocation_id,
+                    &preserved_state,
+                );
+            })
+            .unwrap();
+        });
+    }
+
+    fn seed_reload_tool_fixture(data_dir: &Path) -> ReloadToolFixture {
+        let store =
+            FreshStore::open_or_create_initial(data_dir.join(jaco_db::DATABASE_FILE)).unwrap();
+        let repository = store.repository();
+        let project = repository
+            .insert_project(NewProject {
+                path: data_dir.to_string_lossy().into_owned(),
+                display_name: "Reload Test".to_string(),
+                kind: ProjectKind::Normal,
+                pinned: false,
+                removed: false,
+                metadata: ProjectMetadata {
+                    scratch_reason: None,
+                    git_root: None,
+                    last_active_conversation_id: None,
+                },
+            })
+            .unwrap();
+        let conversation = repository
+            .insert_conversation(NewConversation {
+                project_id: project.id,
+                title: "Reload Test".to_string(),
+                pinned: false,
+                prompt_id: None,
+                default_provider_id: None,
+                default_model_id: None,
+                metadata: ConversationMetadata {
+                    summary: None,
+                    tags: Vec::new(),
+                },
+                settings_snapshot: conversation_settings(),
+            })
+            .unwrap();
+        let trigger = repository
+            .append_conversation_entry(NewConversationEntry {
+                conversation_id: conversation.id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: None,
+                provider_step_id: None,
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationEntryPayload::Message {
+                    role: TranscriptRole::User,
+                    content: vec![ContentPart::Text {
+                        text: "inspect tools".to_string(),
+                    }],
+                },
+            })
+            .unwrap();
+        let run = repository
+            .insert_agent_run(NewAgentRun {
+                conversation_id: conversation.id.clone(),
+                trigger_entry_id: trigger.id.clone(),
+                trigger_kind: AgentRunTriggerKind::User,
+                input: agent_run_input(),
+            })
+            .unwrap();
+        let expanded_invocation_id =
+            insert_approval_invocation(&repository, &run.id, "expanded-call", "old-target");
+        let collapsed_invocation_id =
+            insert_approval_invocation(&repository, &run.id, "collapsed-call", "collapsed-target");
+        let inspectable_invocation_id = insert_inspectable_invocation(&repository, &run.id);
+        let lifecycle_entry_ids = append_tool_lifecycle_entries(
+            &repository,
+            &conversation.id,
+            &run.id,
+            &expanded_invocation_id,
+        );
+        repository
+            .finish_agent_run(
+                &run.id,
+                FinishAgentRun {
+                    status: AgentRunStatus::Canceled,
+                    stopped_reason: AgentStoppedReason::Canceled,
+                    error: None,
+                    final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                        conversation_id: conversation.id.clone(),
+                        status: ConversationEntryStatus::Completed,
+                        agent_run_id: Some(run.id.clone()),
+                        provider_step_id: None,
+                        tool_invocation_id: None,
+                        provider_item_id: None,
+                        payload: ConversationEntryPayload::Status(ConversationStatusEntry {
+                            code: ConversationStatusCode::Canceled,
+                            message: None,
+                        }),
+                    })),
+                },
+            )
+            .unwrap();
+
+        let fixture = ReloadToolFixture {
+            conversation_id: conversation.id,
+            agent_run_id: run.id,
+            expanded_invocation_id,
+            collapsed_invocation_id,
+            inspectable_invocation_id,
+            lifecycle_entry_ids,
+        };
+        drop(repository);
+        drop(store);
+        fixture
+    }
+
+    fn insert_approval_invocation(
+        repository: &jaco_db::FreshRepository,
+        agent_run_id: &str,
+        call_id: &str,
+        access_target: &str,
+    ) -> ToolInvocationId {
+        let invocation = repository
+            .insert_tool_invocation(NewToolInvocation {
+                agent_run_id: agent_run_id.to_string(),
+                provider_step_id: None,
+                status: ToolInvocationStatus::Requested,
+                input: ToolInvocationInput {
+                    source: ToolSource::Local,
+                    namespace: None,
+                    tool_name: "echo".to_string(),
+                    runtime_tool_name: "echo".to_string(),
+                    call_id: call_id.to_string(),
+                    arguments: ToolArguments {
+                        value: serde_json::json!({"text": call_id}),
+                    },
+                    approval_policy: ToolApprovalPolicy::OnRequest,
+                    execution_policy: ToolExecutionPolicy::Foreground,
+                },
+                output: None,
+                error: None,
+            })
+            .unwrap();
+        repository
+            .request_tool_invocation_approval(
+                &invocation.id,
+                NewToolInvocationApproval {
+                    request: ApprovalRequestPayload {
+                        reason: "test access".to_string(),
+                        tool_source: ToolSource::Local,
+                        tool_name: "echo".to_string(),
+                        arguments_preview: "{}".to_string(),
+                        access_requests: vec![tool_access_request(access_target)],
+                    },
+                    expires_at: None,
+                },
+            )
+            .unwrap()
+            .id
+    }
+
+    fn insert_inspectable_invocation(
+        repository: &jaco_db::FreshRepository,
+        agent_run_id: &str,
+    ) -> ToolInvocationId {
+        repository
+            .insert_tool_invocation(NewToolInvocation {
+                agent_run_id: agent_run_id.to_string(),
+                provider_step_id: None,
+                status: ToolInvocationStatus::Succeeded,
+                input: ToolInvocationInput {
+                    source: ToolSource::Mcp {
+                        server_id: "fixture-server".to_string(),
+                    },
+                    namespace: Some("fixture".to_string()),
+                    tool_name: "inspect".to_string(),
+                    runtime_tool_name: "fixture__inspect".to_string(),
+                    call_id: "inspectable-call".to_string(),
+                    arguments: ToolArguments {
+                        value: serde_json::json!({"large": "x".repeat(300 * 1_024)}),
+                    },
+                    approval_policy: ToolApprovalPolicy::Never,
+                    execution_policy: ToolExecutionPolicy::Foreground,
+                },
+                output: Some(ToolInvocationOutput {
+                    content: vec![ContentPart::Text {
+                        text: "y".repeat(70 * 1_024),
+                    }],
+                    structured_output: Some(StructuredOutput {
+                        value: serde_json::json!({"result": "bounded"}),
+                    }),
+                    raw_output: Some(ProviderRawPayload {
+                        provider_kind: "fixture".to_string(),
+                        value: serde_json::json!({"secret": "raw-provider-secret"}),
+                    }),
+                    is_error: false,
+                }),
+                error: None,
+            })
+            .unwrap()
+            .id
+    }
+
+    fn append_tool_lifecycle_entries(
+        repository: &jaco_db::FreshRepository,
+        conversation_id: &str,
+        agent_run_id: &str,
+        invocation_id: &ToolInvocationId,
+    ) -> Vec<String> {
+        let call_id = "expanded-call".to_string();
+        let call = repository
+            .append_conversation_entry(NewConversationEntry {
+                conversation_id: conversation_id.to_string(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(agent_run_id.to_string()),
+                provider_step_id: None,
+                tool_invocation_id: Some(invocation_id.clone()),
+                provider_item_id: None,
+                payload: ConversationEntryPayload::ToolCall(jaco_core::ToolCallEntry {
+                    tool_invocation_id: Some(invocation_id.clone()),
+                    call_id: call_id.clone(),
+                    source: ToolSource::Local,
+                    name: "echo".to_string(),
+                    runtime_tool_name: "echo".to_string(),
+                    arguments: ToolArguments {
+                        value: serde_json::json!({"text": "synthetic"}),
+                    },
+                }),
+            })
+            .unwrap()
+            .id
+            .clone();
+        let result = repository
+            .append_conversation_entry(NewConversationEntry {
+                conversation_id: conversation_id.to_string(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(agent_run_id.to_string()),
+                provider_step_id: None,
+                tool_invocation_id: Some(invocation_id.clone()),
+                provider_item_id: None,
+                payload: ConversationEntryPayload::ToolResult(jaco_core::ToolResultEntry {
+                    tool_invocation_id: Some(invocation_id.clone()),
+                    call_id,
+                    content: vec![ContentPart::Text {
+                        text: "synthetic result".to_string(),
+                    }],
+                    is_error: false,
+                    structured_output: None,
+                    raw_output: None,
+                }),
+            })
+            .unwrap()
+            .id
+            .clone();
+        vec![call, result]
+    }
+
+    fn tool_access_request(target: &str) -> ToolAccessRequestPayload {
+        ToolAccessRequestPayload {
+            kind: ToolAccessKind::Read,
+            target: target.to_string(),
+            normalized_path: Some(format!("/normalized/{target}")),
+            within_project: true,
+            reason_key: Some("test".to_string()),
+        }
+    }
+
+    fn conversation_settings() -> ConversationSettingsSnapshot {
+        ConversationSettingsSnapshot {
+            prompt: None,
+            provider_id: None,
+            model_id: None,
+            model_capabilities: None,
+            tool_policy: tool_policy(),
+        }
+    }
+
+    fn agent_run_input() -> AgentRunInput {
+        AgentRunInput {
+            prompt_snapshot: None,
+            provider_id: "provider".to_string(),
+            model_id: "model".to_string(),
+            settings_snapshot: RunSettingsSnapshot {
+                prompt: None,
+                provider_id: "provider".to_string(),
+                model_id: "model".to_string(),
+                model_capabilities: conservative_model_capabilities("openai"),
+                provider_settings: ProviderSettingsPayload {
+                    provider_kind: "openai".to_string(),
+                    fields: Vec::new(),
+                },
+                reasoning_selection: None,
+                tool_policy: tool_policy(),
+            },
+            runtime_snapshot: AgentRuntimeSnapshot {
+                engine: AgentEngineKind::Rig,
+                engine_version: "test".to_string(),
+                skill_catalog_hash: None,
+                tool_name_strategy: ToolNameStrategy::Direct,
+            },
+            max_steps: 8,
+        }
+    }
+
+    fn tool_policy() -> ToolPolicySnapshot {
+        ToolPolicySnapshot {
+            approval_policy: ToolApprovalPolicy::OnRequest,
+            enabled_sources: vec![ToolSource::Local],
+            max_steps: 8,
+            approval_mode: ToolApprovalMode::RequestApproval,
+            permission_scope: None,
+        }
+    }
+
+    fn tool_detail(
+        page: &ConversationDetailPage,
+        invocation_id: &ToolInvocationId,
+    ) -> ToolInvocationDetail {
+        for index in 0..page.timeline_rows.keys().len() {
+            let Some(TimelineRow::Agent(row)) = page.timeline_rows.row(index) else {
+                continue;
+            };
+            if let Some(detail) = row.items.iter().find_map(|item| match item {
+                AgentDetailItem::ToolInvocation(detail) if &detail.id == invocation_id => {
+                    Some(detail.clone())
+                }
+                AgentDetailItem::Entry(_)
+                | AgentDetailItem::ToolInvocation(_)
+                | AgentDetailItem::UnresolvedToolLifecycle(_) => None,
+            }) {
+                return detail;
+            }
+        }
+        panic!("tool invocation detail {invocation_id} is missing");
+    }
+
+    fn assert_tool_ui_state_preserved(
+        page: &ConversationDetailPage,
+        expanded_invocation_id: &ToolInvocationId,
+        preserved: &(
+            HashMap<ToolInvocationId, bool>,
+            Arc<ToolInvocationPreview>,
+            Vec<TimelineRowKey>,
+        ),
+    ) {
+        assert_eq!(&page.expanded_tool_invocations, &preserved.0);
+        assert_eq!(page.timeline_rows.keys(), preserved.2.as_slice());
+        let current = page
+            .tool_invocation_previews
+            .get(expanded_invocation_id)
+            .expect("preserved expanded preview cache");
+        assert!(Arc::ptr_eq(&current.preview, &preserved.1));
+    }
 
     #[test]
     fn run_error_ticket_is_consumed_only_by_its_owner() {
@@ -1046,6 +2151,56 @@ mod tests {
         assert_eq!(owned, Some(7));
         assert!(take_matching_ticket(&mut owned, &7));
         assert_eq!(owned, None);
+    }
+
+    #[test]
+    fn reload_tool_invocation_state_clears_cache_and_prunes_missing_expansion() {
+        let mut expanded = HashMap::from([
+            ("kept-open".to_string(), true),
+            ("kept-closed".to_string(), false),
+            ("removed".to_string(), true),
+        ]);
+        let mut previews = HashMap::from([
+            ("kept-open".to_string(), "old-open-preview"),
+            ("kept-closed".to_string(), "old-closed-preview"),
+            ("removed".to_string(), "old-removed-preview"),
+        ]);
+        let current_ids = HashSet::from([
+            "kept-open".to_string(),
+            "kept-closed".to_string(),
+            "new".to_string(),
+        ]);
+
+        let rebuild =
+            reconcile_tool_invocation_ui_state(&mut expanded, &mut previews, &current_ids);
+
+        assert!(previews.is_empty());
+        assert_eq!(expanded.len(), 2);
+        assert_eq!(expanded.get("kept-open"), Some(&true));
+        assert_eq!(expanded.get("kept-closed"), Some(&false));
+        assert_eq!(rebuild, vec!["kept-open".to_string()]);
+    }
+
+    #[test]
+    fn invocation_update_remeasures_only_its_owning_agent_row() {
+        let keys = vec![
+            TimelineRowKey::User("prompt".to_string()),
+            TimelineRowKey::Agent("run-a".to_string()),
+            TimelineRowKey::Agent("run-b".to_string()),
+        ];
+
+        assert_eq!(
+            timeline_row_remeasure_range(&keys, &TimelineRowKey::Agent("run-b".to_string())),
+            Some(2..3)
+        );
+        assert_eq!(
+            timeline_row_remeasure_range(&keys, &TimelineRowKey::User("prompt".to_string())),
+            Some(0..1)
+        );
+        assert_eq!(
+            timeline_row_remeasure_range(&keys, &TimelineRowKey::Agent("missing".to_string())),
+            None
+        );
     }
 
     #[test]
