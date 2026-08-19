@@ -131,6 +131,9 @@ impl PersistenceContext {
             tool_invocation_id: invocation.id.clone(),
         });
         self.push_step(AgentStep::ToolInvocation(invocation.id.clone()));
+        self.emit_conversation_timeline_changes(vec![ConversationChange::ToolInvocationChanged {
+            invocation: Box::new(invocation.clone()),
+        }]);
 
         let payload = ConversationEntryPayload::ToolCall(ToolCallEntry {
             tool_invocation_id: Some(invocation.id.clone()),

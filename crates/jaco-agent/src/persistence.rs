@@ -219,6 +219,10 @@ impl PersistenceContext {
         }
     }
 
+    pub(crate) fn observer(&self) -> Option<&AgentRuntimeObserver> {
+        self.observer.as_ref()
+    }
+
     pub(crate) fn events(&self) -> Vec<AgentRunEvent> {
         mutex_clone(&self.events)
     }

@@ -1214,6 +1214,222 @@ async fn rig_tool_call_persists_tool_call_and_result() {
 }
 
 #[tokio::test]
+async fn tool_invocation_initial_publication_contains_persisted_snapshot() {
+    let fixture = Fixture::new("tool-initial-publication");
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
+    let mut request = fixture.request();
+    request
+        .tool_registry
+        .register_local_tool(EchoTool::new(ToolApprovalPolicy::Never))
+        .unwrap();
+    let model = MockCompletionModel::new([
+        MockTurn::tool_call("call_1", "echo", json!({"text": "hi"})),
+        MockTurn::text("done"),
+    ]);
+    let published = Arc::new(Mutex::new(Vec::new()));
+    let observer = AgentRuntimeObserver::new({
+        let published = published.clone();
+        move |event| published.lock().unwrap().push(event)
+    });
+
+    let handle = runtime
+        .run_with_model_observed(request, model, Some(observer))
+        .await
+        .unwrap();
+    let persisted = fixture
+        .repo
+        .tool_invocations_for_run(&handle.agent_run.id)
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("persisted invocation");
+    let events = published.lock().unwrap();
+    let (snapshot_index, snapshot) = events
+        .iter()
+        .enumerate()
+        .find_map(|(index, event)| match event {
+            AgentRuntimeEvent::ConversationTimelineChanged {
+                conversation_id,
+                changes,
+            } if conversation_id == &fixture.conversation.id => match changes.as_slice() {
+                [ConversationChange::ToolInvocationChanged { invocation }]
+                    if invocation.id == persisted.id =>
+                {
+                    Some((index, invocation.as_ref()))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("initial invocation snapshot publication");
+    assert_eq!(snapshot.status, ToolInvocationStatus::Running);
+    assert_eq!(snapshot.input, persisted.input);
+    assert_eq!(snapshot.created_at, persisted.created_at);
+    assert_eq!(snapshot.started_at, persisted.started_at);
+    assert_eq!(snapshot.output, None);
+    assert_eq!(snapshot.error, None);
+
+    let tool_call_index =
+        events
+            .iter()
+            .enumerate()
+            .find_map(|(index, event)| {
+                match event {
+            AgentRuntimeEvent::ConversationCommitted { changes, .. }
+                if changes.iter().any(|change| matches!(
+                    change,
+                    ConversationChange::EntryAppended { entry }
+                        if entry.tool_invocation_id.as_deref() == Some(persisted.id.as_str())
+                            && matches!(entry.payload, ConversationEntryPayload::ToolCall(_))
+                )) => Some(index),
+            _ => None,
+        }
+            })
+            .expect("tool call entry publication");
+    assert!(snapshot_index < tool_call_index);
+}
+
+#[tokio::test]
+async fn tool_invocation_initial_publication_survives_call_entry_failure() {
+    let fixture = Fixture::new("tool-initial-publication-append-failure");
+    let persistence =
+        crate::persistence::direct_agent_persistence_failing_append_conversation_entry(
+            fixture.repo.clone(),
+        );
+    let runtime = AgentRuntime::new(persistence);
+    let mut request = fixture.request();
+    request
+        .tool_registry
+        .register_local_tool(EchoTool::new(ToolApprovalPolicy::Never))
+        .unwrap();
+    let model =
+        MockCompletionModel::new([MockTurn::tool_call("call_1", "echo", json!({"text": "hi"}))]);
+    let published = Arc::new(Mutex::new(Vec::new()));
+    let observer = AgentRuntimeObserver::new({
+        let published = published.clone();
+        move |event| published.lock().unwrap().push(event)
+    });
+
+    let handle = runtime
+        .run_with_model_observed(request, model, Some(observer))
+        .await
+        .expect("run failure is persisted in the handle");
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Failed);
+    let invocations = fixture
+        .repo
+        .tool_invocations_for_run(&handle.agent_run.id)
+        .unwrap();
+    assert_eq!(invocations.len(), 1);
+    let invocation_id = &invocations[0].id;
+    let events = published.lock().unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentRuntimeEvent::ConversationTimelineChanged { changes, .. }
+            if matches!(
+                changes.as_slice(),
+                [ConversationChange::ToolInvocationChanged { invocation }]
+                    if invocation.id == *invocation_id
+            )
+    )));
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        AgentRuntimeEvent::ConversationCommitted { changes, .. }
+            if changes.iter().any(|change| matches!(
+                change,
+                ConversationChange::EntryAppended { entry }
+                    if entry.tool_invocation_id.as_deref() == Some(invocation_id.as_str())
+                        && matches!(entry.payload, ConversationEntryPayload::ToolCall(_))
+            ))
+    )));
+    assert!(
+        fixture
+            .repo
+            .conversation_entries(&fixture.conversation.id)
+            .unwrap()
+            .iter()
+            .all(|entry| !matches!(entry.payload, ConversationEntryPayload::ToolCall(_)))
+    );
+}
+
+#[tokio::test]
+async fn ordinary_tool_result_publication_is_not_duplicated() {
+    let fixture = Fixture::new("ordinary-tool-result-publication");
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
+    let mut request = fixture.request();
+    request
+        .tool_registry
+        .register_local_tool(EchoTool::new(ToolApprovalPolicy::Never))
+        .unwrap();
+    let model = MockCompletionModel::new([
+        MockTurn::tool_call("call_1", "echo", json!({"text": "hi"})),
+        MockTurn::text("done"),
+    ]);
+    let published = Arc::new(Mutex::new(Vec::new()));
+    let observer = AgentRuntimeObserver::new({
+        let published = published.clone();
+        move |event| published.lock().unwrap().push(event)
+    });
+
+    let handle = runtime
+        .run_with_model_observed(request, model, Some(observer))
+        .await
+        .unwrap();
+    let invocation = fixture
+        .repo
+        .tool_invocations_for_run(&handle.agent_run.id)
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("persisted invocation");
+    let events = published.lock().unwrap();
+    let snapshots = events
+        .iter()
+        .flat_map(|event| match event {
+            AgentRuntimeEvent::ConversationCommitted { changes, .. }
+            | AgentRuntimeEvent::ConversationTimelineChanged { changes, .. } => changes.as_slice(),
+            _ => &[],
+        })
+        .filter(|change| {
+            matches!(
+                change,
+                ConversationChange::ToolInvocationChanged { invocation: changed }
+                    if changed.id == invocation.id
+            )
+        })
+        .count();
+    assert_eq!(snapshots, 2, "one initial and one terminal snapshot");
+
+    let result_commits =
+        events
+            .iter()
+            .filter_map(|event| {
+                match event {
+            AgentRuntimeEvent::ConversationCommitted { changes, .. }
+                if changes.iter().any(|change| matches!(
+                    change,
+                    ConversationChange::EntryAppended { entry }
+                        if entry.tool_invocation_id.as_deref() == Some(invocation.id.as_str())
+                            && matches!(entry.payload, ConversationEntryPayload::ToolResult(_))
+                )) => Some(changes),
+            _ => None,
+        }
+            })
+            .collect::<Vec<_>>();
+    assert_eq!(result_commits.len(), 1);
+    assert_eq!(
+        result_commits[0]
+            .iter()
+            .filter(|change| matches!(
+                change,
+                ConversationChange::ToolInvocationChanged { invocation: changed }
+                    if changed.id == invocation.id
+            ))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn tool_execution_cancellation_does_not_persist_tool_output() {
     let fixture = Fixture::new("tool-cancel-during-await");
     let runtime = AgentRuntime::from_repository(fixture.repo.clone());
@@ -1506,35 +1722,15 @@ async fn max_turns_is_persisted_as_max_steps_stop() {
 }
 
 #[tokio::test]
-async fn prompt_error_fails_active_tool_invocations() {
-    let fixture = Fixture::new("tool-failure");
+async fn finalized_tool_invocation_publication_contains_terminal_commit() {
+    let fixture = Fixture::new("tool-finalization-publication");
     let runtime = AgentRuntime::from_repository(fixture.repo.clone());
-    let agent_run = fixture
-        .repo
-        .insert_agent_run(new_agent_run_input(&fixture.request()))
-        .unwrap();
-    let invocation = fixture
-        .repo
-        .insert_tool_invocation(NewToolInvocation {
-            agent_run_id: agent_run.id.clone(),
-            provider_step_id: None,
-            status: ToolInvocationStatus::Running,
-            input: ToolInvocationInput {
-                source: ToolSource::Local,
-                namespace: None,
-                tool_name: "echo".to_string(),
-                runtime_tool_name: "echo".to_string(),
-                call_id: "call_1".to_string(),
-                arguments: ToolArguments {
-                    value: json!({"text": "hi"}),
-                },
-                approval_policy: ToolApprovalPolicy::Never,
-                execution_policy: ToolExecutionPolicy::Foreground,
-            },
-            output: None,
-            error: None,
-        })
-        .unwrap();
+    let (agent_run, invocation) = insert_waiting_approval(&fixture);
+    let published = Arc::new(Mutex::new(Vec::new()));
+    let observer = AgentRuntimeObserver::new({
+        let published = published.clone();
+        move |event| published.lock().unwrap().push(event)
+    });
 
     runtime
         .finalize_active_tool_invocations(
@@ -1542,6 +1738,7 @@ async fn prompt_error_fails_active_tool_invocations() {
             &fixture.conversation.id,
             ToolInvocationStatus::Failed,
             run_error("prompt_error", "tool failed", true, None),
+            Some(&observer),
         )
         .await
         .unwrap();
@@ -1555,6 +1752,10 @@ async fn prompt_error_fails_active_tool_invocations() {
     let error = invocation.error.as_ref().unwrap();
     assert_eq!(error.code, "prompt_error");
     assert_eq!(error.message, "tool failed");
+    assert_eq!(
+        invocation.approval.as_ref().map(|approval| approval.status),
+        Some(ApprovalStatus::Canceled)
+    );
     let invocations = fixture
         .repo
         .tool_invocations_for_run(&agent_run.id)
@@ -1572,8 +1773,27 @@ async fn prompt_error_fails_active_tool_invocations() {
         })
         .collect::<Vec<_>>();
     assert_eq!(tool_results.len(), 1);
-    assert_eq!(tool_results[0].call_id, "call_1");
+    assert_eq!(tool_results[0].call_id, "call_approval");
     assert!(tool_results[0].is_error);
+
+    let events = published.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        &events[0],
+        AgentRuntimeEvent::ConversationCommitted {
+            conversation,
+            changes,
+        } if conversation.id == fixture.conversation.id
+            && matches!(
+                changes.as_slice(),
+                [
+                    ConversationChange::EntryAppended { entry: result },
+                    ConversationChange::ToolInvocationChanged { invocation: changed },
+                ] if matches!(result.payload, ConversationEntryPayload::ToolResult(_))
+                    && changed.id == invocation.id
+                    && changed.status == ToolInvocationStatus::Failed
+            )
+    ));
 }
 
 #[tokio::test]
@@ -1784,7 +2004,7 @@ async fn denied_approval_writes_error_tool_result_and_continues_same_run() {
 }
 
 #[tokio::test]
-async fn recovery_fails_active_child_execution_rows() {
+async fn recovery_without_observer_persists_terminal_invocation() {
     let fixture = Fixture::new("recovery-children");
     let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let agent_run = insert_agent_run_with_status(&fixture, AgentRunStatus::Running);
@@ -1938,9 +2158,23 @@ async fn cancel_running_run_terminalizes_active_children_without_run_error() {
         Some(assistant_item.id.as_str())
     );
     let events = events.lock().unwrap();
-    assert_eq!(events.len(), 2);
+    assert_eq!(events.len(), 3);
     assert!(matches!(
         &events[0],
+        AgentRuntimeEvent::ConversationCommitted { changes, .. }
+            if matches!(
+                changes.as_slice(),
+                [
+                    ConversationChange::EntryAppended { entry },
+                    ConversationChange::ToolInvocationChanged { invocation: changed },
+                ] if entry.tool_invocation_id.as_deref() == Some(invocation.id.as_str())
+                    && matches!(entry.payload, ConversationEntryPayload::ToolResult(_))
+                    && changed.id == invocation.id
+                    && changed.status == ToolInvocationStatus::Canceled
+            )
+    ));
+    assert!(matches!(
+        &events[1],
         AgentRuntimeEvent::ConversationCommitted { changes, .. }
             if matches!(
                 changes.as_slice(),
@@ -1949,7 +2183,7 @@ async fn cancel_running_run_terminalizes_active_children_without_run_error() {
             )
     ));
     assert_eq!(
-        events[1],
+        events[2],
         AgentRuntimeEvent::AgentRunStatusChanged {
             agent_run_id: agent_run.id.clone(),
             status: AgentRunStatus::Canceled,

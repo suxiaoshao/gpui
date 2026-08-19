@@ -1,7 +1,7 @@
 use fluent_bundle::FluentArgs;
 use jaco_core::{
     AgentRun, AgentRunStatus, ContentPart, ConversationEntry, ConversationEntryPayload,
-    ConversationStatusCode, ProviderRawPayload, TranscriptRole,
+    ConversationStatusCode, TranscriptRole,
 };
 use time::{Month, OffsetDateTime, UtcOffset, Weekday};
 
@@ -29,42 +29,10 @@ pub(crate) fn item_markdown(item: &ConversationEntry) -> String {
         ConversationEntryPayload::Reasoning { text, summary } => {
             summary.clone().unwrap_or_else(|| text.clone())
         }
-        ConversationEntryPayload::ToolCall(call) => {
-            let arguments = pretty_json(&call.arguments.value);
-            format!(
-                "**Tool call:** `{}`\n\n```json\n{}\n```",
-                call.runtime_tool_name, arguments
-            )
-        }
-        ConversationEntryPayload::ToolResult(result) => {
-            let mut parts = Vec::new();
-            let content = content_parts_text(&result.content);
-            if !content.is_empty() {
-                parts.push(content);
-            }
-            if let Some(structured) = &result.structured_output {
-                parts.push(format!("```json\n{}\n```", pretty_json(&structured.value)));
-            }
-            if let Some(raw) = &result.raw_output {
-                parts.push(format_raw_payload(raw));
-            }
-            if parts.is_empty() {
-                format!("Tool result `{}`", result.call_id)
-            } else {
-                parts.join("\n\n")
-            }
-        }
-        ConversationEntryPayload::ApprovalRequest(request) => format!(
-            "**Approval requested:** `{}`\n\n{}",
-            request.request.tool_name, request.request.arguments_preview
-        ),
-        ConversationEntryPayload::ApprovalDecision(decision) => {
-            if decision.decision.approved {
-                "Approved".to_string()
-            } else {
-                "Denied".to_string()
-            }
-        }
+        ConversationEntryPayload::ToolCall(_)
+        | ConversationEntryPayload::ToolResult(_)
+        | ConversationEntryPayload::ApprovalRequest(_)
+        | ConversationEntryPayload::ApprovalDecision(_) => String::new(),
         ConversationEntryPayload::Status(status) => status
             .message
             .as_ref()
@@ -202,20 +170,14 @@ fn month_key(month: Month) -> &'static str {
     }
 }
 
-fn pretty_json(value: &serde_json::Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
-}
-
-fn format_raw_payload(raw: &ProviderRawPayload) -> String {
-    format!(
-        "```json\n{}\n```",
-        serde_json::to_string_pretty(&raw.value).unwrap_or_else(|_| raw.value.to_string())
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jaco_core::{
+        ApprovalDecisionEntry, ApprovalDecisionPayload, ApprovalRequestEntry,
+        ApprovalRequestPayload, ConversationEntryStatus, ToolArguments, ToolCallEntry,
+        ToolResultEntry, ToolSource,
+    };
     use time::{Date, Time};
 
     fn utc_datetime(year: i32, month: Month, day: u8, hour: u8, minute: u8) -> OffsetDateTime {
@@ -223,6 +185,72 @@ mod tests {
             .unwrap()
             .with_time(Time::from_hms(hour, minute, 0).unwrap())
             .assume_utc()
+    }
+
+    fn entry(payload: ConversationEntryPayload) -> ConversationEntry {
+        ConversationEntry {
+            id: "entry-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            seq: 1,
+            kind: payload.kind(),
+            status: ConversationEntryStatus::Completed,
+            agent_run_id: Some("run-1".to_string()),
+            provider_step_id: None,
+            tool_invocation_id: Some("invocation-1".to_string()),
+            provider_item_id: None,
+            search_text: payload.search_text(),
+            payload,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn item_markdown_never_formats_tool_lifecycle_payloads() {
+        let payloads = [
+            ConversationEntryPayload::ToolCall(ToolCallEntry {
+                tool_invocation_id: Some("inner-invocation".to_string()),
+                call_id: "call-secret".to_string(),
+                source: ToolSource::Local,
+                name: "tool-secret".to_string(),
+                runtime_tool_name: "runtime-secret".to_string(),
+                arguments: ToolArguments {
+                    value: serde_json::json!({"api_key": "synthetic-secret"}),
+                },
+            }),
+            ConversationEntryPayload::ToolResult(ToolResultEntry {
+                tool_invocation_id: Some("inner-invocation".to_string()),
+                call_id: "call-secret".to_string(),
+                content: vec![ContentPart::Text {
+                    text: "tool output secret".to_string(),
+                }],
+                is_error: false,
+                structured_output: None,
+                raw_output: None,
+            }),
+            ConversationEntryPayload::ApprovalRequest(ApprovalRequestEntry {
+                tool_invocation_id: "inner-invocation".to_string(),
+                request: ApprovalRequestPayload {
+                    reason: "approval reason secret".to_string(),
+                    tool_source: ToolSource::Local,
+                    tool_name: "tool-secret".to_string(),
+                    arguments_preview: "approval arguments secret".to_string(),
+                    access_requests: Vec::new(),
+                },
+            }),
+            ConversationEntryPayload::ApprovalDecision(ApprovalDecisionEntry {
+                tool_invocation_id: "inner-invocation".to_string(),
+                decision: ApprovalDecisionPayload {
+                    approved: true,
+                    decided_by: "tester".to_string(),
+                    reason: Some("decision reason secret".to_string()),
+                },
+            }),
+        ];
+
+        for payload in payloads {
+            assert!(item_markdown(&entry(payload)).is_empty());
+        }
     }
 
     #[test]

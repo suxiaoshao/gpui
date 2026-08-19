@@ -1,5 +1,5 @@
-use super::AgentRuntime;
-use crate::{AgentRuntimeError, Result};
+use super::{AgentRuntime, emit_runtime};
+use crate::{AgentRuntimeError, AgentRuntimeEvent, AgentRuntimeObserver, Result};
 use jaco_core::*;
 use jaco_db::{
     AgentRunRecord, NewConversationEntry, ToolInvocationRecord, UpdateProviderStepStatus,
@@ -13,6 +13,7 @@ impl AgentRuntime {
         conversation_id: &str,
         status: ToolInvocationStatus,
         error: RunErrorPayload,
+        observer: Option<&AgentRuntimeObserver>,
     ) -> Result<()> {
         for invocation in self
             .persistence
@@ -33,6 +34,7 @@ impl AgentRuntime {
                 &invocation,
                 status,
                 error.clone(),
+                observer,
             )
             .await?;
         }
@@ -45,6 +47,7 @@ impl AgentRuntime {
         invocation: &ToolInvocationRecord,
         status: ToolInvocationStatus,
         error: RunErrorPayload,
+        observer: Option<&AgentRuntimeObserver>,
     ) -> Result<ConversationEntryId> {
         let output = ToolInvocationOutput {
             content: vec![ContentPart::Text {
@@ -108,6 +111,24 @@ impl AgentRuntime {
                 approval,
             )
             .await?;
+        emit_runtime(
+            observer,
+            AgentRuntimeEvent::ConversationCommitted {
+                conversation: Box::new(commit.conversation.clone()),
+                changes: commit
+                    .value
+                    .0
+                    .iter()
+                    .cloned()
+                    .map(|entry| ConversationChange::EntryAppended {
+                        entry: Box::new(entry),
+                    })
+                    .chain(std::iter::once(ConversationChange::ToolInvocationChanged {
+                        invocation: Box::new(commit.value.1.clone()),
+                    }))
+                    .collect(),
+            },
+        );
         let items = commit.value.0;
         items.last().map(|item| item.id.clone()).ok_or_else(|| {
             AgentRuntimeError::Invariant(format!(

@@ -18,6 +18,11 @@ use crate::{database, errors::JacoResult, state::providers::secrets::ProviderSec
 
 enum RuntimePublication {
     Event(jaco_agent::AgentRuntimeEvent),
+    ToolApprovalAvailabilityChanged {
+        conversation_id: ConversationId,
+        agent_run_id: AgentRunId,
+        tool_invocation_id: ToolInvocationId,
+    },
     Drain(Sender<()>),
 }
 
@@ -183,6 +188,11 @@ pub(crate) enum ConversationRuntimeEvent {
     RunFinished {
         ticket: ConversationSubmissionTicket,
     },
+    ToolApprovalAvailabilityChanged {
+        conversation_id: ConversationId,
+        agent_run_id: AgentRunId,
+        tool_invocation_id: ToolInvocationId,
+    },
 }
 
 impl Transition<SubmitAttempt> for &mut ActiveRuns {
@@ -280,7 +290,9 @@ impl Transition<StopRun<'_, '_>> for &mut ActiveRuns {
         };
         active.cancellation_token.cancel();
         if let Some(agent_run_id) = active.agent_run_id.as_ref() {
-            active.approval_broker.cancel_all_for_run(agent_run_id);
+            active
+                .approval_broker
+                .cancel_all_for_run(&conversation_id, agent_run_id);
         } else {
             active.approval_broker.cancel_all();
         }
@@ -386,6 +398,52 @@ impl ConversationRuntimeStore {
         runtime.recovery.transition(Load(Task::ready(())));
         runtime.recovery.transition(Complete(Ok(())));
         runtime
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_tool_approval_authorities_for_test(
+        &mut self,
+        conversation_id: ConversationId,
+        agent_run_id: AgentRunId,
+        tool_invocation_ids: &[ToolInvocationId],
+    ) -> ConversationSubmissionTicket {
+        let key = self.next_active_run_key();
+        let (publications, _publication_receiver) = smol::channel::unbounded();
+        let approval_broker = Arc::new(ConversationApprovalBroker::new(publications));
+        for tool_invocation_id in tool_invocation_ids {
+            let _receiver = approval_broker.register_pending_for_test(
+                conversation_id.clone(),
+                agent_run_id.clone(),
+                tool_invocation_id.clone(),
+            );
+        }
+        self.active_runs.insert(
+            conversation_id.clone(),
+            ActiveRun {
+                key,
+                agent_run_id: Some(agent_run_id),
+                cancellation_token: AgentCancellationToken::new(),
+                approval_broker,
+                task: Task::ready(()),
+                _event_task: Task::ready(()),
+            },
+        );
+        ConversationSubmissionTicket {
+            conversation_id,
+            attempt_key: key,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finish_run_event_for_test(
+        &mut self,
+        ticket: ConversationSubmissionTicket,
+    ) -> ConversationRuntimeEvent {
+        assert!((&mut self.active_runs).transition(RunFinished {
+            conversation_id: ticket.conversation_id.clone(),
+            key: ticket.attempt_key,
+        }));
+        ConversationRuntimeEvent::RunFinished { ticket }
     }
 
     pub(crate) fn run_status(&self, conversation_id: &ConversationId) -> ConversationRunStatus {
@@ -579,7 +637,7 @@ impl ConversationRuntimeStore {
         };
         let (tx, rx) = smol::channel::unbounded();
         let event_task = self.spawn_event_listener(rx, run_key, cx);
-        let approval_broker = Arc::new(ConversationApprovalBroker::new());
+        let approval_broker = Arc::new(ConversationApprovalBroker::new(tx.clone()));
         let run_conversation_id = conversation_id.clone();
         let cancellation_token = request.cancellation_token.clone();
         let runtime_approval_broker = approval_broker.clone();
@@ -635,7 +693,9 @@ impl ConversationRuntimeStore {
                 ConversationAttempt::Running(active) | ConversationAttempt::Stopping(active) => {
                     active.cancellation_token.cancel();
                     if let Some(agent_run_id) = active.agent_run_id.as_ref() {
-                        active.approval_broker.cancel_all_for_run(agent_run_id);
+                        active
+                            .approval_broker
+                            .cancel_all_for_run(&conversation_id, agent_run_id);
                     } else {
                         active.approval_broker.cancel_all();
                     }
@@ -672,7 +732,6 @@ impl ConversationRuntimeStore {
         if self.shutting_down || !matches!(self.recovery, refresh::Operation::Ready(_)) {
             return false;
         }
-        self.last_errors.remove(&conversation_id);
         let Some(ConversationAttempt::Running(active)) = self.active_runs.0.get(&conversation_id)
         else {
             return false;
@@ -680,14 +739,9 @@ impl ConversationRuntimeStore {
         let Some(agent_run_id) = active.agent_run_id.as_ref() else {
             return false;
         };
-        if !active
-            .approval_broker
-            .is_pending_for_run(agent_run_id, &tool_invocation_id)
-        {
-            return false;
-        }
-        debug_assert!(active.approval_broker.pending_count_for_run(agent_run_id) > 0);
-        let Some(outcome) = active.approval_broker.resolve(
+        let Some(outcome) = active.approval_broker.resolve_for(
+            &conversation_id,
+            agent_run_id,
             &tool_invocation_id,
             ToolApprovalDecision::Approved {
                 decided_by: "user".to_string(),
@@ -699,6 +753,7 @@ impl ConversationRuntimeStore {
         debug_assert_eq!(outcome.conversation_id, conversation_id);
         debug_assert_eq!(&outcome.agent_run_id, agent_run_id);
         let _ = outcome.remaining_for_run;
+        self.last_errors.remove(&conversation_id);
         cx.notify();
         true
     }
@@ -712,7 +767,6 @@ impl ConversationRuntimeStore {
         if self.shutting_down || !matches!(self.recovery, refresh::Operation::Ready(_)) {
             return false;
         }
-        self.last_errors.remove(&conversation_id);
         let Some(ConversationAttempt::Running(active)) = self.active_runs.0.get(&conversation_id)
         else {
             return false;
@@ -720,14 +774,9 @@ impl ConversationRuntimeStore {
         let Some(agent_run_id) = active.agent_run_id.as_ref() else {
             return false;
         };
-        if !active
-            .approval_broker
-            .is_pending_for_run(agent_run_id, &tool_invocation_id)
-        {
-            return false;
-        }
-        debug_assert!(active.approval_broker.pending_count_for_run(agent_run_id) > 0);
-        let Some(outcome) = active.approval_broker.resolve(
+        let Some(outcome) = active.approval_broker.resolve_for(
+            &conversation_id,
+            agent_run_id,
             &tool_invocation_id,
             ToolApprovalDecision::Denied {
                 decided_by: "user".to_string(),
@@ -739,8 +788,30 @@ impl ConversationRuntimeStore {
         debug_assert_eq!(outcome.conversation_id, conversation_id);
         debug_assert_eq!(&outcome.agent_run_id, agent_run_id);
         let _ = outcome.remaining_for_run;
+        self.last_errors.remove(&conversation_id);
         cx.notify();
         true
+    }
+
+    pub(crate) fn can_decide_tool_invocation(
+        &self,
+        conversation_id: &ConversationId,
+        agent_run_id: &AgentRunId,
+        tool_invocation_id: &ToolInvocationId,
+    ) -> bool {
+        if self.shutting_down || !matches!(self.recovery, refresh::Operation::Ready(_)) {
+            return false;
+        }
+        let Some(ConversationAttempt::Running(active)) = self.active_runs.0.get(conversation_id)
+        else {
+            return false;
+        };
+        if active.agent_run_id.as_ref() != Some(agent_run_id) {
+            return false;
+        }
+        active
+            .approval_broker
+            .is_pending_for(conversation_id, agent_run_id, tool_invocation_id)
     }
 
     fn next_active_run_key(&mut self) -> ActiveRunKey {
@@ -764,6 +835,26 @@ impl ConversationRuntimeStore {
                         };
                         this.update(cx, |store, cx| {
                             store.handle_runtime_event(run_key, runtime_event, cx);
+                        });
+                    }
+                    RuntimePublication::ToolApprovalAvailabilityChanged {
+                        conversation_id,
+                        agent_run_id,
+                        tool_invocation_id,
+                    } => {
+                        let Some(this) = this.upgrade() else {
+                            break;
+                        };
+                        this.update(cx, |store, cx| {
+                            if !store.accepts_runtime_publication(&conversation_id, run_key) {
+                                return;
+                            }
+                            cx.emit(ConversationRuntimeEvent::ToolApprovalAvailabilityChanged {
+                                conversation_id,
+                                agent_run_id,
+                                tool_invocation_id,
+                            });
+                            cx.notify();
                         });
                     }
                     RuntimePublication::Drain(acknowledgement) => {
@@ -929,6 +1020,20 @@ impl ConversationRuntimeStore {
         result: Result<AgentRunHandle, String>,
         cx: &mut Context<Self>,
     ) -> bool {
+        let Some(ConversationAttempt::Running(active)) = self.active_runs.0.get(&conversation_id)
+        else {
+            return false;
+        };
+        if active.key != run_key {
+            return false;
+        }
+        if let Some(agent_run_id) = active.agent_run_id.as_ref() {
+            active
+                .approval_broker
+                .cancel_all_for_run(&conversation_id, agent_run_id);
+        } else {
+            active.approval_broker.cancel_all();
+        }
         if !(&mut self.active_runs).transition(RunFinished {
             conversation_id: conversation_id.clone(),
             key: run_key,
@@ -1238,11 +1343,12 @@ mod tests {
         key: ActiveRunKey,
         cancellation_token: AgentCancellationToken,
     ) -> ActiveRun {
+        let (publications, _publication_receiver) = smol::channel::unbounded();
         ActiveRun {
             key,
             agent_run_id: Some("run-1".to_string()),
             cancellation_token,
-            approval_broker: Arc::new(ConversationApprovalBroker::new()),
+            approval_broker: Arc::new(ConversationApprovalBroker::new(publications)),
             task: Task::ready(()),
             _event_task: Task::ready(()),
         }
@@ -1758,6 +1864,15 @@ mod tests {
                     approval_id.clone(),
                 );
                 store.active_runs.insert(conversation_id.clone(), active);
+                store
+                    .last_errors
+                    .insert(conversation_id.clone(), "previous error".to_string());
+
+                assert!(store.can_decide_tool_invocation(
+                    &conversation_id,
+                    &agent_run_id,
+                    &approval_id
+                ));
 
                 assert!(store.deny_tool_invocation(
                     conversation_id.clone(),
@@ -1771,6 +1886,178 @@ mod tests {
                         decided_by: "user".to_string(),
                         reason: None,
                     }
+                );
+                assert!(store.take_last_error(&conversation_id).is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn approval_availability_publication_emits_the_exact_key(cx: &mut gpui::TestAppContext) {
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
+        let recorder = cx.update(|cx| cx.new(|cx| RuntimeEventRecorder::new(store.clone(), cx)));
+        let conversation_id = "conversation-1".to_string();
+        let agent_run_id = "run-1".to_string();
+        let tool_invocation_id = "invocation-1".to_string();
+
+        cx.update(|cx| {
+            store.update(cx, |runtime, cx| {
+                let (publications, publication_receiver) = smol::channel::unbounded();
+                let event_task =
+                    runtime.spawn_event_listener(publication_receiver, ActiveRunKey(0), cx);
+                let approval_broker = Arc::new(ConversationApprovalBroker::new(publications));
+                let _decision = approval_broker.register_pending_for_test(
+                    conversation_id.clone(),
+                    agent_run_id.clone(),
+                    tool_invocation_id.clone(),
+                );
+                runtime.active_runs.insert(
+                    conversation_id.clone(),
+                    ActiveRun {
+                        agent_run_id: Some(agent_run_id.clone()),
+                        approval_broker,
+                        _event_task: event_task,
+                        ..active_run(ActiveRunKey(0))
+                    },
+                );
+            });
+        });
+
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(recorder.read(cx).events.lock().unwrap().contains(
+                &ConversationRuntimeEvent::ToolApprovalAvailabilityChanged {
+                    conversation_id,
+                    agent_run_id,
+                    tool_invocation_id,
+                }
+            ));
+        });
+    }
+
+    #[test]
+    fn can_decide_tool_invocation_requires_ready_exact_running_authority() {
+        let mut runtime = ConversationRuntimeStore::new_ready_for_test();
+        let conversation_id = "conversation-1".to_string();
+        let agent_run_id = "run-1".to_string();
+        let tool_invocation_id = "invocation-1".to_string();
+        let active = active_run_with_agent_id(ActiveRunKey(0), agent_run_id.clone());
+        let _decision = active.approval_broker.register_pending_for_test(
+            conversation_id.clone(),
+            agent_run_id.clone(),
+            tool_invocation_id.clone(),
+        );
+        runtime.active_runs.insert(conversation_id.clone(), active);
+
+        assert!(runtime.can_decide_tool_invocation(
+            &conversation_id,
+            &agent_run_id,
+            &tool_invocation_id
+        ));
+        assert!(!runtime.can_decide_tool_invocation(
+            &conversation_id,
+            &"run-2".to_string(),
+            &tool_invocation_id
+        ));
+        assert!(!runtime.can_decide_tool_invocation(
+            &"conversation-2".to_string(),
+            &agent_run_id,
+            &tool_invocation_id
+        ));
+        assert!(!runtime.can_decide_tool_invocation(
+            &conversation_id,
+            &agent_run_id,
+            &"invocation-2".to_string()
+        ));
+
+        runtime.shutting_down = true;
+        assert!(!runtime.can_decide_tool_invocation(
+            &conversation_id,
+            &agent_run_id,
+            &tool_invocation_id
+        ));
+        assert!(
+            !ConversationRuntimeStore::new_ready_for_test().can_decide_tool_invocation(
+                &conversation_id,
+                &agent_run_id,
+                &tool_invocation_id
+            )
+        );
+        assert!(!ConversationRuntimeStore::new().can_decide_tool_invocation(
+            &conversation_id,
+            &agent_run_id,
+            &tool_invocation_id
+        ));
+    }
+
+    #[gpui::test]
+    fn denial_with_wrong_pending_conversation_preserves_authority_and_last_error(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
+        let conversation_id = "conversation-1".to_string();
+        let agent_run_id = "run-1".to_string();
+        let tool_invocation_id = "invocation-1".to_string();
+
+        cx.update(|cx| {
+            store.update(cx, |store, cx| {
+                let active = active_run_with_agent_id(ActiveRunKey(0), agent_run_id.clone());
+                let mut decision = active.approval_broker.register_pending_for_test(
+                    "conversation-2".to_string(),
+                    agent_run_id.clone(),
+                    tool_invocation_id.clone(),
+                );
+                store.active_runs.insert(conversation_id.clone(), active);
+                store
+                    .last_errors
+                    .insert(conversation_id.clone(), "previous error".to_string());
+
+                assert!(!store.deny_tool_invocation(
+                    conversation_id.clone(),
+                    tool_invocation_id.clone(),
+                    cx
+                ));
+                assert!(decision.try_recv().is_err());
+                assert_eq!(
+                    store.take_last_error(&conversation_id).as_deref(),
+                    Some("previous error")
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn denial_while_shutting_down_preserves_authority_and_last_error(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
+        let conversation_id = "conversation-1".to_string();
+        let agent_run_id = "run-1".to_string();
+        let tool_invocation_id = "invocation-1".to_string();
+
+        cx.update(|cx| {
+            store.update(cx, |store, cx| {
+                let active = active_run_with_agent_id(ActiveRunKey(0), agent_run_id.clone());
+                let mut decision = active.approval_broker.register_pending_for_test(
+                    conversation_id.clone(),
+                    agent_run_id,
+                    tool_invocation_id.clone(),
+                );
+                store.active_runs.insert(conversation_id.clone(), active);
+                store.shutting_down = true;
+                store
+                    .last_errors
+                    .insert(conversation_id.clone(), "previous error".to_string());
+
+                assert!(!store.deny_tool_invocation(
+                    conversation_id.clone(),
+                    tool_invocation_id,
+                    cx
+                ));
+                assert!(decision.try_recv().is_err());
+                assert_eq!(
+                    store.take_last_error(&conversation_id).as_deref(),
+                    Some("previous error")
                 );
             });
         });
@@ -1795,6 +2082,9 @@ mod tests {
             window
                 .update(cx, |_view, window, cx| {
                     store.update(cx, |store, cx| {
+                        store
+                            .last_errors
+                            .insert(conversation_id.clone(), "previous error".to_string());
                         store.approve_tool_invocation(
                             conversation_id.clone(),
                             approval_id.clone(),
@@ -1822,7 +2112,10 @@ mod tests {
             assert_eq!(agent_run.status, AgentRunStatus::Running);
             assert!(!store.read(cx).is_running(&conversation_id));
             store.update(cx, |store, _cx| {
-                assert!(store.take_last_error(&conversation_id).is_none());
+                assert_eq!(
+                    store.take_last_error(&conversation_id).as_deref(),
+                    Some("previous error")
+                );
             });
         });
     }
@@ -1887,6 +2180,9 @@ mod tests {
                     conversation_id.clone(),
                     active_run_with_agent_id(ActiveRunKey(0), agent_run_id.clone()),
                 );
+                store
+                    .last_errors
+                    .insert(conversation_id.clone(), "previous error".to_string());
 
                 assert!(!store.deny_tool_invocation(
                     conversation_id.clone(),
@@ -1899,7 +2195,10 @@ mod tests {
                     panic!("stale denial must not clear the active run");
                 };
                 assert_eq!(active.agent_run_id.as_ref(), Some(&agent_run_id));
-                assert!(store.take_last_error(&conversation_id).is_none());
+                assert_eq!(
+                    store.take_last_error(&conversation_id).as_deref(),
+                    Some("previous error")
+                );
             });
         });
     }

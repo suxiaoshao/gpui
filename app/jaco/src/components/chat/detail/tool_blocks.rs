@@ -12,8 +12,6 @@ use jaco_core::{ConversationEntry, ConversationEntryPayload};
 
 use crate::foundation::{I18n, assets::IconName, conversation_format as format};
 
-use super::message::OnApprovalDecision;
-
 struct DetailBlockState {
     expanded: bool,
 }
@@ -23,33 +21,24 @@ pub(super) struct DetailBlock {
     state: Entity<DetailBlockState>,
     item: ConversationEntry,
     text_state: Option<Entity<TextViewState>>,
-    approval_decidable: bool,
-    on_approval_decision: OnApprovalDecision,
 }
 
 impl DetailBlock {
     pub(super) fn new(
         item: ConversationEntry,
         text_state: Option<Entity<TextViewState>>,
-        approval_decidable: bool,
-        on_approval_decision: OnApprovalDecision,
         window: &mut Window,
         cx: &mut App,
     ) -> Self {
-        let default_expanded = default_expanded(&item.payload);
         let state = window.use_keyed_state(
             format!("conversation-agent-detail-state-{}", item.id),
             cx,
-            move |_window, _cx| DetailBlockState {
-                expanded: default_expanded,
-            },
+            move |_window, _cx| DetailBlockState { expanded: true },
         );
         Self {
             state,
             item,
             text_state,
-            approval_decidable,
-            on_approval_decision,
         }
     }
 }
@@ -73,11 +62,6 @@ impl View for DetailBlock {
         let icon = detail_icon(&self.item.payload);
         let tone = detail_tone(&self.item.payload);
         let markdown = format::item_markdown(&self.item);
-        let approval_actions = if self.approval_decidable {
-            approval_action_buttons(&self.item.payload, self.on_approval_decision.clone(), cx)
-        } else {
-            None
-        };
         let toggle_state = self.state.clone();
         let item_id = self.item.id;
         let text_state = self.text_state;
@@ -111,7 +95,6 @@ impl View for DetailBlock {
                             .truncate(),
                     )
                     .child(div().flex_1())
-                    .when_some(approval_actions, |this, actions| this.child(actions))
                     .child(
                         Button::new(format!("conversation-agent-detail-toggle-{item_id}"))
                             .ghost()
@@ -135,47 +118,6 @@ impl View for DetailBlock {
     }
 }
 
-fn approval_action_buttons(
-    payload: &ConversationEntryPayload,
-    on_approval_decision: OnApprovalDecision,
-    cx: &mut App,
-) -> Option<AnyElement> {
-    let ConversationEntryPayload::ApprovalRequest(request) = payload else {
-        return None;
-    };
-    let approve_id = request.tool_invocation_id.clone();
-    let deny_id = request.tool_invocation_id.clone();
-    let approve = cx.global::<I18n>().t("conversation-approval-approve");
-    let deny = cx.global::<I18n>().t("conversation-approval-deny");
-    let approve_callback = on_approval_decision.clone();
-
-    Some(
-        h_flex()
-            .items_center()
-            .gap_1()
-            .child(
-                Button::new(format!("conversation-approval-approve-{approve_id}"))
-                    .small()
-                    .icon(IconName::ShieldCheck)
-                    .label(approve)
-                    .on_click(move |_, window, cx| {
-                        approve_callback(approve_id.clone(), true, window, cx);
-                    }),
-            )
-            .child(
-                Button::new(format!("conversation-approval-deny-{deny_id}"))
-                    .ghost()
-                    .small()
-                    .icon(IconName::ShieldAlert)
-                    .label(deny)
-                    .on_click(move |_, window, cx| {
-                        on_approval_decision(deny_id.clone(), false, window, cx);
-                    }),
-            )
-            .into_any_element(),
-    )
-}
-
 fn markdown_view(
     id: impl Into<ElementId>,
     text_state: Option<Entity<TextViewState>>,
@@ -190,16 +132,6 @@ fn markdown_view(
             .selectable(true)
             .into_any_element()
     }
-}
-
-fn default_expanded(payload: &ConversationEntryPayload) -> bool {
-    !matches!(
-        payload,
-        ConversationEntryPayload::ToolCall(_)
-            | ConversationEntryPayload::ToolResult(_)
-            | ConversationEntryPayload::ApprovalRequest(_)
-            | ConversationEntryPayload::ApprovalDecision(_)
-    )
 }
 
 fn detail_title(item: &ConversationEntry, i18n: &I18n) -> String {
@@ -344,27 +276,13 @@ mod tests {
                 let state = self.state.read(cx);
                 (state.revision, state.snapshots.clone())
             };
-            let (search_text, approval_decidable) = if revision == 0 {
-                ("first payload", false)
+            let search_text = if revision == 0 {
+                "first payload"
             } else {
-                ("refreshed payload", true)
+                "refreshed payload"
             };
-            let block = DetailBlock::new(
-                entry("detail-1", search_text),
-                None,
-                approval_decidable,
-                Rc::new(|_, _, _, _| {}),
-                window,
-                cx,
-            );
-            let sibling = DetailBlock::new(
-                entry("detail-2", "sibling payload"),
-                None,
-                false,
-                Rc::new(|_, _, _, _| {}),
-                window,
-                cx,
-            );
+            let block = DetailBlock::new(entry("detail-1", search_text), None, window, cx);
+            let sibling = DetailBlock::new(entry("detail-2", "sibling payload"), None, window, cx);
             snapshots.borrow_mut()[revision] = Some(Snapshot {
                 identity: block.entity_id(),
                 sibling_identity: sibling.entity_id(),

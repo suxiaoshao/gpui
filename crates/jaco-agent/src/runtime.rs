@@ -534,6 +534,7 @@ impl AgentRuntime {
                             &request.conversation_id,
                             ToolInvocationStatus::Canceled,
                             run_error("canceled", "runtime canceled", false, None),
+                            context.observer(),
                         )
                         .await?;
                     }
@@ -571,6 +572,7 @@ impl AgentRuntime {
                             ToolInvocationStatus::Failed
                         },
                         payload.clone(),
+                        context.observer(),
                     )
                     .await?;
                     if canceled {
@@ -600,6 +602,7 @@ impl AgentRuntime {
                         &request.conversation_id,
                         ToolInvocationStatus::Failed,
                         payload.clone(),
+                        context.observer(),
                     )
                     .await;
                 AgentRunOutcome::Failed { error: payload }
@@ -702,6 +705,7 @@ impl AgentRuntime {
                 &active.record().conversation_id,
                 ToolInvocationStatus::Canceled,
                 error,
+                observer,
             )
             .await?;
             self.latest_assistant_entry_id_for_run(active.record())
@@ -740,6 +744,7 @@ impl AgentRuntime {
                     &active.record().conversation_id,
                     ToolInvocationStatus::Failed,
                     interrupted.clone(),
+                    None,
                 )
                 .await
             }
