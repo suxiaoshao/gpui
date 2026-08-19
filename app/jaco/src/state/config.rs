@@ -67,6 +67,13 @@ struct ConfigProbeStart {
 
 type ConfigProbeResult = Result<ConfigData, ConfigProblem>;
 
+#[cfg(test)]
+#[derive(Clone)]
+struct ConfigProbeResultForTest(ConfigProbeResult);
+
+#[cfg(test)]
+impl Global for ConfigProbeResultForTest {}
+
 const MISSING_CONFIRMATION_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -509,6 +516,16 @@ pub(crate) fn shutdown_file_observer(cx: &mut App) {
     });
 }
 
+pub(crate) fn resume_file_observer_after_mcp_submission(cx: &mut App) {
+    let Some(observer) = cx
+        .try_global::<ConfigFileObserverGlobal>()
+        .map(|global| global._observer.clone())
+    else {
+        return;
+    };
+    observer.update(cx, |observer, cx| observer.consume_pending(cx));
+}
+
 fn invalidate_file_observer_probe(cx: &mut App) {
     let Some(observer) = cx
         .try_global::<ConfigFileObserverGlobal>()
@@ -529,7 +546,10 @@ impl ConfigFileObserver {
         if crate::app::is_shutting_down() {
             return;
         }
-        if self.probe_task.is_some() || store(cx).read(cx, ConfigOperation::is_running) {
+        if crate::state::mcp::oauth::credential_cleanup_in_progress(cx)
+            || self.probe_task.is_some()
+            || store(cx).read(cx, ConfigOperation::is_running)
+        {
             self.pending_dirty = true;
             return;
         }
@@ -553,7 +573,8 @@ impl ConfigFileObserver {
         if crate::app::is_shutting_down() {
             return;
         }
-        if self.probe_task.is_some() {
+        if crate::state::mcp::oauth::credential_cleanup_in_progress(cx) || self.probe_task.is_some()
+        {
             self.pending_dirty = true;
             return;
         }
@@ -585,6 +606,19 @@ impl ConfigFileObserver {
             operation_phase,
             source_bytes,
         };
+        #[cfg(test)]
+        if let Some(result) = cx
+            .try_global::<ConfigProbeResultForTest>()
+            .map(|result| result.0.clone())
+        {
+            let task = cx.spawn(async move |observer, cx| {
+                let _ = observer.update(cx, |observer, cx| {
+                    observer.finish_probe(start, result, cx);
+                });
+            });
+            self.probe_task = Some(task);
+            return;
+        }
         let task = cx.spawn(async move |observer, cx| {
             if crate::app::is_shutting_down() {
                 return;
@@ -625,6 +659,10 @@ impl ConfigFileObserver {
     ) {
         self.probe_task.take();
         if crate::app::is_shutting_down() {
+            return;
+        }
+        if crate::state::mcp::oauth::credential_cleanup_in_progress(cx) {
+            self.pending_dirty = true;
             return;
         }
         let (
@@ -688,6 +726,7 @@ impl ConfigFileObserver {
     fn consume_pending(&mut self, cx: &mut Context<Self>) {
         if self.pending_dirty
             && self.probe_task.is_none()
+            && !crate::state::mcp::oauth::credential_cleanup_in_progress(cx)
             && !store(cx).read(cx, ConfigOperation::is_running)
         {
             self.pending_dirty = false;
@@ -966,6 +1005,15 @@ fn write_pending_at(
 }
 
 pub(crate) fn request_reload(cx: &mut App) {
+    if crate::state::mcp::oauth::credential_cleanup_in_progress(cx) {
+        let observer = cx
+            .try_global::<ConfigFileObserverGlobal>()
+            .map(|global| global._observer.clone());
+        if let Some(observer) = observer {
+            observer.update(cx, |observer, _| observer.pending_dirty = true);
+        }
+        return;
+    }
     let config_store = store(cx);
     let (path, refresh_ready) = config_store.read(cx, |operation| {
         (
@@ -1020,6 +1068,9 @@ pub(crate) fn request_reload(cx: &mut App) {
 }
 
 pub(crate) fn request_repair(repair: ConfigRepair, cx: &mut App) -> JacoResult<()> {
+    if crate::state::mcp::oauth::credential_cleanup_in_progress(cx) {
+        return Err(JacoError::McpSubmissionInProgress);
+    }
     let (path, problem, current) = store(cx).read(cx, |operation| {
         let problem = operation.problem().cloned();
         let path = operation

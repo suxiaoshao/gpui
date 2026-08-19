@@ -34,13 +34,14 @@ use std::{
     rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
 };
+use tokio::sync::oneshot;
 use tracing::{Level, event};
 
 use super::{
     super::push_settings_error,
     form_rows::{
-        AddMcpRow, McpRowList, MoveRowHandler, RemoveRowHandler, RowMoveHandlers, one_input_rows,
-        two_input_rows, validation_error_list,
+        AddMcpRow, McpRowActions, McpRowList, MoveRowHandler, RemoveRowHandler, RowMoveHandlers,
+        one_input_rows, two_input_rows, validation_error_list,
     },
     form_state::{
         McpArgRowInput, McpCollectionImpact, McpEnvHeaderRowInput, McpEnvRowInput,
@@ -90,6 +91,7 @@ pub(super) struct McpServerEditDialogState {
     sign_out_task: Option<Task<()>>,
     save_task: Option<Task<()>>,
     _form_subscription: Subscription,
+    _credential_cleanup_subscription: Subscription,
 }
 
 struct McpOAuthDialogTarget {
@@ -193,6 +195,8 @@ impl McpServerEditDialogState {
             .expect("fresh MCP form rows have unique stable ids");
         let dialog = cx.entity().downgrade();
         let dialog_window = window.window_handle();
+        let credential_cleanup_subscription =
+            state::mcp::oauth::observe_credential_cleanup(cx, |_, cx| cx.notify());
         let form_subscription = App::subscribe(
             cx,
             &draft.form,
@@ -242,6 +246,7 @@ impl McpServerEditDialogState {
             sign_out_task: None,
             save_task: None,
             _form_subscription: form_subscription,
+            _credential_cleanup_subscription: credential_cleanup_subscription,
         }
     }
 
@@ -267,7 +272,9 @@ impl McpServerEditDialogState {
     }
 
     fn is_busy(&self, cx: &App) -> bool {
-        self.is_saving(cx) || self.is_signing_out()
+        self.is_saving(cx)
+            || self.is_signing_out()
+            || state::mcp::oauth::credential_cleanup_in_progress(cx)
     }
 
     fn is_oauth_signing_in(&self, cx: &App) -> bool {
@@ -385,23 +392,22 @@ impl McpServerEditDialogState {
                     request.saved_auth,
                     cx,
                 );
-                window.push_notification(
-                    Notification::new()
-                        .title(cx.global::<I18n>().t(request.success_title_key))
-                        .with_type(NotificationType::Success),
-                    cx,
-                );
-                if rebased {
-                    window.close_dialog(cx);
-                } else {
+                if !rebased {
                     self.mode = McpServerEditMode::Edit {
-                        original_server_id: saved_server_id,
+                        original_server_id: saved_server_id.clone(),
                     };
-                    self.original_config = Some(saved_server);
-                    cx.notify();
+                    self.original_config = Some(saved_server.clone());
                 }
                 if let Some(credential_keys) = credential_cleanup {
-                    self.schedule_oauth_cleanup(credential_keys, window, cx);
+                    self.schedule_oauth_cleanup(
+                        credential_keys,
+                        request.success_title_key,
+                        rebased,
+                        window,
+                        cx,
+                    );
+                } else {
+                    self.finish_successful_save(request.success_title_key, rebased, window, cx);
                 }
             }
             Err(err) => {
@@ -426,45 +432,94 @@ impl McpServerEditDialogState {
         Ok(())
     }
 
+    fn finish_successful_save(
+        &mut self,
+        success_title_key: &'static str,
+        rebased: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.push_notification(
+            Notification::new()
+                .title(cx.global::<I18n>().t(success_title_key))
+                .with_type(NotificationType::Success),
+            cx,
+        );
+        if rebased {
+            window.close_dialog(cx);
+        } else {
+            cx.notify();
+        }
+    }
+
     fn schedule_oauth_cleanup(
-        &self,
+        &mut self,
         credential_keys: Vec<state::mcp::oauth::CredentialsKey>,
+        success_title_key: &'static str,
+        rebased: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if credential_keys.is_empty() {
             return;
         }
-        let credential_count = credential_keys.len();
-        let window_handle = window.window_handle();
+        let (sender, receiver) = oneshot::channel();
+        let dialog = cx.entity().downgrade();
         state::mcp::oauth::schedule_credential_cleanup(
             credential_keys,
-            move |result, cx| {
-                if credential_cleanup_outcome(result.failure_count)
-                    != CredentialCleanupOutcome::WarnOnly
-                {
-                    return;
-                }
-                event!(
-                    Level::ERROR,
-                    credential_count,
-                    failure_count = result.failure_count,
-                    "MCP OAuth credential cleanup failed after config commit"
-                );
-                let _ = window_handle.update(cx, |_, window, cx| {
-                    window.push_notification(
-                        Notification::new()
-                            .title(
-                                cx.global::<I18n>()
-                                    .t("mcp-notify-credential-cleanup-failed"),
-                            )
-                            .with_type(NotificationType::Warning),
-                        cx,
-                    );
-                });
+            move |result, _cx| {
+                let _ = sender.send(result);
             },
             cx,
         );
+        self.save_task = Some(window.spawn(cx, async move |cx| {
+            let Ok(result) = receiver.await else {
+                return;
+            };
+            let _ = dialog.update_in(cx, |dialog, window, cx| {
+                dialog.save_task = None;
+                dialog.finish_oauth_cleanup(result, success_title_key, rebased, window, cx);
+            });
+        }));
+        cx.notify();
+    }
+
+    fn finish_oauth_cleanup(
+        &mut self,
+        result: state::mcp::oauth::CredentialCleanupResult,
+        success_title_key: &'static str,
+        rebased: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match credential_cleanup_outcome(result.failure_count) {
+            CredentialCleanupOutcome::Complete => {
+                self.finish_successful_save(success_title_key, rebased, window, cx);
+            }
+            CredentialCleanupOutcome::WarnOnly => {
+                event!(
+                    Level::ERROR,
+                    failure_count = result.failure_count,
+                    error = ?result.first_error,
+                    "MCP OAuth credential cleanup failed after config commit"
+                );
+                let mut notification = Notification::new()
+                    .title(
+                        cx.global::<I18n>()
+                            .t("mcp-notify-credential-cleanup-failed"),
+                    )
+                    .with_type(NotificationType::Warning);
+                if let Some(message) = result.first_error {
+                    notification = notification.message(message);
+                }
+                window.push_notification(notification, cx);
+                if rebased {
+                    window.close_dialog(cx);
+                } else {
+                    cx.notify();
+                }
+            }
+        }
     }
 
     fn finish_oauth_after_save(
@@ -509,6 +564,7 @@ impl McpServerEditDialogState {
 
     fn render_transport_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
         let transport = McpServerFormInput::TRANSPORT.get(&self.draft.form, cx);
+        let blocked = self.is_dialog_blocked(cx);
         ToggleGroup::new("mcp-dialog-transport")
             .segmented()
             .outline()
@@ -517,15 +573,20 @@ impl McpServerEditDialogState {
                 Toggle::new("mcp-dialog-transport-stdio")
                     .label(cx.global::<I18n>().t("mcp-transport-stdio"))
                     .checked(transport == McpTransportKind::Stdio)
+                    .disabled(blocked)
                     .flex_1()
                     .h(px(36.)),
                 Toggle::new("mcp-dialog-transport-http")
                     .label(cx.global::<I18n>().t("mcp-transport-streamable-http"))
                     .checked(transport == McpTransportKind::StreamableHttp)
+                    .disabled(blocked)
                     .flex_1()
                     .h(px(36.)),
             ])
             .on_click(cx.listener(|this, states: &Vec<bool>, window, cx| {
+                if this.is_dialog_blocked(cx) {
+                    return;
+                }
                 let transport = transport_from_toggle_states(
                     McpServerFormInput::TRANSPORT.get(&this.draft.form, cx),
                     states,
@@ -538,6 +599,9 @@ impl McpServerEditDialogState {
     }
 
     fn on_add_mcp_row(&mut self, action: &AddMcpRow, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_dialog_blocked(cx) {
+            return;
+        }
         let result = match action.list {
             McpRowList::Args => self.draft.add_arg_row(window, cx),
             McpRowList::Env => self.draft.add_env_row(window, cx),
@@ -565,6 +629,9 @@ impl McpServerEditDialogState {
         Rc::new(move |window, cx| {
             let row = row.clone();
             let _ = dialog.update(cx, |dialog, cx| {
+                if dialog.is_dialog_blocked(cx) {
+                    return;
+                }
                 match remove(&mut dialog.draft, row, window, cx) {
                     Ok(false) => {
                         event!(Level::DEBUG, "ignored stale MCP row removal callback");
@@ -620,6 +687,9 @@ impl McpServerEditDialogState {
             let row = row.clone();
             let anchor = anchor.clone();
             let _ = dialog.update(cx, |dialog, cx| {
+                if dialog.is_dialog_blocked(cx) {
+                    return;
+                }
                 match dialog
                     .draft
                     .move_row_before(collection, &row, &anchor, window, cx)
@@ -640,12 +710,18 @@ impl McpServerEditDialogState {
     }
 
     fn set_oauth_enabled(&mut self, enabled: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_dialog_blocked(cx) {
+            return;
+        }
         self.draft.set_oauth_enabled(enabled, window, cx);
         self.revalidate_form(ValidationTrigger::Change, window, cx);
         cx.notify();
     }
 
     fn authorize_oauth(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_dialog_blocked(cx) {
+            return;
+        }
         let Some(target) = self.draft_oauth_target(cx) else {
             return;
         };
@@ -675,7 +751,7 @@ impl McpServerEditDialogState {
     }
 
     fn sign_out_oauth(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_busy(cx) {
+        if self.is_dialog_blocked(cx) {
             return;
         }
         let Some(target) = self.draft_oauth_target(cx) else {
@@ -1115,6 +1191,7 @@ impl Render for McpServerEditDialogState {
             )
         };
         let scroll_handle = self.content_scroll_handle.clone();
+        let dialog_blocked = self.is_dialog_blocked(cx);
 
         div()
             .on_action(cx.listener(Self::on_add_mcp_row))
@@ -1132,7 +1209,10 @@ impl Render for McpServerEditDialogState {
                     .pr_2()
                     .child(form_field(
                         name_label,
-                        Input::new(&server_id_input).w_full().into_any_element(),
+                        Input::new(&server_id_input)
+                            .w_full()
+                            .disabled(dialog_blocked)
+                            .into_any_element(),
                         server_id_errors,
                         server_id_required,
                         cx,
@@ -1148,7 +1228,10 @@ impl Render for McpServerEditDialogState {
                         this.child(section_label(stdio_section_label, cx))
                             .child(form_field(
                                 command_label,
-                                Input::new(&command_input).w_full().into_any_element(),
+                                Input::new(&command_input)
+                                    .w_full()
+                                    .disabled(dialog_blocked)
+                                    .into_any_element(),
                                 command_errors,
                                 command_required,
                                 cx,
@@ -1203,9 +1286,12 @@ impl Render for McpServerEditDialogState {
                                         "mcp-dialog-args",
                                         args_label,
                                         rows,
-                                        McpRowList::Args,
-                                        add_arg_label,
-                                        remove_label.clone(),
+                                        McpRowActions::new(
+                                            McpRowList::Args,
+                                            add_arg_label,
+                                            remove_label.clone(),
+                                            dialog_blocked,
+                                        ),
                                         cx,
                                     )
                                 },
@@ -1267,9 +1353,12 @@ impl Render for McpServerEditDialogState {
                                         "mcp-dialog-env",
                                         env_label,
                                         rows,
-                                        McpRowList::Env,
-                                        add_env_label,
-                                        remove_label.clone(),
+                                        McpRowActions::new(
+                                            McpRowList::Env,
+                                            add_env_label,
+                                            remove_label.clone(),
+                                            dialog_blocked,
+                                        ),
                                         cx,
                                     )
                                 },
@@ -1327,9 +1416,12 @@ impl Render for McpServerEditDialogState {
                                         "mcp-dialog-env-vars",
                                         env_vars_label,
                                         rows,
-                                        McpRowList::EnvVars,
-                                        add_env_var_label,
-                                        remove_label.clone(),
+                                        McpRowActions::new(
+                                            McpRowList::EnvVars,
+                                            add_env_var_label,
+                                            remove_label.clone(),
+                                            dialog_blocked,
+                                        ),
                                         cx,
                                     )
                                 },
@@ -1338,7 +1430,10 @@ impl Render for McpServerEditDialogState {
                             ))
                             .child(form_field(
                                 cwd_label,
-                                Input::new(&cwd_input).w_full().into_any_element(),
+                                Input::new(&cwd_input)
+                                    .w_full()
+                                    .disabled(dialog_blocked)
+                                    .into_any_element(),
                                 cwd_errors,
                                 cwd_required,
                                 cx,
@@ -1351,6 +1446,7 @@ impl Render for McpServerEditDialogState {
                                 Input::new(&url_input)
                                     .w_full()
                                     .content_type(InputContentType::Url)
+                                    .disabled(dialog_blocked)
                                     .into_any_element(),
                                 url_errors,
                                 url_required,
@@ -1360,6 +1456,7 @@ impl Render for McpServerEditDialogState {
                                 bearer_token_env_var_label,
                                 Input::new(&bearer_token_env_var_input)
                                     .w_full()
+                                    .disabled(dialog_blocked)
                                     .into_any_element(),
                                 bearer_token_env_var_errors,
                                 bearer_token_env_var_required,
@@ -1425,9 +1522,12 @@ impl Render for McpServerEditDialogState {
                                         "mcp-dialog-headers",
                                         headers_label,
                                         rows,
-                                        McpRowList::Headers,
-                                        add_header_label,
-                                        remove_label.clone(),
+                                        McpRowActions::new(
+                                            McpRowList::Headers,
+                                            add_header_label,
+                                            remove_label.clone(),
+                                            dialog_blocked,
+                                        ),
                                         cx,
                                     )
                                 },
@@ -1495,9 +1595,12 @@ impl Render for McpServerEditDialogState {
                                         "mcp-dialog-env-headers",
                                         env_headers_label,
                                         rows,
-                                        McpRowList::EnvHeaders,
-                                        add_env_header_label,
-                                        remove_label.clone(),
+                                        McpRowActions::new(
+                                            McpRowList::EnvHeaders,
+                                            add_env_header_label,
+                                            remove_label.clone(),
+                                            dialog_blocked,
+                                        ),
                                         cx,
                                     )
                                 },
@@ -2015,7 +2118,7 @@ mod tests {
     }
 
     #[test]
-    fn credential_cleanup_failure_is_warning_only() {
+    fn credential_cleanup_success_requires_zero_failures() {
         assert_eq!(
             credential_cleanup_outcome(0),
             CredentialCleanupOutcome::Complete
@@ -2128,6 +2231,34 @@ mod tests {
             assert!(form.read(cx).is_dialog_blocked(cx));
             assert!(!form.update(cx, |form, cx| form.save(window, cx)));
             assert!(!form.read(cx).is_saving(cx));
+        });
+    }
+
+    #[gpui::test]
+    fn credential_cleanup_starts_a_busy_dialog_submission(cx: &mut TestAppContext) {
+        let _dir = init_dialog_test(cx);
+        let window = open_test_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let form = cx.update(|window, cx| {
+            cx.new(|cx| McpServerEditDialogState::new(McpServerEditMode::Create, None, window, cx))
+        });
+
+        cx.update(|window, cx| {
+            let key =
+                oauth_credential_key_for_server("server", &oauth_server("https://example.com/mcp"))
+                    .unwrap();
+            form.update(cx, |form, cx| {
+                form.schedule_oauth_cleanup(
+                    vec![key],
+                    "mcp-notify-server-saved",
+                    false,
+                    window,
+                    cx,
+                );
+                assert!(form.save_task.is_some());
+                assert!(form.is_dialog_blocked(cx));
+            });
+            assert!(state::mcp::oauth::credential_cleanup_in_progress(cx));
         });
     }
 

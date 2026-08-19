@@ -22,6 +22,8 @@ pub(crate) enum JacoError {
     Config(String),
     #[error(transparent)]
     ConfigEditConflict(#[from] ConfigEditConflict),
+    #[error("MCP configuration submission is still in progress")]
+    McpSubmissionInProgress,
     #[error("log file not found")]
     LogFileNotFound,
     #[error("file system error: {0}")]

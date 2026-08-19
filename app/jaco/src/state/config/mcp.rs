@@ -354,6 +354,7 @@ pub(crate) fn upsert_mcp_server_if_unchanged(
     server_id: String,
     server: McpServerTomlConfig,
 ) -> JacoResult<()> {
+    ensure_mcp_mutation_available(cx)?;
     server.validate(&server_id)?;
     let current = ready_data(cx)?;
     match original_server_id {
@@ -397,6 +398,7 @@ pub(crate) fn upsert_mcp_server_if_unchanged(
 }
 
 pub(crate) fn delete_mcp_server(cx: &mut App, server_id: &str) -> JacoResult<bool> {
+    ensure_mcp_mutation_available(cx)?;
     let server_id = server_id.to_string();
     update_config(cx, move |config| {
         let servers = &mut config.mcp_servers;
@@ -409,6 +411,7 @@ pub(crate) fn set_mcp_server_enabled(
     server_id: &str,
     enabled: bool,
 ) -> JacoResult<()> {
+    ensure_mcp_mutation_available(cx)?;
     let exists = read(cx, |config| config.mcp_servers.contains_key(server_id));
     if !exists {
         return Err(JacoError::Config(format!(
@@ -422,6 +425,14 @@ pub(crate) fn set_mcp_server_enabled(
             server.enabled = enabled;
         }
     })
+}
+
+fn ensure_mcp_mutation_available(cx: &App) -> JacoResult<()> {
+    if crate::state::mcp::oauth::credential_cleanup_in_progress(cx) {
+        Err(JacoError::McpSubmissionInProgress)
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_server_id(server_id: &str) -> JacoResult<()> {

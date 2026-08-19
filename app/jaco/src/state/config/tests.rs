@@ -466,6 +466,96 @@ fn mcp_fragment_cas_classifies_removed_and_occupied_entries(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn credential_cleanup_blocks_mcp_mutation_and_defers_external_config(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let initial = JacoConfig::default();
+    fs::write(&path, toml::to_string_pretty(&initial).unwrap()).unwrap();
+    let server = McpServerTomlConfig {
+        transport: McpTransportKind::StreamableHttp,
+        url: Some("https://example.com/mcp".to_string()),
+        oauth: Some(McpOAuthTomlConfig::AuthorizationCodePkce {
+            scopes: Vec::new(),
+            client_id: None,
+            client_metadata_url: None,
+            resource: None,
+            callback_port: None,
+            callback_url: None,
+        }),
+        ..Default::default()
+    };
+    let key = crate::state::mcp::oauth::credentials_key_for_server("server-a", &server)
+        .unwrap()
+        .unwrap();
+
+    let observer = cx.update(|cx| {
+        install_for_test(cx, path.clone(), initial).unwrap();
+        let observer = cx.new(|_| ConfigFileObserver {
+            _binding: None,
+            _config_subscription: None,
+            probe_task: None,
+            probe_basis_epoch: 0,
+            pending_dirty: false,
+        });
+        cx.set_global(ConfigFileObserverGlobal {
+            _observer: observer.clone(),
+        });
+        crate::state::mcp::oauth::schedule_credential_cleanup(
+            vec![key],
+            |result, _| {
+                assert_eq!(result.failure_count, 0);
+            },
+            cx,
+        );
+        assert!(crate::state::mcp::oauth::credential_cleanup_in_progress(cx));
+        observer
+    });
+
+    let mut external = JacoConfig::default();
+    external
+        .mcp_servers
+        .insert("server-a".to_string(), server.clone());
+    let external_bytes = toml::to_string_pretty(&external).unwrap().into_bytes();
+    fs::write(&path, &external_bytes).unwrap();
+    cx.update(|cx| {
+        cx.set_global(ConfigProbeResultForTest(Ok(data_from_value(
+            path.clone(),
+            external,
+            external_bytes,
+        ))));
+        observer.update(cx, |observer, cx| {
+            observer.on_dirty(cx);
+            assert!(observer.pending_dirty);
+            assert!(observer.probe_task.is_none());
+            observer.pending_dirty = false;
+        });
+        request_reload(cx);
+        assert!(observer.read(cx).pending_dirty);
+        let result = upsert_mcp_server_if_unchanged(cx, None, None, "server-b".to_string(), server);
+        assert!(matches!(result, Err(JacoError::McpSubmissionInProgress)));
+        assert!(store(cx).read(cx, |operation| {
+            operation
+                .data()
+                .is_some_and(|data| data.mcp_servers.is_empty())
+        }));
+    });
+
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(!crate::state::mcp::oauth::credential_cleanup_in_progress(
+            cx
+        ));
+        assert!(
+            store(cx).read(cx, |operation| operation.data().is_some_and(|data| {
+                data.mcp_servers.contains_key("server-a")
+                    && !data.mcp_servers.contains_key("server-b")
+            }))
+        );
+        assert!(!observer.read(cx).pending_dirty);
+    });
+}
+
+#[gpui::test]
 fn observed_same_bytes_do_not_publish_config(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
