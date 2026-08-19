@@ -13,7 +13,7 @@ use crate::{
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Icon, Sizable, StyledExt,
+    ActiveTheme, Disableable, Icon, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -45,7 +45,6 @@ impl Select<state::config::ConfigOperation> for SelectMcpConfig {
 pub(super) struct McpSettingsPage {
     search_input: Entity<InputState>,
     selected_server_id: Option<String>,
-    delete_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -68,11 +67,11 @@ impl McpSettingsPage {
                 page.selected_server_id = None;
                 cx.notify();
             }),
+            state::mcp::oauth::observe_credential_cleanup(cx, |_page, cx| cx.notify()),
         ];
         Self {
             search_input,
             selected_server_id: None,
-            delete_task: None,
             _subscriptions,
         }
     }
@@ -144,6 +143,9 @@ impl McpSettingsPage {
     }
 
     fn open_create_server_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if state::mcp::oauth::credential_cleanup_in_progress(cx) {
+            return;
+        }
         dialog::open_mcp_server_edit_dialog(dialog::McpServerEditMode::Create, None, window, cx);
     }
 
@@ -153,6 +155,9 @@ impl McpSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if state::mcp::oauth::credential_cleanup_in_progress(cx) {
+            return;
+        }
         let server = state::config::read(cx, |config| config.mcp_servers.get(&server_id).cloned());
         dialog::open_mcp_server_edit_dialog(
             dialog::McpServerEditMode::Edit {
@@ -170,10 +175,10 @@ impl McpSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.delete_task.is_some() {
+        if state::mcp::oauth::credential_cleanup_in_progress(cx) {
             return;
         }
-        dialog::open_mcp_server_delete_confirm(server_id, cx.entity().downgrade(), window, cx);
+        dialog::open_mcp_server_delete_confirm(server_id, window, cx);
     }
 
     fn toggle_server_enabled(
@@ -183,6 +188,9 @@ impl McpSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if state::mcp::oauth::credential_cleanup_in_progress(cx) {
+            return;
+        }
         match state::config::set_mcp_server_enabled(cx, &server_id, enabled) {
             Ok(()) => {
                 if !enabled {
@@ -199,6 +207,7 @@ impl McpSettingsPage {
     }
 
     fn render_toolbar(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let mutation_disabled = state::mcp::oauth::credential_cleanup_in_progress(cx);
         h_flex()
             .w_full()
             .items_center()
@@ -214,6 +223,7 @@ impl McpSettingsPage {
                     .primary()
                     .icon(IconName::Plus)
                     .label(cx.global::<I18n>().t("mcp-action-add-server"))
+                    .disabled(mutation_disabled)
                     .on_click(cx.listener(|page, _, window, cx| {
                         page.open_create_server_dialog(window, cx);
                     })),
@@ -251,6 +261,7 @@ impl McpSettingsPage {
     fn render_server_list(
         &self,
         rows: &[state::mcp::McpServerStatusRow],
+        mutation_disabled: bool,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -280,7 +291,7 @@ impl McpSettingsPage {
                         let edit_page = page.clone();
                         let delete_page = page.clone();
                         let toggle_page = page.clone();
-                        render_server_row(row, selected)
+                        render_server_row(row, selected, mutation_disabled)
                             .on_click(move |server_id, window, cx| {
                                 let _ = select_page.update(cx, |page, cx| {
                                     page.select_server(server_id, window, cx);
@@ -377,6 +388,7 @@ impl Render for McpSettingsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self.filtered_rows(cx);
         let selected = self.selected_row(&rows);
+        let mutation_disabled = state::mcp::oauth::credential_cleanup_in_progress(cx);
         let last_error = state::mcp::runtime(cx)
             .read(cx)
             .last_error()
@@ -396,7 +408,7 @@ impl Render for McpSettingsPage {
                     .overflow_hidden()
                     .when(rows.is_empty(), |this| this.child(self.render_empty(cx)))
                     .when(!rows.is_empty(), |this| {
-                        this.child(self.render_server_list(&rows, window, cx))
+                        this.child(self.render_server_list(&rows, mutation_disabled, window, cx))
                             .child(self.render_detail(selected, cx))
                     }),
             )

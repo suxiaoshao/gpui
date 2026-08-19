@@ -1,3 +1,4 @@
+pub(crate) mod file_watch;
 pub(crate) mod menus;
 pub(crate) mod tasks;
 pub(crate) mod temporary_window;
@@ -53,6 +54,8 @@ pub(crate) fn run() -> crate::errors::JacoResult<()> {
     app.run(move |cx: &mut App| {
         if let Err(err) = init(cx) {
             event!(Level::ERROR, error = ?err, "failed to initialize jaco");
+            state::config::shutdown_file_observer(cx);
+            file_watch::shutdown(cx);
             *startup_error_for_run.borrow_mut() = Some(err);
             cx.quit();
             return;
@@ -153,6 +156,8 @@ fn init(cx: &mut App) -> crate::errors::JacoResult<()> {
 
     state::config::init(cx)?;
     foundation::init_i18n(cx);
+    file_watch::init(cx);
+    state::config::init_file_observer(cx);
     state::layout::init(cx)?;
     gpui_tokio::init(cx);
     state::theme::init(cx);
@@ -161,7 +166,7 @@ fn init(cx: &mut App) -> crate::errors::JacoResult<()> {
         event!(Level::ERROR, error = ?err, "failed to initialize jaco hotkeys");
     }
 
-    database::init_store(cx);
+    database::init_store(cx)?;
     state::providers::init(cx);
     state::projects::init(cx);
     state::prompts::init(cx);
@@ -194,14 +199,13 @@ pub(crate) fn quit_app(cx: &mut App) {
         return;
     }
 
-    let session = database::store(cx).read(cx, |resource| match resource {
-        database::DatabaseResource::Bound { operation, .. } => operation.session().cloned(),
-        database::DatabaseResource::AwaitingConfig => None,
-    });
+    let session = database::store(cx).read(cx, |resource| resource.operation.session().cloned());
     let runtime_task =
         ready_runtime(cx).map(|runtime| runtime.update(cx, |runtime, cx| runtime.shutdown_all(cx)));
 
     AppShutdownStore::global(cx).set(cx, AppShutdownPhase::Draining);
+    state::config::shutdown_file_observer(cx);
+    file_watch::shutdown(cx);
     state::hotkey::shutdown(cx);
     crate::features::screenshot::overlay::close(cx);
     temporary_window::close_temporary_window(cx);
@@ -369,6 +373,7 @@ pub(crate) fn show_or_create_main_window(cx: &mut App) {
                 }
             }
             focus_main_window(root, window, cx);
+            file_watch::flush_pending_warning(window, cx);
         }) {
             event!(Level::ERROR, error = ?err, "update jaco main window failed");
         }
@@ -382,6 +387,7 @@ pub(crate) fn show_or_create_main_window(cx: &mut App) {
         Ok(window) => {
             if let Err(err) = window.update(cx, |root, window, cx| {
                 focus_main_window(root, window, cx);
+                file_watch::flush_pending_warning(window, cx);
             }) {
                 event!(Level::ERROR, error = ?err, "activate new jaco main window failed");
             }

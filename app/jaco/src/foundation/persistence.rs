@@ -54,13 +54,17 @@ pub(crate) fn atomic_replace(
     })?;
     fs::create_dir_all(parent)?;
 
-    compare_current(path, expected)?;
     let mut staged = NamedTempFile::new_in(parent)?;
     staged.write_all(contents)?;
     staged.flush()?;
     staged.as_file().sync_all()?;
-    compare_current(path, expected)?;
-    persist_staged(staged, path, parent)?;
+    match expected {
+        None => persist_staged_noclobber(staged, path, parent)?,
+        Some(expected) => {
+            compare_current(path, Some(expected))?;
+            persist_staged(staged, path, parent)?;
+        }
+    }
 
     let committed = fs::read(path)?;
     if committed != contents {
@@ -70,6 +74,17 @@ pub(crate) fn atomic_replace(
         )));
     }
     Ok(committed)
+}
+
+fn persist_staged_noclobber(
+    staged: NamedTempFile,
+    path: &Path,
+    parent: &Path,
+) -> std::io::Result<()> {
+    staged
+        .persist_noclobber(path)
+        .map_err(|error| error.error)?;
+    sync_directory(parent)
 }
 
 pub(crate) fn copy_new_synced(source: &[u8], path: &Path) -> std::io::Result<()> {
@@ -173,6 +188,7 @@ pub(crate) fn sync_directory(_path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::atomic_replace;
+    use std::io::ErrorKind;
 
     #[test]
     fn atomic_replace_creates_and_replaces_the_destination() {
@@ -188,5 +204,21 @@ mod tests {
             b"second"
         );
         assert_eq!(std::fs::read(path).expect("read destination"), b"second");
+    }
+
+    #[test]
+    fn atomic_create_never_overwrites_an_external_winner() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, b"external").expect("write external winner");
+
+        let error = atomic_replace(&path, None, b"default")
+            .expect_err("create-if-absent must reject an existing destination");
+
+        assert_eq!(error.kind(), ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read(path).expect("read external winner"),
+            b"external"
+        );
     }
 }

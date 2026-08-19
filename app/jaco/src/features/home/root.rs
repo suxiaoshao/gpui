@@ -10,7 +10,7 @@ use crate::{
     components::resource::{
         CriticalResourceAction, CriticalResourceProblem, CriticalResourcesView,
     },
-    database::{self, DatabasePhase, DatabaseResource},
+    database::{self, DatabasePhase},
     features::{conversation::resources, home::HomeView},
     foundation::I18n,
     state::{self, config::ConfigOperation},
@@ -191,65 +191,59 @@ impl JacoRoot {
     }
 
     fn render_database(&self, cx: &mut Context<Self>) -> AnyElement {
-        let snapshot = database::store(cx).read(cx, |resource| match resource {
-            DatabaseResource::AwaitingConfig => None,
-            DatabaseResource::Bound { operation, .. } => Some((
-                operation.phase(),
-                operation.is_running(),
-                operation.problem().map(ToString::to_string),
-                operation
-                    .problem()
-                    .is_some_and(database::DatabaseProblem::can_create_fresh),
-            )),
-        });
-        match snapshot {
-            None => {
+        let (phase, running, problem, can_create_fresh) =
+            database::store(cx).read(cx, |resource| {
+                let operation = &resource.operation;
+                (
+                    operation.phase(),
+                    operation.is_running(),
+                    operation.problem().map(ToString::to_string),
+                    operation
+                        .problem()
+                        .is_some_and(database::DatabaseProblem::can_create_fresh),
+                )
+            });
+        match phase {
+            DatabasePhase::Idle => {
                 CriticalResourcesView::loading(cx.global::<I18n>().t("critical-database-loading"))
                     .into_any_element()
             }
-            Some((phase, running, problem, can_create_fresh)) => match phase {
-                DatabasePhase::Idle | DatabasePhase::Loading => CriticalResourcesView::loading(
-                    cx.global::<I18n>().t("critical-database-loading"),
-                )
-                .into_any_element(),
-                DatabasePhase::Ready => self
-                    .home
-                    .as_ref()
-                    .cloned()
-                    .map(IntoElement::into_any_element)
-                    .unwrap_or_else(|| self.render_session_pending(cx)),
-                DatabasePhase::Refreshing if self.home.is_some() => self.database_problem(
-                    cx.global::<I18n>().t("critical-read-only-description"),
+            DatabasePhase::Ready => self
+                .home
+                .as_ref()
+                .cloned()
+                .map(IntoElement::into_any_element)
+                .unwrap_or_else(|| self.render_session_pending(cx)),
+            DatabasePhase::Refreshing if self.home.is_some() => self.database_problem(
+                cx.global::<I18n>().t("critical-read-only-description"),
+                running,
+                false,
+                true,
+                cx,
+            ),
+            DatabasePhase::Refreshing => {
+                CriticalResourcesView::loading(cx.global::<I18n>().t("critical-database-loading"))
+                    .into_any_element()
+            }
+            DatabasePhase::Retiring | DatabasePhase::Unavailable | DatabasePhase::Repairing
+                if self.home.is_some() =>
+            {
+                self.database_problem(
+                    problem.unwrap_or_default(),
                     running,
-                    false,
+                    can_create_fresh,
                     true,
                     cx,
-                ),
-                DatabasePhase::Refreshing => CriticalResourcesView::loading(
-                    cx.global::<I18n>().t("critical-database-loading"),
                 )
-                .into_any_element(),
-                DatabasePhase::Retiring | DatabasePhase::Unavailable | DatabasePhase::Repairing
-                    if self.home.is_some() =>
-                {
-                    self.database_problem(
-                        problem.unwrap_or_default(),
-                        running,
-                        can_create_fresh,
-                        true,
-                        cx,
-                    )
-                }
-                DatabasePhase::Retiring | DatabasePhase::Unavailable | DatabasePhase::Repairing => {
-                    self.database_problem(
-                        problem.unwrap_or_default(),
-                        running,
-                        can_create_fresh,
-                        false,
-                        cx,
-                    )
-                }
-            },
+            }
+            DatabasePhase::Retiring | DatabasePhase::Unavailable | DatabasePhase::Repairing => self
+                .database_problem(
+                    problem.unwrap_or_default(),
+                    running,
+                    can_create_fresh,
+                    false,
+                    cx,
+                ),
         }
     }
 
@@ -289,10 +283,7 @@ impl JacoRoot {
             resources::ConversationResourcesState::AwaitingDatabase
             | resources::ConversationResourcesState::Ready(_) => None,
         });
-        let path = database::store(cx).read(cx, |resource| match resource {
-            DatabaseResource::Bound { target, .. } => Some(target.database_path.clone()),
-            DatabaseResource::AwaitingConfig => None,
-        });
+        let path = database::store(cx).read(cx, |resource| resource.target.database_path.clone());
         let Some(message) = message else {
             return CriticalResourcesView::loading(
                 cx.global::<I18n>().t("critical-session-loading"),
@@ -300,11 +291,7 @@ impl JacoRoot {
             .into_any_element();
         };
         let mut args = fluent_bundle::FluentArgs::new();
-        args.set(
-            "path",
-            path.map(|path| path.display().to_string())
-                .unwrap_or_default(),
-        );
+        args.set("path", path.display().to_string());
         args.set("message", message);
         CriticalResourcesView::problem(CriticalResourceProblem {
             id: "critical-session-error",

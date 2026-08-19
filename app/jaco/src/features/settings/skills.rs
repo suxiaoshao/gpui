@@ -1,4 +1,5 @@
 use crate::{
+    app::file_watch::{self, FileWatchBinding},
     features::skills,
     foundation::{I18n, assets::IconName},
 };
@@ -14,8 +15,8 @@ use gpui_component::{
 };
 use gpui_operation::{Complete, Load, Refresh, Retry, Transition};
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    collections::BTreeSet,
+    path::{Path, PathBuf},
 };
 
 use super::push_settings_error;
@@ -26,13 +27,54 @@ use rows::{
 
 mod rows;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SkillWatchRefreshRequest {
+    Immediate,
+    Pending,
+}
+
+fn skill_watch_refresh_request(is_running: bool) -> SkillWatchRefreshRequest {
+    if is_running {
+        SkillWatchRefreshRequest::Pending
+    } else {
+        SkillWatchRefreshRequest::Immediate
+    }
+}
+
+fn take_pending_skill_refresh(pending: &mut bool) -> bool {
+    std::mem::take(pending)
+}
+
+fn expanded_skill_content(
+    expanded: &BTreeSet<PathBuf>,
+    skill_file_path: &Path,
+    content: Option<&skills::LoadedSkillContent>,
+) -> Option<SkillContentPanelState> {
+    if !expanded.contains(skill_file_path) {
+        return None;
+    }
+
+    Some(
+        content
+            .map(|content| SkillContentPanelState::Loaded {
+                content: content.content.clone().into(),
+                content_sha256: content.content_sha256.clone().into(),
+            })
+            .unwrap_or_else(|| SkillContentPanelState::Failed {
+                message: "skill detail is unavailable".into(),
+            }),
+    )
+}
+
 pub(super) struct SkillsSettingsPage {
     search_input: Entity<InputState>,
     skill_catalog: skills::SkillCatalogOperation,
     list: ListState,
     rows: Vec<SkillCatalogRow>,
     items: Vec<PathBuf>,
-    expanded: BTreeMap<PathBuf, SkillContentPanelState>,
+    expanded: BTreeSet<PathBuf>,
+    _watch_binding: FileWatchBinding,
+    pending_dirty: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -44,17 +86,41 @@ impl SkillsSettingsPage {
         });
         let search_subscription =
             cx.subscribe_in(&search_input, window, Self::on_search_input_event);
+        let watch_binding = Self::create_watch_binding(cx);
         let mut page = Self {
             search_input,
             skill_catalog: skills::SkillCatalogOperation::new(),
             list: ListState::new(0, ListAlignment::Top, px(2048.)).measure_all(),
             rows: Vec::new(),
             items: Vec::new(),
-            expanded: BTreeMap::new(),
+            expanded: BTreeSet::new(),
+            _watch_binding: watch_binding,
+            pending_dirty: false,
             _subscriptions: vec![search_subscription],
         };
         page.start_skill_load(cx);
         page
+    }
+
+    fn create_watch_binding(cx: &mut Context<Self>) -> FileWatchBinding {
+        let targets = skills::watch_roots(&skills::SkillCatalogScope::Global)
+            .into_iter()
+            .filter_map(|path| match file_watch::directory_tree(path) {
+                Ok(target) => Some(target),
+                Err(problem) => {
+                    file_watch::report_problem(problem, cx);
+                    None
+                }
+            })
+            .collect();
+        file_watch::bind(targets, cx, |page, cx| page.on_skill_watch_dirty(cx))
+    }
+
+    fn on_skill_watch_dirty(&mut self, cx: &mut Context<Self>) {
+        match skill_watch_refresh_request(self.skill_catalog.is_running()) {
+            SkillWatchRefreshRequest::Pending => self.pending_dirty = true,
+            SkillWatchRefreshRequest::Immediate => self.start_skill_load(cx),
+        }
     }
 
     fn on_search_input_event(
@@ -87,6 +153,9 @@ impl SkillsSettingsPage {
             page.update(cx, |page, cx| {
                 page.skill_catalog.transition(Complete(result));
                 page.sync_list_items(cx, None);
+                if take_pending_skill_refresh(&mut page.pending_dirty) {
+                    page.start_skill_load(cx);
+                }
             });
         });
         match &self.skill_catalog {
@@ -114,7 +183,7 @@ impl SkillsSettingsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.expanded.remove(&skill_file_path).is_some() {
+        if self.expanded.remove(&skill_file_path) {
             self.sync_list_items(cx, Some(&skill_file_path));
             return;
         }
@@ -130,18 +199,7 @@ impl SkillsSettingsPage {
             return;
         };
 
-        let next_state = self
-            .skill_catalog
-            .data()
-            .and_then(|data| data.details().get(&skill_file_path))
-            .map(|content| SkillContentPanelState::Loaded {
-                content: content.content.clone().into(),
-                content_sha256: content.content_sha256.clone().into(),
-            })
-            .unwrap_or_else(|| SkillContentPanelState::Failed {
-                message: "skill detail is unavailable".into(),
-            });
-        self.expanded.insert(skill_file_path.clone(), next_state);
+        self.expanded.insert(skill_file_path.clone());
         self.sync_list_items(cx, Some(&skill_file_path));
     }
 
@@ -156,7 +214,7 @@ impl SkillsSettingsPage {
             .iter()
             .map(|entry| entry.skill_file_path.clone())
             .collect::<BTreeSet<_>>();
-        self.expanded.retain(|path, _| all_paths.contains(path));
+        self.expanded.retain(|path| all_paths.contains(path));
 
         let rows = skill_catalog_rows(entries, cx.global::<I18n>());
         let query = self.current_query(cx);
@@ -244,7 +302,13 @@ impl SkillsSettingsPage {
         let Some(row) = self.rows.iter().find(|row| row.key == path).cloned() else {
             return div().into_any_element();
         };
-        let content = self.expanded.get(&path).cloned();
+        let content = expanded_skill_content(
+            &self.expanded,
+            &path,
+            self.skill_catalog
+                .data()
+                .and_then(|data| data.details().get(&path)),
+        );
         let toggle_page = page.clone();
         let scroll_page = page.clone();
         SkillCatalogEntryView::new(row, content)
@@ -361,8 +425,31 @@ fn sync_skill_list(
 #[cfg(test)]
 mod tests {
     use super::sync_skill_list;
-    use gpui::{ListAlignment, ListState, px};
-    use std::path::PathBuf;
+    use super::{
+        SkillWatchRefreshRequest, expanded_skill_content, skill_watch_refresh_request,
+        take_pending_skill_refresh,
+    };
+    use crate::features::{settings::skills::rows::SkillContentPanelState, skills};
+    use gpui::{ListAlignment, ListState, Task, px};
+    use gpui_operation::{Complete, Load, Refresh, Transition, refresh};
+    use std::{collections::BTreeSet, path::PathBuf};
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct TestProblem;
+
+    impl std::fmt::Display for TestProblem {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("test skill refresh failed")
+        }
+    }
+
+    impl std::error::Error for TestProblem {}
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct CatalogSnapshot {
+        data: Vec<&'static str>,
+        rows: Vec<&'static str>,
+    }
 
     #[test]
     fn sync_skill_list_handles_unchanged_keys() {
@@ -373,5 +460,84 @@ mod tests {
         sync_skill_list(&list, &keys, &keys, Some(&path));
 
         assert_eq!(list.item_count(), 2);
+    }
+
+    #[test]
+    fn running_skill_watch_dirty_coalesces_to_one_follow_up() {
+        let mut pending = false;
+        let mut follow_up_count = 0;
+
+        for _ in 0..4 {
+            assert_eq!(
+                skill_watch_refresh_request(true),
+                SkillWatchRefreshRequest::Pending
+            );
+            pending = true;
+        }
+
+        if take_pending_skill_refresh(&mut pending) {
+            follow_up_count += 1;
+        }
+        assert_eq!(follow_up_count, 1);
+        assert!(!pending);
+        assert!(!take_pending_skill_refresh(&mut pending));
+        assert_eq!(
+            skill_watch_refresh_request(false),
+            SkillWatchRefreshRequest::Immediate
+        );
+    }
+
+    #[test]
+    fn failed_skill_refresh_preserves_last_good_data_and_rows() {
+        type Operation = refresh::Operation<CatalogSnapshot, TestProblem, Task<()>>;
+
+        let snapshot = CatalogSnapshot {
+            data: vec!["rust", "gpui"],
+            rows: vec!["rust", "gpui"],
+        };
+        let mut operation = Operation::new();
+        operation.transition(Load(Task::ready(())));
+        operation.transition(Complete(Ok(snapshot)));
+
+        operation.transition(Refresh(Task::ready(())));
+        operation.transition(Complete(Err(TestProblem)));
+
+        assert!(matches!(operation, Operation::Degraded(_)));
+        assert_eq!(
+            operation.data(),
+            Some(&CatalogSnapshot {
+                data: vec!["rust", "gpui"],
+                rows: vec!["rust", "gpui"],
+            })
+        );
+    }
+
+    #[test]
+    fn expanded_skill_content_uses_latest_loaded_detail() {
+        let path = PathBuf::from("/tmp/example/SKILL.md");
+        let expanded = BTreeSet::from([path.clone()]);
+        let initial = skills::LoadedSkillContent {
+            content: "initial content".to_owned(),
+            content_sha256: "initial-hash".to_owned(),
+        };
+        let refreshed = skills::LoadedSkillContent {
+            content: "refreshed content".to_owned(),
+            content_sha256: "refreshed-hash".to_owned(),
+        };
+
+        assert_eq!(
+            expanded_skill_content(&expanded, &path, Some(&initial)),
+            Some(SkillContentPanelState::Loaded {
+                content: "initial content".into(),
+                content_sha256: "initial-hash".into(),
+            })
+        );
+        assert_eq!(
+            expanded_skill_content(&expanded, &path, Some(&refreshed)),
+            Some(SkillContentPanelState::Loaded {
+                content: "refreshed content".into(),
+                content_sha256: "refreshed-hash".into(),
+            })
+        );
     }
 }

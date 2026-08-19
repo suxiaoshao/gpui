@@ -9,9 +9,8 @@ use gpui::*;
 use serde::{Deserialize, Serialize};
 use tracing::{Level, event};
 
-use crate::{errors::JacoResult, state::JacoConfig};
+use crate::{errors::JacoResult, foundation::paths};
 
-const STATE_FILE_NAME: &str = "state.toml";
 const STATE_VERSION: u32 = 1;
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(300);
 
@@ -241,7 +240,7 @@ impl JacoLayoutState {
     }
 
     fn path() -> JacoResult<PathBuf> {
-        Ok(JacoConfig::config_dir()?.join(STATE_FILE_NAME))
+        paths::state_file()
     }
 }
 

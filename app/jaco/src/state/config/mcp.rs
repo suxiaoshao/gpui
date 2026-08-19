@@ -13,9 +13,9 @@ use jaco_agent::{
 use jaco_core::{McpToolApprovalModeSnapshot, ToolApprovalPolicy, ToolExecutionPolicy};
 use serde::{Deserialize, Serialize};
 
-use crate::errors::{JacoError, JacoResult};
+use crate::errors::{ConfigEditConflict, JacoError, JacoResult};
 
-use super::{read, update_config};
+use super::{commit_update, read, ready_data, update_config};
 
 pub(crate) const DEFAULT_MCP_STARTUP_TIMEOUT_MS: u64 = 30_000;
 pub(crate) const DEFAULT_MCP_TOOL_TIMEOUT_MS: u64 = 300_000;
@@ -187,6 +187,7 @@ impl McpServerTomlConfig {
             .unwrap_or(inherited_default_approval_mode);
         Ok(McpServerRuntimeConfig {
             server: self.to_agent_config(server_id)?,
+            generation: 0,
             required: self.required,
             startup_timeout: Duration::from_millis(
                 self.startup_timeout_ms
@@ -346,35 +347,58 @@ impl McpToolApprovalMode {
     }
 }
 
-pub(crate) fn upsert_mcp_server(
+pub(crate) fn upsert_mcp_server_if_unchanged(
     cx: &mut App,
     original_server_id: Option<&str>,
+    expected_original: Option<&McpServerTomlConfig>,
     server_id: String,
     server: McpServerTomlConfig,
 ) -> JacoResult<()> {
+    ensure_mcp_mutation_available(cx)?;
     server.validate(&server_id)?;
-    let duplicate = read(cx, |config| {
-        config.mcp_servers.contains_key(&server_id)
-            && original_server_id.is_none_or(|original_server_id| original_server_id != server_id)
-    });
-    if duplicate {
-        return Err(JacoError::Config(format!(
-            "mcp server `{server_id}` already exists"
-        )));
+    let current = ready_data(cx)?;
+    match original_server_id {
+        None => {
+            if current.mcp_servers.contains_key(&server_id) {
+                return Err(ConfigEditConflict::IdOccupied { server_id }.into());
+            }
+        }
+        Some(original_server_id) => {
+            let Some(latest_original) = current.mcp_servers.get(original_server_id) else {
+                return Err(ConfigEditConflict::Removed {
+                    server_id: original_server_id.to_string(),
+                }
+                .into());
+            };
+            if Some(latest_original) != expected_original {
+                return Err(ConfigEditConflict::Changed {
+                    server_id: original_server_id.to_string(),
+                }
+                .into());
+            }
+            if original_server_id != server_id && current.mcp_servers.contains_key(&server_id) {
+                return Err(ConfigEditConflict::IdOccupied { server_id }.into());
+            }
+        }
     }
     let original_server_id = original_server_id.map(ToOwned::to_owned);
-    update_config(cx, move |config| {
-        let servers = &mut config.mcp_servers;
-        if let Some(original_server_id) = original_server_id.as_deref()
-            && original_server_id != server_id
-        {
-            servers.remove(original_server_id);
-        }
-        servers.insert(server_id, server);
-    })
+    commit_update(
+        current,
+        move |config| {
+            let servers = &mut config.mcp_servers;
+            if let Some(original_server_id) = original_server_id.as_deref()
+                && original_server_id != server_id
+            {
+                servers.remove(original_server_id);
+            }
+            servers.insert(server_id, server);
+        },
+        cx,
+    )
 }
 
 pub(crate) fn delete_mcp_server(cx: &mut App, server_id: &str) -> JacoResult<bool> {
+    ensure_mcp_mutation_available(cx)?;
     let server_id = server_id.to_string();
     update_config(cx, move |config| {
         let servers = &mut config.mcp_servers;
@@ -387,6 +411,7 @@ pub(crate) fn set_mcp_server_enabled(
     server_id: &str,
     enabled: bool,
 ) -> JacoResult<()> {
+    ensure_mcp_mutation_available(cx)?;
     let exists = read(cx, |config| config.mcp_servers.contains_key(server_id));
     if !exists {
         return Err(JacoError::Config(format!(
@@ -400,6 +425,14 @@ pub(crate) fn set_mcp_server_enabled(
             server.enabled = enabled;
         }
     })
+}
+
+fn ensure_mcp_mutation_available(cx: &App) -> JacoResult<()> {
+    if crate::state::mcp::oauth::credential_cleanup_in_progress(cx) {
+        Err(JacoError::McpSubmissionInProgress)
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_server_id(server_id: &str) -> JacoResult<()> {

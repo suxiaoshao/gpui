@@ -11,9 +11,6 @@ use super::{DatabaseData, DatabaseProblem, DatabaseRepair, session::DatabaseSess
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum DatabaseOperation {
     Idle,
-    Loading {
-        _task: Task<()>,
-    },
     Ready(DatabaseData),
     Refreshing {
         data: DatabaseData,
@@ -34,7 +31,6 @@ pub(crate) enum DatabaseOperation {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum DatabasePhase {
     Idle,
-    Loading,
     Ready,
     Refreshing,
     Retiring,
@@ -44,8 +40,6 @@ pub(crate) enum DatabasePhase {
 
 pub(super) enum DatabaseMessage {
     Settle(Result<DatabaseData, DatabaseProblem>),
-    Load(Task<()>),
-    Loaded(Result<DatabaseData, DatabaseProblem>),
     Refresh(Task<()>),
     Refreshed,
     RefreshFailed {
@@ -64,8 +58,6 @@ impl DatabaseMessage {
     fn name(&self) -> &'static str {
         match self {
             Self::Settle(_) => "Settle",
-            Self::Load(_) => "Load",
-            Self::Loaded(_) => "Loaded",
             Self::Refresh(_) => "Refresh",
             Self::Refreshed => "Refreshed",
             Self::RefreshFailed { .. } => "RefreshFailed",
@@ -84,7 +76,6 @@ impl DatabaseOperation {
     pub(crate) fn phase(&self) -> DatabasePhase {
         match self {
             Self::Idle => DatabasePhase::Idle,
-            Self::Loading { .. } => DatabasePhase::Loading,
             Self::Ready(_) => DatabasePhase::Ready,
             Self::Refreshing { .. } => DatabasePhase::Refreshing,
             Self::Retiring { .. } => DatabasePhase::Retiring,
@@ -98,11 +89,9 @@ impl DatabaseOperation {
     pub(crate) fn session(&self) -> Option<&Entity<DatabaseSession>> {
         match self {
             Self::Ready(data) | Self::Refreshing { data, .. } => Some(&data.session),
-            Self::Idle
-            | Self::Loading { .. }
-            | Self::Retiring { .. }
-            | Self::Unavailable(_)
-            | Self::Repairing { .. } => None,
+            Self::Idle | Self::Retiring { .. } | Self::Unavailable(_) | Self::Repairing { .. } => {
+                None
+            }
         }
     }
 
@@ -111,17 +100,14 @@ impl DatabaseOperation {
             Self::Retiring { problem, .. }
             | Self::Unavailable(problem)
             | Self::Repairing { problem, .. } => Some(problem),
-            Self::Idle | Self::Loading { .. } | Self::Ready(_) | Self::Refreshing { .. } => None,
+            Self::Idle | Self::Ready(_) | Self::Refreshing { .. } => None,
         }
     }
 
     pub(crate) fn is_running(&self) -> bool {
         matches!(
             self,
-            Self::Loading { .. }
-                | Self::Refreshing { .. }
-                | Self::Retiring { .. }
-                | Self::Repairing { .. }
+            Self::Refreshing { .. } | Self::Retiring { .. } | Self::Repairing { .. }
         )
     }
 }
@@ -145,16 +131,6 @@ impl Transition<DatabaseMessage> for &mut DatabaseOperation {
                     Ok(data) => DatabaseOperation::Ready(data),
                     Err(problem) => DatabaseOperation::Unavailable(problem),
                 };
-            }
-            (DatabaseOperation::Idle, DatabaseMessage::Load(task)) => {
-                *self = DatabaseOperation::Loading { _task: task };
-            }
-            (DatabaseOperation::Loading { _task: task }, DatabaseMessage::Loaded(result)) => {
-                *self = match result {
-                    Ok(data) => DatabaseOperation::Ready(data),
-                    Err(problem) => DatabaseOperation::Unavailable(problem),
-                };
-                drop(task);
             }
             (DatabaseOperation::Ready(data), DatabaseMessage::Refresh(task)) => {
                 *self = DatabaseOperation::Refreshing { data, _task: task };

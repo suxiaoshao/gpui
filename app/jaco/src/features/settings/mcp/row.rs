@@ -25,6 +25,7 @@ type McpServerToggleHandler = Box<dyn Fn(String, bool, &mut Window, &mut App)>;
 pub(super) struct McpServerRowView {
     row: state::mcp::McpServerStatusRow,
     selected: bool,
+    mutation_disabled: bool,
     on_click: McpServerRowHandler,
     on_test: McpServerRowHandler,
     on_edit: McpServerRowHandler,
@@ -87,6 +88,7 @@ impl RenderOnce for McpServerRowView {
         let on_edit = self.on_edit;
         let on_delete = self.on_delete;
         let on_toggle_enabled = self.on_toggle_enabled;
+        let mutation_disabled = self.mutation_disabled;
         let test_label = cx.global::<I18n>().t("mcp-action-test-server");
         let edit_label = cx.global::<I18n>().t("mcp-action-edit-server");
         let delete_label = cx.global::<I18n>().t("mcp-action-delete-server");
@@ -161,6 +163,7 @@ impl RenderOnce for McpServerRowView {
                     .icon(IconName::Pencil)
                     .ghost()
                     .tooltip(edit_label)
+                    .disabled(mutation_disabled)
                     .on_click(move |_, window, cx| {
                         cx.stop_propagation();
                         on_edit(edit_id.clone(), window, cx);
@@ -171,6 +174,7 @@ impl RenderOnce for McpServerRowView {
                     .icon(IconName::Trash)
                     .ghost()
                     .tooltip(delete_label)
+                    .disabled(mutation_disabled)
                     .on_click(move |_, window, cx| {
                         cx.stop_propagation();
                         on_delete(delete_id.clone(), window, cx);
@@ -180,6 +184,7 @@ impl RenderOnce for McpServerRowView {
                 Switch::new(format!("mcp-server-enabled-{toggle_id}"))
                     .small()
                     .checked(row.enabled)
+                    .disabled(mutation_disabled)
                     .on_click(move |checked, window, cx| {
                         cx.stop_propagation();
                         on_toggle_enabled(toggle_id.clone(), *checked, window, cx);
@@ -191,10 +196,12 @@ impl RenderOnce for McpServerRowView {
 pub(super) fn render_server_row(
     row: state::mcp::McpServerStatusRow,
     selected: bool,
+    mutation_disabled: bool,
 ) -> McpServerRowView {
     McpServerRowView {
         row,
         selected,
+        mutation_disabled,
         on_click: Box::new(|_, _, _| {}),
         on_test: Box::new(|_, _, _| {}),
         on_edit: Box::new(|_, _, _| {}),

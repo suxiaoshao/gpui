@@ -4,12 +4,7 @@ use gpui_component::{
     dialog::DialogButtonProps, spinner::Spinner, v_flex,
 };
 
-use crate::{
-    app,
-    database::{self, DatabaseResource},
-    foundation::I18n,
-    state,
-};
+use crate::{app, database, foundation::I18n, state};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CriticalResourceAction {
@@ -210,10 +205,7 @@ fn confirm_database_repair(window: &mut Window, cx: &mut App) {
 }
 
 fn choose_database_backup_path(window: &mut Window, cx: &mut App) {
-    let initial_dir = database::store(cx).read(cx, |resource| match resource {
-        DatabaseResource::Bound { target, .. } => target.data_dir.clone(),
-        DatabaseResource::AwaitingConfig => std::env::temp_dir(),
-    });
+    let initial_dir = database::store(cx).read(cx, |resource| resource.target.data_dir.clone());
     let suggested = format!(
         "jaco-database-backup-{}",
         time::OffsetDateTime::now_utc().unix_timestamp()

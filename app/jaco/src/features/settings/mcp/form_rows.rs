@@ -4,7 +4,7 @@ use gpui::{
     ParentElement as _, SharedString, Styled as _, Window, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme, StyledExt,
+    ActiveTheme, Disableable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputState},
@@ -38,6 +38,29 @@ pub(super) struct RowMoveHandlers {
     pub(super) down: Option<MoveRowHandler>,
 }
 
+pub(super) struct McpRowActions {
+    list: McpRowList,
+    add_label: SharedString,
+    remove_label: SharedString,
+    disabled: bool,
+}
+
+impl McpRowActions {
+    pub(super) fn new(
+        list: McpRowList,
+        add_label: impl Into<SharedString>,
+        remove_label: impl Into<SharedString>,
+        disabled: bool,
+    ) -> Self {
+        Self {
+            list,
+            add_label: add_label.into(),
+            remove_label: remove_label.into(),
+            disabled,
+        }
+    }
+}
+
 pub(super) fn one_input_rows(
     field_id: &'static str,
     label: impl Into<SharedString>,
@@ -50,13 +73,15 @@ pub(super) fn one_input_rows(
             RemoveRowHandler,
         ),
     >,
-    list: McpRowList,
-    add_label: impl Into<SharedString>,
-    remove_label: impl Into<SharedString>,
+    actions: McpRowActions,
     cx: &mut App,
 ) -> AnyElement {
-    let add_label = add_label.into();
-    let remove_label = remove_label.into();
+    let McpRowActions {
+        list,
+        add_label,
+        remove_label,
+        disabled,
+    } = actions;
 
     row_container(label)
         .children(
@@ -64,20 +89,21 @@ pub(super) fn one_input_rows(
                 .map(|(row_id, input, errors, moves, remove)| {
                     row_with_errors(
                         row_shell(field_id, &row_id)
-                            .child(Input::new(&input).w_full().flex_1())
-                            .children(move_buttons(field_id, &row_id, moves, cx))
+                            .child(Input::new(&input).w_full().flex_1().disabled(disabled))
+                            .children(move_buttons(field_id, &row_id, moves, disabled, cx))
                             .child(remove_button(
                                 field_id,
                                 row_id,
                                 remove_label.clone(),
                                 remove,
+                                disabled,
                             )),
                         errors,
                         cx,
                     )
                 }),
         )
-        .child(add_button(field_id, list, add_label))
+        .child(add_button(field_id, list, add_label, disabled))
         .into_any_element()
 }
 
@@ -95,31 +121,34 @@ pub(super) fn two_input_rows(
             RemoveRowHandler,
         ),
     >,
-    list: McpRowList,
-    add_label: impl Into<SharedString>,
-    remove_label: impl Into<SharedString>,
+    actions: McpRowActions,
     cx: &mut App,
 ) -> AnyElement {
-    let add_label = add_label.into();
-    let remove_label = remove_label.into();
+    let McpRowActions {
+        list,
+        add_label,
+        remove_label,
+        disabled,
+    } = actions;
 
     row_container(label)
         .children(rows.into_iter().map(
             |(row_id, first_input, first_errors, second_input, second_errors, moves, remove)| {
                 row_shell(field_id, &row_id)
-                    .child(input_with_errors(first_input, first_errors, cx))
-                    .child(input_with_errors(second_input, second_errors, cx))
-                    .children(move_buttons(field_id, &row_id, moves, cx))
+                    .child(input_with_errors(first_input, first_errors, disabled, cx))
+                    .child(input_with_errors(second_input, second_errors, disabled, cx))
+                    .children(move_buttons(field_id, &row_id, moves, disabled, cx))
                     .child(remove_button(
                         field_id,
                         row_id,
                         remove_label.clone(),
                         remove,
+                        disabled,
                     ))
                     .into_any_element()
             },
         ))
-        .child(add_button(field_id, list, add_label))
+        .child(add_button(field_id, list, add_label, disabled))
         .into_any_element()
 }
 
@@ -127,6 +156,7 @@ fn move_buttons(
     field_id: &'static str,
     row_id: &PathKey,
     moves: RowMoveHandlers,
+    disabled: bool,
     cx: &mut App,
 ) -> Vec<Button> {
     let mut buttons = Vec::with_capacity(2);
@@ -135,6 +165,7 @@ fn move_buttons(
             Button::new(row_element_id(field_id, row_id, "move-up"))
                 .icon(IconName::ChevronUp)
                 .ghost()
+                .disabled(disabled)
                 .tooltip(cx.global::<crate::foundation::I18n>().t("button-move-up"))
                 .on_click(move |_, window, cx| move_up(window, cx)),
         );
@@ -144,6 +175,7 @@ fn move_buttons(
             Button::new(row_element_id(field_id, row_id, "move-down"))
                 .icon(IconName::ChevronDown)
                 .ghost()
+                .disabled(disabled)
                 .tooltip(cx.global::<crate::foundation::I18n>().t("button-move-down"))
                 .on_click(move |_, window, cx| move_down(window, cx)),
         );
@@ -154,13 +186,14 @@ fn move_buttons(
 fn input_with_errors(
     input: Entity<InputState>,
     errors: Vec<SharedString>,
+    disabled: bool,
     cx: &mut App,
 ) -> AnyElement {
     v_flex()
         .w_full()
         .flex_1()
         .gap_1()
-        .child(Input::new(&input).w_full())
+        .child(Input::new(&input).w_full().disabled(disabled))
         .when(!errors.is_empty(), |this| {
             this.child(validation_error_list(errors, cx))
         })
@@ -174,11 +207,17 @@ fn row_container(label: impl Into<SharedString>) -> gpui::Div {
         .child(Label::new(label.into()).text_sm().font_medium())
 }
 
-fn add_button(field_id: &'static str, list: McpRowList, add_label: SharedString) -> Button {
+fn add_button(
+    field_id: &'static str,
+    list: McpRowList,
+    add_label: SharedString,
+    disabled: bool,
+) -> Button {
     Button::new(format!("{field_id}-add"))
         .icon(IconName::Plus)
         .label(add_label)
         .w_full()
+        .disabled(disabled)
         .on_click(move |_, window, cx| {
             window.dispatch_action(AddMcpRow { list }.boxed_clone(), cx);
         })
@@ -212,10 +251,12 @@ fn remove_button(
     row_id: PathKey,
     remove_label: SharedString,
     remove: RemoveRowHandler,
+    disabled: bool,
 ) -> Button {
     Button::new(row_element_id(field_id, &row_id, "remove"))
         .icon(IconName::Trash)
         .ghost()
+        .disabled(disabled)
         .tooltip(remove_label)
         .on_click(move |_, window, cx| remove(window, cx))
 }

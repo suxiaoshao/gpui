@@ -12,6 +12,7 @@ pub(crate) use form_state::ChatInputInput;
 
 use crate::components::chat::run_settings::reasoning_selection_is_valid;
 use crate::{
+    app::file_watch::{self, FileWatchBinding},
     components::{
         chat::form::{
             AgentRunControlStatus, AgentRunStatusSource, AttachmentControlState, ChatForm,
@@ -37,7 +38,7 @@ use gpui_component::{
     v_flex,
 };
 use gpui_form::{Form, FormEvent};
-use gpui_operation::{Complete, Load, Transition};
+use gpui_operation::{Complete, Load, Refresh, Retry, Transition};
 use jaco_core::{ReasoningSelectionSnapshot, ToolApprovalMode};
 use std::{path::Path, rc::Rc};
 use tracing::{Level, event};
@@ -111,6 +112,36 @@ enum ChatInputPrimaryButtonAction {
     Stop,
 }
 
+#[derive(Clone, Debug)]
+enum ChatFormFieldPatch {
+    Model(Option<ChatFormModelConfig>),
+    ReasoningSelection(Option<ReasoningSelectionSnapshot>),
+    ApprovalMode(ToolApprovalMode),
+}
+
+fn skill_load_is_current(
+    current_scope: &skills::SkillCatalogScope,
+    current_generation: u64,
+    completed_scope: &skills::SkillCatalogScope,
+    completed_generation: u64,
+) -> bool {
+    current_scope == completed_scope && current_generation == completed_generation
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SkillWatchRefreshRequest {
+    Immediate,
+    Pending,
+}
+
+fn skill_watch_refresh_request(is_running: bool) -> SkillWatchRefreshRequest {
+    if is_running {
+        SkillWatchRefreshRequest::Pending
+    } else {
+        SkillWatchRefreshRequest::Immediate
+    }
+}
+
 pub(crate) struct ChatInputController {
     composer: Entity<ComposerEditor>,
     chat_form: Entity<ChatFormState>,
@@ -122,6 +153,9 @@ pub(crate) struct ChatInputController {
     submission_problem: Option<SharedString>,
     skill_catalog_scope: skills::SkillCatalogScope,
     skill_catalog: skills::SkillCatalogOperation,
+    skill_watch_binding: FileWatchBinding,
+    pending_skill_dirty: bool,
+    skill_load_generation: u64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -175,6 +209,8 @@ impl ChatInputController {
         if focus_composer {
             composer.update(cx, |composer, cx| composer.focus(window, cx));
         }
+        let skill_catalog_scope = skills::SkillCatalogScope::Global;
+        let skill_watch_binding = Self::create_skill_watch_binding(&skill_catalog_scope, cx);
         let mut skill_catalog = skills::SkillCatalogOperation::new();
         skill_catalog.transition(Load(Task::ready(())));
         skill_catalog.transition(Complete(skills::load_catalog(
@@ -283,7 +319,6 @@ impl ChatInputController {
         let settings_keys = {
             let current = form.read(cx);
             [
-                run_settings_field.key(current),
                 run_settings_field
                     .clone()
                     .then(RunSettingsInput::MODEL)
@@ -302,13 +337,36 @@ impl ChatInputController {
             &form,
             window,
             move |form, _, event: &FormEvent<ChatInputInput>, window, cx| {
-                if let FormEvent::ModelChanged(change) = event
-                    && settings_keys
-                        .iter()
-                        .any(|key| change.impact(key).value_changed())
-                {
-                    form.save_chat_form_config(window, cx);
+                let FormEvent::ModelChanged(change) = event else {
+                    return;
+                };
+                let changed = std::array::from_fn::<_, 3, _>(|index| {
+                    change.impact(&settings_keys[index]).value_changed()
+                });
+                if !changed.into_iter().any(|changed| changed) {
+                    return;
                 }
+                let settings = ChatInputInput::ROOT
+                    .then(ChatInputInput::RUN_SETTINGS)
+                    .get(&form.form, cx);
+                let mut patches = Vec::with_capacity(3);
+                if changed[0] {
+                    patches.push(ChatFormFieldPatch::Model(settings.model.as_ref().map(
+                        |key| ChatFormModelConfig {
+                            provider_id: key.provider_id.clone(),
+                            model_id: key.model_id.clone(),
+                        },
+                    )));
+                }
+                if changed[1] {
+                    patches.push(ChatFormFieldPatch::ReasoningSelection(
+                        settings.reasoning_selection,
+                    ));
+                }
+                if changed[2] {
+                    patches.push(ChatFormFieldPatch::ApprovalMode(settings.approval_mode));
+                }
+                form.save_chat_form_config(patches, window, cx);
             },
         ));
         let attachments_key = ChatInputInput::ROOT
@@ -362,8 +420,11 @@ impl ChatInputController {
             primary_action_state,
             next_attachment_id: 1,
             submission_problem: None,
-            skill_catalog_scope: skills::SkillCatalogScope::Global,
+            skill_catalog_scope,
             skill_catalog,
+            skill_watch_binding,
+            pending_skill_dirty: false,
+            skill_load_generation: 0,
             _subscriptions: subscriptions,
         }
     }
@@ -383,11 +444,64 @@ impl ChatInputController {
                 root: root.to_path_buf(),
             })
             .unwrap_or(skills::SkillCatalogScope::Global);
+        if self.skill_catalog_scope == scope {
+            self.request_skill_catalog_refresh(cx);
+            return;
+        }
+
+        self.skill_load_generation = self.skill_load_generation.wrapping_add(1);
         self.skill_catalog_scope = scope.clone();
-        self.load_skill_catalog(scope, cx);
+        self.skill_watch_binding = Self::create_skill_watch_binding(&scope, cx);
+        self.pending_skill_dirty = false;
+        self.skill_catalog = skills::SkillCatalogOperation::new();
+        self.composer
+            .update(cx, |composer, cx| composer.set_skill_entries(&[], cx));
+        self.start_skill_catalog_load(scope, self.skill_load_generation, cx);
     }
 
-    fn load_skill_catalog(&mut self, scope: skills::SkillCatalogScope, cx: &mut Context<Self>) {
+    fn create_skill_watch_binding(
+        scope: &skills::SkillCatalogScope,
+        cx: &mut Context<Self>,
+    ) -> FileWatchBinding {
+        let targets = skills::watch_roots(scope)
+            .into_iter()
+            .filter_map(|path| match file_watch::directory_tree(path) {
+                Ok(target) => Some(target),
+                Err(problem) => {
+                    file_watch::report_problem(problem, cx);
+                    None
+                }
+            })
+            .collect();
+        file_watch::bind(targets, cx, |controller, cx| {
+            controller.on_skill_watch_dirty(cx)
+        })
+    }
+
+    fn on_skill_watch_dirty(&mut self, cx: &mut Context<Self>) {
+        match skill_watch_refresh_request(self.skill_catalog.is_running()) {
+            SkillWatchRefreshRequest::Pending => self.pending_skill_dirty = true,
+            SkillWatchRefreshRequest::Immediate => self.request_skill_catalog_refresh(cx),
+        }
+    }
+
+    fn request_skill_catalog_refresh(&mut self, cx: &mut Context<Self>) {
+        match skill_watch_refresh_request(self.skill_catalog.is_running()) {
+            SkillWatchRefreshRequest::Pending => self.pending_skill_dirty = true,
+            SkillWatchRefreshRequest::Immediate => self.start_skill_catalog_load(
+                self.skill_catalog_scope.clone(),
+                self.skill_load_generation,
+                cx,
+            ),
+        }
+    }
+
+    fn start_skill_catalog_load(
+        &mut self,
+        scope: skills::SkillCatalogScope,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) {
         let task_scope = scope.clone();
         let load = cx.background_spawn(async move { skills::load_catalog(task_scope) });
 
@@ -397,7 +511,12 @@ impl ChatInputController {
                 return;
             };
             form.update(cx, |form, cx| {
-                if form.skill_catalog_scope != scope {
+                if !skill_load_is_current(
+                    &form.skill_catalog_scope,
+                    form.skill_load_generation,
+                    &scope,
+                    generation,
+                ) {
                     return;
                 }
                 form.skill_catalog.transition(Complete(result));
@@ -405,13 +524,30 @@ impl ChatInputController {
                     let entries = data.entries().to_vec();
                     form.apply_skill_catalog_entries(entries, cx);
                 }
+                if std::mem::take(&mut form.pending_skill_dirty) {
+                    form.request_skill_catalog_refresh(cx);
+                }
                 cx.notify();
             });
         });
-        self.skill_catalog = skills::SkillCatalogOperation::new();
-        self.skill_catalog.transition(Load(task));
-        self.composer
-            .update(cx, |composer, cx| composer.set_skill_entries(&[], cx));
+        match &self.skill_catalog {
+            skills::SkillCatalogOperation::Idle(_) => {
+                self.skill_catalog.transition(Load(task));
+            }
+            skills::SkillCatalogOperation::Ready(_)
+            | skills::SkillCatalogOperation::Degraded(_) => {
+                self.skill_catalog.transition(Refresh(task));
+            }
+            skills::SkillCatalogOperation::Unavailable(_) => {
+                self.skill_catalog.transition(Retry(task));
+            }
+            skills::SkillCatalogOperation::Loading(_)
+            | skills::SkillCatalogOperation::Refreshing(_)
+            | skills::SkillCatalogOperation::Retrying(_)
+            | skills::SkillCatalogOperation::RefreshingDegraded(_) => {
+                self.pending_skill_dirty = true;
+            }
+        }
         cx.notify();
     }
 
@@ -468,21 +604,22 @@ impl ChatInputController {
         self.primary_action_state.read(cx).agent_status(cx)
     }
 
-    fn save_chat_form_config(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let settings = ChatInputInput::ROOT
-            .then(ChatInputInput::RUN_SETTINGS)
-            .get(&self.form, cx);
-        let model = settings.model.as_ref().map(|key| ChatFormModelConfig {
-            provider_id: key.provider_id.clone(),
-            model_id: key.model_id.clone(),
-        });
-        let reasoning_selection = settings.reasoning_selection;
-        let approval_mode = settings.approval_mode;
-
+    fn save_chat_form_config(
+        &self,
+        patches: Vec<ChatFormFieldPatch>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Err(err) = state::config::update_chat_form_config(cx, move |config| {
-            config.model = model;
-            config.reasoning_selection = reasoning_selection;
-            config.approval_mode = approval_mode;
+            for patch in patches {
+                match patch {
+                    ChatFormFieldPatch::Model(model) => config.model = model,
+                    ChatFormFieldPatch::ReasoningSelection(selection) => {
+                        config.reasoning_selection = selection;
+                    }
+                    ChatFormFieldPatch::ApprovalMode(mode) => config.approval_mode = mode,
+                }
+            }
         }) {
             event!(Level::ERROR, error = ?err, "save chat form config failed");
             window.push_notification(
@@ -629,8 +766,7 @@ impl View for ChatInput {
                         .disabled(running)
                         .on_click(move |_, _window, cx| {
                             let _ = refresh_target.update(cx, |controller, cx| {
-                                controller
-                                    .load_skill_catalog(controller.skill_catalog_scope.clone(), cx);
+                                controller.request_skill_catalog_refresh(cx);
                             });
                         }),
                 )
@@ -690,8 +826,9 @@ mod tests {
         ChatFormSkillCompletionPlacement, ChatInput, ChatInputController, ChatInputInput,
         ChatInputPrimaryButtonAction,
         composer_editor::{ComposerSendPolicy, ComposerSnapshot},
-        selected_model_choice_in,
+        selected_model_choice_in, skill_load_is_current,
     };
+    use super::{SkillWatchRefreshRequest, skill_watch_refresh_request};
     use crate::{
         components::chat::form::{
             AgentRunControlStatus, AgentRunStatusSource, SKILL_COMPLETION_GAP,
@@ -754,6 +891,55 @@ mod tests {
         assert!(selected_model_choice_in(&choices, Some(&stale)).is_none());
         assert!(selected_model_choice_in(&choices, None).is_none());
         assert!(selected_model_choice_in(&Err("load failed".into()), Some(&selected)).is_none());
+    }
+
+    #[test]
+    fn skill_load_generation_rejects_a_stale_same_scope_completion() {
+        let scope = skills::SkillCatalogScope::Project {
+            root: PathBuf::from("/work/project-a"),
+        };
+
+        assert!(skill_load_is_current(&scope, 3, &scope, 3));
+        assert!(!skill_load_is_current(&scope, 3, &scope, 1));
+        assert!(!skill_load_is_current(
+            &scope,
+            3,
+            &skills::SkillCatalogScope::Global,
+            3,
+        ));
+    }
+
+    #[test]
+    fn skill_load_generation_rejects_stale_completion_after_scope_returns_to_a() {
+        let scope_a = skills::SkillCatalogScope::Project {
+            root: PathBuf::from("/work/project-a"),
+        };
+        let scope_b = skills::SkillCatalogScope::Project {
+            root: PathBuf::from("/work/project-b"),
+        };
+
+        // A@0 -> B@1 -> A@2. Both older completions must be ignored.
+        assert!(!skill_load_is_current(&scope_a, 2, &scope_a, 0));
+        assert!(!skill_load_is_current(&scope_a, 2, &scope_b, 1));
+        assert!(skill_load_is_current(&scope_a, 2, &scope_a, 2));
+    }
+
+    #[test]
+    fn same_scope_running_skill_dirty_is_held_for_refresh() {
+        assert_eq!(
+            skill_watch_refresh_request(true),
+            SkillWatchRefreshRequest::Pending
+        );
+        assert_eq!(
+            skill_watch_refresh_request(false),
+            SkillWatchRefreshRequest::Immediate
+        );
+
+        let mut pending = false;
+        if skill_watch_refresh_request(true) == SkillWatchRefreshRequest::Pending {
+            pending = true;
+        }
+        assert!(pending);
     }
 
     #[test]
@@ -1019,6 +1205,45 @@ mod tests {
                 .as_ref()
                 .map(|model| (model.provider_id.as_str(), model.model_id.as_str())),
             Some((provider_id.as_str(), "gpt-5-mini"))
+        );
+        assert_eq!(config.chat_form.approval_mode, ToolApprovalMode::FullAccess);
+    }
+
+    #[gpui::test]
+    fn chat_field_patch_preserves_external_sibling_fields(cx: &mut TestAppContext) {
+        let dir = init_chat_form_test(cx);
+        let config_path = test_config_path(&dir);
+        let window = open_chat_form_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let form = chat_input_controller(window, &mut cx);
+        let external_reasoning = ReasoningSelectionSnapshot::Level {
+            value: "external".to_string(),
+        };
+
+        cx.update(|_window, cx| {
+            state::config::update_chat_form_config(cx, |config| {
+                config.reasoning_selection = Some(external_reasoning.clone());
+            })
+            .expect("apply external sibling config");
+        });
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.run_settings.update(cx, |settings, cx| {
+                    settings.select_approval_value(
+                        ChatInputInput::ROOT.then(ChatInputInput::RUN_SETTINGS),
+                        ToolApprovalMode::FullAccess,
+                        window,
+                        cx,
+                    );
+                });
+            });
+        });
+
+        let config =
+            state::JacoConfig::load_from_path_for_test(&config_path).expect("reload config");
+        assert_eq!(
+            config.chat_form.reasoning_selection,
+            Some(external_reasoning)
         );
         assert_eq!(config.chat_form.approval_mode, ToolApprovalMode::FullAccess);
     }

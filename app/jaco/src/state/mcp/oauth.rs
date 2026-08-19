@@ -1,6 +1,11 @@
-use std::time::Duration;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
-use gpui::{App, AsyncApp, AsyncWindowContext, TaskExt as _};
+use gpui::{
+    App, AppContext, AsyncApp, AsyncWindowContext, Context, Entity, Global, Subscription, Task,
+};
 use jaco_agent::McpOAuthStatusSnapshot;
 use rmcp::transport::{
     StoredCredentials,
@@ -13,13 +18,46 @@ use tokio::{
 };
 use url::Url;
 
-use crate::state::config::{McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind};
+use crate::state::config::{self, McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind};
 
 const CREDENTIALS_USERNAME: &str = "mcp-oauth";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MAX_CALLBACK_REQUEST_BYTES: usize = 64 * 1024;
 const CALLBACK_RESPONSE_OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<html><body>OAuth authorization completed. You can close this window.</body></html>";
 const CALLBACK_RESPONSE_ERROR: &[u8] = b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<html><body>OAuth authorization failed. You can close this window.</body></html>";
+
+type CredentialCleanupCompletion = Box<dyn FnOnce(CredentialCleanupResult, &mut App) + 'static>;
+
+struct CredentialCleanupRequest {
+    keys: Vec<CredentialsKey>,
+    failure_count: usize,
+    first_error: Option<String>,
+    completion: CredentialCleanupCompletion,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CredentialCleanupKeyOutcome {
+    Deleted,
+    Failed(String),
+}
+
+struct CredentialCleanupOwner {
+    pending: Vec<CredentialCleanupRequest>,
+    task: Option<Task<()>>,
+    #[cfg(test)]
+    deleted_keys: Vec<CredentialsKey>,
+}
+
+#[derive(Clone)]
+struct CredentialCleanupGlobal(Entity<CredentialCleanupOwner>);
+
+impl Global for CredentialCleanupGlobal {}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CredentialCleanupResult {
+    pub(crate) failure_count: usize,
+    pub(crate) first_error: Option<String>,
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct AuthorizationCodePkceConfig {
@@ -134,9 +172,174 @@ pub(crate) async fn delete_credentials(
     task.await.map_err(|err| err.to_string())
 }
 
-pub(crate) fn delete_credentials_detached(key: &CredentialsKey, cx: &mut App) {
+async fn delete_credentials_in_app(key: &CredentialsKey, cx: &mut AsyncApp) -> Result<(), String> {
     let key = key.as_str().to_string();
-    cx.delete_credentials(&key).detach_and_log_err(cx);
+    let read_key = key.clone();
+    let read_task = cx.update(move |cx| cx.read_credentials(&read_key));
+    if read_task.await.map_err(|err| err.to_string())?.is_none() {
+        return Ok(());
+    }
+    cx.update(move |cx| cx.delete_credentials(&key))
+        .await
+        .map_err(|err| err.to_string())
+}
+
+pub(crate) fn init_credential_cleanup(cx: &mut App) {
+    if cx.has_global::<CredentialCleanupGlobal>() {
+        return;
+    }
+    let owner = cx.new(|_| CredentialCleanupOwner {
+        pending: Vec::new(),
+        task: None,
+        #[cfg(test)]
+        deleted_keys: Vec::new(),
+    });
+    cx.set_global(CredentialCleanupGlobal(owner));
+}
+
+pub(crate) fn credential_cleanup_in_progress(cx: &App) -> bool {
+    cx.try_global::<CredentialCleanupGlobal>()
+        .is_some_and(|global| global.0.read(cx).is_busy())
+}
+
+pub(crate) fn observe_credential_cleanup<T: 'static>(
+    cx: &mut Context<T>,
+    mut on_change: impl FnMut(&mut T, &mut Context<T>) + 'static,
+) -> Subscription {
+    init_credential_cleanup(cx);
+    let owner = cx.global::<CredentialCleanupGlobal>().0.clone();
+    cx.observe(&owner, move |this, _, cx| on_change(this, cx))
+}
+
+pub(crate) fn schedule_credential_cleanup(
+    mut keys: Vec<CredentialsKey>,
+    completion: impl FnOnce(CredentialCleanupResult, &mut App) + 'static,
+    cx: &mut App,
+) {
+    if keys.is_empty() {
+        cx.defer(move |cx| {
+            completion(
+                CredentialCleanupResult {
+                    failure_count: 0,
+                    first_error: None,
+                },
+                cx,
+            );
+        });
+        return;
+    }
+    init_credential_cleanup(cx);
+    keys.sort();
+    keys.dedup();
+    let owner = cx.global::<CredentialCleanupGlobal>().0.clone();
+    owner.update(cx, |owner, cx| {
+        let was_busy = owner.is_busy();
+        owner.pending.push(CredentialCleanupRequest {
+            keys,
+            failure_count: 0,
+            first_error: None,
+            completion: Box::new(completion),
+        });
+        owner.process_pending(cx);
+        owner.notify_busy_if_changed(was_busy, cx);
+    });
+}
+
+impl CredentialCleanupOwner {
+    fn is_busy(&self) -> bool {
+        !self.pending.is_empty() || self.task.is_some()
+    }
+
+    fn notify_busy_if_changed(&self, was_busy: bool, cx: &mut Context<Self>) {
+        if was_busy != self.is_busy() {
+            cx.notify();
+        }
+    }
+
+    fn process_pending(&mut self, cx: &mut Context<Self>) {
+        if self.pending.is_empty() || self.task.is_some() {
+            return;
+        }
+        let requests = std::mem::take(&mut self.pending);
+        let keys = requests
+            .iter()
+            .flat_map(|request| request.keys.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let task = cx.spawn(async move |owner, cx| {
+            let mut outcomes = BTreeMap::new();
+            // The cleanup owner marks MCP submission globally busy before this task starts.
+            // In-app MCP mutations are rejected and file-observer publications are deferred
+            // until every queued cleanup finishes, so each committed cleanup key is deleted
+            // even if the same server identity is later configured again.
+            for key in keys {
+                let outcome = match delete_credentials_in_app(&key, cx).await {
+                    Ok(()) => CredentialCleanupKeyOutcome::Deleted,
+                    Err(error) => CredentialCleanupKeyOutcome::Failed(error),
+                };
+                outcomes.insert(key, outcome);
+            }
+            let _ = owner.update(cx, |owner, cx| {
+                owner.finish_task(requests, outcomes, cx);
+            });
+        });
+        self.task = Some(task);
+    }
+
+    fn finish_task(
+        &mut self,
+        requests: Vec<CredentialCleanupRequest>,
+        outcomes: BTreeMap<CredentialsKey, CredentialCleanupKeyOutcome>,
+        cx: &mut Context<Self>,
+    ) {
+        let was_busy = self.is_busy();
+        self.task.take();
+        #[cfg(test)]
+        self.deleted_keys
+            .extend(outcomes.iter().filter_map(|(key, outcome)| {
+                matches!(outcome, CredentialCleanupKeyOutcome::Deleted).then_some(key.clone())
+            }));
+
+        let mut completions = Vec::new();
+        for mut request in requests {
+            for key in request.keys {
+                match outcomes.get(&key) {
+                    Some(CredentialCleanupKeyOutcome::Failed(error)) => {
+                        request.failure_count += 1;
+                        if request.first_error.is_none() {
+                            request.first_error = Some(error.clone());
+                        }
+                    }
+                    Some(CredentialCleanupKeyOutcome::Deleted) => {}
+                    None => {
+                        request.failure_count += 1;
+                        if request.first_error.is_none() {
+                            request.first_error =
+                                Some("credential cleanup result is missing".to_string());
+                        }
+                    }
+                }
+            }
+            completions.push((
+                request.completion,
+                CredentialCleanupResult {
+                    failure_count: request.failure_count,
+                    first_error: request.first_error,
+                },
+            ));
+        }
+        self.process_pending(cx);
+        self.notify_busy_if_changed(was_busy, cx);
+        if !self.is_busy() {
+            cx.defer(config::resume_file_observer_after_mcp_submission);
+        }
+        if !completions.is_empty() {
+            cx.defer(move |cx| {
+                for (completion, result) in completions {
+                    completion(result, cx);
+                }
+            });
+        }
+    }
 }
 
 pub(crate) async fn read_credentials(
@@ -551,12 +754,18 @@ fn canonical_server_uri(url: &Url) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::Cell, rc::Rc};
+
     use super::{
-        CallbackListenerConfig, authorization_url_with_resource, callback_url_from_request,
-        canonical_server_uri, credentials_key_for_server, legacy_credentials_key_for_test,
-        resolve_callback_listener_config,
+        CallbackListenerConfig, CredentialCleanupGlobal, authorization_url_with_resource,
+        callback_url_from_request, canonical_server_uri, credential_cleanup_in_progress,
+        credentials_key_for_server, init_credential_cleanup, legacy_credentials_key_for_test,
+        resolve_callback_listener_config, schedule_credential_cleanup,
     };
-    use crate::state::config::{McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind};
+    use crate::state::config::{
+        self, JacoConfig, McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind,
+    };
+    use gpui::TestAppContext;
     use url::Url;
 
     #[test]
@@ -586,6 +795,170 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_ne!(first, audience_key);
+    }
+
+    #[gpui::test]
+    fn credential_cleanup_is_globally_busy_until_completion(cx: &mut TestAppContext) {
+        let key =
+            credentials_key_for_server("server-a", &oauth_server("https://example.com/mcp", None))
+                .unwrap()
+                .unwrap();
+        let completed = Rc::new(Cell::new(false));
+        let completed_for_cleanup = Rc::clone(&completed);
+
+        cx.update(|cx| {
+            init_credential_cleanup(cx);
+            assert!(!credential_cleanup_in_progress(cx));
+            schedule_credential_cleanup(
+                vec![key.clone()],
+                move |result, _cx| {
+                    assert_eq!(result.failure_count, 0);
+                    completed_for_cleanup.set(true);
+                },
+                cx,
+            );
+            assert!(credential_cleanup_in_progress(cx));
+        });
+        assert!(!completed.get());
+
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(!credential_cleanup_in_progress(cx));
+            let owner = cx.global::<CredentialCleanupGlobal>().0.clone();
+            assert_eq!(owner.read(cx).deleted_keys, vec![key]);
+        });
+        assert!(completed.get());
+    }
+
+    #[gpui::test]
+    fn credential_cleanup_deletes_key_even_if_config_reintroduces_same_server(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let server = oauth_server("https://example.com/mcp", None);
+        let key = credentials_key_for_server("server-a", &server)
+            .unwrap()
+            .unwrap();
+        let mut config_with_same_server = JacoConfig::default();
+        config_with_same_server
+            .mcp_servers
+            .insert("server-a".to_string(), server);
+
+        cx.update(|cx| {
+            config::install_for_test(cx, path, config_with_same_server).unwrap();
+            schedule_credential_cleanup(
+                vec![key.clone()],
+                |result, _| {
+                    assert_eq!(result.failure_count, 0);
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let owner = cx.global::<CredentialCleanupGlobal>().0.clone();
+            assert_eq!(owner.read(cx).deleted_keys, vec![key]);
+        });
+    }
+
+    #[gpui::test]
+    fn credential_cleanup_deduplicates_keys_within_one_submission(cx: &mut TestAppContext) {
+        let key =
+            credentials_key_for_server("server-a", &oauth_server("https://example.com/mcp", None))
+                .unwrap()
+                .unwrap();
+
+        cx.update(|cx| {
+            schedule_credential_cleanup(
+                vec![key.clone(), key.clone()],
+                |result, _| {
+                    assert_eq!(result.failure_count, 0);
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let owner = cx.global::<CredentialCleanupGlobal>().0.clone();
+            assert_eq!(owner.read(cx).deleted_keys, vec![key]);
+        });
+    }
+
+    #[gpui::test]
+    fn credential_cleanup_queues_requests_while_a_task_is_running(cx: &mut TestAppContext) {
+        let key =
+            credentials_key_for_server("server-a", &oauth_server("https://example.com/mcp", None))
+                .unwrap()
+                .unwrap();
+        let completion_count = Rc::new(Cell::new(0));
+
+        cx.update(|cx| {
+            let first = Rc::clone(&completion_count);
+            schedule_credential_cleanup(
+                vec![key.clone()],
+                move |result, _| {
+                    assert_eq!(result.failure_count, 0);
+                    first.set(first.get() + 1);
+                },
+                cx,
+            );
+            let second = Rc::clone(&completion_count);
+            schedule_credential_cleanup(
+                vec![key.clone()],
+                move |result, _| {
+                    assert_eq!(result.failure_count, 0);
+                    second.set(second.get() + 1);
+                },
+                cx,
+            );
+            assert!(credential_cleanup_in_progress(cx));
+        });
+        cx.run_until_parked();
+        assert_eq!(completion_count.get(), 2);
+        cx.update(|cx| assert!(!credential_cleanup_in_progress(cx)));
+    }
+
+    #[gpui::test]
+    fn credential_cleanup_completion_can_schedule_another_cleanup(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let server = oauth_server("https://example.com/mcp", None);
+        let key = credentials_key_for_server("server-a", &server)
+            .unwrap()
+            .unwrap();
+        let completion_count = Rc::new(Cell::new(0));
+        let first_completion_count = Rc::clone(&completion_count);
+        let second_completion_count = Rc::clone(&completion_count);
+
+        cx.update(|cx| {
+            config::install_for_test(cx, path, JacoConfig::default()).unwrap();
+            init_credential_cleanup(cx);
+            schedule_credential_cleanup(
+                vec![key.clone()],
+                move |result, cx| {
+                    assert_eq!(result.failure_count, 0);
+                    first_completion_count.set(first_completion_count.get() + 1);
+                    schedule_credential_cleanup(
+                        vec![key],
+                        move |result, _cx| {
+                            assert_eq!(result.failure_count, 0);
+                            second_completion_count.set(second_completion_count.get() + 1);
+                        },
+                        cx,
+                    );
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let owner = cx.global::<CredentialCleanupGlobal>().0.clone();
+            assert!(owner.read(cx).pending.is_empty());
+            assert!(owner.read(cx).task.is_none());
+            assert_eq!(owner.read(cx).deleted_keys.len(), 2);
+        });
+        assert_eq!(completion_count.get(), 2);
     }
 
     #[test]
