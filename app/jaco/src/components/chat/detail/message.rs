@@ -9,13 +9,15 @@ use gpui_component::{
     v_flex,
 };
 use jaco_core::{
-    AgentRun, AgentRunId, AgentRunStatus, ConversationEntry, ConversationEntryId, ToolInvocationId,
+    AgentMessageRequestUsage, AgentRun, AgentRunId, AgentRunStatus, ConversationEntry,
+    ConversationEntryId, ToolInvocationId,
 };
 
 use crate::foundation::{I18n, assets::IconName, conversation_format as format};
 
 use super::attachments::{UserImageAttachment, render_user_image_attachments};
 use super::copy_button::{CopyButton, OnCopy};
+use super::request_usage::RequestUsageDisclosure;
 use super::tool_invocation::{AgentDetailItem, OnToggleToolInvocation};
 
 pub(super) type OnToggleAgent = Rc<dyn Fn(AgentRunId, &mut Window, &mut App) + 'static>;
@@ -160,6 +162,7 @@ impl RenderOnce for UserMessageRow {
 pub(super) struct AgentTurnRow {
     pub(super) run_id: Option<AgentRunId>,
     pub(super) run: Option<AgentRun>,
+    pub(super) request_usage: Option<AgentMessageRequestUsage>,
     pub(super) items: Vec<AgentDetailItem>,
     pub(super) text_states: HashMap<ConversationEntryId, Entity<TextViewState>>,
     pub(super) expanded: bool,
@@ -216,6 +219,7 @@ impl RenderOnce for AgentTurnRow {
                 copy_tooltip,
                 copied_tooltip,
                 hover_time,
+                request_usage: self.request_usage.clone(),
             },
             window,
             cx,
@@ -389,6 +393,7 @@ struct AgentActionRow {
     copy_tooltip: String,
     copied_tooltip: String,
     hover_time: String,
+    request_usage: Option<AgentMessageRequestUsage>,
 }
 
 fn agent_action_row(row: AgentActionRow, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -412,6 +417,14 @@ fn agent_action_row(row: AgentActionRow, window: &mut Window, cx: &mut App) -> A
         .items_center()
         .gap_1()
         .child(copy_button)
+        .when_some(row.request_usage, |this, request_usage| {
+            let step_id = request_usage.provider_step_id.clone();
+            this.child(RequestUsageDisclosure::new(
+                format!("conversation-request-usage-{step_id}"),
+                action_group.clone(),
+                request_usage,
+            ))
+        })
         .child(
             div()
                 .opacity(0.)
@@ -419,7 +432,8 @@ fn agent_action_row(row: AgentActionRow, window: &mut Window, cx: &mut App) -> A
                 .child(
                     Label::new(row.hover_time)
                         .text_xs()
-                        .text_color(cx.theme().muted_foreground),
+                        .text_color(cx.theme().muted_foreground)
+                        .whitespace_nowrap(),
                 ),
         )
         .into_any_element()

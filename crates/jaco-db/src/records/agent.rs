@@ -29,6 +29,7 @@ pub struct FinishedAgentRun {
     pub run: AgentRunRecord,
     pub final_entry: ConversationEntryRecord,
     pub appended_final_entry: bool,
+    pub request_usage: Option<AgentMessageRequestUsage>,
 }
 
 pub type ProviderStepRecord = ProviderStep;

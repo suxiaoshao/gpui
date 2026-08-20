@@ -156,6 +156,33 @@ fn provider_step_row(conn: &mut SqliteConnection, id: &str) -> Result<Option<Sql
         .optional()?)
 }
 
+fn usage_event_row(
+    conn: &mut SqliteConnection,
+    provider_step_id: &str,
+) -> Result<Option<SqlUsageEventRow>> {
+    Ok(usage_events::table
+        .filter(usage_events::provider_step_id.eq(provider_step_id))
+        .select(SqlUsageEventRow::as_select())
+        .first(conn)
+        .optional()?)
+}
+
+fn usage_events_for_conversation_with_conn(
+    conn: &mut SqliteConnection,
+    conversation_id: &str,
+) -> Result<Vec<UsageEventRecord>> {
+    usage_events::table
+        .inner_join(provider_steps::table.on(provider_steps::id.eq(usage_events::provider_step_id)))
+        .inner_join(agent_runs::table.on(agent_runs::id.eq(provider_steps::agent_run_id)))
+        .filter(agent_runs::conversation_id.eq(conversation_id))
+        .order((usage_events::created_at.asc(), usage_events::id.asc()))
+        .select(SqlUsageEventRow::as_select())
+        .load::<SqlUsageEventRow>(conn)?
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect()
+}
+
 fn tool_invocation_row(
     conn: &mut SqliteConnection,
     id: &str,
@@ -373,6 +400,159 @@ fn validate_timeline_run_entries(
     Ok(())
 }
 
+fn agent_message_request_usage_from_parts(
+    run: &AgentRunRecord,
+    final_entry: &ConversationEntryRecord,
+    provider_step: &ProviderStepRecord,
+    usage: Option<&UsageEventRecord>,
+) -> Result<Option<AgentMessageRequestUsage>> {
+    let output = run.output.as_ref().ok_or_else(|| {
+        DbError::Invariant(format!(
+            "agent run {} has no final entry for request usage",
+            run.id
+        ))
+    })?;
+    ensure_equal(
+        "agent run final entry",
+        &output.final_entry_id,
+        &final_entry.id,
+    )?;
+    ensure_conversation_owner(
+        "final conversation entry",
+        &final_entry.id,
+        &final_entry.conversation_id,
+        &run.conversation_id,
+    )?;
+    ensure_agent_link(
+        "final conversation entry",
+        &final_entry.id,
+        final_entry.agent_run_id.as_deref().ok_or_else(|| {
+            DbError::Invariant(format!(
+                "final conversation entry {} has no agent run",
+                final_entry.id
+            ))
+        })?,
+        Some(&run.id),
+    )?;
+
+    if !is_completed_assistant_message(final_entry) {
+        return Ok(None);
+    }
+
+    let Some(final_provider_step_id) = final_entry.provider_step_id.as_deref() else {
+        return Ok(None);
+    };
+    ensure_equal(
+        "final conversation entry provider step",
+        final_provider_step_id,
+        &provider_step.id,
+    )?;
+    ensure_agent_link(
+        "final provider step",
+        &provider_step.id,
+        &provider_step.agent_run_id,
+        Some(&run.id),
+    )?;
+    ensure_equal(
+        "provider step request provider",
+        &provider_step.request_snapshot.provider_id,
+        &provider_step.provider_id,
+    )?;
+    ensure_equal(
+        "provider step request model",
+        &provider_step.request_snapshot.model_id,
+        &provider_step.model_id,
+    )?;
+    ensure_equal(
+        "provider step settings provider",
+        &provider_step.settings_snapshot.provider_id,
+        &provider_step.provider_id,
+    )?;
+    ensure_equal(
+        "provider step settings model",
+        &provider_step.settings_snapshot.model_id,
+        &provider_step.model_id,
+    )?;
+
+    if provider_step.status != ProviderStepStatus::Completed {
+        return Ok(None);
+    }
+    let Some(completed_at) = provider_step.completed_at else {
+        return Ok(None);
+    };
+
+    let usage = usage
+        .map(|usage| -> Result<ProviderUsageSnapshot> {
+            ensure_equal(
+                "usage event provider step",
+                &usage.provider_step_id,
+                &provider_step.id,
+            )?;
+            ensure_equal(
+                "usage event conversation",
+                &usage.conversation_id,
+                &run.conversation_id,
+            )?;
+            ensure_equal(
+                "usage event provider",
+                &usage.provider_id,
+                &provider_step.provider_id,
+            )?;
+            ensure_equal(
+                "usage event model",
+                &usage.model_id,
+                &provider_step.model_id,
+            )?;
+            Ok(usage.usage.clone())
+        })
+        .transpose()?;
+
+    Ok(Some(AgentMessageRequestUsage {
+        conversation_entry_id: final_entry.id.clone(),
+        agent_run_id: run.id.clone(),
+        provider_step_id: provider_step.id.clone(),
+        provider_id: provider_step.provider_id.clone(),
+        model_id: provider_step.model_id.clone(),
+        provider_kind: provider_step
+            .settings_snapshot
+            .provider_settings
+            .provider_kind
+            .clone(),
+        completed_at,
+        usage,
+    }))
+}
+
+fn agent_message_request_usage_for_final_entry_with_conn(
+    conn: &mut SqliteConnection,
+    run: &AgentRunRecord,
+    final_entry: &ConversationEntryRecord,
+) -> Result<Option<AgentMessageRequestUsage>> {
+    if !is_completed_assistant_message(final_entry) {
+        return Ok(None);
+    }
+    let Some(provider_step_id) = final_entry.provider_step_id.as_deref() else {
+        return Ok(None);
+    };
+    let provider_step: ProviderStepRecord =
+        load_provider_step_row(conn, provider_step_id)?.try_into()?;
+    let usage = usage_event_row(conn, provider_step_id)?
+        .map(TryInto::try_into)
+        .transpose()?;
+    agent_message_request_usage_from_parts(run, final_entry, &provider_step, usage.as_ref())
+}
+
+fn is_completed_assistant_message(entry: &ConversationEntryRecord) -> bool {
+    entry.status == ConversationEntryStatus::Completed
+        && matches!(
+            &entry.payload,
+            ConversationEntryPayload::Message {
+                role: TranscriptRole::Assistant,
+                ..
+            }
+        )
+}
+
 fn conversation_matches_query(
     conversation: &ConversationRecord,
     project: Option<&ProjectRecord>,
@@ -407,10 +587,13 @@ fn finish_agent_run_with_conn(
         let final_entry = conversation_entry_row(conn, final_entry_id)?
             .ok_or_else(|| DbError::Invariant(format!("final entry {final_entry_id} is missing")))?
             .try_into()?;
+        let request_usage =
+            agent_message_request_usage_for_final_entry_with_conn(conn, &run, &final_entry)?;
         return Ok(FinishedAgentRun {
             run,
             final_entry,
             appended_final_entry: false,
+            request_usage,
         });
     }
 
@@ -486,10 +669,13 @@ fn finish_agent_run_with_conn(
         .returning(SqlAgentRunRow::as_returning())
         .get_result::<SqlAgentRunRow>(conn)?
         .try_into()?;
+    let request_usage =
+        agent_message_request_usage_for_final_entry_with_conn(conn, &run, &final_entry)?;
     Ok(FinishedAgentRun {
         run,
         final_entry,
         appended_final_entry,
+        request_usage,
     })
 }
 

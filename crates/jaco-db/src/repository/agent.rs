@@ -647,6 +647,14 @@ impl FreshRepository {
             .map(TryInto::try_into)
             .collect()
     }
+
+    pub fn usage_events_for_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<UsageEventRecord>> {
+        let mut conn = self.conn()?;
+        usage_events_for_conversation_with_conn(&mut conn, conversation_id)
+    }
 }
 
 type ProviderContinuationColumns = (

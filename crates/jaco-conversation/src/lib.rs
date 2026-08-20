@@ -65,13 +65,19 @@ fn conversation_from_records(records: ConversationTimelineRecords) -> Conversati
         runs: records.runs,
         provider_steps: records.provider_steps,
         tool_invocations: records.tool_invocations,
+        agent_message_request_usages: records.agent_message_request_usages,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jaco_db::FreshStore;
+    use jaco_core::{
+        AgentMessageRequestUsage, ConversationMetadata, ConversationSettingsSnapshot, ProjectKind,
+        ProjectMetadata, ProviderUsageSnapshot, ToolApprovalMode, ToolApprovalPolicy,
+        ToolPolicySnapshot,
+    };
+    use jaco_db::{FreshStore, NewConversation, NewProject};
 
     #[test]
     fn empty_store_has_ready_empty_catalog() {
@@ -82,5 +88,94 @@ mod tests {
         let service = ConversationService::new(&repository);
 
         assert_eq!(service.load_catalog().unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn conversation_from_records_moves_request_usage_without_reassociation() {
+        let directory = tempfile::tempdir().unwrap();
+        let store =
+            FreshStore::open_or_create_initial(directory.path().join("jaco.sqlite3")).unwrap();
+        let repository = store.repository();
+        let project = repository
+            .insert_project(NewProject {
+                path: "/tmp/jaco-conversation-usage".to_string(),
+                display_name: "Conversation Usage".to_string(),
+                kind: ProjectKind::Normal,
+                pinned: false,
+                removed: false,
+                metadata: ProjectMetadata {
+                    scratch_reason: None,
+                    git_root: Some("/tmp".to_string()),
+                    last_active_conversation_id: None,
+                },
+            })
+            .unwrap();
+        let conversation = repository
+            .insert_conversation(NewConversation {
+                project_id: project.id,
+                title: "Usage".to_string(),
+                pinned: false,
+                prompt_id: None,
+                default_provider_id: None,
+                default_model_id: None,
+                metadata: ConversationMetadata {
+                    summary: None,
+                    tags: Vec::new(),
+                },
+                settings_snapshot: ConversationSettingsSnapshot {
+                    prompt: None,
+                    provider_id: None,
+                    model_id: None,
+                    model_capabilities: None,
+                    tool_policy: ToolPolicySnapshot {
+                        approval_policy: ToolApprovalPolicy::OnRequest,
+                        enabled_sources: Vec::new(),
+                        max_steps: 8,
+                        approval_mode: ToolApprovalMode::RequestApproval,
+                        permission_scope: None,
+                    },
+                },
+            })
+            .unwrap();
+        let mut records = repository
+            .conversation_timeline_records(&conversation.id)
+            .unwrap()
+            .unwrap();
+        let completed_at = records.conversation.updated_at;
+        let usages = vec![
+            AgentMessageRequestUsage {
+                conversation_entry_id: "entry-reported".to_string(),
+                agent_run_id: "run-reported".to_string(),
+                provider_step_id: "step-reported".to_string(),
+                provider_id: "provider".to_string(),
+                model_id: "model".to_string(),
+                provider_kind: "openai".to_string(),
+                completed_at,
+                usage: Some(ProviderUsageSnapshot {
+                    input_tokens: 10,
+                    output_tokens: 2,
+                    cached_input_tokens: 3,
+                    cache_write_input_tokens: 0,
+                    reasoning_tokens: 0,
+                    total_tokens: 12,
+                    metadata: None,
+                }),
+            },
+            AgentMessageRequestUsage {
+                conversation_entry_id: "entry-missing".to_string(),
+                agent_run_id: "run-missing".to_string(),
+                provider_step_id: "step-missing".to_string(),
+                provider_id: "provider".to_string(),
+                model_id: "model".to_string(),
+                provider_kind: "openai".to_string(),
+                completed_at,
+                usage: None,
+            },
+        ];
+        records.agent_message_request_usages = usages.clone();
+
+        let hydrated = conversation_from_records(records);
+
+        assert_eq!(hydrated.agent_message_request_usages, usages);
     }
 }

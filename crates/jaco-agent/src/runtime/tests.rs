@@ -216,6 +216,68 @@ async fn streaming_text_delta_updates_single_assistant_item() {
 }
 
 #[tokio::test]
+async fn run_finalization_publishes_request_usage_after_run_status() {
+    let fixture = Fixture::new("request-usage-publication");
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
+    let model = MockCompletionModel::from_stream_turns([[
+        MockStreamEvent::text("hello"),
+        MockStreamEvent::final_response_with_total_tokens(7),
+    ]]);
+    let published = Arc::new(Mutex::new(Vec::new()));
+    let observer = AgentRuntimeObserver::new({
+        let published = published.clone();
+        move |event| published.lock().unwrap().push(event)
+    });
+
+    let handle = runtime
+        .run_with_model_observed(fixture.streaming_request(), model, Some(observer))
+        .await
+        .unwrap();
+    let final_entry_id = handle
+        .agent_run
+        .output
+        .as_ref()
+        .expect("completed output")
+        .final_entry_id
+        .clone();
+    let provider_step = fixture
+        .repo
+        .provider_steps_for_run(&handle.agent_run.id)
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("completed provider step");
+
+    let events = published.lock().unwrap();
+    let changes = events
+        .iter()
+        .find_map(|event| match event {
+            AgentRuntimeEvent::ConversationCommitted { changes, .. }
+                if matches!(
+                    changes.first(),
+                    Some(ConversationChange::RunStatusChanged { run })
+                        if run.id == handle.agent_run.id
+                ) =>
+            {
+                Some(changes)
+            }
+            _ => None,
+        })
+        .expect("run finalization publication");
+    assert!(matches!(
+        changes.as_slice(),
+        [
+            ConversationChange::RunStatusChanged { run },
+            ConversationChange::AgentMessageRequestUsageChanged { request_usage },
+        ] if run.id == handle.agent_run.id
+            && request_usage.agent_run_id == handle.agent_run.id
+            && request_usage.conversation_entry_id == final_entry_id
+            && request_usage.provider_step_id == provider_step.id
+            && request_usage.usage.as_ref().map(|usage| usage.total_tokens) == Some(7)
+    ));
+}
+
+#[tokio::test]
 async fn streaming_unknown_provider_output_is_persisted_in_provider_step_audit() {
     let fixture = Fixture::new("streaming-unknown-provider-output");
     let runtime = AgentRuntime::from_repository(fixture.repo.clone());

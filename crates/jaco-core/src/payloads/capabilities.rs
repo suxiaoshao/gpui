@@ -12,6 +12,129 @@ pub struct ProviderUsageSnapshot {
     pub metadata: Option<ProviderRawPayload>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderUsageCoverage {
+    Unreported,
+    Partial,
+    Reported,
+}
+
+impl ProviderUsageSnapshot {
+    pub fn coverage(&self) -> ProviderUsageCoverage {
+        let has_detail = self.input_tokens > 0
+            || self.output_tokens > 0
+            || self.cached_input_tokens > 0
+            || self.cache_write_input_tokens > 0
+            || self.reasoning_tokens > 0;
+
+        match (self.total_tokens, has_detail) {
+            (0, false) => ProviderUsageCoverage::Unreported,
+            (0, true) => ProviderUsageCoverage::Partial,
+            (_, _) => ProviderUsageCoverage::Reported,
+        }
+    }
+
+    pub fn cache_hit_rate(&self, provider_kind: &str) -> Option<f64> {
+        if self.cached_input_tokens == 0 {
+            return None;
+        }
+
+        let denominator = match provider_kind {
+            "anthropic" => self
+                .input_tokens
+                .checked_add(self.cached_input_tokens)?
+                .checked_add(self.cache_write_input_tokens)?,
+            "openai" | "gemini" | "openrouter" | "deepseek" | "mistral" => self.input_tokens,
+            _ => return None,
+        };
+
+        if denominator == 0 {
+            return None;
+        }
+
+        Some(self.cached_input_tokens as f64 / denominator as f64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn usage(
+        input_tokens: u64,
+        output_tokens: u64,
+        cached_input_tokens: u64,
+        cache_write_input_tokens: u64,
+        reasoning_tokens: u64,
+        total_tokens: u64,
+    ) -> ProviderUsageSnapshot {
+        ProviderUsageSnapshot {
+            input_tokens,
+            output_tokens,
+            cached_input_tokens,
+            cache_write_input_tokens,
+            reasoning_tokens,
+            total_tokens,
+            metadata: Some(ProviderRawPayload {
+                provider_kind: "ignored".to_string(),
+                value: serde_json::json!({"ignored": true}),
+            }),
+        }
+    }
+
+    #[test]
+    fn usage_snapshot_classifies_all_zero_as_unreported() {
+        assert_eq!(
+            usage(0, 0, 0, 0, 0, 0).coverage(),
+            ProviderUsageCoverage::Unreported
+        );
+    }
+
+    #[test]
+    fn usage_snapshot_classifies_detail_without_total_as_partial() {
+        assert_eq!(
+            usage(24, 0, 0, 0, 0, 0).coverage(),
+            ProviderUsageCoverage::Partial
+        );
+    }
+
+    #[test]
+    fn usage_snapshot_classifies_positive_total_as_reported() {
+        assert_eq!(
+            usage(24, 0, 0, 0, 0, 24).coverage(),
+            ProviderUsageCoverage::Reported
+        );
+    }
+
+    #[test]
+    fn cache_hit_rate_uses_inclusive_input_provider_denominator() {
+        let usage = usage(1_000, 100, 500, 0, 0, 1_600);
+
+        assert_eq!(usage.cache_hit_rate("openai"), Some(0.5));
+        assert_eq!(usage.cache_hit_rate("gemini"), Some(0.5));
+        assert_eq!(usage.cache_hit_rate("openrouter"), Some(0.5));
+        assert_eq!(usage.cache_hit_rate("deepseek"), Some(0.5));
+        assert_eq!(usage.cache_hit_rate("mistral"), Some(0.5));
+    }
+
+    #[test]
+    fn cache_hit_rate_uses_anthropic_total_input_denominator() {
+        let usage = usage(1_000, 100, 500, 250, 0, 1_850);
+
+        assert_eq!(usage.cache_hit_rate("anthropic"), Some(500.0 / 1_750.0));
+    }
+
+    #[test]
+    fn cache_hit_rate_is_unknown_for_zero_unsupported_and_overflow() {
+        assert_eq!(usage(0, 0, 0, 0, 0, 0).cache_hit_rate("openai"), None);
+        assert_eq!(usage(1_000, 0, 500, 0, 0, 0).cache_hit_rate("ollama"), None);
+        assert_eq!(
+            usage(u64::MAX, 0, 1, u64::MAX, 0, 0).cache_hit_rate("anthropic"),
+            None
+        );
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum ShortcutAction {

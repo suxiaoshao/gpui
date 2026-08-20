@@ -45,6 +45,19 @@ pub struct Conversation {
     pub runs: Vec<AgentRun>,
     pub provider_steps: Vec<ProviderStep>,
     pub tool_invocations: Vec<ToolInvocation>,
+    pub agent_message_request_usages: Vec<AgentMessageRequestUsage>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentMessageRequestUsage {
+    pub conversation_entry_id: ConversationEntryId,
+    pub agent_run_id: AgentRunId,
+    pub provider_step_id: ProviderStepId,
+    pub provider_id: ProviderId,
+    pub model_id: ProviderModelId,
+    pub provider_kind: String,
+    pub completed_at: OffsetDateTime,
+    pub usage: Option<ProviderUsageSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -179,6 +192,9 @@ pub enum ConversationChange {
     ToolInvocationChanged {
         invocation: Box<ToolInvocation>,
     },
+    AgentMessageRequestUsageChanged {
+        request_usage: Box<AgentMessageRequestUsage>,
+    },
     RunStatusChanged {
         run: Box<AgentRun>,
     },
@@ -215,6 +231,9 @@ pub enum ConversationEffect {
     },
     ToolInvocationChanged {
         tool_invocation_id: ToolInvocationId,
+    },
+    AgentMessageRequestUsageChanged {
+        agent_run_id: AgentRunId,
     },
     Deleted,
 }
@@ -319,8 +338,62 @@ impl Transition<ConversationChange> for &mut Conversation {
                 }
                 ConversationEffect::ToolInvocationChanged { tool_invocation_id }
             }
+            ConversationChange::AgentMessageRequestUsageChanged { request_usage } => {
+                let request_usage = *request_usage;
+                let agent_run_id = request_usage.agent_run_id.clone();
+                if let Some(current) =
+                    self.agent_message_request_usages
+                        .iter_mut()
+                        .find(|current| {
+                            current.conversation_entry_id == request_usage.conversation_entry_id
+                                && current.provider_step_id == request_usage.provider_step_id
+                        })
+                {
+                    *current = request_usage;
+                } else {
+                    self.agent_message_request_usages.push(request_usage);
+                }
+                sort_agent_message_request_usages(
+                    &self.entries,
+                    &mut self.agent_message_request_usages,
+                );
+                ConversationEffect::AgentMessageRequestUsageChanged { agent_run_id }
+            }
             ConversationChange::Deleted => ConversationEffect::Deleted,
         }
+    }
+}
+
+fn sort_agent_message_request_usages(
+    entries: &[ConversationEntry],
+    request_usages: &mut [AgentMessageRequestUsage],
+) {
+    request_usages.sort_by(|left, right| {
+        request_usage_sort_key(entries, left).cmp(&request_usage_sort_key(entries, right))
+    });
+}
+
+fn request_usage_sort_key<'a>(
+    entries: &[ConversationEntry],
+    request_usage: &'a AgentMessageRequestUsage,
+) -> (bool, i32, &'a str, &'a str) {
+    if let Some(entry) = entries
+        .iter()
+        .find(|entry| entry.id == request_usage.conversation_entry_id)
+    {
+        (
+            false,
+            entry.seq,
+            request_usage.conversation_entry_id.as_str(),
+            request_usage.provider_step_id.as_str(),
+        )
+    } else {
+        (
+            true,
+            0,
+            request_usage.conversation_entry_id.as_str(),
+            request_usage.provider_step_id.as_str(),
+        )
     }
 }
 
@@ -473,6 +546,7 @@ mod tests {
             runs: Vec::new(),
             provider_steps: Vec::new(),
             tool_invocations: Vec::new(),
+            agent_message_request_usages: Vec::new(),
         }
     }
 
@@ -497,5 +571,97 @@ mod tests {
             created_at: OffsetDateTime::UNIX_EPOCH,
             updated_at: OffsetDateTime::UNIX_EPOCH,
         }
+    }
+
+    fn request_usage(
+        entry_id: &str,
+        run_id: &str,
+        step_id: &str,
+        completed_at: i64,
+    ) -> AgentMessageRequestUsage {
+        AgentMessageRequestUsage {
+            conversation_entry_id: entry_id.to_string(),
+            agent_run_id: run_id.to_string(),
+            provider_step_id: step_id.to_string(),
+            provider_id: "provider-1".to_string(),
+            model_id: "model-1".to_string(),
+            provider_kind: "openai".to_string(),
+            completed_at: OffsetDateTime::from_unix_timestamp(completed_at).unwrap(),
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn request_usage_change_upserts_only_matching_message_and_preserves_order() {
+        let mut conversation = conversation(vec![
+            entry("entry-2", 2, "second"),
+            entry("entry-1", 1, "first"),
+            entry("entry-3", 3, "third"),
+        ]);
+        let first = request_usage("entry-1", "run-1", "step-1", 1);
+        let second = request_usage("entry-2", "run-2", "step-2", 2);
+        let sibling = request_usage("entry-3", "run-3", "step-3", 3);
+
+        let effects = (&mut conversation).transition(ConversationChanges(vec![
+            ConversationChange::AgentMessageRequestUsageChanged {
+                request_usage: Box::new(second.clone()),
+            },
+            ConversationChange::AgentMessageRequestUsageChanged {
+                request_usage: Box::new(sibling.clone()),
+            },
+            ConversationChange::AgentMessageRequestUsageChanged {
+                request_usage: Box::new(first.clone()),
+            },
+        ]));
+
+        assert_eq!(
+            effects,
+            vec![
+                ConversationEffect::AgentMessageRequestUsageChanged {
+                    agent_run_id: "run-2".to_string(),
+                },
+                ConversationEffect::AgentMessageRequestUsageChanged {
+                    agent_run_id: "run-3".to_string(),
+                },
+                ConversationEffect::AgentMessageRequestUsageChanged {
+                    agent_run_id: "run-1".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            conversation
+                .agent_message_request_usages
+                .iter()
+                .map(|request_usage| request_usage.conversation_entry_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["entry-1", "entry-2", "entry-3"]
+        );
+
+        let mut replacement = first.clone();
+        replacement.provider_id = "provider-2".to_string();
+        replacement.usage = Some(ProviderUsageSnapshot {
+            input_tokens: 1,
+            output_tokens: 2,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            reasoning_tokens: 0,
+            total_tokens: 3,
+            metadata: None,
+        });
+        let effect =
+            (&mut conversation).transition(ConversationChange::AgentMessageRequestUsageChanged {
+                request_usage: Box::new(replacement.clone()),
+            });
+
+        assert_eq!(
+            effect,
+            ConversationEffect::AgentMessageRequestUsageChanged {
+                agent_run_id: "run-1".to_string(),
+            }
+        );
+        assert_eq!(conversation.agent_message_request_usages.len(), 3);
+        assert_eq!(conversation.agent_message_request_usages[0], replacement);
+        assert_eq!(conversation.agent_message_request_usages[1], second);
+        assert_eq!(conversation.agent_message_request_usages[2], sibling);
     }
 }

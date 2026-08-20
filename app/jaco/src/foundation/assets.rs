@@ -9,6 +9,7 @@ pub(crate) const APP_ICON_ASSET_PATH: &str = "build-assets/icon/app-icon.png";
 define_lucide_icons!(
     pub(crate) enum IconName {
         Check => "check",
+        ChartNoAxesColumn => "chart-no-axes-column",
         ChevronDown => "chevron-down",
         ChevronRight => "chevron-right",
         ChevronUp => "chevron-up",
@@ -359,6 +360,10 @@ mod tests {
     #[test]
     fn declared_icons_have_lucide_paths() {
         assert_eq!(
+            IconName::ChartNoAxesColumn.path(),
+            SharedString::from("icons/chart-no-axes-column.svg")
+        );
+        assert_eq!(
             IconName::Database.path(),
             SharedString::from("icons/database.svg")
         );
@@ -591,6 +596,7 @@ mod tests {
         let icons = assets.list("icons/").expect("list icons");
 
         assert!(icons.contains(&SharedString::from("icons/database.svg")));
+        assert!(icons.contains(&SharedString::from("icons/chart-no-axes-column.svg")));
         assert!(icons.contains(&SharedString::from("icons/folder.svg")));
         assert!(icons.contains(&SharedString::from("icons/folder-open.svg")));
         assert!(icons.contains(&SharedString::from("icons/folder-plus.svg")));

@@ -25,7 +25,7 @@ use crate::{
     SkillLoader, ToolApprovalBroker,
     persistence::{
         AgentPersistence, AgentRunOutcome, PersistenceContext, PersistingCompletionModel,
-        finish_agent_run_spec, new_agent_run_input, run_error,
+        finish_agent_run_spec, finished_agent_run_changes, new_agent_run_input, run_error,
     },
     providers::run_saved_provider_model,
 };
@@ -812,17 +812,7 @@ impl AgentRuntime {
             observer.as_ref(),
             AgentRuntimeEvent::ConversationCommitted {
                 conversation: Box::new(commit.conversation.clone()),
-                changes: {
-                    let mut changes = vec![jaco_core::ConversationChange::RunStatusChanged {
-                        run: Box::new(commit.value.run.clone()),
-                    }];
-                    if commit.value.appended_final_entry {
-                        changes.push(jaco_core::ConversationChange::EntryAppended {
-                            entry: Box::new(commit.value.final_entry.clone()),
-                        });
-                    }
-                    changes
-                },
+                changes: finished_agent_run_changes(&commit.value),
             },
         );
         let finished = finalizing

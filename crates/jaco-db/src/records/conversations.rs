@@ -103,6 +103,7 @@ pub struct ConversationTimelineRecords {
     pub runs: Vec<AgentRunRecord>,
     pub provider_steps: Vec<ProviderStepRecord>,
     pub tool_invocations: Vec<ToolInvocationRecord>,
+    pub agent_message_request_usages: Vec<AgentMessageRequestUsage>,
 }
 
 pub type ConversationEntryRecord = ConversationEntry;

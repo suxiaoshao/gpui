@@ -1,6 +1,7 @@
 mod attachments;
 mod copy_button;
 mod message;
+mod request_usage;
 mod timeline;
 mod tool_blocks;
 mod tool_invocation;
@@ -412,6 +413,9 @@ impl ConversationDetailPage {
             ConversationEffect::ToolInvocationChanged { tool_invocation_id } => {
                 self.update_timeline_tool_invocation(tool_invocation_id, cx);
             }
+            ConversationEffect::AgentMessageRequestUsageChanged { agent_run_id } => {
+                self.update_timeline_request_usage(agent_run_id, cx);
+            }
             ConversationEffect::Deleted => {
                 self.message_text_states.clear();
                 self.expanded_tool_invocations.clear();
@@ -642,6 +646,34 @@ impl ConversationDetailPage {
             return;
         };
         let Some(key) = self.timeline_rows.update_run(run) else {
+            self.sync_timeline(cx, None);
+            return;
+        };
+        self.remeasure_timeline_row(&key);
+    }
+
+    fn update_timeline_request_usage(&mut self, agent_run_id: &AgentRunId, cx: &mut Context<Self>) {
+        let request_usage = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .and_then(|conversation| {
+                conversation
+                    .agent_message_request_usages
+                    .iter()
+                    .find(|request_usage| &request_usage.agent_run_id == agent_run_id)
+                    .cloned()
+            });
+        let Some(request_usage) = request_usage else {
+            self.sync_timeline(cx, None);
+            return;
+        };
+        let Some(key) = self
+            .timeline_rows
+            .update_agent_request_usage(agent_run_id, request_usage)
+        else {
             self.sync_timeline(cx, None);
             return;
         };
