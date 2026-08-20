@@ -4,17 +4,19 @@
 
 ## 应用列表
 
-- **jaco**：桌面 agent 工作台，支持项目会话、工具、MCP、技能、提示词和快捷键
-- **feiwen**：小说 / 网页内容阅读器，支持本地数据库存储
-- **http-client**：HTTP 请求测试工具（类似 Postman）
-- **novel-download**：小说 / 网页内容下载工具
+- **[jaco](app/jaco/README.md)**：桌面 Agent 工作台，支持项目会话、工具、MCP、Skills、提示词和快捷键
+- **[feiwen](app/feiwen/README.md)**：小说元数据抓取与高级检索工具，使用本地 DuckDB 存储
+- **[http-client](app/http-client/README.md)**：桌面 HTTP 请求调试工具
+- **[novel-download](app/novel-download/README.md)**：面向 `zgzl.net` 的小说下载工具
+- **[lestty](app/lestty/README.md)**：轻量终端应用，目前仅包含 crate 脚手架
 
 ## 目录结构
 
-- `app/jaco`：桌面 agent 工作台
-- `app/feiwen`：阅读器
-- `app/http-client`：HTTP 客户端
-- `app/novel-download`：下载器
+- [`app/jaco`](app/jaco/README.md)：桌面 Agent 工作台
+- [`app/feiwen`](app/feiwen/README.md)：小说数据工具
+- [`app/http-client`](app/http-client/README.md)：HTTP 客户端
+- [`app/novel-download`](app/novel-download/README.md)：小说下载器
+- [`app/lestty`](app/lestty/README.md)：终端应用脚手架
 - `crates/window-ext`：窗口相关扩展
 - `crates/xtask`：工作区任务工具（打包脚本迁移）
 
@@ -35,12 +37,14 @@ cargo build -p jaco
 cargo build -p feiwen
 cargo build -p http-client
 cargo build -p novel-download
+cargo build -p lestty
 
 # 运行指定应用
 cargo run -p jaco
 cargo run -p feiwen
 cargo run -p http-client
 cargo run -p novel-download
+cargo run -p lestty
 ```
 
 ## 开发与调试
@@ -65,6 +69,8 @@ cargo run -p xtask -- bundle novel-download
 cargo run -p xtask -- bundle jaco --install
 ```
 
+`lestty` 当前只有 crate 脚手架，尚未接入 GPUI 窗口、应用图标和 `xtask` 打包配置。
+
 默认产物目录：
 
 ```bash
@@ -88,10 +94,11 @@ target/<target-triple>/release/bundle/msi/
 
 ## 技术栈
 
-- GPUI + gpui-component
+- GPUI + gpui-component（Lestty 脚手架仅接入 gpui-base）
 - Rust 2024 Edition
 - tracing / tracing-subscriber（日志）
-- Diesel + SQLite（jaco、feiwen）
+- Diesel + SQLite（jaco）
+- DuckDB（feiwen）
 
 ## 许可
 
