@@ -22,6 +22,21 @@ use serde::Deserialize;
 use serde_json::json;
 use thiserror::Error;
 
+fn apply_fetched_model_capability_profile(
+    provider: &ProviderRecord,
+    model_id: &str,
+    capabilities: &mut jaco_core::ModelCapabilitiesSnapshot,
+) {
+    let configured_base_url = settings_field_string(&provider.settings, "base_url")
+        .filter(|value| !value.trim().is_empty());
+    capabilities::apply_documented_model_profile(
+        &provider.kind,
+        model_id,
+        openai::official_openai_endpoint(configured_base_url),
+        capabilities,
+    );
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProviderSecretValues {
     pub values: BTreeMap<String, String>,
@@ -354,6 +369,7 @@ pub fn build_mistral_client(
 
 pub fn provider_model_from_rig_model(provider: &ProviderRecord, model: Model) -> NewProviderModel {
     let model_id = model.id.clone();
+    let context_length = model.context_length.map(u64::from);
     let raw = serde_json::to_value(&model)
         .ok()
         .map(|value| ProviderRawPayload {
@@ -365,13 +381,16 @@ pub fn provider_model_from_rig_model(provider: &ProviderRecord, model: Model) ->
         .clone()
         .filter(|name| name != &model.id)
         .or_else(|| Some(model.display_name().to_string()));
+    let mut capabilities =
+        capabilities_for_model(&provider.kind, &model_id, context_length, raw.clone());
+    apply_fetched_model_capability_profile(provider, &model_id, &mut capabilities);
 
     NewProviderModel {
         provider_id: provider.id.clone(),
         model_id: model_id.clone(),
         display_name: display_name.clone(),
         enabled: true,
-        capabilities: capabilities_for_model(&provider.kind, &model_id, raw.clone()),
+        capabilities,
         metadata: ProviderModelMetadata {
             display_name,
             family: model.owned_by,
@@ -397,6 +416,8 @@ struct OllamaShowResponse {
     details: OllamaModelDetails,
     #[serde(default, deserialize_with = "deserialize_null_default_vec")]
     capabilities: Vec<String>,
+    #[serde(default)]
+    model_info: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -405,6 +426,8 @@ struct OllamaModelDetails {
     family: String,
     #[serde(default, deserialize_with = "deserialize_null_default_vec")]
     families: Vec<String>,
+    #[serde(default)]
+    context_length: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -420,7 +443,7 @@ struct GeminiModelEntry {
     name: String,
     base_model_id: Option<String>,
     display_name: Option<String>,
-    input_token_limit: Option<u64>,
+    input_token_limit: Option<serde_json::Value>,
     #[serde(default)]
     supported_generation_methods: Vec<String>,
     thinking: Option<bool>,
@@ -445,7 +468,7 @@ struct OpenRouterModelEntry {
     name: String,
     created: Option<u64>,
     #[serde(rename = "context_length")]
-    context_length: Option<u32>,
+    context_length: Option<serde_json::Value>,
     architecture: Option<OpenRouterModelArchitecture>,
     #[serde(default, rename = "supported_parameters")]
     supported_parameters: Vec<String>,
@@ -506,8 +529,10 @@ async fn fetch_ollama_models(
                     "details": {
                         "family": show.details.family.clone(),
                         "families": show.details.families.clone(),
+                        "context_length": show.details.context_length.clone(),
                     },
                     "capabilities": show.capabilities.clone(),
+                    "model_info": show.model_info.clone(),
                 }
             }),
         });
@@ -520,6 +545,8 @@ async fn fetch_ollama_models(
                 show.capabilities,
                 show.details.family.clone(),
                 show.details.families.clone(),
+                show.details.context_length,
+                show.model_info,
                 raw.clone(),
             ),
             metadata: ProviderModelMetadata {
@@ -587,7 +614,12 @@ fn provider_model_from_gemini_model(
         model_id: model_id.clone(),
         display_name: model.display_name.clone().filter(|name| name != &model_id),
         enabled: true,
-        capabilities: capabilities_from_gemini_model(&model_id, model.thinking, raw.clone()),
+        capabilities: capabilities_from_gemini_model(
+            &model_id,
+            model.thinking,
+            model.input_token_limit,
+            raw.clone(),
+        ),
         metadata: ProviderModelMetadata {
             display_name: model.display_name,
             family: None,
@@ -634,6 +666,7 @@ async fn fetch_openrouter_models(
                         .as_ref()
                         .map(|architecture| architecture.input_modalities.clone())
                         .unwrap_or_default(),
+                    model.context_length,
                     raw.clone(),
                 ),
                 metadata: ProviderModelMetadata {
@@ -880,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn rig_model_maps_to_provider_model_record_payload() {
+    fn rig_model_context_window_maps_to_provider_model_record_payload() {
         let provider = provider_record("openai", None);
         let model = Model {
             id: "gpt-5".to_string(),
@@ -899,7 +932,49 @@ mod tests {
         assert_eq!(mapped.display_name.as_deref(), Some("GPT-5"));
         assert!(mapped.enabled);
         assert!(mapped.capabilities.reasoning.is_some());
+        let context_window = mapped
+            .capabilities
+            .context_window
+            .expect("Rig listing context window");
+        assert_eq!(context_window.tokens.get(), 272_000);
+        assert_eq!(
+            context_window.source,
+            jaco_core::CapabilitySourceSnapshot::ApiDiscovered {
+                provider: "openai".to_string(),
+                endpoint: "rig model listing".to_string(),
+            }
+        );
         assert!(mapped.metadata.raw.is_some());
+    }
+
+    #[test]
+    fn documented_openai_context_window_requires_the_official_endpoint() {
+        let model = || Model {
+            id: "gpt-5.6-sol".to_string(),
+            name: None,
+            description: None,
+            r#type: Some("chat".to_string()),
+            created_at: Some(1),
+            owned_by: Some("openai".to_string()),
+            context_length: None,
+        };
+
+        let official = provider_model_from_rig_model(&provider_record("openai", None), model());
+        assert_eq!(
+            official
+                .capabilities
+                .context_window
+                .expect("official OpenAI documented context window")
+                .tokens
+                .get(),
+            1_050_000
+        );
+
+        let compatible = provider_model_from_rig_model(
+            &provider_record("openai", Some("https://compatible.example/v1")),
+            model(),
+        );
+        assert!(compatible.capabilities.context_window.is_none());
     }
 
     #[test]
@@ -919,7 +994,7 @@ mod tests {
         .unwrap();
 
         let model = &payload.data[0];
-        assert_eq!(model.context_length, Some(272000));
+        assert_eq!(model.context_length, Some(json!(272_000)));
         assert_eq!(
             model.supported_parameters,
             vec!["tools".to_string(), "reasoning".to_string()]
@@ -951,6 +1026,53 @@ mod tests {
         assert_eq!(model.base_model_id.as_deref(), Some("gemini-2.5-flash"));
         assert!(model.supports_generate_content());
         assert_eq!(model.thinking, Some(true));
+        assert_eq!(model.input_token_limit, Some(json!(1_048_576)));
+    }
+
+    #[test]
+    fn native_provider_payloads_tolerate_invalid_context_window_values() {
+        let gemini: GeminiModelsResponse = serde_json::from_value(json!({
+            "models": [{
+                "name": "models/gemini-invalid",
+                "inputTokenLimit": -1,
+                "supportedGenerationMethods": ["generateContent"]
+            }]
+        }))
+        .expect("invalid Gemini limit remains a mappable value");
+        assert_eq!(gemini.models[0].input_token_limit, Some(json!(-1)));
+
+        let openrouter: OpenRouterModelsResponse = serde_json::from_value(json!({
+            "data": [{
+                "id": "vendor/model-invalid",
+                "name": "Invalid limit fixture",
+                "context_length": "128k"
+            }]
+        }))
+        .expect("invalid OpenRouter limit remains a mappable value");
+        assert_eq!(openrouter.data[0].context_length, Some(json!("128k")));
+    }
+
+    #[test]
+    fn native_ollama_payload_keeps_context_window_sources() {
+        let payload: OllamaShowResponse = serde_json::from_value(json!({
+            "details": {
+                "family": "qwen3",
+                "families": ["qwen3"],
+                "context_length": 32768
+            },
+            "capabilities": ["completion"],
+            "model_info": {
+                "qwen3.context_length": 32768,
+                "qwen3.embedding_length": 4096
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(payload.details.context_length, Some(json!(32_768)));
+        assert_eq!(
+            payload.model_info.get("qwen3.context_length"),
+            Some(&json!(32_768))
+        );
     }
 
     #[test]

@@ -390,6 +390,7 @@ fn tool_policy() -> ToolPolicySnapshot {
 
 fn model_capabilities() -> ModelCapabilitiesSnapshot {
     ModelCapabilitiesSnapshot {
+        context_window: None,
         text_input: true,
         text_output: true,
         streaming: true,

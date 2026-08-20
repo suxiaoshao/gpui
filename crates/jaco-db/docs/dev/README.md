@@ -4,4 +4,4 @@
 
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
-| [#189](https://github.com/suxiaoshao/gpui/issues/189) Agent message request usage projection | `Implemented`；final association、query、assembly 与 reload projection 已实施并通过本地测试 | [issue-189/README.md](issue-189/README.md) |
+| [#189](https://github.com/suxiaoshao/gpui/issues/189) Message usage 与 composer context projections | `In progress`；message final association 已实施，composer selector/assembler 正在实施 | [issue-189/README.md](issue-189/README.md) |

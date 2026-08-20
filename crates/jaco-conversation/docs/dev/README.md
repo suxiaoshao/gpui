@@ -4,4 +4,4 @@
 
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
-| [#189](https://github.com/suxiaoshao/gpui/issues/189) Agent message request usage hydration | `Implemented`；conversation hydration 已实施并通过 reopen 测试 | [issue-189/README.md](issue-189/README.md) |
+| [#189](https://github.com/suxiaoshao/gpui/issues/189) Message usage 与 composer context hydration | `In progress`；message collection hydration 已实施，composer singular-fact hydration 正在实施 | [issue-189/README.md](issue-189/README.md) |

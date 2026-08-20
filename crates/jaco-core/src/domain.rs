@@ -46,6 +46,7 @@ pub struct Conversation {
     pub provider_steps: Vec<ProviderStep>,
     pub tool_invocations: Vec<ToolInvocation>,
     pub agent_message_request_usages: Vec<AgentMessageRequestUsage>,
+    pub latest_context_request_usage: Option<ConversationContextRequestUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,6 +58,18 @@ pub struct AgentMessageRequestUsage {
     pub model_id: ProviderModelId,
     pub provider_kind: String,
     pub completed_at: OffsetDateTime,
+    pub usage: Option<ProviderUsageSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConversationContextRequestUsage {
+    pub agent_run_id: AgentRunId,
+    pub provider_step_id: ProviderStepId,
+    pub provider_step_seq: i32,
+    pub provider_id: ProviderId,
+    pub model_id: ProviderModelId,
+    pub provider_step_completed_at: OffsetDateTime,
+    pub agent_run_completed_at: OffsetDateTime,
     pub usage: Option<ProviderUsageSnapshot>,
 }
 
@@ -195,6 +208,9 @@ pub enum ConversationChange {
     AgentMessageRequestUsageChanged {
         request_usage: Box<AgentMessageRequestUsage>,
     },
+    ConversationContextRequestUsageChanged {
+        request_usage: Box<ConversationContextRequestUsage>,
+    },
     RunStatusChanged {
         run: Box<AgentRun>,
     },
@@ -234,6 +250,9 @@ pub enum ConversationEffect {
     },
     AgentMessageRequestUsageChanged {
         agent_run_id: AgentRunId,
+    },
+    ConversationContextRequestUsageChanged {
+        provider_step_id: ProviderStepId,
     },
     Deleted,
 }
@@ -359,9 +378,36 @@ impl Transition<ConversationChange> for &mut Conversation {
                 );
                 ConversationEffect::AgentMessageRequestUsageChanged { agent_run_id }
             }
+            ConversationChange::ConversationContextRequestUsageChanged { request_usage } => {
+                let request_usage = *request_usage;
+                let provider_step_id = request_usage.provider_step_id.clone();
+                let should_replace =
+                    self.latest_context_request_usage
+                        .as_ref()
+                        .is_none_or(|current| {
+                            current.provider_step_id == request_usage.provider_step_id
+                                || context_request_usage_sort_key(&request_usage)
+                                    > context_request_usage_sort_key(current)
+                        });
+                if should_replace {
+                    self.latest_context_request_usage = Some(request_usage);
+                }
+                ConversationEffect::ConversationContextRequestUsageChanged { provider_step_id }
+            }
             ConversationChange::Deleted => ConversationEffect::Deleted,
         }
     }
+}
+
+fn context_request_usage_sort_key(
+    request_usage: &ConversationContextRequestUsage,
+) -> (OffsetDateTime, OffsetDateTime, i32, &str) {
+    (
+        request_usage.provider_step_completed_at,
+        request_usage.agent_run_completed_at,
+        request_usage.provider_step_seq,
+        request_usage.provider_step_id.as_str(),
+    )
 }
 
 fn sort_agent_message_request_usages(
@@ -547,6 +593,7 @@ mod tests {
             provider_steps: Vec::new(),
             tool_invocations: Vec::new(),
             agent_message_request_usages: Vec::new(),
+            latest_context_request_usage: None,
         }
     }
 
@@ -663,5 +710,98 @@ mod tests {
         assert_eq!(conversation.agent_message_request_usages[0], replacement);
         assert_eq!(conversation.agent_message_request_usages[1], second);
         assert_eq!(conversation.agent_message_request_usages[2], sibling);
+    }
+
+    fn context_request_usage(
+        run_id: &str,
+        step_id: &str,
+        step_seq: i32,
+        step_completed_at: i64,
+        run_completed_at: i64,
+    ) -> ConversationContextRequestUsage {
+        ConversationContextRequestUsage {
+            agent_run_id: run_id.to_string(),
+            provider_step_id: step_id.to_string(),
+            provider_step_seq: step_seq,
+            provider_id: "provider-1".to_string(),
+            model_id: "model-1".to_string(),
+            provider_step_completed_at: OffsetDateTime::from_unix_timestamp(step_completed_at)
+                .unwrap(),
+            agent_run_completed_at: OffsetDateTime::from_unix_timestamp(run_completed_at).unwrap(),
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn context_request_usage_change_uses_the_repository_ordering_key() {
+        let mut conversation = conversation(Vec::new());
+        let initial = context_request_usage("run-1", "step-1", 1, 20, 20);
+        let later_run = context_request_usage("run-2", "step-2", 1, 20, 21);
+        let later_seq = context_request_usage("run-3", "step-3", 2, 20, 21);
+        let later_id = context_request_usage("run-4", "step-4", 2, 20, 21);
+
+        for request_usage in [&initial, &later_run, &later_seq, &later_id] {
+            let effect = (&mut conversation).transition(
+                ConversationChange::ConversationContextRequestUsageChanged {
+                    request_usage: Box::new(request_usage.clone()),
+                },
+            );
+            assert_eq!(
+                effect,
+                ConversationEffect::ConversationContextRequestUsageChanged {
+                    provider_step_id: request_usage.provider_step_id.clone(),
+                }
+            );
+            assert_eq!(
+                conversation.latest_context_request_usage.as_ref(),
+                Some(request_usage)
+            );
+        }
+    }
+
+    #[test]
+    fn context_request_usage_change_replaces_same_step_and_ignores_late_state() {
+        let mut conversation = conversation(Vec::new());
+        let current = context_request_usage("run-2", "step-2", 2, 20, 20);
+        (&mut conversation).transition(
+            ConversationChange::ConversationContextRequestUsageChanged {
+                request_usage: Box::new(current.clone()),
+            },
+        );
+
+        let mut same_step = context_request_usage("run-2", "step-2", 1, 10, 10);
+        same_step.provider_id = "provider-replayed".to_string();
+        let same_step_effect = (&mut conversation).transition(
+            ConversationChange::ConversationContextRequestUsageChanged {
+                request_usage: Box::new(same_step.clone()),
+            },
+        );
+        assert_eq!(
+            same_step_effect,
+            ConversationEffect::ConversationContextRequestUsageChanged {
+                provider_step_id: "step-2".to_string(),
+            }
+        );
+        assert_eq!(
+            conversation.latest_context_request_usage.as_ref(),
+            Some(&same_step)
+        );
+
+        let late = context_request_usage("run-1", "step-1", 0, 9, 9);
+        let late_effect = (&mut conversation).transition(
+            ConversationChange::ConversationContextRequestUsageChanged {
+                request_usage: Box::new(late.clone()),
+            },
+        );
+        assert_eq!(
+            late_effect,
+            ConversationEffect::ConversationContextRequestUsageChanged {
+                provider_step_id: late.provider_step_id,
+            }
+        );
+        assert_eq!(
+            conversation.latest_context_request_usage.as_ref(),
+            Some(&same_step)
+        );
     }
 }

@@ -542,6 +542,232 @@ fn agent_message_request_usage_for_final_entry_with_conn(
     agent_message_request_usage_from_parts(run, final_entry, &provider_step, usage.as_ref())
 }
 
+fn conversation_context_request_usage_from_parts(
+    conversation_id: &str,
+    run: &AgentRunRecord,
+    provider_step: &ProviderStepRecord,
+    usage: Option<&UsageEventRecord>,
+) -> Result<ConversationContextRequestUsage> {
+    ensure_conversation_owner("agent run", &run.id, &run.conversation_id, conversation_id)?;
+    if run.status != AgentRunStatus::Completed {
+        return Err(DbError::Invariant(format!(
+            "agent run {} is not completed for context request usage",
+            run.id
+        )));
+    }
+    let agent_run_completed_at = run.completed_at.ok_or_else(|| {
+        DbError::Invariant(format!(
+            "completed agent run {} has no completion timestamp",
+            run.id
+        ))
+    })?;
+    ensure_agent_link(
+        "context provider step",
+        &provider_step.id,
+        &provider_step.agent_run_id,
+        Some(&run.id),
+    )?;
+    if provider_step.status != ProviderStepStatus::Completed {
+        return Err(DbError::Invariant(format!(
+            "provider step {} is not completed for context request usage",
+            provider_step.id
+        )));
+    }
+    let provider_step_completed_at = provider_step.completed_at.ok_or_else(|| {
+        DbError::Invariant(format!(
+            "completed provider step {} has no completion timestamp",
+            provider_step.id
+        ))
+    })?;
+    ensure_equal(
+        "provider step request provider",
+        &provider_step.request_snapshot.provider_id,
+        &provider_step.provider_id,
+    )?;
+    ensure_equal(
+        "provider step request model",
+        &provider_step.request_snapshot.model_id,
+        &provider_step.model_id,
+    )?;
+    ensure_equal(
+        "provider step settings provider",
+        &provider_step.settings_snapshot.provider_id,
+        &provider_step.provider_id,
+    )?;
+    ensure_equal(
+        "provider step settings model",
+        &provider_step.settings_snapshot.model_id,
+        &provider_step.model_id,
+    )?;
+    ensure_equal(
+        "agent run input provider",
+        &run.input.provider_id,
+        &provider_step.provider_id,
+    )?;
+    ensure_equal(
+        "agent run input model",
+        &run.input.model_id,
+        &provider_step.model_id,
+    )?;
+    ensure_equal(
+        "agent run settings provider",
+        &run.input.settings_snapshot.provider_id,
+        &provider_step.provider_id,
+    )?;
+    ensure_equal(
+        "agent run settings model",
+        &run.input.settings_snapshot.model_id,
+        &provider_step.model_id,
+    )?;
+
+    let usage = usage
+        .map(|usage| -> Result<ProviderUsageSnapshot> {
+            ensure_equal(
+                "usage event provider step",
+                &usage.provider_step_id,
+                &provider_step.id,
+            )?;
+            ensure_equal(
+                "usage event conversation",
+                &usage.conversation_id,
+                conversation_id,
+            )?;
+            ensure_equal(
+                "usage event provider",
+                &usage.provider_id,
+                &provider_step.provider_id,
+            )?;
+            ensure_equal(
+                "usage event model",
+                &usage.model_id,
+                &provider_step.model_id,
+            )?;
+            Ok(usage.usage.clone())
+        })
+        .transpose()?;
+
+    Ok(ConversationContextRequestUsage {
+        agent_run_id: run.id.clone(),
+        provider_step_id: provider_step.id.clone(),
+        provider_step_seq: provider_step.seq,
+        provider_id: provider_step.provider_id.clone(),
+        model_id: provider_step.model_id.clone(),
+        provider_step_completed_at,
+        agent_run_completed_at,
+        usage,
+    })
+}
+
+fn latest_conversation_context_request_usage_from_parts(
+    conversation_id: &str,
+    runs: &[AgentRunRecord],
+    provider_steps: &[ProviderStepRecord],
+    usage_events: &[UsageEventRecord],
+) -> Result<Option<ConversationContextRequestUsage>> {
+    let runs_by_id = runs
+        .iter()
+        .map(|run| (run.id.as_str(), run))
+        .collect::<HashMap<_, _>>();
+    let usage_events_by_step_id = usage_events
+        .iter()
+        .map(|usage| (usage.provider_step_id.as_str(), usage))
+        .collect::<HashMap<_, _>>();
+
+    let mut candidates = Vec::new();
+    for step in provider_steps {
+        let run = runs_by_id
+            .get(step.agent_run_id.as_str())
+            .copied()
+            .ok_or_else(|| {
+                DbError::Invariant(format!(
+                    "provider step {} references missing agent run {}",
+                    step.id, step.agent_run_id
+                ))
+            })?;
+        ensure_conversation_owner("agent run", &run.id, &run.conversation_id, conversation_id)?;
+        if run.status != AgentRunStatus::Completed || step.status != ProviderStepStatus::Completed {
+            continue;
+        }
+        let provider_step_completed_at = step.completed_at.ok_or_else(|| {
+            DbError::Invariant(format!(
+                "completed provider step {} has no completion timestamp",
+                step.id
+            ))
+        })?;
+        let agent_run_completed_at = run.completed_at.ok_or_else(|| {
+            DbError::Invariant(format!(
+                "completed agent run {} has no completion timestamp",
+                run.id
+            ))
+        })?;
+        candidates.push((
+            run,
+            step,
+            (
+                provider_step_completed_at,
+                agent_run_completed_at,
+                step.seq,
+                step.id.as_str(),
+            ),
+        ));
+    }
+    let candidate = candidates
+        .into_iter()
+        .max_by(|left, right| left.2.cmp(&right.2));
+
+    candidate
+        .map(|(run, step, _)| {
+            conversation_context_request_usage_from_parts(
+                conversation_id,
+                run,
+                step,
+                usage_events_by_step_id.get(step.id.as_str()).copied(),
+            )
+        })
+        .transpose()
+}
+
+fn latest_conversation_context_request_usage_with_conn(
+    conn: &mut SqliteConnection,
+    conversation_id: &str,
+) -> Result<Option<ConversationContextRequestUsage>> {
+    let runs = agent_runs::table
+        .filter(agent_runs::conversation_id.eq(conversation_id))
+        .select(SqlAgentRunRow::as_select())
+        .load::<SqlAgentRunRow>(conn)?
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<AgentRunRecord>>>()?;
+    let provider_steps = provider_steps::table
+        .inner_join(agent_runs::table.on(agent_runs::id.eq(provider_steps::agent_run_id)))
+        .filter(agent_runs::conversation_id.eq(conversation_id))
+        .select(SqlProviderStepRow::as_select())
+        .load::<SqlProviderStepRow>(conn)?
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<ProviderStepRecord>>>()?;
+    let usage_events = usage_events_for_conversation_with_conn(conn, conversation_id)?;
+    latest_conversation_context_request_usage_from_parts(
+        conversation_id,
+        &runs,
+        &provider_steps,
+        &usage_events,
+    )
+}
+
+fn context_request_usage_delta_for_run_with_conn(
+    conn: &mut SqliteConnection,
+    run: &AgentRunRecord,
+) -> Result<Option<ConversationContextRequestUsage>> {
+    if run.status != AgentRunStatus::Completed {
+        return Ok(None);
+    }
+    Ok(
+        latest_conversation_context_request_usage_with_conn(conn, &run.conversation_id)?
+            .filter(|request_usage| request_usage.agent_run_id == run.id),
+    )
+}
+
 fn is_completed_assistant_message(entry: &ConversationEntryRecord) -> bool {
     entry.status == ConversationEntryStatus::Completed
         && matches!(
@@ -589,11 +815,13 @@ fn finish_agent_run_with_conn(
             .try_into()?;
         let request_usage =
             agent_message_request_usage_for_final_entry_with_conn(conn, &run, &final_entry)?;
+        let context_request_usage = context_request_usage_delta_for_run_with_conn(conn, &run)?;
         return Ok(FinishedAgentRun {
             run,
             final_entry,
             appended_final_entry: false,
             request_usage,
+            context_request_usage,
         });
     }
 
@@ -671,11 +899,13 @@ fn finish_agent_run_with_conn(
         .try_into()?;
     let request_usage =
         agent_message_request_usage_for_final_entry_with_conn(conn, &run, &final_entry)?;
+    let context_request_usage = context_request_usage_delta_for_run_with_conn(conn, &run)?;
     Ok(FinishedAgentRun {
         run,
         final_entry,
         appended_final_entry,
         request_usage,
+        context_request_usage,
     })
 }
 

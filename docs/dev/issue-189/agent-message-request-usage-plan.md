@@ -438,7 +438,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 - `WP-101`–`WP-501` 全部完成，`R-01`–`R-13` 有对应证据。
 - 实际变更文件、commit、PR、命令结果、人工场景和CI记录回写 root/owner plans。
 - Agent message UI没有context-window、occupancy、累计usage、TTFT或TPS。
-- Composer 与 Settings 两份 `Draft` 计划未被实现或替代。
+- 本执行文档未实现或替代 Composer 与 Settings；Composer 独立计划正在实施，Settings 仍为 `Draft`。
 
 ## 完成证据
 

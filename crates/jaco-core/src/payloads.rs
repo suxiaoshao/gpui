@@ -313,5 +313,78 @@ mod tests {
         let snapshot: RunSettingsSnapshot = serde_json::from_value(payload).unwrap();
 
         assert_eq!(snapshot.reasoning_selection, None);
+        assert_eq!(snapshot.model_capabilities.context_window, None);
+    }
+
+    #[test]
+    fn context_window_capability_roundtrips_discovered_and_manual_sources() {
+        for source in [
+            CapabilitySourceSnapshot::ApiDiscovered {
+                provider: "gemini".to_string(),
+                endpoint: "/v1beta/models".to_string(),
+            },
+            CapabilitySourceSnapshot::Manual {
+                source: "model settings".to_string(),
+            },
+        ] {
+            let mut model_capabilities = crate::conservative_model_capabilities("gemini");
+            model_capabilities.context_window = Some(ContextWindowCapabilitySnapshot {
+                tokens: std::num::NonZeroU64::new(128_000).unwrap(),
+                source,
+            });
+            let snapshot = RunSettingsSnapshot {
+                prompt: None,
+                provider_id: "provider".to_string(),
+                model_id: "model".to_string(),
+                model_capabilities,
+                provider_settings: ProviderSettingsPayload {
+                    provider_kind: "gemini".to_string(),
+                    fields: Vec::new(),
+                },
+                reasoning_selection: None,
+                tool_policy: ToolPolicySnapshot {
+                    approval_policy: ToolApprovalPolicy::Never,
+                    enabled_sources: Vec::new(),
+                    max_steps: 8,
+                    approval_mode: ToolApprovalMode::RequestApproval,
+                    permission_scope: None,
+                },
+            };
+
+            let value = serde_json::to_value(&snapshot).unwrap();
+            assert_eq!(
+                value["modelCapabilities"]["contextWindow"]["tokens"],
+                128_000
+            );
+            assert_eq!(
+                serde_json::from_value::<RunSettingsSnapshot>(value).unwrap(),
+                snapshot
+            );
+        }
+    }
+
+    #[test]
+    fn context_window_capability_rejects_zero_tokens() {
+        let mut snapshot = crate::conservative_model_capabilities("openai");
+        snapshot.context_window = Some(ContextWindowCapabilitySnapshot {
+            tokens: std::num::NonZeroU64::new(1).unwrap(),
+            source: CapabilitySourceSnapshot::ApiDiscovered {
+                provider: "openai".to_string(),
+                endpoint: "rig model listing".to_string(),
+            },
+        });
+        let mut value = serde_json::to_value(snapshot).unwrap();
+        value["contextWindow"]["tokens"] = serde_json::json!(0);
+
+        assert!(serde_json::from_value::<ModelCapabilitiesSnapshot>(value).is_err());
+    }
+
+    #[test]
+    fn unknown_context_window_is_omitted_from_capability_json() {
+        let snapshot = crate::conservative_model_capabilities("openai");
+
+        let value = serde_json::to_value(&snapshot).unwrap();
+
+        assert!(value.get("contextWindow").is_none());
     }
 }

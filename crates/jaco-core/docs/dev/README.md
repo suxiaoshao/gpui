@@ -4,4 +4,4 @@
 
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
-| [#189](https://github.com/suxiaoshao/gpui/issues/189) Agent message request usage domain contract | `Implemented`；coverage、cache 与 projection contract 已实施并通过本地测试 | [issue-189/README.md](issue-189/README.md) |
+| [#189](https://github.com/suxiaoshao/gpui/issues/189) Usage 与 context domain contract | `In progress`；message usage contract 已实施，composer capability/latest-request contract 正在实施 | [issue-189/README.md](issue-189/README.md) |

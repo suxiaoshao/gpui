@@ -1,16 +1,16 @@
-# jaco-agent：发布 Agent message request usage live change
+# jaco-agent：Issue #189 provider discovery 与 live publication
 
 ## 根计划与 owner 边界
 
 - Plan ID：`issue-189`
 - Root hub：[Issue #189](../../../../../docs/dev/issue-189/README.md)
-- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)
+- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)
 - Owner directory：`crates/jaco-agent`
-- Owner status：`In progress`
-- 消费 root IDs：`C-02`、`C-03`、`D-02`、`D-07`、`ST-01`、`R-02`、`R-07`、`R-08`
-- Assigned WP：`WP-401`
-- Owns：在DB run-finalization commit返回projection后，把同一个value加入既有Conversation event
-- Does not own：usage association/重算、provider-step query、schema、core coverage、UI、composer/settings
+- Owner status：`In progress`（`WP-401`、`WP-402` 均已 `Implemented`；root-level workspace/known-provider/CI gates待做）
+- 消费 root IDs：`C-02`、`C-03`、`C-11`、`C-13`、`D-02`、`D-07`、`D-11`–`D-13`、`D-18`、`D-22`、`ST-01`、`ST-11`、`R-02`、`R-07`、`R-08`、`R-22`、`R-23`、`R-26`、`R-27`
+- Assigned WP：`WP-401`、`WP-402`
+- Owns：在DB run-finalization commit后发布typed changes，以及Rig/Gemini/OpenRouter/Ollama的权威context-window discovery mapping与exact OpenAI GPT-5.6官方文档profile
+- Does not own：usage association/重算、provider-step query、schema、core coverage、GPUI、Settings或#194 manual editor
 
 ## 证据与决定
 
@@ -111,5 +111,74 @@ git diff --check
 ## 实施证据（2026-08-20）
 
 - 两条 finalization 路径已统一调用 `finished_agent_run_changes`，按 run、可选 entry、可选 request usage 的顺序发布 DB authoritative projection；provider-step completion未提前绑定。
-- `cargo test -p jaco-agent run_finalization_publishes_request_usage_after_run_status`：1 passed；`cargo test -p jaco-agent`：123 passed。
-- workspace build/test/strict clippy、`cargo fmt` 与 `git diff --check` 通过；未新增 event、query、Task、channel 或 provider adapter logic。
+- `cargo test -p jaco-agent run_finalization_publishes_request_usage_after_run_status`：1 passed；`cargo test -p jaco-agent`：128 passed。
+- `cargo fmt` 与 selected-package combined strict clippy 通过；workspace-wide `cargo build`、`cargo test`、`cargo clippy`、known/provider 场景与三平台 CI 未执行；未新增 event、query、Task、channel 或 provider adapter logic。
+
+## Composer extension — `WP-402`（Implemented）
+
+本节登记 [composer 执行文档](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md) 的 provider discovery 与 live publication contract。
+
+### Owner-local 文件与边界
+
+```text
+crates/jaco-agent/src/
+├── providers.rs                      # F-411 [Modify] response字段解析/传递与fixtures
+├── providers/capabilities.rs         # F-414 [Modify] typed capability mappings/tests
+├── providers/openai.rs               # F-415 [Modify] capability fixture fallout only
+├── persistence.rs                    # F-412 [Modify] ordered composer change publication
+└── runtime/{lifecycle.rs,reasoning.rs,tests.rs}
+                                        # F-413 [Modify] capability fixtures + lifecycle/reload tests
+```
+
+- 不新增通用或family-wide静态model默认表、heuristic fallback、API request或依赖。
+- 不从provider name、非exact model ID或家族前缀推断context window。
+- manual provenance只由core/db fixture覆盖；agent不激活unfinished editor或CRUD。
+
+### `L-411`：Authoritative discovery mapping
+
+`providers.rs` 只解析并把response已有字段传入 `providers/capabilities.rs`；后者是 `ModelCapabilitiesSnapshot` 的唯一mapping owner，只接受权威正整数：
+
+| Source | Field | Provenance |
+| --- | --- | --- |
+| Rig `Model` | `context_length` | `ApiDiscovered` / `rig model listing` |
+| [Gemini Models API](https://ai.google.dev/api/models) | `inputTokenLimit` | `ApiDiscovered` / `/v1beta/models` |
+| [OpenRouter Models API](https://openrouter.ai/docs/api/api-reference/models/get-models) | `context_length` | `OpenRouterNormalized` |
+| [Ollama Show API](https://docs.ollama.com/api-reference/show-model-details) | `details.context_length` or `model_info.*.context_length` | `ApiDiscovered` / `/api/show` |
+| [OpenAI Models 文档](https://developers.openai.com/api/docs/models) | exact GPT-5.6 model ID，listing缺失且默认/显式 `api.openai.com[/v1]` 端点 | `OfficialDocs` / `1_050_000` |
+
+Ollama algorithm：优先收集typed `details.context_length`，并兼容 `model_info` 的exact key或suffix `*.context_length`；过滤0/非整数后仅当distinct positive values集合大小为1才known。多个来源给同值合法，冲突值保持unknown并由fixture固定。
+
+### `L-412`：Composer live change
+
+扩展既有 `finished_agent_run_changes`：在run、可选entry、可选message usage之后，clone DB `FinishedAgentRun.context_request_usage` 为 `ConversationContextRequestUsageChanged`。
+
+- provider-step completion不提前发布。
+- failed/canceled/no-step或DB返回None不发布。
+- partial/unreported/missing usage的 `Some(fact)` 必须发布，从而清除旧known摘要。
+- 两条finalization producer继续调用同一helper；不新增event/channel/task。
+
+### Tests 与验证
+
+| T-ID | Owner test |
+| --- | --- |
+| `T-411` | `rig_gemini_and_openrouter_map_positive_context_windows_with_provenance` |
+| `T-412` | `ollama_context_window_requires_one_distinct_positive_value` |
+| `T-413` | `finished_agent_run_changes_publish_context_request_after_message_usage` |
+| `T-414` | `partial_unreported_and_missing_usage_publish_context_request_change` |
+| `T-415` | `failed_canceled_and_provider_step_completion_do_not_publish_context_change` |
+| `T-416` | exact GPT-5.6 IDs在官方端点使用官方值；discovered/manual优先，compatible endpoint、非exact/provider mismatch保持unknown |
+
+```sh
+cargo fmt
+cargo test -p jaco-agent context_window
+cargo test -p jaco-agent composer_context
+git diff --check
+```
+
+完成条件：root `C-11` discovery与`C-13` publication、`T-411`–`T-416`通过，并保持WP-401 event order tests全绿。
+
+## Composer 实施证据（2026-08-20）
+
+- `WP-402` 已 `Implemented`；`cargo test -p jaco-agent`：131 passed，`cargo test -p jaco-agent composer_context`：2 passed。
+- capability 回归覆盖 provider discovery、invalid-value、exact OpenAI GPT-5.6 official-doc profile、official/compatible endpoint 与 discovered/manual precedence；`cargo fmt` 与 `cargo clippy -p jaco -p jaco-agent -p jaco-db --all-targets --all-features -- -D warnings` 通过。
+- provider mapping自动化覆盖exact GPT-5.6 official-doc capability；app不再对旧缓存做读取时补全。workspace-wide gates、现场provider refresh/新请求与三平台 CI 未执行；implementation commit/PR：`Pending`。

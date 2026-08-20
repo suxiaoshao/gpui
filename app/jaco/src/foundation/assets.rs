@@ -32,6 +32,7 @@ define_lucide_icons!(
         FolderOpen => "folder-open",
         FolderPlus => "folder-plus",
         FolderX => "folder-x",
+        Gauge => "gauge",
         Keyboard => "keyboard",
         KeyRound => "key-round",
         Languages => "languages",
@@ -380,6 +381,10 @@ mod tests {
             SharedString::from("icons/folder-open.svg")
         );
         assert_eq!(
+            IconName::Gauge.path(),
+            SharedString::from("icons/gauge.svg")
+        );
+        assert_eq!(
             IconName::FolderPlus.path(),
             SharedString::from("icons/folder-plus.svg")
         );
@@ -601,6 +606,7 @@ mod tests {
         assert!(icons.contains(&SharedString::from("icons/folder-open.svg")));
         assert!(icons.contains(&SharedString::from("icons/folder-plus.svg")));
         assert!(icons.contains(&SharedString::from("icons/folder-x.svg")));
+        assert!(icons.contains(&SharedString::from("icons/gauge.svg")));
         assert!(icons.contains(&SharedString::from("icons/keyboard.svg")));
         assert!(icons.contains(&SharedString::from("icons/lightbulb.svg")));
         assert!(icons.contains(&SharedString::from("icons/send.svg")));

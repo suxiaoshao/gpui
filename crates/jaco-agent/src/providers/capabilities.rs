@@ -1,18 +1,25 @@
 use jaco_core::{
-    CapabilitySourceSnapshot, FileInputCapabilitySnapshot, ImageInputCapabilitySnapshot,
-    ModelCapabilitiesSnapshot, OllamaThinkingCapabilitySnapshot,
+    CapabilitySourceSnapshot, ContextWindowCapabilitySnapshot, FileInputCapabilitySnapshot,
+    ImageInputCapabilitySnapshot, ModelCapabilitiesSnapshot, OllamaThinkingCapabilitySnapshot,
     ProviderCapabilityExtensionSnapshot, ProviderRawPayload, ReasoningCapabilitySnapshot,
     ReasoningControlSnapshot, ToolCallingCapabilitySnapshot, conservative_model_capabilities,
 };
 
 const CHECKED_AT: &str = "2026-06-14";
+const OPENAI_MODELS_DOCS_URL: &str = "https://developers.openai.com/api/docs/models";
+const OPENAI_MODELS_CHECKED_AT: &str = "2026-08-20";
 
 pub(crate) fn capabilities_for_model(
     provider_kind: &str,
     model_id: &str,
+    context_length: Option<u64>,
     raw: Option<ProviderRawPayload>,
 ) -> ModelCapabilitiesSnapshot {
     let mut snapshot = conservative_model_capabilities(provider_kind);
+    snapshot.context_window = discovered_context_window(
+        context_length,
+        source_api(provider_kind, "rig model listing"),
+    );
     snapshot.extension = provider_extension(provider_kind, raw);
 
     match provider_kind {
@@ -27,10 +34,36 @@ pub(crate) fn capabilities_for_model(
     snapshot
 }
 
+pub(crate) fn apply_documented_model_profile(
+    provider_kind: &str,
+    model_id: &str,
+    official_endpoint: bool,
+    capabilities: &mut ModelCapabilitiesSnapshot,
+) {
+    if capabilities.context_window.is_some() || provider_kind != "openai" || !official_endpoint {
+        return;
+    }
+
+    let id = normalized_model_id(model_id);
+    if !matches!(
+        id.as_str(),
+        "gpt-5.6" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna"
+    ) {
+        return;
+    }
+
+    capabilities.context_window = Some(ContextWindowCapabilitySnapshot {
+        tokens: std::num::NonZeroU64::new(1_050_000).expect("documented OpenAI context window"),
+        source: source_docs("openai", OPENAI_MODELS_DOCS_URL, OPENAI_MODELS_CHECKED_AT),
+    });
+}
+
 pub(crate) fn capabilities_from_ollama_show(
     raw_capabilities: Vec<String>,
     family: String,
     families: Vec<String>,
+    details_context_length: Option<serde_json::Value>,
+    model_info: std::collections::BTreeMap<String, serde_json::Value>,
     raw: Option<ProviderRawPayload>,
 ) -> ModelCapabilitiesSnapshot {
     let mut snapshot = conservative_model_capabilities("ollama");
@@ -38,6 +71,7 @@ pub(crate) fn capabilities_from_ollama_show(
     snapshot.tool_calling = None;
     let supports = |name: &str| raw_capabilities.iter().any(|capability| capability == name);
     let thinking = thinking_from_ollama_family(&raw_capabilities, &family, &families);
+    snapshot.context_window = ollama_context_window(details_context_length, &model_info);
 
     if supports("vision") {
         snapshot.image_input = Some(ImageInputCapabilitySnapshot { max_images: None });
@@ -83,9 +117,14 @@ pub(crate) fn capabilities_from_ollama_show(
 pub(crate) fn capabilities_from_gemini_model(
     model_id: &str,
     thinking: Option<bool>,
+    input_token_limit: Option<serde_json::Value>,
     raw: Option<ProviderRawPayload>,
 ) -> ModelCapabilitiesSnapshot {
-    let mut snapshot = capabilities_for_model("gemini", model_id, None);
+    let mut snapshot = capabilities_for_model("gemini", model_id, None, None);
+    snapshot.context_window = discovered_context_window(
+        input_token_limit.as_ref().and_then(json_positive_u64),
+        source_api("gemini", "/v1beta/models"),
+    );
     if thinking == Some(false) {
         snapshot.reasoning = None;
     } else if thinking == Some(true) && snapshot.reasoning.is_none() {
@@ -106,9 +145,14 @@ pub(crate) fn capabilities_from_gemini_model(
 pub(crate) fn capabilities_from_openrouter_model(
     supported_parameters: Vec<String>,
     input_modalities: Vec<String>,
+    context_length: Option<serde_json::Value>,
     raw: Option<ProviderRawPayload>,
 ) -> ModelCapabilitiesSnapshot {
     let mut snapshot = conservative_model_capabilities("openrouter");
+    snapshot.context_window = discovered_context_window(
+        context_length.as_ref().and_then(openrouter_context_length),
+        CapabilitySourceSnapshot::OpenRouterNormalized,
+    );
     let supports = |name: &str| {
         supported_parameters
             .iter()
@@ -164,6 +208,47 @@ pub(crate) fn capabilities_from_openrouter_model(
         raw,
     };
     snapshot
+}
+
+fn discovered_context_window(
+    tokens: Option<u64>,
+    source: CapabilitySourceSnapshot,
+) -> Option<ContextWindowCapabilitySnapshot> {
+    Some(ContextWindowCapabilitySnapshot {
+        tokens: std::num::NonZeroU64::new(tokens?)?,
+        source,
+    })
+}
+
+fn ollama_context_window(
+    details_context_length: Option<serde_json::Value>,
+    model_info: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Option<ContextWindowCapabilitySnapshot> {
+    let mut context_lengths = std::collections::BTreeSet::new();
+    if let Some(tokens) = details_context_length.as_ref().and_then(json_positive_u64) {
+        context_lengths.insert(tokens);
+    }
+    for (key, value) in model_info {
+        if (key == "context_length" || key.ends_with(".context_length"))
+            && let Some(tokens) = json_positive_u64(value)
+        {
+            context_lengths.insert(tokens);
+        }
+    }
+    let mut values = context_lengths.into_iter();
+    let tokens = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+    discovered_context_window(Some(tokens), source_api("ollama", "/api/show"))
+}
+
+fn json_positive_u64(value: &serde_json::Value) -> Option<u64> {
+    value.as_u64().filter(|tokens| *tokens > 0)
+}
+
+fn openrouter_context_length(value: &serde_json::Value) -> Option<u64> {
+    json_positive_u64(value).filter(|tokens| u32::try_from(*tokens).is_ok())
 }
 
 fn provider_extension(
@@ -547,8 +632,225 @@ mod tests {
     use super::*;
 
     #[test]
+    fn authoritative_context_windows_require_positive_values_and_keep_provenance() {
+        let rig = capabilities_for_model("anthropic", "claude-sonnet-4-6", Some(200_000), None);
+        let rig_context = rig.context_window.expect("rig context window");
+        assert_eq!(rig_context.tokens.get(), 200_000);
+        assert_eq!(
+            rig_context.source,
+            source_api("anthropic", "rig model listing")
+        );
+
+        let gemini = capabilities_from_gemini_model(
+            "gemini-2.5-flash",
+            Some(true),
+            Some(serde_json::json!(1_048_576)),
+            None,
+        );
+        let gemini_context = gemini.context_window.expect("Gemini context window");
+        assert_eq!(gemini_context.tokens.get(), 1_048_576);
+        assert_eq!(
+            gemini_context.source,
+            source_api("gemini", "/v1beta/models")
+        );
+
+        let openrouter = capabilities_from_openrouter_model(
+            values(["tools"]),
+            values(["text"]),
+            Some(serde_json::json!(272_000)),
+            None,
+        );
+        let openrouter_context = openrouter
+            .context_window
+            .expect("OpenRouter context window");
+        assert_eq!(openrouter_context.tokens.get(), 272_000);
+        assert_eq!(
+            openrouter_context.source,
+            CapabilitySourceSnapshot::OpenRouterNormalized
+        );
+
+        assert!(
+            capabilities_for_model("openai", "gpt-5", Some(0), None)
+                .context_window
+                .is_none()
+        );
+        assert!(
+            capabilities_from_gemini_model(
+                "gemini-2.5-flash",
+                None,
+                Some(serde_json::json!(0)),
+                None,
+            )
+            .context_window
+            .is_none()
+        );
+        for invalid in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("128k"),
+        ] {
+            assert!(
+                capabilities_from_gemini_model(
+                    "gemini-2.5-flash",
+                    None,
+                    Some(invalid.clone()),
+                    None,
+                )
+                .context_window
+                .is_none()
+            );
+            assert!(
+                capabilities_from_openrouter_model(Vec::new(), Vec::new(), Some(invalid), None,)
+                    .context_window
+                    .is_none()
+            );
+        }
+        assert!(
+            capabilities_from_openrouter_model(Vec::new(), Vec::new(), None, None)
+                .context_window
+                .is_none()
+        );
+        assert!(
+            capabilities_from_openrouter_model(
+                Vec::new(),
+                Vec::new(),
+                Some(serde_json::json!(u64::from(u32::MAX) + 1)),
+                None,
+            )
+            .context_window
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn documented_openai_context_windows_cover_only_exact_gpt_5_6_ids() {
+        for model_id in ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+            let mut snapshot = capabilities_for_model("openai", model_id, None, None);
+            apply_documented_model_profile("openai", model_id, true, &mut snapshot);
+            let context_window = snapshot
+                .context_window
+                .expect("documented OpenAI context window");
+            assert_eq!(context_window.tokens.get(), 1_050_000);
+            assert_eq!(
+                context_window.source,
+                CapabilitySourceSnapshot::OfficialDocs {
+                    provider: "openai".to_string(),
+                    url: OPENAI_MODELS_DOCS_URL.to_string(),
+                    checked_at: OPENAI_MODELS_CHECKED_AT.to_string(),
+                }
+            );
+        }
+
+        let mut non_exact = capabilities_for_model("openai", "gpt-5.6-preview", None, None);
+        apply_documented_model_profile("openai", "gpt-5.6-preview", true, &mut non_exact);
+        assert!(non_exact.context_window.is_none());
+
+        let mut other_provider = capabilities_for_model("anthropic", "gpt-5.6", None, None);
+        apply_documented_model_profile("anthropic", "gpt-5.6", true, &mut other_provider);
+        assert!(other_provider.context_window.is_none());
+
+        let mut custom_endpoint = capabilities_for_model("openai", "gpt-5.6-sol", None, None);
+        apply_documented_model_profile("openai", "gpt-5.6-sol", false, &mut custom_endpoint);
+        assert!(custom_endpoint.context_window.is_none());
+    }
+
+    #[test]
+    fn documented_openai_context_window_does_not_replace_existing_sources() {
+        for source in [
+            CapabilitySourceSnapshot::ApiDiscovered {
+                provider: "openai".to_string(),
+                endpoint: "rig model listing".to_string(),
+            },
+            CapabilitySourceSnapshot::Manual {
+                source: "model settings".to_string(),
+            },
+        ] {
+            let mut capabilities = conservative_model_capabilities("openai");
+            capabilities.context_window = Some(ContextWindowCapabilitySnapshot {
+                tokens: std::num::NonZeroU64::new(272_000).unwrap(),
+                source,
+            });
+            let existing = capabilities.context_window.clone();
+
+            apply_documented_model_profile("openai", "gpt-5.6", true, &mut capabilities);
+
+            assert_eq!(capabilities.context_window, existing);
+        }
+    }
+
+    #[test]
+    fn ollama_context_window_requires_one_distinct_positive_value() {
+        let details_only = capabilities_from_ollama_show(
+            values(["completion"]),
+            "qwen3".to_string(),
+            values(["qwen3"]),
+            Some(serde_json::json!(32_768)),
+            std::collections::BTreeMap::new(),
+            None,
+        );
+        let details_context = details_only.context_window.expect("details context window");
+        assert_eq!(details_context.tokens.get(), 32_768);
+        assert_eq!(details_context.source, source_api("ollama", "/api/show"));
+
+        let duplicate_same = capabilities_from_ollama_show(
+            values(["completion"]),
+            "qwen3".to_string(),
+            values(["qwen3"]),
+            Some(serde_json::json!(32_768)),
+            std::collections::BTreeMap::from([
+                ("context_length".to_string(), serde_json::json!(32_768)),
+                (
+                    "qwen3.context_length".to_string(),
+                    serde_json::json!(32_768),
+                ),
+                ("ignored_context_length".to_string(), serde_json::json!(1)),
+                ("other.context_length".to_string(), serde_json::json!(0)),
+                (
+                    "invalid.context_length".to_string(),
+                    serde_json::json!("32768"),
+                ),
+            ]),
+            None,
+        );
+        assert_eq!(
+            duplicate_same
+                .context_window
+                .expect("one distinct positive context window")
+                .tokens
+                .get(),
+            32_768
+        );
+
+        let conflicting = capabilities_from_ollama_show(
+            values(["completion"]),
+            "qwen3".to_string(),
+            values(["qwen3"]),
+            Some(serde_json::json!(32_768)),
+            std::collections::BTreeMap::from([(
+                "qwen3.context_length".to_string(),
+                serde_json::json!(65_536),
+            )]),
+            None,
+        );
+        assert!(conflicting.context_window.is_none());
+
+        let no_positive = capabilities_from_ollama_show(
+            values(["completion"]),
+            "qwen3".to_string(),
+            values(["qwen3"]),
+            Some(serde_json::json!(0)),
+            std::collections::BTreeMap::from([(
+                "qwen3.context_length".to_string(),
+                serde_json::json!(32_768.5),
+            )]),
+            None,
+        );
+        assert!(no_positive.context_window.is_none());
+    }
+
+    #[test]
     fn openai_profiles_use_model_specific_efforts() {
-        let gpt5 = capabilities_for_model("openai", "gpt-5", None);
+        let gpt5 = capabilities_for_model("openai", "gpt-5", None, None);
         assert_eq!(
             gpt5.reasoning.unwrap().efforts,
             values(["minimal", "low", "medium", "high"])
@@ -556,7 +858,7 @@ mod tests {
         assert!(gpt5.image_input.is_some());
         assert!(gpt5.file_input.is_some());
 
-        let gpt55 = capabilities_for_model("openai", "gpt-5.5", None);
+        let gpt55 = capabilities_for_model("openai", "gpt-5.5", None, None);
         assert_eq!(
             gpt55.reasoning.unwrap().efforts,
             values(["none", "low", "medium", "high", "xhigh"])
@@ -564,7 +866,7 @@ mod tests {
         assert!(gpt55.image_input.is_some());
         assert!(gpt55.file_input.is_some());
 
-        let gpt56 = capabilities_for_model("openai", "gpt-5.6-sol-2026-07-29", None);
+        let gpt56 = capabilities_for_model("openai", "gpt-5.6-sol-2026-07-29", None, None);
         assert_eq!(
             gpt56.reasoning.unwrap().efforts,
             values(["none", "low", "medium", "high", "xhigh", "max"])
@@ -572,7 +874,7 @@ mod tests {
         assert!(gpt56.image_input.is_some());
         assert!(gpt56.file_input.is_some());
 
-        let codex = capabilities_for_model("openai", "gpt-5.2-codex", None);
+        let codex = capabilities_for_model("openai", "gpt-5.2-codex", None, None);
         assert_eq!(
             codex.reasoning.unwrap().efforts,
             values(["low", "medium", "high", "xhigh"])
@@ -588,6 +890,8 @@ mod tests {
             "qwen3".to_string(),
             values(["qwen3"]),
             None,
+            std::collections::BTreeMap::new(),
+            None,
         );
         assert!(matches!(
             qwen.reasoning.unwrap().control,
@@ -599,6 +903,8 @@ mod tests {
             values(["completion", "thinking", "vision", "tools"]),
             "gpt-oss".to_string(),
             values(["gpt-oss"]),
+            None,
+            std::collections::BTreeMap::new(),
             None,
         );
         assert!(gpt_oss.image_input.is_some());
@@ -615,6 +921,7 @@ mod tests {
             values(["tools", "structured_outputs", "reasoning"]),
             values(["text", "image", "file"]),
             None,
+            None,
         );
         let reasoning = snapshot.reasoning.expect("reasoning");
         assert!(snapshot.tool_calling.is_some());
@@ -630,7 +937,8 @@ mod tests {
             Some(ReasoningControlSnapshot::Composite { .. })
         ));
 
-        let basic = capabilities_from_openrouter_model(values(["tools"]), values(["text"]), None);
+        let basic =
+            capabilities_from_openrouter_model(values(["tools"]), values(["text"]), None, None);
         assert!(basic.tool_calling.is_some());
         assert!(!basic.structured_output);
         assert!(basic.image_input.is_none());
@@ -640,16 +948,17 @@ mod tests {
 
     #[test]
     fn gemini_uses_api_thinking_signal_and_doc_profiles() {
-        let unsupported = capabilities_from_gemini_model("gemini-2.5-flash", Some(false), None);
+        let unsupported =
+            capabilities_from_gemini_model("gemini-2.5-flash", Some(false), None, None);
         assert!(unsupported.reasoning.is_none());
 
-        let budget = capabilities_from_gemini_model("gemini-2.5-flash", Some(true), None);
+        let budget = capabilities_from_gemini_model("gemini-2.5-flash", Some(true), None, None);
         assert!(matches!(
             budget.reasoning.unwrap().control,
             Some(ReasoningControlSnapshot::TokenBudget { .. })
         ));
 
-        let levels = capabilities_from_gemini_model("gemini-3-pro", Some(true), None);
+        let levels = capabilities_from_gemini_model("gemini-3-pro", Some(true), None, None);
         assert!(matches!(
             levels.reasoning.unwrap().control,
             Some(ReasoningControlSnapshot::Levels { .. })
@@ -660,7 +969,7 @@ mod tests {
 
     #[test]
     fn deepseek_and_mistral_profiles_are_provider_native() {
-        let deepseek = capabilities_for_model("deepseek", "deepseek-v4-flash", None);
+        let deepseek = capabilities_for_model("deepseek", "deepseek-v4-flash", None, None);
         assert_eq!(
             deepseek.reasoning.unwrap().efforts,
             values(["disabled", "high", "max"])
@@ -669,22 +978,22 @@ mod tests {
         assert!(deepseek.structured_output);
         assert!(deepseek.image_input.is_none());
 
-        let deepseek_reasoner = capabilities_for_model("deepseek", "deepseek-reasoner", None);
+        let deepseek_reasoner = capabilities_for_model("deepseek", "deepseek-reasoner", None, None);
         assert!(deepseek_reasoner.tool_calling.is_none());
         assert!(deepseek_reasoner.structured_output);
 
-        let deepseek_chat = capabilities_for_model("deepseek", "deepseek-chat", None);
+        let deepseek_chat = capabilities_for_model("deepseek", "deepseek-chat", None, None);
         assert!(deepseek_chat.tool_calling.is_some());
         assert!(deepseek_chat.structured_output);
         assert!(deepseek_chat.reasoning.is_none());
 
-        let mistral = capabilities_for_model("mistral", "mistral-large-latest", None);
+        let mistral = capabilities_for_model("mistral", "mistral-large-latest", None, None);
         assert_eq!(mistral.reasoning.unwrap().efforts, values(["none", "high"]));
         assert!(mistral.image_input.is_none());
         assert!(mistral.tool_calling.is_some());
         assert!(mistral.structured_output);
 
-        let magistral = capabilities_for_model("mistral", "magistral-medium-latest", None);
+        let magistral = capabilities_for_model("mistral", "magistral-medium-latest", None, None);
         assert!(matches!(
             magistral.reasoning.unwrap().control,
             Some(ReasoningControlSnapshot::AlwaysOn { .. })
@@ -695,7 +1004,7 @@ mod tests {
 
     #[test]
     fn anthropic_profiles_enable_current_multimodal_inputs() {
-        let claude = capabilities_for_model("anthropic", "claude-sonnet-4-6", None);
+        let claude = capabilities_for_model("anthropic", "claude-sonnet-4-6", None, None);
         assert!(claude.image_input.is_some());
         assert!(claude.file_input.is_some());
         assert!(claude.tool_calling.is_some());
@@ -704,11 +1013,11 @@ mod tests {
 
     #[test]
     fn openai_legacy_multimodal_families_are_not_regressed() {
-        let gpt4o = capabilities_for_model("openai", "gpt-4o", None);
+        let gpt4o = capabilities_for_model("openai", "gpt-4o", None, None);
         assert!(gpt4o.image_input.is_some());
         assert!(gpt4o.file_input.is_some());
 
-        let o4 = capabilities_for_model("openai", "o4-mini", None);
+        let o4 = capabilities_for_model("openai", "o4-mini", None, None);
         assert!(o4.image_input.is_some());
         assert!(o4.file_input.is_some());
     }

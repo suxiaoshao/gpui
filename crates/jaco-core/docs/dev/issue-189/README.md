@@ -1,16 +1,16 @@
-# jaco-core：Agent message request usage domain contract
+# jaco-core：Issue #189 usage 与 context domain contract
 
 ## 根计划与 owner 边界
 
 - Plan ID：`issue-189`
 - Root hub：[Issue #189](../../../../../docs/dev/issue-189/README.md)
-- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)
+- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)
 - Owner directory：`crates/jaco-core`
-- Owner status：`In progress`
-- 消费 root IDs：`C-01`–`C-03`、`D-01`、`D-03`、`D-04`、`D-08`、`R-01`–`R-08`
-- Assigned WP：`WP-101`
-- Owns：usage coverage/cache纯函数、消息 projection、Conversation collection/change/effect/transition
-- Does not own：DB association、agent publication、GPUI、composer context、Settings aggregate
+- Owner status：`In progress`（`WP-101`、`WP-102` 均已 `Implemented`；root-level workspace/known-provider/CI gates待做）
+- 消费 root IDs：`C-01`–`C-03`、`C-11`、`C-12`、`D-01`、`D-03`、`D-04`、`D-08`、`D-11`、`D-12`、`D-18`、`D-22`、`R-01`–`R-08`、`R-21`、`R-23`、`R-27`
+- Assigned WP：`WP-101`、`WP-102`
+- Owns：usage coverage/cache纯函数、消息 projection、context capability snapshot、latest context request fact、Conversation collection/change/effect/transition
+- Does not own：DB association/selection、provider discovery mapping、agent publication、GPUI、Settings aggregate或#194 manual editor
 
 ## Owner-local 证据与决定
 
@@ -103,6 +103,69 @@ git diff --check
 ## 实施证据（2026-08-20）
 
 - 已修改 `src/payloads/capabilities.rs` 与 `src/domain.rs`：coverage/cache rate、typed projection、Conversation collection/change/effect/transition及回归测试已落地。
-- `cargo test -p jaco-core --no-fail-fast`：26 passed。
-- workspace `cargo build`、`cargo test`、strict clippy、`cargo fmt` 与 `git diff --check` 通过。
-- 未修改 persisted usage JSON、serde representation、schema、context capability 或 Cargo files。
+- `cargo test -p jaco-core`：31 passed；`cargo fmt` 与 selected-package combined strict clippy 通过。
+- workspace-wide `cargo build`、`cargo test`、`cargo clippy`、known/provider 场景与三平台 CI 未执行。
+- `ProviderUsageSnapshot` persisted usage JSON、schema 与 Cargo files 未修改；context capability 由已实施的 `WP-102` 负责。
+
+## Composer extension — `WP-102`（Implemented）
+
+本节只登记 [composer 执行文档](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md) 的 core owner contract；上面的 `WP-101` 实施证据保持不变。
+
+### Owner-local 文件与边界
+
+```text
+crates/jaco-core/src/
+├── payloads/capabilities.rs          # F-111 [Modify] ContextWindowCapabilitySnapshot
+├── payloads/resources.rs             # F-112 [Modify] optional ModelCapabilitiesSnapshot.context_window
+├── capabilities.rs                   # F-114 [Modify] conservative default is unknown
+└── domain.rs                         # F-113 [Modify] latest fact/change/effect/transition
+```
+
+- 不修改 ID aliases、`ProviderUsageSnapshot` persisted representation、Cargo files 或数据库类型。
+- 不把 percentage、current composer choice、provider/model label 或 unknown reason放进core。
+- `CapabilitySourceSnapshot` 继续作为唯一 provenance enum，不新增平行 source contract。
+
+### `L-111`：Context-window capability
+
+按 root `C-11` 增加带 `NonZeroU64` tokens 与 `CapabilitySourceSnapshot` source 的 snapshot，并在 `ModelCapabilitiesSnapshot` 增加 serde-default optional field。
+
+Owner invariants：
+
+1. unknown 只有 `None`；0 不可构造为 known。
+2. 旧 JSON 缺字段可读，unknown 重写时省略字段。
+3. discovered 与 `Manual` provenance 的 positive fixture 走同一个 serde/run-settings path。
+4. `conservative_model_capabilities` 显式写入 `context_window: None`；全部struct-literal fixtures同步unknown。
+5. `ConversationSettingsSnapshot` / `RunSettingsSnapshot` 通过现有 `model_capabilities` 字段携带值；不新增 parallel field。
+
+### `L-112`：Conversation singular fact
+
+按 root `C-12` 增加 `ConversationContextRequestUsage` 与 `Conversation.latest_context_request_usage`，以及对应 change/effect。
+
+- fact 保存 run/step/provider/model identity、step seq、step/run completed time 与 optional normalized usage。
+- same step 幂等 replace；不同 step 按 `(provider_step_completed_at, agent_run_completed_at, provider_step_seq, provider_step_id)` 只接受更新值。
+- 受现有Transition固定output约束，accepted、duplicate与ignored late change都返回context effect；late change不修改state，app通过同步当前fact并等值去重避免notify。
+- 更新全部 `Conversation` constructors/fixtures，禁止从 `agent_message_request_usages` 推导该字段。
+
+### Tests 与验证
+
+| T-ID | Owner test |
+| --- | --- |
+| `T-111` | `model_capabilities_old_json_defaults_context_window_to_unknown` |
+| `T-112` | `context_window_discovered_and_manual_snapshots_round_trip` |
+| `T-113` | `context_request_usage_change_replaces_same_step_idempotently` |
+| `T-114` | `context_request_usage_change_ignores_older_step_and_returns_replay_safe_effect` |
+
+```sh
+cargo fmt
+cargo test -p jaco-core context_window
+cargo test -p jaco-core context_request_usage
+git diff --check
+```
+
+完成条件：root `C-11`/`C-12` 的 core 部分、`T-111`–`T-114` 通过，旧 capability JSON 与 WP-101 usage tests 无回归。
+
+## Composer 实施证据（2026-08-20）
+
+- `WP-102` 已 `Implemented`；`cargo test -p jaco-core`：31 passed，覆盖旧 capability JSON、discovered/Manual round trip 与 context request transition。
+- `cargo fmt` 与 `cargo clippy -p jaco -p jaco-agent -p jaco-db --all-targets --all-features -- -D warnings` 通过；workspace-wide build/test/clippy、known/provider 场景与三平台 CI 未执行。
+- implementation commit/PR：`Pending`。

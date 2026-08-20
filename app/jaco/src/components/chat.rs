@@ -1,3 +1,4 @@
+pub(crate) mod context_occupancy;
 pub(crate) mod detail;
 pub(crate) mod form;
 pub(crate) mod image_preview;

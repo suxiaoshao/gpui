@@ -416,10 +416,14 @@ impl ConversationDetailPage {
             ConversationEffect::AgentMessageRequestUsageChanged { agent_run_id } => {
                 self.update_timeline_request_usage(agent_run_id, cx);
             }
+            ConversationEffect::ConversationContextRequestUsageChanged { .. } => {
+                self.sync_chat_form_context_usage(cx);
+            }
             ConversationEffect::Deleted => {
                 self.message_text_states.clear();
                 self.expanded_tool_invocations.clear();
                 self.tool_invocation_previews.clear();
+                self.sync_chat_form_context_usage(cx);
                 self.sync_timeline(cx, None);
             }
         }
@@ -431,15 +435,35 @@ impl ConversationDetailPage {
     }
 
     fn refresh_chat_form_context(&mut self, cx: &mut Context<Self>) {
-        let project_path = self
+        let (project_path, latest_context_request_usage) = self
             .conversation
             .read(cx)
             .operation()
             .data()
             .and_then(Option::as_ref)
-            .map(|snapshot| snapshot.project.path.clone());
+            .map(|snapshot| {
+                (
+                    Some(snapshot.project.path.clone()),
+                    snapshot.latest_context_request_usage.clone(),
+                )
+            })
+            .unwrap_or((None, None));
         self.chat_form.update(cx, |chat_form, cx| {
             chat_form.refresh_skill_catalog(project_path.as_deref().map(Path::new), cx);
+            chat_form.set_latest_context_request_usage(latest_context_request_usage, cx);
+        });
+    }
+
+    fn sync_chat_form_context_usage(&mut self, cx: &mut Context<Self>) {
+        let latest_context_request_usage = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .and_then(|snapshot| snapshot.latest_context_request_usage.clone());
+        self.chat_form.update(cx, |chat_form, cx| {
+            chat_form.set_latest_context_request_usage(latest_context_request_usage, cx);
         });
     }
 

@@ -117,6 +117,58 @@ fn finish_request_usage_run(
     .unwrap()
 }
 
+fn next_request_usage_run(
+    repo: &crate::FreshRepository,
+    context: &RequestUsageContext,
+    message: &str,
+) -> RequestUsageContext {
+    let trigger = repo
+        .append_conversation_entry(message_item(&context.conversation_id, message))
+        .unwrap();
+    let run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: context.conversation_id.clone(),
+            trigger_entry_id: trigger.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            input: agent_run_input(&trigger.id, &context.provider_id, &context.model_id),
+        })
+        .unwrap();
+    RequestUsageContext {
+        conversation_id: context.conversation_id.clone(),
+        provider_id: context.provider_id.clone(),
+        model_id: context.model_id.clone(),
+        trigger_entry_id: trigger.id.clone(),
+        agent_run_id: run.id,
+    }
+}
+
+fn finish_context_run_without_output(
+    repo: &crate::FreshRepository,
+    context: &RequestUsageContext,
+) -> crate::ConversationCommit<crate::FinishedAgentRun> {
+    repo.finish_agent_run(
+        &context.agent_run_id,
+        FinishAgentRun {
+            status: AgentRunStatus::Completed,
+            stopped_reason: AgentStoppedReason::Completed,
+            error: None,
+            final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                conversation_id: context.conversation_id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(context.agent_run_id.clone()),
+                provider_step_id: None,
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationEntryPayload::Status(ConversationStatusEntry {
+                    code: ConversationStatusCode::CompletedWithoutOutput,
+                    message: None,
+                }),
+            })),
+        },
+    )
+    .unwrap()
+}
+
 #[test]
 fn soft_delete_conversation_rejects_active_run_and_succeeds_after_terminal_status() {
     let dir = tempdir().unwrap();
@@ -554,6 +606,302 @@ fn agent_message_request_usage_reload_rejects_cross_conversation_usage_identity(
         .conversation_timeline_records(&context.conversation_id)
         .unwrap_err();
     assert!(error.to_string().contains("usage event conversation"));
+}
+
+#[test]
+fn composer_context_selects_latest_completed_step_deterministically_without_sum() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let context = request_usage_context(&repo, "composer-context-latest-step");
+
+    let mut first_usage = usage_snapshot();
+    first_usage.total_tokens = 101;
+    request_usage_step(&repo, &context, 1, Some(first_usage));
+    let mut latest_usage = usage_snapshot();
+    latest_usage.total_tokens = 202;
+    let latest_step = request_usage_step(&repo, &context, 2, Some(latest_usage.clone()));
+
+    let finished = finish_context_run_without_output(&repo, &context);
+    let request_usage = finished.context_request_usage.clone().unwrap();
+    assert_eq!(request_usage.agent_run_id, context.agent_run_id);
+    assert_eq!(request_usage.provider_step_id, latest_step.id);
+    assert_eq!(request_usage.provider_step_seq, 2);
+    assert_eq!(request_usage.usage, Some(latest_usage));
+    assert_eq!(finished.request_usage, None);
+
+    let reloaded = repo
+        .conversation_timeline_records(&context.conversation_id)
+        .unwrap()
+        .unwrap()
+        .latest_context_request_usage;
+    assert_eq!(reloaded, Some(request_usage));
+}
+
+#[test]
+fn composer_context_preserves_missing_usage_for_latest_candidate() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let context = request_usage_context(&repo, "composer-context-missing-usage");
+    let step = request_usage_step(&repo, &context, 1, None);
+
+    let finished = finish_context_run_without_output(&repo, &context);
+    let request_usage = finished.context_request_usage.clone().unwrap();
+    assert_eq!(request_usage.provider_step_id, step.id);
+    assert_eq!(request_usage.usage, None);
+    assert_eq!(
+        repo.conversation_timeline_records(&context.conversation_id)
+            .unwrap()
+            .unwrap()
+            .latest_context_request_usage,
+        Some(request_usage)
+    );
+}
+
+#[test]
+fn composer_context_rejects_corrupt_latest_completed_candidate_without_backscan() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let first = request_usage_context(&repo, "composer-context-corrupt-latest");
+    request_usage_step(&repo, &first, 1, Some(usage_snapshot()));
+    finish_context_run_without_output(&repo, &first);
+
+    let latest = next_request_usage_run(&repo, &first, "latest request");
+    let latest_step = request_usage_step(&repo, &latest, 1, Some(usage_snapshot()));
+    finish_context_run_without_output(&repo, &latest);
+
+    let mut conn = store.pool().get().unwrap();
+    sql_query("PRAGMA ignore_check_constraints = ON")
+        .execute(&mut conn)
+        .unwrap();
+    sql_query("UPDATE provider_steps SET completed_at = NULL WHERE id = ?")
+        .bind::<Text, _>(&latest_step.id)
+        .execute(&mut conn)
+        .unwrap();
+    sql_query("PRAGMA ignore_check_constraints = OFF")
+        .execute(&mut conn)
+        .unwrap();
+    drop(conn);
+
+    let error = repo
+        .conversation_timeline_records(&first.conversation_id)
+        .unwrap_err();
+    assert!(error.to_string().contains("completed provider step"));
+    assert!(error.to_string().contains("has no completion timestamp"));
+
+    let mut conn = store.pool().get().unwrap();
+    sql_query("UPDATE provider_steps SET completed_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind::<Text, _>(&latest_step.id)
+        .execute(&mut conn)
+        .unwrap();
+    sql_query("UPDATE agent_runs SET completed_at = NULL WHERE id = ?")
+        .bind::<Text, _>(&latest.agent_run_id)
+        .execute(&mut conn)
+        .unwrap();
+    drop(conn);
+
+    let error = repo
+        .conversation_timeline_records(&first.conversation_id)
+        .unwrap_err();
+    assert!(error.to_string().contains("completed agent run"));
+    assert!(error.to_string().contains("has no completion timestamp"));
+}
+
+#[test]
+fn composer_context_excludes_running_failed_and_canceled_runs() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let completed = request_usage_context(&repo, "composer-context-terminal-filter");
+    let completed_step = request_usage_step(&repo, &completed, 1, Some(usage_snapshot()));
+    let completed_fact = finish_request_usage_run(&repo, &completed, &completed_step.id)
+        .context_request_usage
+        .clone()
+        .unwrap();
+
+    let running = next_request_usage_run(&repo, &completed, "running request");
+    request_usage_step(&repo, &running, 1, Some(usage_snapshot()));
+    assert_eq!(
+        repo.conversation_timeline_records(&completed.conversation_id)
+            .unwrap()
+            .unwrap()
+            .latest_context_request_usage,
+        Some(completed_fact.clone())
+    );
+    let canceled = repo
+        .finish_agent_run(
+            &running.agent_run_id,
+            FinishAgentRun {
+                status: AgentRunStatus::Canceled,
+                stopped_reason: AgentStoppedReason::Canceled,
+                error: None,
+                final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                    conversation_id: running.conversation_id.clone(),
+                    status: ConversationEntryStatus::Completed,
+                    agent_run_id: Some(running.agent_run_id.clone()),
+                    provider_step_id: None,
+                    tool_invocation_id: None,
+                    provider_item_id: None,
+                    payload: ConversationEntryPayload::Status(ConversationStatusEntry {
+                        code: ConversationStatusCode::Canceled,
+                        message: None,
+                    }),
+                })),
+            },
+        )
+        .unwrap();
+    assert_eq!(canceled.context_request_usage, None);
+
+    let failed = next_request_usage_run(&repo, &completed, "failed request");
+    request_usage_step(&repo, &failed, 1, Some(usage_snapshot()));
+    let error = run_error();
+    let failed = repo
+        .finish_agent_run(
+            &failed.agent_run_id,
+            FinishAgentRun {
+                status: AgentRunStatus::Failed,
+                stopped_reason: AgentStoppedReason::Failed,
+                error: Some(error.clone()),
+                final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                    conversation_id: failed.conversation_id.clone(),
+                    status: ConversationEntryStatus::Failed,
+                    agent_run_id: Some(failed.agent_run_id.clone()),
+                    provider_step_id: None,
+                    tool_invocation_id: None,
+                    provider_item_id: None,
+                    payload: ConversationEntryPayload::Error(error),
+                })),
+            },
+        )
+        .unwrap();
+    assert_eq!(failed.context_request_usage, None);
+    assert_eq!(
+        repo.conversation_timeline_records(&completed.conversation_id)
+            .unwrap()
+            .unwrap()
+            .latest_context_request_usage,
+        Some(completed_fact)
+    );
+}
+
+#[test]
+fn composer_context_identity_mismatch_rolls_back_finalization() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let context = request_usage_context(&repo, "composer-context-identity-rollback");
+    let step = request_usage_step(&repo, &context, 1, Some(usage_snapshot()));
+    let different_provider = repo.insert_provider(provider()).unwrap();
+    let entries_before = repo
+        .conversation_entries(&context.conversation_id)
+        .unwrap()
+        .len();
+
+    let mut conn = store.pool().get().unwrap();
+    sql_query("UPDATE usage_events SET provider_id = ? WHERE provider_step_id = ?")
+        .bind::<Text, _>(&different_provider.id)
+        .bind::<Text, _>(&step.id)
+        .execute(&mut conn)
+        .unwrap();
+    drop(conn);
+
+    let result = repo.finish_agent_run(
+        &context.agent_run_id,
+        FinishAgentRun {
+            status: AgentRunStatus::Completed,
+            stopped_reason: AgentStoppedReason::Completed,
+            error: None,
+            final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                conversation_id: context.conversation_id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(context.agent_run_id.clone()),
+                provider_step_id: None,
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationEntryPayload::Status(ConversationStatusEntry {
+                    code: ConversationStatusCode::CompletedWithoutOutput,
+                    message: None,
+                }),
+            })),
+        },
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("usage event provider")
+    );
+    assert_eq!(
+        repo.get_agent_run(&context.agent_run_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentRunStatus::Running
+    );
+    assert_eq!(
+        repo.conversation_entries(&context.conversation_id)
+            .unwrap()
+            .len(),
+        entries_before
+    );
+}
+
+#[test]
+fn composer_context_finalization_projection_matches_reload() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let context = request_usage_context(&repo, "composer-context-finalization-parity");
+    request_usage_step(&repo, &context, 1, Some(usage_snapshot()));
+
+    let live = finish_context_run_without_output(&repo, &context)
+        .context_request_usage
+        .clone();
+    let reload = repo
+        .conversation_timeline_records(&context.conversation_id)
+        .unwrap()
+        .unwrap()
+        .latest_context_request_usage;
+    assert_eq!(live, reload);
+}
+
+#[test]
+fn composer_context_terminal_idempotent_finalize_rebuilds_only_current_latest_completed_delta() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let first = request_usage_context(&repo, "composer-context-idempotent");
+    request_usage_step(&repo, &first, 1, Some(usage_snapshot()));
+    let first_finish = finish_context_run_without_output(&repo, &first);
+    let first_fact = first_finish.context_request_usage.clone().unwrap();
+    let repeated_first = finish_context_run_without_output(&repo, &first);
+    assert!(!repeated_first.appended_final_entry);
+    assert_eq!(repeated_first.context_request_usage, Some(first_fact));
+
+    let latest = next_request_usage_run(&repo, &first, "newer completed request");
+    let mut latest_usage = usage_snapshot();
+    latest_usage.total_tokens = 404;
+    request_usage_step(&repo, &latest, 1, Some(latest_usage));
+    let latest_finish = finish_context_run_without_output(&repo, &latest);
+    let latest_fact = latest_finish.context_request_usage.clone().unwrap();
+
+    assert_eq!(
+        finish_context_run_without_output(&repo, &first).context_request_usage,
+        None
+    );
+    assert_eq!(
+        finish_context_run_without_output(&repo, &latest).context_request_usage,
+        Some(latest_fact.clone())
+    );
+    assert_eq!(
+        repo.conversation_timeline_records(&first.conversation_id)
+            .unwrap()
+            .unwrap()
+            .latest_context_request_usage,
+        Some(latest_fact)
+    );
 }
 
 #[test]

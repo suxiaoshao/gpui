@@ -316,6 +316,11 @@ pub(crate) fn finished_agent_run_changes(finished: &FinishedAgentRun) -> Vec<Con
             request_usage: Box::new(request_usage),
         });
     }
+    if let Some(request_usage) = finished.context_request_usage.clone() {
+        changes.push(ConversationChange::ConversationContextRequestUsageChanged {
+            request_usage: Box::new(request_usage),
+        });
+    }
     changes
 }
 

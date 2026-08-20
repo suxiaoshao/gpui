@@ -17,6 +17,7 @@ use gpui_component::{
 
 use crate::{
     components::{
+        chat::context_occupancy::{ComposerContextProjection, ContextOccupancyDisclosure},
         chat::input::{ChatFormSkillCompletionPlacement, ComposerEditor, attachments},
         chat::run_settings,
         picker::{PickerPopover, PickerPopoverConfig},
@@ -119,6 +120,7 @@ pub(crate) struct ChatForm {
     skill_completion_placement: ChatFormSkillCompletionPlacement,
     primary_action_can_submit: bool,
     primary_action_disabled_reason: Option<SharedString>,
+    context_occupancy_projection: Option<ComposerContextProjection>,
 }
 
 impl ChatForm {
@@ -131,6 +133,7 @@ impl ChatForm {
             skill_completion_placement: ChatFormSkillCompletionPlacement::BelowForm,
             primary_action_can_submit: false,
             primary_action_disabled_reason: None,
+            context_occupancy_projection: None,
         }
     }
 
@@ -149,6 +152,14 @@ impl ChatForm {
     ) -> Self {
         self.primary_action_can_submit = can_submit;
         self.primary_action_disabled_reason = disabled_reason;
+        self
+    }
+
+    pub(crate) fn context_occupancy_projection(
+        mut self,
+        projection: ComposerContextProjection,
+    ) -> Self {
+        self.context_occupancy_projection = Some(projection);
         self
     }
 
@@ -730,6 +741,9 @@ impl View for ChatForm {
         let primary_enabled = self.controls.primary_action.is_enabled();
         let primary_action_can_submit = self.primary_action_can_submit;
         let primary_action_disabled_reason = self.primary_action_disabled_reason.clone();
+        let context_occupancy_projection = self.context_occupancy_projection.clone();
+        let context_occupancy_id =
+            format!("conversation-context-occupancy-{}", self.state.entity_id());
         let attachments_enabled_for_drop = self.controls.attachments.is_enabled();
         let drop_event_target = self.state.downgrade();
         let skill_completion_open = composer
@@ -803,6 +817,12 @@ impl View for ChatForm {
                             .when_some(approval, |this, approval| this.child(approval)),
                     )
                     .child(div().flex_1().min_w_0())
+                    .when_some(context_occupancy_projection, |this, projection| {
+                        this.child(ContextOccupancyDisclosure::new(
+                            context_occupancy_id,
+                            projection,
+                        ))
+                    })
                     .child(
                         footer_primary_controls()
                             .when_some(model, |this, model| this.child(model))

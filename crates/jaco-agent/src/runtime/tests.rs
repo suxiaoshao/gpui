@@ -216,7 +216,7 @@ async fn streaming_text_delta_updates_single_assistant_item() {
 }
 
 #[tokio::test]
-async fn run_finalization_publishes_request_usage_after_run_status() {
+async fn composer_context_run_finalization_publishes_after_message_usage() {
     let fixture = Fixture::new("request-usage-publication");
     let runtime = AgentRuntime::from_repository(fixture.repo.clone());
     let model = MockCompletionModel::from_stream_turns([[
@@ -249,9 +249,10 @@ async fn run_finalization_publishes_request_usage_after_run_status() {
         .expect("completed provider step");
 
     let events = published.lock().unwrap();
-    let changes = events
+    let (finalization_index, changes) = events
         .iter()
-        .find_map(|event| match event {
+        .enumerate()
+        .find_map(|(index, event)| match event {
             AgentRuntimeEvent::ConversationCommitted { changes, .. }
                 if matches!(
                     changes.first(),
@@ -259,7 +260,7 @@ async fn run_finalization_publishes_request_usage_after_run_status() {
                         if run.id == handle.agent_run.id
                 ) =>
             {
-                Some(changes)
+                Some((index, changes))
             }
             _ => None,
         })
@@ -269,12 +270,166 @@ async fn run_finalization_publishes_request_usage_after_run_status() {
         [
             ConversationChange::RunStatusChanged { run },
             ConversationChange::AgentMessageRequestUsageChanged { request_usage },
+            ConversationChange::ConversationContextRequestUsageChanged {
+                request_usage: context_request_usage,
+            },
         ] if run.id == handle.agent_run.id
             && request_usage.agent_run_id == handle.agent_run.id
             && request_usage.conversation_entry_id == final_entry_id
             && request_usage.provider_step_id == provider_step.id
             && request_usage.usage.as_ref().map(|usage| usage.total_tokens) == Some(7)
+            && context_request_usage.agent_run_id == handle.agent_run.id
+            && context_request_usage.provider_step_id == provider_step.id
+            && context_request_usage.usage.as_ref().map(|usage| usage.total_tokens) == Some(7)
     ));
+
+    let provider_step_index = events
+        .iter()
+        .enumerate()
+        .find_map(|(index, event)| match event {
+            AgentRuntimeEvent::ConversationTimelineChanged { changes, .. }
+                if matches!(
+                    changes.as_slice(),
+                    [ConversationChange::ProviderStepChanged { step }]
+                        if step.id == provider_step.id
+                            && step.status == ProviderStepStatus::Completed
+                ) =>
+            {
+                Some(index)
+            }
+            _ => None,
+        })
+        .expect("provider step completion publication");
+    assert!(provider_step_index < finalization_index);
+
+    let message_request_usage = changes
+        .iter()
+        .find_map(|change| match change {
+            ConversationChange::AgentMessageRequestUsageChanged { request_usage } => {
+                Some(request_usage.as_ref().clone())
+            }
+            _ => None,
+        })
+        .unwrap();
+    let context_request_usage = changes
+        .iter()
+        .find_map(|change| match change {
+            ConversationChange::ConversationContextRequestUsageChanged { request_usage } => {
+                Some(request_usage.as_ref().clone())
+            }
+            _ => None,
+        })
+        .unwrap();
+    let final_entry = fixture
+        .repo
+        .conversation_entries(&fixture.conversation.id)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.id == final_entry_id)
+        .unwrap();
+
+    let mut partial_usage = context_request_usage.usage.clone().unwrap();
+    partial_usage.total_tokens = 0;
+    partial_usage.input_tokens = 1;
+    let mut unreported_usage = partial_usage.clone();
+    unreported_usage.input_tokens = 0;
+    for usage in [Some(partial_usage), Some(unreported_usage), None] {
+        let mut context_request_usage = context_request_usage.clone();
+        context_request_usage.usage = usage.clone();
+        let synthetic = jaco_db::FinishedAgentRun {
+            run: handle.agent_run.clone(),
+            final_entry: final_entry.clone(),
+            appended_final_entry: false,
+            request_usage: Some(message_request_usage.clone()),
+            context_request_usage: Some(context_request_usage),
+        };
+        let published = finished_agent_run_changes(&synthetic);
+        assert!(matches!(
+            published.as_slice(),
+            [
+                ConversationChange::RunStatusChanged { .. },
+                ConversationChange::AgentMessageRequestUsageChanged { .. },
+                ConversationChange::ConversationContextRequestUsageChanged { request_usage },
+            ] if request_usage.usage == usage
+        ));
+    }
+
+    let without_context = jaco_db::FinishedAgentRun {
+        run: handle.agent_run.clone(),
+        final_entry,
+        appended_final_entry: false,
+        request_usage: Some(message_request_usage),
+        context_request_usage: None,
+    };
+    assert!(
+        !finished_agent_run_changes(&without_context)
+            .iter()
+            .any(|change| {
+                matches!(
+                    change,
+                    ConversationChange::ConversationContextRequestUsageChanged { .. }
+                )
+            })
+    );
+}
+
+#[tokio::test]
+async fn composer_context_failed_and_canceled_runs_do_not_publish() {
+    fn publishes_context(event: &AgentRuntimeEvent) -> bool {
+        let changes = match event {
+            AgentRuntimeEvent::ConversationCommitted { changes, .. }
+            | AgentRuntimeEvent::ConversationTimelineChanged { changes, .. } => changes,
+            _ => return false,
+        };
+        changes.iter().any(|change| {
+            matches!(
+                change,
+                ConversationChange::ConversationContextRequestUsageChanged { .. }
+            )
+        })
+    }
+
+    let failed_fixture = Fixture::new("composer-context-failed-publication");
+    let failed_events = Arc::new(Mutex::new(Vec::new()));
+    let failed_observer = AgentRuntimeObserver::new({
+        let failed_events = failed_events.clone();
+        move |event| failed_events.lock().unwrap().push(event)
+    });
+    let failed = AgentRuntime::from_repository(failed_fixture.repo.clone())
+        .run_with_model_observed(
+            failed_fixture.streaming_request(),
+            FailBeforeFirstTokenModel,
+            Some(failed_observer),
+        )
+        .await
+        .unwrap();
+    assert_eq!(failed.agent_run.status, AgentRunStatus::Failed);
+    assert!(!failed_events.lock().unwrap().iter().any(publishes_context));
+
+    let canceled_fixture = Fixture::new("composer-context-canceled-publication");
+    let canceled_events = Arc::new(Mutex::new(Vec::new()));
+    let canceled_observer = AgentRuntimeObserver::new({
+        let canceled_events = canceled_events.clone();
+        move |event| canceled_events.lock().unwrap().push(event)
+    });
+    let canceled_request = canceled_fixture.streaming_request();
+    let cancellation_token = canceled_request.cancellation_token.clone();
+    let canceled = AgentRuntime::from_repository(canceled_fixture.repo.clone())
+        .run_with_model_observed(
+            canceled_request,
+            CancelAfterTextStreamModel { cancellation_token },
+            Some(canceled_observer),
+        )
+        .await
+        .unwrap();
+    assert_eq!(canceled.agent_run.status, AgentRunStatus::Canceled);
+    assert!(
+        !canceled_events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(publishes_context)
+    );
 }
 
 #[tokio::test]
@@ -3583,6 +3738,7 @@ fn model_capabilities() -> ModelCapabilitiesSnapshot {
         text_input: true,
         text_output: true,
         streaming: true,
+        context_window: None,
         image_input: None,
         file_input: None,
         audio_input: false,

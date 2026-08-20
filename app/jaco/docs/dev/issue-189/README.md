@@ -1,16 +1,16 @@
-# Jaco：在 Agent message action row 展示单次请求用量
+# Jaco：Issue #189 message usage 与 composer context UI
 
 ## 根计划与 owner 边界
 
 - Plan ID：`issue-189`
 - Root hub：[Issue #189](../../../../../docs/dev/issue-189/README.md)
-- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)
+- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)
 - Owner directory：`app/jaco`
-- Owner status：`In progress`
-- 消费 root IDs：`C-01`–`C-03`、`D-05`、`D-06`、`D-08`、`ST-01`、`R-01`–`R-13`
-- Assigned WP：`WP-501`
-- Owns：Conversation effect消费、timeline row projection、request usage formatter、原生HoverCard/DescriptionList、typed icon、Fluent、UI tests/manual validation
-- Does not own：DB association、usage authority/聚合、provider raw parsing、composer context、Settings analytics
+- Owner status：`In progress`（`WP-501`、`WP-502` 均已 `Implemented`；root-level workspace/known-provider/CI gates待做）
+- 消费 root IDs：`C-01`–`C-03`、`C-12`、`D-05`、`D-06`、`D-08`、`D-19`–`D-21`、`ST-01`、`ST-11`、`R-01`–`R-13`、`R-27`–`R-34`
+- Assigned WP：`WP-501`、`WP-502`
+- Owns：Conversation effect消费、timeline message usage、composer current-choice projection、持久化model capability消费、footer HoverCard、shared formatter、typed icons、Fluent、GPUI tests/manual validation
+- Does not own：DB association/selection、usage authority/聚合、provider raw parsing、capability persistence、Settings analytics或#194 editor
 
 ## Owner-local 证据与决定
 
@@ -223,5 +223,99 @@ git diff --check
 
 - 已实现Conversation effect精确更新、timeline projection、agent action-row projection、原生HoverCard/DescriptionList、分离的exact/compact formatter、typed icon及en-US/zh-CN keys；当前UI语义为始终可hover的纯图标、与时间样式一致的trigger外group-hover紧凑total摘要、详情完整整数与组件默认延迟。
 - `cargo test -p jaco request_usage`：8 passed（包含摘要compact/详情exact边界、真实GPUI window的icon-only trigger、快速掠过取消、默认延迟与trigger/content过渡）；`cargo test -p jaco timeline`：11 passed；`cargo test -p jaco request_usage_update`：2 passed；两个typed icon focused tests通过。
-- workspace build/test/strict clippy、`cargo fmt` 与 `git diff --check` 通过；chat form、Settings、TTFT/TPS与provider metadata均未接入。
-- 最终HoverCard交互已由用户检查确认符合预期。真实provider请求与三平台CI尚未执行，因此owner状态保留`In progress`。
+- `cargo fmt` 与 selected-package combined strict clippy 通过；workspace-wide `cargo build`、`cargo test`、`cargo clippy`、known/provider 场景与三平台 CI 未执行；chat form、Settings、TTFT/TPS与provider metadata均未接入。
+- 最终HoverCard交互已由用户检查确认符合预期；release bundle 构建成功。隔离配置下 fresh no-model `Gauge —`、AX label、默认延迟 HoverCard、详情内容与 footer 布局已验证。
+
+## Composer extension — `WP-502`（Implemented）
+
+本节登记 [composer 执行文档](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md) 的 app owner contract。`WP-501` 的 action-row视觉与pointer交互不得改变。
+
+### Owner-local 文件与边界
+
+```text
+app/jaco/src/
+├── state/providers.rs                         # F-526 [Modify] persisted capability projection
+├── components/chat.rs                         # F-511 [Modify] module declaration
+├── components/chat/context_occupancy.rs       # F-512 [Add] projection/UI/tests
+├── components/chat/detail.rs                  # F-513 [Modify] reload/effect sync
+├── components/chat/input.rs                   # F-514 [Modify] singular fact owner
+├── components/chat/form.rs                    # F-515 [Modify] footer builder slot
+├── components/chat/detail/request_usage.rs    # F-516 [Modify] shared formatter consumer
+├── components/chat/model_picker.rs            # F-521 [Modify] capability fixture fallout
+├── features/conversation.rs                   # F-522 [Modify] capability/domain fixture fallout
+├── features/conversation/attachments.rs       # F-523 [Modify] capability fixture fallout
+├── features/conversation/model.rs             # F-524 [Modify] Conversation fixture fallout
+├── features/home/sidebar.rs                   # F-525 [Modify] Conversation fixture fallout
+├── foundation/conversation_format.rs          # F-517 [Modify] exact/compact token helpers
+└── foundation/assets.rs                       # F-518 [Modify] typed Gauge + path test
+
+app/jaco/locales/
+├── en-US/main.ftl                             # F-519 [Modify] context occupancy keys
+└── zh-CN/main.ftl                             # F-520 [Modify] parity keys
+```
+
+- 不新增Entity/Store/Global/Operation/Task、overlay state、timer、subscription或数字格式化dependency。
+- `ChatForm`保持pure visual shell；不读取Conversation/repository/provider global。
+- composer UI不复用message action-row component，也不展示request input/output/cache/reasoning明细。
+
+### `L-511`：Raw fact ownership 与纯派生
+
+- `ConversationDetailPage` 在initial/reload、composer context effect与conversation clear后，把 `Conversation.latest_context_request_usage.clone()` 同步给 `ChatInputController`；effect可来自accepted或ignored replay。
+- controller singular-fact setter先做`PartialEq`等值判断，只有raw fact实际变化时才notify。
+- controller只保存该plain optional fact；form/current catalog沿既有observe/notify路径触发render。
+- provider catalog 从持久化record原样派生 `ProviderModelChoice`，不做读取时补全；升级前缺capability的缓存保持unknown，用户执行provider refresh后消费新持久化值。
+- `context_occupancy.rs` 始终构造projection；无model selection时current choice为None并派生typed unknown，其余情况按root固定顺序派生capability、exact identity match与coverage。
+- percentage用`u128`整数计算到十分位；1%、37.5%、125%均保留准确文本，不clamp。
+- model切换不保存per-model history；切回时仍只检查conversation singular latest fact。
+
+### `L-512`：Footer trigger 与 HoverCard
+
+Footer插槽固定为既有flex spacer之后、model selector之前：
+
+```text
+[left controls] [flex spacer] [Gauge 37.5%] [model selector] [send/stop]
+```
+
+- 常驻 `IconName::Gauge + text_xs percentage`；unknown为`Gauge + —`。
+- icon/text同为muted foreground、nowrap、shrink-0，无button chrome、fill、progress ring或threshold color。
+- 整个cluster是原生 `HoverCard` trigger，使用默认600ms open/300ms close delay与`Anchor::BottomRight`。
+- pointer-only；不注册click、keydown、focus handle或tab stop。
+- known详情用exact formatter列出used/window/occupancy/provider/model/request time；unknown详情显示typed reason与仍可确定的metadata。
+
+### `L-513`：Formatter、Fluent 与 accessibility
+
+- 把 `request_usage.rs` 当前exact/compact helpers原样迁移到 `foundation/conversation_format.rs`，保留WP-501输出/tests。
+- `Gauge` 走app-local `IconName`与既有Lucide runtime asset；扩展typed path test。
+- root计划列出的全部Fluent keys在`en-US`/`zh-CN` parity出现。
+- cluster暴露一个localized、非可聚焦的image-role accessibility label；known label含percentage，unknown label含状态。
+
+### Tests 与验证
+
+| T-ID | Owner test |
+| --- | --- |
+| `T-511` | `composer_context_projection_classifies_all_known_and_unknown_states` |
+| `T-512` | `composer_context_percentage_formats_integer_decimal_and_over_capacity` |
+| `T-513` | `composer_context_model_switch_uses_only_latest_conversation_request` |
+| `T-514` | `composer_footer_places_gauge_before_model_without_shrinking_primary_controls` |
+| `T-515` | `composer_context_hover_card_uses_whole_cluster_and_component_default_delays` |
+| `T-516` | `shared_token_formatters_preserve_request_usage_exact_and_compact_output` |
+| `T-517` | typed Gauge path、locale parity与accessible label coverage |
+| `T-518` | `composer_context_fact_setter_deduplicates_replayed_or_ignored_effects` |
+| `T-519` | 升级前缺context-window的GPT-5.6缓存保持unknown直至provider refresh；已持久化的discovered/manual/official-doc capability与provenance原样进入choice |
+
+```sh
+cargo fmt
+cargo test -p jaco context_occupancy
+cargo test -p jaco request_usage
+cargo test -p jaco i18n
+cargo check -p jaco
+git diff --check
+```
+
+完成条件：root `ST-11`、`R-27`–`R-34`与`T-511`–`T-519`通过；用户参考图对应的`Gauge + percentage/—`常驻footer，默认HoverCard详情和WP-501 action row均有回归证据。
+
+## Composer 实施证据（2026-08-20）
+
+- `WP-502` 已 `Implemented`；provider state 4、`context_occupancy` 7、`request_usage` 8、`i18n` 11、`context_request_usage_setter` 1 passed，`cargo check -p jaco` 通过。
+- `cargo fmt` 与 `cargo clippy -p jaco -p jaco-agent -p jaco-db --all-targets --all-features -- -D warnings` 通过；隔离配置的fresh no-model `Gauge —`、AX label、默认 HoverCard/details/layout已在此前UI构建中验证；移除读取时兼容补全后的最终bundle尚未重建。
+- 现场provider refresh/新请求、完整人工矩阵、workspace-wide build/test/clippy、三平台 CI 与 implementation commit/PR 仍 `Pending`。

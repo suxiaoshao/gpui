@@ -9,7 +9,7 @@ mod websocket;
 pub use websocket::OpenAiResponsesSessionPool;
 pub(crate) use websocket::{
     OpenAiAttemptCoordinator, OpenAiSessionKey, OpenAiWebSocketCompletionModel,
-    OpenAiWebSocketModelClient, official_gpt_5_6_websocket,
+    OpenAiWebSocketModelClient, official_gpt_5_6_websocket, official_openai_endpoint,
 };
 
 #[derive(Clone, Debug)]
@@ -126,6 +126,7 @@ mod tests {
                 text_input: true,
                 text_output: true,
                 streaming: true,
+                context_window: None,
                 image_input: None,
                 file_input: None,
                 audio_input: false,

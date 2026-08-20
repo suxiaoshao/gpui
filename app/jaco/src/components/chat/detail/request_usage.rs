@@ -10,7 +10,11 @@ use gpui_component::{
 };
 use jaco_core::{AgentMessageRequestUsage, ProviderUsageCoverage};
 
-use crate::foundation::{I18n, assets::IconName};
+use crate::foundation::{
+    I18n,
+    assets::IconName,
+    conversation_format::{format_compact_token_count, format_token_count},
+};
 
 #[derive(Debug, PartialEq, Eq)]
 enum RequestUsageContent {
@@ -198,56 +202,6 @@ fn request_usage_compact_total(
     let mut args = FluentArgs::new();
     args.set("tokens", tokens);
     Some(i18n.t_with_args("conversation-request-usage-compact-total", &args))
-}
-
-fn format_token_count(value: u64) -> String {
-    let digits = value.to_string();
-    let mut formatted = String::with_capacity(digits.len() + digits.len().saturating_sub(1) / 3);
-    let first_group = digits.len() % 3;
-    for (index, byte) in digits.bytes().enumerate() {
-        if index > 0 && index % 3 == first_group {
-            formatted.push(',');
-        }
-        formatted.push(char::from(byte));
-    }
-    formatted
-}
-
-fn format_compact_token_count(value: u64) -> String {
-    const UNITS: [(u64, &str); 6] = [
-        (1_000, "k"),
-        (1_000_000, "M"),
-        (1_000_000_000, "B"),
-        (1_000_000_000_000, "T"),
-        (1_000_000_000_000_000, "P"),
-        (1_000_000_000_000_000_000, "E"),
-    ];
-
-    let Some(mut unit_index) = UNITS.iter().rposition(|(unit, _)| value >= *unit) else {
-        return value.to_string();
-    };
-    let value = u128::from(value);
-
-    loop {
-        let (unit, suffix) = UNITS[unit_index];
-        let unit = u128::from(unit);
-        let whole = value / unit;
-
-        if whole < 100 {
-            let tenths = (value * 10 + unit / 2) / unit;
-            if tenths.is_multiple_of(10) {
-                return format!("{}{suffix}", tenths / 10);
-            }
-            return format!("{}.{}{suffix}", tenths / 10, tenths % 10);
-        }
-
-        let rounded = (value + unit / 2) / unit;
-        if rounded >= 1_000 && unit_index + 1 < UNITS.len() {
-            unit_index += 1;
-            continue;
-        }
-        return format!("{rounded}{suffix}");
-    }
 }
 
 fn format_rate(value: f64) -> String {

@@ -4,5 +4,5 @@
 
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
-| [#189](https://github.com/suxiaoshao/gpui/issues/189) Agent message request usage live publication | `Implemented`；run-finalization ordered publication 已实施并通过本地测试 | [issue-189/README.md](issue-189/README.md) |
+| [#189](https://github.com/suxiaoshao/gpui/issues/189) Usage/context discovery 与 live publication | `In progress`；message usage publication 已实施，composer capability/live contract 正在实施 | [issue-189/README.md](issue-189/README.md) |
 | [#190](https://github.com/suxiaoshao/gpui/issues/190) ToolInvocation lifecycle snapshot publication | `Implemented`；初始与强制终态 snapshot publication 及本地自动化已验证 | [issue-190/README.md](issue-190/README.md) |

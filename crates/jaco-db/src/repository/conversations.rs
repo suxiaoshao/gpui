@@ -455,6 +455,12 @@ impl FreshRepository {
             tool_invocations.extend(self.tool_invocations_for_run(&run.id)?);
         }
         let usage_events = self.usage_events_for_conversation(conversation_id)?;
+        let latest_context_request_usage = latest_conversation_context_request_usage_from_parts(
+            conversation_id,
+            &runs,
+            &provider_steps,
+            &usage_events,
+        )?;
 
         let entries_by_id = items
             .iter()
@@ -522,6 +528,7 @@ impl FreshRepository {
             provider_steps,
             tool_invocations,
             agent_message_request_usages,
+            latest_context_request_usage,
         }))
     }
 

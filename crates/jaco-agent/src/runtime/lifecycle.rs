@@ -349,6 +349,7 @@ mod tests {
                         text_input: true,
                         text_output: true,
                         streaming: true,
+                        context_window: None,
                         image_input: None,
                         file_input: None,
                         audio_input: false,

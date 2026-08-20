@@ -489,11 +489,17 @@ pub(crate) fn ready_provider(
 #[cfg(test)]
 mod tests {
     use super::{
-        ProviderDatabaseOwnerGlobal, ProviderModelChoice, ProviderModelKey, ProviderOperation,
-        catalog, init,
+        ProviderData, ProviderDatabaseOwnerGlobal, ProviderModelChoice, ProviderModelKey,
+        ProviderOperation, catalog, init,
     };
     use crate::database;
-    use jaco_core::conservative_model_capabilities;
+    use jaco_core::{
+        CapabilitySourceSnapshot, ContextWindowCapabilitySnapshot, ProviderModelMetadata,
+        ProviderSecretRefs, ProviderSettingsPayload, conservative_model_capabilities,
+    };
+    use jaco_db::{ProviderModelRecord, ProviderRecord};
+    use std::num::NonZeroU64;
+    use time::OffsetDateTime;
 
     #[test]
     fn provider_model_choice_uses_provider_model_composite_key() {
@@ -518,6 +524,79 @@ mod tests {
         let mut choice_without_display_name = choice.clone();
         choice_without_display_name.model_display_name = None;
         assert_eq!(choice_without_display_name.display_label(), "gpt-5");
+    }
+
+    #[test]
+    fn old_cached_openai_model_stays_unknown_until_provider_refresh() {
+        let capabilities = conservative_model_capabilities("openai");
+        let data = ProviderData::new(vec![(
+            provider_record("openai"),
+            vec![provider_model_record("gpt-5.6-sol", capabilities.clone())],
+        )]);
+
+        assert_eq!(data.providers[0].1[0].capabilities, capabilities);
+        assert_eq!(data.enabled_models.len(), 1);
+        assert_eq!(data.enabled_models[0].capabilities, capabilities);
+        assert!(data.enabled_models[0].capabilities.context_window.is_none());
+    }
+
+    #[test]
+    fn enabled_choice_preserves_existing_context_window_provenance() {
+        let mut capabilities = conservative_model_capabilities("openai");
+        capabilities.context_window = Some(ContextWindowCapabilitySnapshot {
+            tokens: NonZeroU64::new(64_000).unwrap(),
+            source: CapabilitySourceSnapshot::Manual {
+                source: "test".to_string(),
+            },
+        });
+        let data = ProviderData::new(vec![(
+            provider_record("openai"),
+            vec![provider_model_record("gpt-5.6-sol", capabilities.clone())],
+        )]);
+
+        assert_eq!(data.providers[0].1[0].capabilities, capabilities);
+        assert_eq!(
+            data.enabled_models[0].capabilities.context_window,
+            capabilities.context_window
+        );
+    }
+
+    fn provider_record(kind: &str) -> ProviderRecord {
+        ProviderRecord {
+            id: "provider".to_string(),
+            kind: kind.to_string(),
+            display_name: kind.to_string(),
+            enabled: true,
+            settings: ProviderSettingsPayload {
+                provider_kind: kind.to_string(),
+                fields: Vec::new(),
+            },
+            secret_refs: ProviderSecretRefs { refs: Vec::new() },
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    fn provider_model_record(
+        model_id: &str,
+        capabilities: jaco_core::ModelCapabilitiesSnapshot,
+    ) -> ProviderModelRecord {
+        ProviderModelRecord {
+            id: "model".to_string(),
+            provider_id: "provider".to_string(),
+            model_id: model_id.to_string(),
+            display_name: None,
+            enabled: true,
+            capabilities,
+            metadata: ProviderModelMetadata {
+                display_name: None,
+                family: None,
+                raw: None,
+            },
+            fetched_at: OffsetDateTime::UNIX_EPOCH,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        }
     }
 
     #[gpui::test]

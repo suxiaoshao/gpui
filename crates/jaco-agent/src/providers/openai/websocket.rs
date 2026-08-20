@@ -1080,13 +1080,16 @@ pub(crate) fn official_gpt_5_6_websocket(
     configured_base_url: Option<&str>,
     stateful_response_continuation: bool,
 ) -> bool {
-    let official_endpoint = configured_base_url.is_none_or(|base_url| {
-        let normalized = base_url.trim().trim_end_matches('/');
-        normalized == "https://api.openai.com" || normalized == "https://api.openai.com/v1"
-    });
-    official_endpoint
+    official_openai_endpoint(configured_base_url)
         && stateful_response_continuation
         && model_id.to_ascii_lowercase().starts_with("gpt-5.6")
+}
+
+pub(crate) fn official_openai_endpoint(configured_base_url: Option<&str>) -> bool {
+    configured_base_url.is_none_or(|base_url| {
+        let normalized = base_url.trim().trim_end_matches('/');
+        normalized == "https://api.openai.com" || normalized == "https://api.openai.com/v1"
+    })
 }
 
 #[cfg(test)]

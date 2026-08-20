@@ -22,6 +22,7 @@ pub fn conservative_model_capabilities(provider_kind: &str) -> ModelCapabilities
         text_input: true,
         text_output: true,
         streaming: true,
+        context_window: None,
         image_input: None::<ImageInputCapabilitySnapshot>,
         file_input: None,
         audio_input: false,

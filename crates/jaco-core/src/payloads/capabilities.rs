@@ -242,6 +242,13 @@ pub struct ToolCallingCapabilitySnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContextWindowCapabilitySnapshot {
+    pub tokens: std::num::NonZeroU64,
+    pub source: CapabilitySourceSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReasoningCapabilitySnapshot {
     pub default_effort: String,
     pub efforts: Vec<String>,
