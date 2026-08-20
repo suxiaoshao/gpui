@@ -1,8 +1,5 @@
 use crate::{
-    app::{
-        APP_NAME, menus,
-        title_bar_menu::{TitleBarAppMenuBar, title_bar_leading},
-    },
+    app::{APP_NAME, menus, title_bar_menu::title_bar_leading},
     components::resource::{
         CriticalResourceAction, CriticalResourceProblem, CriticalResourcesView,
     },
@@ -15,6 +12,7 @@ use gpui_component::{
     Root, StyledExt, TitleBar, WindowExt as NotificationWindowExt, h_flex,
     input::{InputEvent, InputState},
     label::Label,
+    menu::AppMenuBar,
     notification::{Notification, NotificationType},
     v_flex,
 };
@@ -63,7 +61,7 @@ pub(crate) struct SettingsView {
     settings_search_input: Entity<InputState>,
     config_pages: Option<ConfigSettingsPages>,
     database_pages: Option<DatabaseSettingsPages>,
-    app_menu_bar: Entity<TitleBarAppMenuBar>,
+    app_menu_bar: Entity<AppMenuBar>,
     selected_page: SettingsPageKey,
     sidebar_width: Pixels,
     _theme_binding: state::theme::WindowThemeBinding,
@@ -118,7 +116,7 @@ impl SettingsView {
         let config_pages = state::config::store(cx)
             .read(cx, |operation| operation.data().is_some())
             .then(|| ConfigSettingsPages::new(window, cx));
-        let app_menu_bar = TitleBarAppMenuBar::new(cx);
+        let app_menu_bar = AppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
         let database_store = crate::database::store(cx);
         let config_store = state::config::store(cx);
@@ -590,12 +588,11 @@ fn inner_open_settings_window(selected_page: Option<SettingsPageKey>, cx: &mut A
             window_bounds: Some(placement.window_bounds),
             display_id: placement.display_id,
             titlebar: Some(settings_titlebar_options(title)),
-            app_owns_titlebar_drag: true,
             window_background: WindowBackgroundAppearance::Blurred,
             is_resizable: true,
             kind: WindowKind::Normal,
             app_id: Some(APP_NAME.to_owned()),
-            ..Default::default()
+            ..TitleBar::window_options()
         },
         |window, cx| {
             let selected_page = selected_page.unwrap_or(SettingsPageKey::General);
@@ -728,7 +725,7 @@ fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 8] {
 }
 
 fn settings_title_bar_content(
-    app_menu_bar: Entity<TitleBarAppMenuBar>,
+    app_menu_bar: Entity<AppMenuBar>,
     title: impl Into<SharedString>,
 ) -> impl IntoElement {
     h_flex()

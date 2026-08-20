@@ -38,19 +38,26 @@ description: Use gpui-component components in GPUI applications. Use when buildi
 - Shared editor and rendered-Markdown syntax colors belong to the theme layer.
   Apps consume the installed `ActiveTheme`; they do not clone palettes, force
   reparses, or mutate text to refresh code highlighting.
+- `Command` owns palette interaction and optional local label/keyword matching;
+  an application-owned or remote search keeps result authority and uses
+  `.filterable(false)` to avoid discarding valid external matches.
+- Component roles and labels improve accessibility only where the component
+  explicitly implements them. Custom rows, icon-only controls, and app-owned
+  drawing still need an app-level accessibility contract and runtime testing.
 
 ## Component Selection
 
 | Need | Prefer |
 | --- | --- |
 | Primary, secondary, danger, icon, or loading action | `Button`, `ButtonGroup`, `Toggle` |
-| Text entry | `Input`, `Editor`, `NumberInput`, `OtpInput` |
+| Text entry | `Input`, `Textarea`, `Editor`, `NumberInput`, `OtpInput` |
 | Formatted text, Markdown, or HTML rendering | `TextView` |
 | Boolean or option selection | `Checkbox`, `Switch`, `Radio`, `Select`, `Combobox`, `Slider`, `ColorPicker`, `DatePicker` |
 | Forms and settings | `Form`, `Settings`, `GroupBox`, `Label`, `DescriptionList` |
 | Modal or confirmation flow | `Dialog`, `AlertDialog` |
 | Non-modal panel or floating content | `Sheet`, `Popover`, `HoverCard`, `Tooltip` |
-| Menu actions | `Menu`, `DropdownButton` |
+| Command palette or action search | `Command` |
+| Menu actions | `Menu`, `DropdownButton`, `AppMenuBar` |
 | Feedback and status | `Alert`, `Notification`, `Progress`, `Spinner`, `Skeleton`, `Badge`, `Tag`, `StatusBar` |
 | Data display | `Table`, `DataTable`, `List`, `ListItem`, `Tree`, `VirtualList`, `Chart`, `Plot` |
 | Navigation and structure | `Sidebar`, `Tabs`, `Pagination`, `Accordion`, `Collapsible`, `Resizable`, `Scrollable` |
@@ -65,6 +72,8 @@ description: Use gpui-component components in GPUI applications. Use when buildi
 - Library primitives and helpers: `references/rules/primitives.md`
 - Theme and size rules: `references/rules/theme-and-size.md`
 - State and interaction rules: `references/rules/state-and-interaction.md`
+- Accessibility rules: `references/rules/accessibility.md`
+- Verified upstream documentation errata: `references/rules/upstream-errata.md`
 - Component docs: `references/components/<component>.md`
 - Online docs fallback: `https://longbridge.github.io/gpui-component/docs/components/{component}.md`
 - Full online docs fallback: `https://longbridge.github.io/gpui-component/llms-full.txt`

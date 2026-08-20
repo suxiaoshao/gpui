@@ -5,7 +5,7 @@ edition = "2024"
 build = "build.rs"
 
 [dependencies]
-thiserror = "2.0.19"
+thiserror = "2.0.20"
 tracing = "0.1.44"
 
 [build-dependencies]

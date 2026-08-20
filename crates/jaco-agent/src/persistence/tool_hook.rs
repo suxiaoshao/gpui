@@ -1,4 +1,4 @@
-use super::{PersistenceContext, error_tool_output, lock, mutex_clone, mutex_replace, run_error};
+use super::{PersistenceContext, error_tool_output, lock, mutex_replace, run_error};
 use crate::{
     AgentRuntimeError, AgentStep, RegisteredToolDefinition, Result, ToolApprovalDecision,
     ToolApprovalRequest, tools::tool_output_to_model_text,
@@ -11,8 +11,9 @@ use jaco_db::{
 use rig::{
     agent::{
         AgentHook, CompletionCallAction, CompletionCallEvent, CompletionResponseEvent, HookContext,
-        InvalidToolCallAction, InvalidToolCallContext, ObservationAction, StepEventKind,
-        StreamResponseFinish, ToolCall, ToolCallAction, ToolResultAction, ToolResultEvent,
+        InvalidToolCallAction, InvalidToolCallContext, ModelTurnAction, ModelTurnFinished,
+        ObservationAction, StepEventKind, ToolCall, ToolCallAction, ToolResultAction,
+        ToolResultEvent,
     },
     completion::AssistantContent,
     message::ToolResultContent as RigToolResultContent,
@@ -118,7 +119,7 @@ impl PersistenceContext {
             .persistence
             .insert_tool_invocation(NewToolInvocation {
                 agent_run_id: self.agent_run_id.clone(),
-                provider_step_id: mutex_clone(&self.last_provider_step_id),
+                provider_step_id: self.current_model_turn_provider_step_id(),
                 status,
                 input,
                 output: None,
@@ -527,7 +528,7 @@ impl PersistingAgentHook {
         &self,
         content: impl IntoIterator<Item = AssistantContent>,
     ) -> Result<()> {
-        let provider_step_id = mutex_clone(&self.context.last_provider_step_id);
+        let provider_step_id = self.context.current_model_turn_provider_step_id();
         for content in content {
             let payload = match content {
                 AssistantContent::Text(text) if !text.text.is_empty() => {
@@ -592,6 +593,24 @@ impl AgentHook for PersistingAgentHook {
         {
             Ok(()) => ObservationAction::continue_run(),
             Err(error) => ObservationAction::stop(error.to_string()),
+        }
+    }
+
+    async fn on_model_turn_finished(
+        &self,
+        _context: &HookContext,
+        event: ModelTurnFinished<'_>,
+    ) -> ModelTurnAction {
+        if self.context.cancellation_token.is_cancelled() {
+            return ModelTurnAction::stop("runtime canceled");
+        }
+        match self
+            .context
+            .finish_current_model_turn(event.content, event.usage, event.identity, event.raw)
+            .await
+        {
+            Ok(()) => ModelTurnAction::continue_run(),
+            Err(error) => ModelTurnAction::stop(error.to_string()),
         }
     }
 
@@ -953,41 +972,15 @@ impl AgentHook for PersistingAgentHook {
         ToolResultAction::keep()
     }
 
-    async fn on_stream_response_finish(
-        &self,
-        _context: &HookContext,
-        event: StreamResponseFinish<'_>,
-    ) -> ObservationAction {
-        if self.context.cancellation_token.is_cancelled() {
-            return ObservationAction::stop("runtime canceled");
-        }
-        // Streaming deltas are persisted incrementally by StreamAccumulator. A
-        // tool-bearing model turn must finish its provider step before Rig starts
-        // the next model call; the final tool-free turn is completed by runtime
-        // with the terminal provider payload.
-        if event
-            .content
-            .iter()
-            .any(|content| matches!(content, AssistantContent::ToolCall(_)))
-            && let Err(error) = self
-                .context
-                .finish_current_streaming_provider_step::<serde_json::Value>(None, event.usage)
-                .await
-        {
-            return ObservationAction::stop(error.to_string());
-        }
-        ObservationAction::continue_run()
-    }
-
     fn observes(&self, kind: StepEventKind) -> bool {
         matches!(
             kind,
             StepEventKind::CompletionCall
                 | StepEventKind::CompletionResponse
+                | StepEventKind::ModelTurnFinished
                 | StepEventKind::InvalidToolCall
                 | StepEventKind::ToolCall
                 | StepEventKind::ToolResult
-                | StepEventKind::StreamResponseFinish
         )
     }
 }

@@ -5,12 +5,14 @@ description: Text input component with validation, masking, and various features
 
 # Input
 
-A flexible text input component with support for validation, masking, prefix/suffix elements, and different states.
+A single-line text input with validation, masking, prefix/suffix elements, and
+different visual states. Use [Textarea](./textarea.md) for ordinary multi-line
+text and [Editor](./editor.md) for source code.
 
 ## Import
 
 ```rust
-use gpui_component::input::{InputState, Input};
+use gpui_component::input::{Input, InputState};
 ```
 
 ## Usage
@@ -102,6 +104,15 @@ Input::new(&input).small()
 
 ```rust
 Input::new(&input).disabled(true)
+```
+
+### Read-only Input
+
+Unlike `disabled`, a read-only input keeps the normal appearance and still can
+be focused, selected and copied, it only rejects the changes made by the user.
+
+```rust
+Input::new(&input).readonly(true)
 ```
 
 ### Clean on ESC

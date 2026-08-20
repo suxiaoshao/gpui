@@ -106,14 +106,6 @@ impl AgentRuntime {
     ) -> Result<AgentRunHandle>
     where
         M: CompletionModel + 'static,
-        M::Response: serde::Serialize + serde::de::DeserializeOwned,
-        M::StreamingResponse: Clone
-            + Unpin
-            + Send
-            + Sync
-            + serde::Serialize
-            + serde::de::DeserializeOwned
-            + rig::completion::GetTokenUsage,
     {
         self.run_with_model_observed(request, model, None).await
     }
@@ -126,14 +118,6 @@ impl AgentRuntime {
     ) -> Result<AgentRunHandle>
     where
         M: CompletionModel + 'static,
-        M::Response: serde::Serialize + serde::de::DeserializeOwned,
-        M::StreamingResponse: Clone
-            + Unpin
-            + Send
-            + Sync
-            + serde::Serialize
-            + serde::de::DeserializeOwned
-            + rig::completion::GetTokenUsage,
     {
         let agent_run = self.begin_run(&mut request, observer).await?;
         self.run_started_with_model_observed(agent_run, request, model)
@@ -192,14 +176,6 @@ impl AgentRuntime {
     ) -> Result<AgentRunHandle>
     where
         M: CompletionModel + 'static,
-        M::Response: serde::Serialize + serde::de::DeserializeOwned,
-        M::StreamingResponse: Clone
-            + Unpin
-            + Send
-            + Sync
-            + serde::Serialize
-            + serde::de::DeserializeOwned
-            + rig::completion::GetTokenUsage,
     {
         self.run_started_with_model_observed_inner(agent_run, request, model, None)
             .await
@@ -214,14 +190,6 @@ impl AgentRuntime {
     ) -> Result<AgentRunHandle>
     where
         M: CompletionModel + 'static,
-        M::Response: serde::Serialize + serde::de::DeserializeOwned,
-        M::StreamingResponse: Clone
-            + Unpin
-            + Send
-            + Sync
-            + serde::Serialize
-            + serde::de::DeserializeOwned
-            + rig::completion::GetTokenUsage,
     {
         self.run_started_with_model_observed_inner(agent_run, request, model, Some(attempts))
             .await
@@ -236,14 +204,6 @@ impl AgentRuntime {
     ) -> Result<AgentRunHandle>
     where
         M: CompletionModel + 'static,
-        M::Response: serde::Serialize + serde::de::DeserializeOwned,
-        M::StreamingResponse: Clone
-            + Unpin
-            + Send
-            + Sync
-            + serde::Serialize
-            + serde::de::DeserializeOwned
-            + rig::completion::GetTokenUsage,
     {
         if request.cancellation_token.is_cancelled() {
             return self
@@ -398,7 +358,9 @@ impl AgentRuntime {
                                         StreamedAssistantContent::Text(text) => {
                                             accumulator.append_text(&text.text).await?;
                                         }
-                                        StreamedAssistantContent::Reasoning(reasoning) => {
+                                        StreamedAssistantContent::Reasoning {
+                                            reasoning, ..
+                                        } => {
                                             accumulator
                                                 .replace_reasoning(reasoning.display_text())
                                                 .await?;
@@ -413,7 +375,8 @@ impl AgentRuntime {
                                             final_raw_response = Some(response);
                                         }
                                         StreamedAssistantContent::Unknown(output) => {
-                                            context.record_provider_output(output)?;
+                                            context
+                                                .record_provider_output(output.value().clone())?;
                                         }
                                         StreamedAssistantContent::ToolCall { .. }
                                         | StreamedAssistantContent::ToolCallDelta { .. } => {}

@@ -12,4 +12,4 @@ quote = "1.0.47"
 syn = { version = "3.0.3", features = ["full", "extra-traits"] }
 
 [dev-dependencies]
-trybuild = "1.0.118"
+trybuild = "1.0.120"

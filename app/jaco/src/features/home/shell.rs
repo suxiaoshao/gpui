@@ -8,6 +8,7 @@ use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Root, StyledExt, TitleBar, h_flex,
     label::Label,
+    menu::AppMenuBar,
     resizable::{h_resizable, resizable_panel},
     v_flex,
 };
@@ -25,7 +26,7 @@ pub(crate) const KEY_CONTEXT: &str = "JacoHome";
 
 pub(crate) struct HomeView {
     focus_handle: FocusHandle,
-    app_menu_bar: Entity<title_bar_menu::TitleBarAppMenuBar>,
+    app_menu_bar: Entity<AppMenuBar>,
     layout_state: Entity<state::JacoLayoutState>,
     workspace: Entity<HomeWorkspace>,
     runtime: Entity<conversation::runtime::ConversationRuntimeStore>,
@@ -43,7 +44,7 @@ impl HomeView {
     ) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
-        let app_menu_bar = title_bar_menu::TitleBarAppMenuBar::new(cx);
+        let app_menu_bar = AppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
         let workspace = workspace::create(cx);
         let sidebar_workspace = workspace.clone();
@@ -235,7 +236,7 @@ impl Render for HomeView {
 }
 
 fn title_bar_content(
-    app_menu_bar: Entity<title_bar_menu::TitleBarAppMenuBar>,
+    app_menu_bar: Entity<AppMenuBar>,
     title: impl Into<SharedString>,
 ) -> impl IntoElement {
     h_flex()

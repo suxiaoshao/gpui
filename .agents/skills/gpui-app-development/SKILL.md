@@ -30,6 +30,7 @@ responsibilities from this routing skill.
 | --- | --- |
 | GPUI contexts, windows, Entity, Global, tasks, subscriptions, events, focus, rendering, elements, or tests | `gpui` |
 | App module placement, ownership boundaries, cross-feature coordination, or choosing among the libraries below | `gpui-app-development` |
+| Unstyled behavior primitives in an app that deliberately depends on `gpui-base` without complete `gpui-component` | `gpui-base-usage` |
 | Existing controls, component APIs, custom control decisions, or GPUI translation of Web UI patterns | `gpui-component-usage` |
 | App icons, Lucide icons, runtime assets, or bundle assets | `gpui-app-icon-usage` |
 | User-visible text, Fluent locales, language settings, or bundle localization | `gpui-i18n` |
@@ -63,6 +64,10 @@ deliberately integrates that library's responsibility.
 - Search focused shared crates such as `crates/window-ext`,
   `crates/platform-ext`, `crates/app-theme`, and `crates/app-assets` before
   duplicating cross-app behavior.
+- Route by the target app's actual dependency boundary: Lestty/base-only work
+  uses `gpui-base-usage`; existing apps that call `gpui_component::init` use
+  `gpui-component-usage`. Do not add the complete component library merely to
+  reuse a styled control in a base-only app.
 - Keep app-specific product policy in the app. Move behavior to a shared crate
   only when it is genuinely reusable.
 - Treat the selected crate's current public docs and exported code as its

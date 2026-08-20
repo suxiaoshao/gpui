@@ -3,7 +3,7 @@ use app::{WorkspaceView, titlebar};
 use errors::FeiwenResult;
 use foundation::I18n;
 use gpui::*;
-use gpui_component::Root;
+use gpui_component::{Root, TitleBar};
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -121,9 +121,8 @@ fn main_titlebar_options(title: impl Into<SharedString>) -> TitlebarOptions {
 fn main_window_options(title: impl Into<SharedString>) -> WindowOptions {
     WindowOptions {
         titlebar: Some(main_titlebar_options(title)),
-        app_owns_titlebar_drag: true,
         window_background: WindowBackgroundAppearance::Blurred,
-        ..Default::default()
+        ..TitleBar::window_options()
     }
 }
 

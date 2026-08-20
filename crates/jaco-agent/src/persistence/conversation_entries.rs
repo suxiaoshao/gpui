@@ -1,4 +1,4 @@
-use super::{PersistenceContext, lock, mutex_clone, mutex_replace};
+use super::{PersistenceContext, lock, mutex_replace};
 use crate::{AgentRuntimeEvent, AgentStep, Result};
 use jaco_core::*;
 use jaco_db::{
@@ -61,7 +61,7 @@ impl PersistenceContext {
                 conversation_id: self.conversation_id.clone(),
                 status: ConversationEntryStatus::Completed,
                 agent_run_id: Some(self.agent_run_id.clone()),
-                provider_step_id: mutex_clone(&self.last_provider_step_id),
+                provider_step_id: self.current_model_turn_provider_step_id(),
                 tool_invocation_id: None,
                 provider_item_id: None,
                 payload,
@@ -89,7 +89,7 @@ impl PersistenceContext {
                 conversation_id: self.conversation_id.clone(),
                 status: ConversationEntryStatus::Running,
                 agent_run_id: Some(self.agent_run_id.clone()),
-                provider_step_id: mutex_clone(&self.last_provider_step_id),
+                provider_step_id: self.current_model_turn_provider_step_id(),
                 tool_invocation_id: None,
                 provider_item_id: None,
                 payload,
@@ -132,7 +132,7 @@ impl PersistenceContext {
     }
 
     pub(crate) fn current_provider_step_id(&self) -> Option<ProviderStepId> {
-        mutex_clone(&self.last_provider_step_id)
+        self.current_model_turn_provider_step_id()
     }
 
     pub(crate) fn push_current_provider_step_event(&self, event: ProviderStepEvent) {
@@ -156,7 +156,7 @@ impl PersistenceContext {
                 conversation_id: self.conversation_id.clone(),
                 status: ConversationEntryStatus::Completed,
                 agent_run_id: Some(self.agent_run_id.clone()),
-                provider_step_id: mutex_clone(&self.last_provider_step_id),
+                provider_step_id: self.current_model_turn_provider_step_id(),
                 tool_invocation_id: Some(tool_invocation_id),
                 provider_item_id: None,
                 payload,

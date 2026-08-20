@@ -5,7 +5,6 @@ use jaco_db::{
     CompleteProviderStep, NewProviderStep, ProviderStepRecord, UpdateProviderStepStatus,
 };
 use rig::completion::{AssistantContent, CompletionRequest, CompletionResponse, Usage};
-use serde::Serialize;
 
 impl PersistenceContext {
     pub(super) async fn insert_provider_step(
@@ -59,6 +58,7 @@ impl PersistenceContext {
             })
             .await?;
         mutex_replace(&self.last_provider_step_id, Some(step.id.clone()));
+        mutex_replace(&self.last_completed_provider_step_id, None);
         self.push_event(AgentRunEvent::ProviderStepStarted {
             provider_step_id: step.id.clone(),
         });
@@ -72,48 +72,43 @@ impl PersistenceContext {
         Ok(step)
     }
 
-    pub(super) async fn finish_provider_step<M>(
+    pub(crate) async fn finish_current_model_turn(
         &self,
-        provider_step_id: &str,
-        response: &CompletionResponse<M>,
-    ) -> Result<()>
-    where
-        M: Serialize,
-    {
-        self.finish_provider_step_with_continuation(provider_step_id, response, None)
-            .await
-    }
-
-    pub(crate) async fn finish_openai_provider_step(
-        &self,
-        provider_step_id: &str,
-        response: &CompletionResponse<rig::providers::openai::responses_api::CompletionResponse>,
+        content: &[AssistantContent],
+        usage: Usage,
+        identity: &rig::completion::ResponseIdentity,
+        raw: &serde_json::Value,
     ) -> Result<()> {
-        let raw = &response.raw_response;
-        let reasoning_context = raw.reasoning_context.clone().ok_or_else(|| {
-            crate::AgentRuntimeError::Invariant(
-                "OpenAI GPT-5.6 websocket response omitted reasoning context".to_string(),
-            )
-        })?;
-        let continuation = ProviderContinuationSnapshot::openai_responses(
-            raw.id.clone(),
-            reasoning_context,
-            time::OffsetDateTime::now_utc(),
+        let Some(provider_step_id) = mutex_clone(&self.last_provider_step_id) else {
+            return Ok(());
+        };
+        let response = CompletionResponse::new(
+            content.to_vec(),
+            usage,
+            self.settings_snapshot
+                .provider_settings
+                .provider_kind
+                .clone(),
         )
-        .map_err(|error| crate::AgentRuntimeError::Invariant(error.to_string()))?;
-        self.finish_provider_step_with_continuation(provider_step_id, response, Some(continuation))
+        .with_optional_message_id(identity.message_id.clone())
+        .with_optional_response_id(identity.response_id.clone())
+        .with_optional_provider_request_id(identity.provider_request_id.clone())
+        .with_raw(raw.clone());
+        let continuation = openai_streaming_continuation(
+            &self.settings_snapshot.provider_settings.provider_kind,
+            &self.model_id,
+            Some(raw),
+        )?;
+        self.finish_provider_step_with_continuation(&provider_step_id, &response, continuation)
             .await
     }
 
-    async fn finish_provider_step_with_continuation<M>(
+    async fn finish_provider_step_with_continuation(
         &self,
         provider_step_id: &str,
-        response: &CompletionResponse<M>,
+        response: &CompletionResponse,
         continuation: Option<ProviderContinuationSnapshot>,
-    ) -> Result<()>
-    where
-        M: Serialize,
-    {
+    ) -> Result<()> {
         let output_item_ids = response
             .choice
             .iter()
@@ -124,17 +119,17 @@ impl PersistenceContext {
             .collect::<Vec<_>>();
         let provider_outputs = self.take_provider_outputs(provider_step_id);
         let response_snapshot = ProviderStepResponseSnapshot {
-            provider_run_id: response.message_id.clone(),
+            provider_run_id: response.response_id.clone(),
             output_item_ids: output_item_ids.clone(),
             response_body: Some(ProviderRawPayload {
                 provider_kind: "rig".to_string(),
-                value: serde_json::to_value(&response.raw_response)?,
+                value: response.raw.clone(),
             }),
             provider_outputs: provider_outputs.clone(),
         };
         let state_snapshot = ProviderRunStateSnapshot {
             provider_id: self.provider_id.clone(),
-            provider_run_id: response.message_id.clone(),
+            provider_run_id: response.response_id.clone(),
             output_item_ids,
         };
         let usage = provider_usage(response.usage);
@@ -157,6 +152,10 @@ impl PersistenceContext {
                 return Err(error.into());
             }
         };
+        mutex_replace(
+            &self.last_completed_provider_step_id,
+            Some(provider_step_id.to_string()),
+        );
         self.clear_current_provider_step(provider_step_id);
         let step = completed.step;
         self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
@@ -178,14 +177,11 @@ impl PersistenceContext {
         Ok(())
     }
 
-    pub(crate) async fn finish_current_streaming_provider_step<M>(
+    pub(crate) async fn finish_current_streaming_provider_step(
         &self,
-        response: Option<&M>,
+        response: Option<&rig::streaming::StreamFinal>,
         usage: Usage,
-    ) -> Result<()>
-    where
-        M: Serialize,
-    {
+    ) -> Result<()> {
         let Some(provider_step_id) = mutex_clone(&self.last_provider_step_id) else {
             return Ok(());
         };
@@ -209,24 +205,28 @@ impl PersistenceContext {
         self.cancel_provider_step(&provider_step_id, error).await
     }
 
-    pub(crate) async fn finish_streaming_provider_step<M>(
+    pub(crate) async fn finish_streaming_provider_step(
         &self,
         provider_step_id: &str,
-        response: Option<&M>,
+        response: Option<&rig::streaming::StreamFinal>,
         usage: Usage,
-    ) -> Result<()>
-    where
-        M: Serialize,
-    {
-        let raw_response = response.map(serde_json::to_value).transpose()?;
+    ) -> Result<()> {
+        // Keep the provider-native terminal record as the persistence boundary.
+        // `StreamFinal` is normalized metadata; its `raw` field is the exact
+        // terminal payload captured by Rig's public `normalize_stream` seam.
+        let raw_response = response.map(|response| response.raw.clone());
         let openai_continuation = openai_streaming_continuation(
             &self.settings_snapshot.provider_settings.provider_kind,
             &self.model_id,
             raw_response.as_ref(),
         )?;
-        let provider_run_id = openai_continuation
-            .as_ref()
-            .map(|continuation| continuation.response_id.clone());
+        let provider_run_id = response
+            .and_then(|response| response.response_id.clone())
+            .or_else(|| {
+                openai_continuation
+                    .as_ref()
+                    .map(|continuation| continuation.response_id.clone())
+            });
         let provider_outputs = self.take_provider_outputs(provider_step_id);
         let response_snapshot = ProviderStepResponseSnapshot {
             provider_run_id: provider_run_id.clone(),
@@ -262,6 +262,10 @@ impl PersistenceContext {
                 return Err(error.into());
             }
         };
+        mutex_replace(
+            &self.last_completed_provider_step_id,
+            Some(provider_step_id.to_string()),
+        );
         self.clear_current_provider_step(provider_step_id);
         let step = completed.step;
         self.emit_runtime(AgentRuntimeEvent::ConversationTimelineChanged {
@@ -415,6 +419,11 @@ impl PersistenceContext {
             *current = None;
         }
     }
+
+    pub(super) fn current_model_turn_provider_step_id(&self) -> Option<ProviderStepId> {
+        mutex_clone(&self.last_provider_step_id)
+            .or_else(|| mutex_clone(&self.last_completed_provider_step_id))
+    }
 }
 
 fn failure_response_snapshot(
@@ -449,10 +458,15 @@ fn openai_streaming_continuation(
     let Some(raw_response) = raw_response else {
         return Ok(None);
     };
+    // Only Jaco's retained websocket decoder emits this normalized terminal
+    // shape. Ordinary OpenAI HTTP responses carry `id` instead; they must not
+    // be mistaken for the stateful websocket continuation contract.
+    if raw_response.get("response_id").is_none() && raw_response.get("reasoning_context").is_none()
+    {
+        return Ok(None);
+    }
     let response_id = raw_response
-        .get("reasoning_metadata")
-        .and_then(serde_json::Value::as_object)
-        .and_then(|metadata| metadata.get("__jaco_response_id"))
+        .get("response_id")
         .and_then(serde_json::Value::as_str);
     let reasoning_context = raw_response
         .get("reasoning_context")

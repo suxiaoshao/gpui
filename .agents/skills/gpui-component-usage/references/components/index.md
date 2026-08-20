@@ -20,8 +20,9 @@ Use this index to choose the smallest existing component set for an app UI task.
 | Need | Component docs |
 | --- | --- |
 | Form layout and field labels | [Form](form.md), [Label](label.md), [GroupBox](group-box.md) |
-| Text input | [Input](input.md) |
-| Multiline/code input | [Editor](editor.md) |
+| Single-line text input | [Input](input.md) |
+| Ordinary multi-line text input | [Textarea](textarea.md) |
+| Source-code input | [Editor](editor.md) |
 | Numeric, one-time-code, date, and color input | [NumberInput](number-input.md), [OtpInput](otp-input.md), [DatePicker](date-picker.md), [ColorPicker](color-picker.md) |
 | Simple single choice | [Select](select.md), [Radio](radio.md) |
 | Searchable, multi-select, custom trigger, or custom option rendering | [Combobox](combobox.md) |
@@ -33,6 +34,7 @@ Use this index to choose the smallest existing component set for an app UI task.
 | Need | Component docs |
 | --- | --- |
 | Modal dialogs and destructive confirmations | [Dialog](dialog.md), [AlertDialog](alert-dialog.md) |
+| Command palette, quick actions, or action search | [Command](command.md) |
 | Side panel or drawer-like content | [Sheet](sheet.md) |
 | Anchored floating content | [Popover](popover.md), [HoverCard](hover-card.md), [Tooltip](tooltip.md) |
 | Inline alerts and async status | [Alert](alert.md), [Notification](notification.md), [Progress](progress.md), [Spinner](spinner.md), [Skeleton](skeleton.md) |
@@ -59,14 +61,17 @@ Use this index to choose the smallest existing component set for an app UI task.
 | Layout helpers, element helpers, icons, root, window helpers, initialization | [Primitive rules](../rules/primitives.md) |
 | Theme tokens, semantic colors, component sizes, typography, spacing | [Theme and size rules](../rules/theme-and-size.md) |
 | Focus, overlay, menu, pointer, loading, selected, and delegated interactions | [State and interaction rules](../rules/state-and-interaction.md) |
+| Roles, accessible names, custom rows, and assistive-technology validation | [Accessibility rules](../rules/accessibility.md) |
+| Known target documentation examples that differ from source | [Upstream errata](../rules/upstream-errata.md) |
 
 ## shadcn/ui Mental Mapping
 
 | shadcn-style need | gpui-component reference |
 | --- | --- |
 | Button, Toggle, ToggleGroup | [Button](button.md), [Toggle](toggle.md) |
-| Input, Textarea, InputOTP, Slider | [Input](input.md), [Editor](editor.md), [OtpInput](otp-input.md), [Slider](slider.md) |
-| Checkbox, RadioGroup, Switch, Select, Combobox, Command-like searchable picker | [Checkbox](checkbox.md), [Radio](radio.md), [Switch](switch.md), [Select](select.md), [Combobox](combobox.md) |
+| Input, Textarea, code editor, InputOTP, Slider | [Input](input.md), [Textarea](textarea.md), [Editor](editor.md), [OtpInput](otp-input.md), [Slider](slider.md) |
+| Checkbox, RadioGroup, Switch, Select, Combobox | [Checkbox](checkbox.md), [Radio](radio.md), [Switch](switch.md), [Select](select.md), [Combobox](combobox.md) |
+| Command palette or Command-like action search | [Command](command.md) |
 | Dialog, AlertDialog, Sheet, Popover, Tooltip, HoverCard | [Dialog](dialog.md), [AlertDialog](alert-dialog.md), [Sheet](sheet.md), [Popover](popover.md), [Tooltip](tooltip.md), [HoverCard](hover-card.md) |
 | Alert, Badge, Skeleton, Progress | [Alert](alert.md), [Badge](badge.md), [Skeleton](skeleton.md), [Progress](progress.md) |
 | Tabs, Accordion, Collapsible, Sidebar, Pagination | [Tabs](tabs.md), [Accordion](accordion.md), [Collapsible](collapsible.md), [Sidebar](sidebar.md), [Pagination](pagination.md) |

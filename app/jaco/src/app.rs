@@ -172,7 +172,6 @@ fn init(cx: &mut App) -> crate::errors::JacoResult<()> {
     state::prompts::init(cx);
     state::shortcuts::init(cx);
     state::hotkey::init_shortcuts(cx);
-    title_bar_menu::init(cx);
     temporary_window::init(cx);
     crate::features::init(cx);
 
@@ -309,9 +308,8 @@ pub(crate) fn open_main_window(cx: &mut App) -> Result<WindowHandle<Root>, JacoE
             window_bounds: Some(placement.window_bounds),
             display_id: placement.display_id,
             titlebar: Some(main_titlebar_options(title)),
-            app_owns_titlebar_drag: true,
             window_background: WindowBackgroundAppearance::Opaque,
-            ..Default::default()
+            ..TitleBar::window_options()
         },
         create_main_root,
     )

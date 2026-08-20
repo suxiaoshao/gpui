@@ -25,6 +25,78 @@ fn initialize(cx: &mut TestAppContext) {
     });
 }
 
+struct TokioFutureDrop(Option<tokio::sync::oneshot::Sender<()>>);
+
+impl Drop for TokioFutureDrop {
+    fn drop(&mut self) {
+        if let Some(dropped) = self.0.take() {
+            let _ = dropped.send(());
+        }
+    }
+}
+
+async fn panic_on_tokio() -> usize {
+    panic!("gpui_tokio panic contract")
+}
+
+#[gpui::test]
+async fn zed_gpui_tokio_spawn_returns_success(cx: &mut TestAppContext) {
+    cx.background_executor.allow_parking();
+    cx.update(gpui_tokio::init);
+    let task = cx.update(|cx| gpui_tokio::Tokio::spawn(cx, async { 42_usize }));
+
+    assert_eq!(task.await.expect("Tokio task must complete"), 42);
+}
+
+#[gpui::test]
+async fn zed_gpui_tokio_spawn_preserves_panic_as_join_error(cx: &mut TestAppContext) {
+    cx.background_executor.allow_parking();
+    cx.update(gpui_tokio::init);
+    let task = cx.update(|cx| gpui_tokio::Tokio::spawn(cx, panic_on_tokio()));
+
+    let error = task.await.expect_err("Tokio panic must produce JoinError");
+    assert!(error.is_panic());
+}
+
+#[gpui::test]
+async fn dropping_zed_gpui_tokio_task_aborts_the_tokio_future(cx: &mut TestAppContext) {
+    cx.background_executor.allow_parking();
+    cx.update(gpui_tokio::init);
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+    let task = cx.update(|cx| {
+        gpui_tokio::Tokio::spawn(cx, async move {
+            let _drop = TokioFutureDrop(Some(dropped_tx));
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        })
+    });
+    started_rx.await.expect("Tokio future must start");
+
+    drop(task);
+
+    dropped_rx
+        .await
+        .expect("dropping GPUI Task must abort the Tokio future");
+}
+
+#[gpui::test]
+async fn zed_gpui_tokio_accepts_an_external_runtime_handle(cx: &mut TestAppContext) {
+    cx.background_executor.allow_parking();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("external Tokio runtime must build");
+    cx.update(|cx| gpui_tokio::init_from_handle(cx, runtime.handle().clone()));
+    let task = cx.update(|cx| gpui_tokio::Tokio::spawn(cx, async { "external" }));
+
+    assert_eq!(
+        task.await.expect("external runtime task must complete"),
+        "external"
+    );
+}
+
 fn completed_response(bytes: &'static [u8]) -> Arc<ResponseData> {
     Arc::new(ResponseData::new(
         ResponseHead::new(

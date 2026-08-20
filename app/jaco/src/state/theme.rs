@@ -91,6 +91,10 @@ impl ThemeRuntime {
     }
 
     fn apply(&mut self, cx: &mut App) {
+        cx.set_window_appearance(native_window_appearance(self.settings.mode));
+        if self.settings.mode == AppThemeMode::System {
+            self.appearance = cx.window_appearance();
+        }
         let mode = resolved_component_theme_mode(&self.settings, self.appearance);
         let theme_id = theme_id_for_component_mode(&self.settings, mode);
         let uses_system_accent = app_theme::is_system_accent_material_you_theme_id(&theme_id);
@@ -113,6 +117,7 @@ impl ThemeRuntime {
             app_theme::resolve_theme_config(registry, mode, &theme_id, &custom_theme_colors)
         };
         Theme::global_mut(cx).apply_config(&config);
+        Theme::sync_base(cx);
         self.resolved = Some(key);
         cx.refresh_windows();
     }
@@ -168,6 +173,14 @@ fn theme_id_for_component_mode(settings: &AppThemeSettings, mode: ComponentTheme
     }
 }
 
+fn native_window_appearance(mode: AppThemeMode) -> Option<WindowAppearance> {
+    match mode {
+        AppThemeMode::System => None,
+        AppThemeMode::Light => Some(WindowAppearance::Light),
+        AppThemeMode::Dark => Some(WindowAppearance::Dark),
+    }
+}
+
 pub(crate) fn normalized_custom_theme_colors(settings: &AppThemeSettings) -> Vec<String> {
     let mut colors = settings
         .custom_theme_colors
@@ -202,7 +215,9 @@ fn append_custom_theme_color(colors: &mut Vec<String>, color: String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalized_custom_theme_colors, resolved_component_theme_mode};
+    use super::{
+        native_window_appearance, normalized_custom_theme_colors, resolved_component_theme_mode,
+    };
     use gpui::WindowAppearance;
     use gpui_component::ThemeMode as ComponentThemeMode;
     use jaco_core::{AppThemeMode, AppThemeSettings};
@@ -232,6 +247,19 @@ mod tests {
         assert_eq!(
             resolved_component_theme_mode(&settings, WindowAppearance::Light),
             ComponentThemeMode::Dark
+        );
+    }
+
+    #[test]
+    fn explicit_theme_mode_controls_native_window_appearance() {
+        assert_eq!(native_window_appearance(AppThemeMode::System), None);
+        assert_eq!(
+            native_window_appearance(AppThemeMode::Light),
+            Some(WindowAppearance::Light)
+        );
+        assert_eq!(
+            native_window_appearance(AppThemeMode::Dark),
+            Some(WindowAppearance::Dark)
         );
     }
 

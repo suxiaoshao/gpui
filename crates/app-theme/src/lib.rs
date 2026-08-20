@@ -339,6 +339,7 @@ pub fn apply_fixed_system_accent_theme(window: &mut Window, cx: &mut App) {
     let mode = component_theme_mode_from_appearance(window.appearance());
     let config = fixed_system_accent_theme_config(mode);
     Theme::global_mut(cx).apply_config(&config);
+    Theme::sync_base(cx);
 }
 
 pub fn generated_theme_config(color: &str, mode: ComponentThemeMode) -> Option<ThemeConfig> {

@@ -1,6 +1,8 @@
 use super::*;
-use gpui::Hsla;
-use std::collections::HashSet;
+use gpui::{Hsla, TestAppContext};
+use gpui_base::Theme as BaseTheme;
+use gpui_component::scroll::ScrollbarMode;
+use std::{collections::HashSet, rc::Rc};
 
 const TEST_THEME_COLOR: &str = "#3271AE";
 
@@ -266,6 +268,62 @@ fn generated_theme_config_has_expected_mode_and_colors() {
     assert!(dark.colors.primary.is_some());
     assert!(light.colors.background.is_some());
     assert!(dark.colors.background.is_some());
+}
+
+#[gpui::test]
+fn apply_config_and_sync_base_keep_component_and_base_themes_consistent(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+
+        let mut config = generated_theme_config(TEST_THEME_COLOR, ComponentThemeMode::Dark)
+            .expect("dark material theme");
+        config.radius = Some(11);
+        config.radius_lg = Some(17);
+        let config = Rc::new(config);
+
+        Theme::global_mut(cx).apply_config(&config);
+        let expected_tokens = Theme::global(cx).semantic_tokens();
+        assert_ne!(
+            BaseTheme::global(cx).tokens,
+            expected_tokens,
+            "direct component-theme mutation should remain unsynchronized until sync_base"
+        );
+
+        Theme::sync_base(cx);
+
+        let component = Theme::global(cx);
+        let base = BaseTheme::global(cx);
+        assert_eq!(base.tokens, component.semantic_tokens());
+        assert_eq!(base.tokens.colors.background, component.background);
+        assert_eq!(base.tokens.colors.border, component.border);
+        assert_eq!(base.tokens.radius.md, component.radius);
+        assert_eq!(base.tokens.radius.lg, component.radius_lg);
+        assert_eq!(base.scrollbar.mode(), component.scrollbar_mode);
+        assert_eq!(base.resizable.handle, component.border);
+        assert_eq!(base.resizable.active_handle, component.drag_border);
+    });
+}
+
+#[test]
+fn legacy_scrollbar_show_alias_reads_and_writes_canonical_scrollbar_mode() {
+    let theme = Theme {
+        scrollbar_mode: ScrollbarMode::Always,
+        ..Theme::default()
+    };
+    let mut legacy = serde_json::to_value(theme).expect("serialize component theme");
+    let object = legacy.as_object_mut().expect("component theme object");
+    let mode = object
+        .remove("scrollbar_mode")
+        .expect("canonical scrollbar mode");
+    assert!(object.insert("scrollbar_show".to_string(), mode).is_none());
+
+    let parsed: Theme = serde_json::from_value(legacy).expect("legacy scrollbar_show alias");
+    assert_eq!(parsed.scrollbar_mode, ScrollbarMode::Always);
+
+    let canonical = serde_json::to_value(parsed).expect("serialize canonical component theme");
+    let object = canonical.as_object().expect("component theme object");
+    assert!(object.contains_key("scrollbar_mode"));
+    assert!(!object.contains_key("scrollbar_show"));
 }
 
 #[test]
@@ -809,8 +867,8 @@ fn generated_material_theme_uses_translucent_selection_tokens() {
 #[test]
 fn generated_material_non_button_colors_match_baseline() {
     for (mode, expected_hash) in [
-        (ComponentThemeMode::Light, 0x73ce8e31c6e175e5_u64),
-        (ComponentThemeMode::Dark, 0x5c9b6443a77793e7_u64),
+        (ComponentThemeMode::Light, 0x0da928461bcab0de_u64),
+        (ComponentThemeMode::Dark, 0xfba61b7cfe1ad028_u64),
     ] {
         let config = generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme");
         let mut value = serde_json::to_value(&config.colors).expect("serialize colors");

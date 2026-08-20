@@ -10,21 +10,29 @@
   - `app/feiwen`
   - `app/http-client`
   - `app/novel-download`
-  - `crates/jaco-agent`
-  - `crates/jaco-core`
-  - `crates/jaco-db`
+  - `app/lestty`
   - `crates/app-assets`
   - `crates/app-assets-macros`
   - `crates/app-theme`
+  - `crates/gpui-form`
+  - `crates/gpui-form-gpui-component`
+  - `crates/gpui-form-macros`
+  - `crates/gpui-operation`
   - `crates/gpui-store`
-  - `crates/gpui-tokio`
+  - `crates/http-client-test-server`
+  - `crates/jaco-agent`
+  - `crates/jaco-conversation`
+  - `crates/jaco-core`
+  - `crates/jaco-db`
   - `crates/platform-ext`
   - `crates/window-ext`
   - `crates/xtask`
 - 技术基线：
   - Rust Edition: `2024`
   - 推荐 Rust: `1.95+`
-  - 关键依赖通过 workspace 统一声明；当前 `gpui` / `gpui_platform` 来自 `zed-industries/zed` git，`gpui-component` / `gpui-component-assets` 来自 `longbridge/gpui-component` git。
+  - 关键依赖通过 workspace 统一声明；当前 `gpui` / `gpui_platform` / `gpui_tokio` 来自 `zed-industries/zed` git，`gpui-base` / `gpui-component` / `gpui-component-assets` 来自 `longbridge/gpui-component` git。
+  - Lestty 是唯一在 normal/runtime 图中直接使用 `gpui-base` 的应用；`app-theme` 仅为 projection
+    回归测试保留 dev-dependency，既有应用继续使用完整 `gpui-component`。
 
 ## 2. 代码修改原则
 

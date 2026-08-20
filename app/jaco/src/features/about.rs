@@ -1,15 +1,13 @@
 use crate::{
-    app::{
-        APP_NAME, menus,
-        title_bar_menu::{TitleBarAppMenuBar, title_bar_leading},
-    },
+    app::{APP_NAME, menus, title_bar_menu::title_bar_leading},
     foundation::{I18n, assets::APP_ICON_ASSET_PATH},
     state,
 };
 use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
-    ActiveTheme, Root, Sizable, StyledExt, TitleBar, button::Button, h_flex, label::Label, v_flex,
+    ActiveTheme, Root, Sizable, StyledExt, TitleBar, button::Button, h_flex, label::Label,
+    menu::AppMenuBar, v_flex,
 };
 use window_ext::{NativeWindowHandle, WindowExt};
 
@@ -51,13 +49,12 @@ pub(crate) fn open_about_window(cx: &mut App) {
         WindowOptions {
             window_bounds: Some(WindowBounds::centered(about_window_size(), cx)),
             titlebar: Some(about_titlebar_options(title)),
-            app_owns_titlebar_drag: true,
             window_background: WindowBackgroundAppearance::Opaque,
             is_resizable: false,
             is_minimizable: false,
             kind: WindowKind::Normal,
             app_id: Some(APP_NAME.to_owned()),
-            ..Default::default()
+            ..TitleBar::window_options()
         },
         |window, cx| {
             let view = cx.new(|cx| AboutWindow::new(window, cx));
@@ -143,7 +140,7 @@ fn about_metadata() -> AboutMetadata {
 
 pub(crate) struct AboutWindow {
     focus_handle: FocusHandle,
-    app_menu_bar: Entity<TitleBarAppMenuBar>,
+    app_menu_bar: Entity<AppMenuBar>,
     metadata: AboutMetadata,
     _theme_binding: state::theme::WindowThemeBinding,
 }
@@ -152,7 +149,7 @@ impl AboutWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
-        let app_menu_bar = TitleBarAppMenuBar::new(cx);
+        let app_menu_bar = AppMenuBar::new(cx);
 
         Self {
             focus_handle,
@@ -263,7 +260,7 @@ impl Render for AboutWindow {
 }
 
 fn title_bar_content(
-    app_menu_bar: Entity<TitleBarAppMenuBar>,
+    app_menu_bar: Entity<AppMenuBar>,
     title: impl Into<SharedString>,
 ) -> impl IntoElement {
     h_flex()

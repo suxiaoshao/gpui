@@ -11,14 +11,14 @@ use gpui_component::{
     dialog::{DialogAction, DialogClose, DialogFooter},
     form::field as component_form_field,
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputState, Textarea, TextareaState},
     label::Label,
     notification::{Notification, NotificationType},
     scroll::ScrollableElement,
     v_flex,
 };
 use gpui_form::{Form, FormVersion, GardeValidator, PrepareError as SubmitError};
-use gpui_form_gpui_component::FormInput;
+use gpui_form_gpui_component::{FormInput, FormTextarea};
 use jaco_core::PromptId;
 use jaco_db::PromptRecord;
 
@@ -50,7 +50,7 @@ pub(super) struct PromptEditDialogState {
     prompt_id: Option<PromptId>,
     form: Entity<Form<PromptEditFormInput>>,
     name_input: FormInput,
-    content_input: FormInput,
+    content_input: FormTextarea,
     save_task: Option<Task<()>>,
 }
 
@@ -91,12 +91,11 @@ impl PromptEditDialogState {
             window,
             cx,
         );
-        let content_input = FormInput::new(
+        let content_input = FormTextarea::new(
             &form,
             PromptEditFormInput::CONTENT,
             |window, cx| {
-                InputState::new(window, cx)
-                    .multi_line(true)
+                TextareaState::new(window, cx)
                     .placeholder(cx.global::<I18n>().t("prompt-placeholder-content"))
             },
             window,
@@ -247,7 +246,7 @@ impl Render for PromptEditDialogState {
             ))
             .child(form_field(
                 cx.global::<I18n>().t("prompt-field-content"),
-                Input::new(&self.content_input)
+                Textarea::new(&self.content_input)
                     .w_full()
                     .min_w_0()
                     .h(px(220.)),
@@ -547,7 +546,7 @@ mod tests {
     };
     use crate::{database, foundation, state};
     use gpui::{AppContext as _, Entity, Render, TestAppContext, VisualTestContext, WindowHandle};
-    use gpui_component::input::{InputEvent, InputState};
+    use gpui_component::input::{InputEvent, InputState, TextareaState};
     use tempfile::{TempDir, tempdir};
 
     #[gpui::test]
@@ -642,7 +641,7 @@ mod tests {
             )
         });
         set_input_value(name_input, "Existing Prompt", &mut cx);
-        set_input_value(content_input, "New content", &mut cx);
+        set_textarea_value(content_input, "New content", &mut cx);
 
         let saved = cx.update(|window, cx| confirm_prompt_edit_dialog(&form, window, cx));
         assert!(!saved);
@@ -722,6 +721,19 @@ mod tests {
 
     fn set_input_value(
         input: Entity<InputState>,
+        value: impl Into<String>,
+        cx: &mut VisualTestContext,
+    ) {
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_value(value.into(), window, cx);
+                cx.emit(InputEvent::Change);
+            });
+        });
+    }
+
+    fn set_textarea_value(
+        input: Entity<TextareaState>,
         value: impl Into<String>,
         cx: &mut VisualTestContext,
     ) {

@@ -20,7 +20,7 @@ use gpui_component::{
     ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
     alert::Alert,
     button::Button,
-    input::{Input, InputState},
+    input::{Editor, EditorState},
     label::Label,
     progress::Progress,
     scroll::ScrollableElement as _,
@@ -126,7 +126,7 @@ pub(super) struct ResponsePane {
     mode: ViewerMode,
     pub(super) mode_state: Entity<SelectState<ViewerModeItems>>,
     projection: Option<ResponseProjection>,
-    text_editor: Option<Entity<InputState>>,
+    text_editor: Option<Entity<EditorState>>,
     preview_task: Option<Task<()>>,
     preview_generation: u64,
     preview_token: Option<PreviewToken>,
@@ -314,8 +314,8 @@ impl ResponsePane {
                 let source = source.clone();
                 let language = language.editor_language();
                 Some(cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .code_editor(language)
+                    EditorState::new(window, cx)
+                        .language(language)
                         .line_number(true)
                         .searchable(true)
                         .replaceable(false)
@@ -862,8 +862,8 @@ impl ResponsePane {
                         .overflow_hidden()
                         .bg(cx.theme().input_background())
                         .child(
-                            Input::new(editor)
-                                .disabled(true)
+                            Editor::new(editor)
+                                .readonly(true)
                                 .appearance(false)
                                 .size_full()
                                 .font_family(cx.theme().mono_font_family.clone()),
@@ -1519,6 +1519,12 @@ mod pane_tests {
             })
         });
         cx.run_until_parked();
+
+        cx.update(|_, cx| {
+            let presentation = editor.read(cx).presentation();
+            assert!(presentation.is_readonly());
+            assert!(!presentation.is_disabled());
+        });
 
         cx.update(|window, cx| {
             editor.update(cx, |editor, cx| {

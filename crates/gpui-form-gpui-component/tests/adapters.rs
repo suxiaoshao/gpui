@@ -4,13 +4,13 @@ use gpui::{
 };
 use gpui_component::{
     combobox::{ComboboxEvent, ComboboxState},
-    input::{InputEvent, InputState},
+    input::{EditorState, InputEvent, InputState, TextareaState},
     select::{SelectEvent, SelectState},
 };
 use gpui_form::{ControlBinding, ControlProjection, DynamicPath, Form, FormSchema, ResolveError};
 use gpui_form_gpui_component::{
-    FormCombobox, FormInput, FormIntegerInput, FormSelect, IntegerInput, IntegerInputError,
-    IntegerInputEvent, IntegerInputPolicyError, IntegerInputState,
+    FormCombobox, FormEditor, FormInput, FormIntegerInput, FormSelect, FormTextarea, IntegerInput,
+    IntegerInputError, IntegerInputEvent, IntegerInputPolicyError, IntegerInputState,
 };
 
 #[derive(Clone, Debug, PartialEq, FormSchema)]
@@ -239,6 +239,81 @@ fn total_input_mirrors_form_and_component_without_echo(cx: &mut TestAppContext) 
     cx.update(|_, cx| AdapterInput::NAME.set(&form, "external".to_string(), cx));
     cx.run_until_parked();
     cx.update(|_, cx| assert_eq!(input.read(cx).value().as_ref(), "external"));
+}
+
+#[gpui::test]
+fn textarea_preserves_newlines_and_blur_validation(cx: &mut TestAppContext) {
+    let window = open_harness(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).expect("adapter harness root");
+    let (form, control) = cx.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            (
+                root.form.clone(),
+                FormTextarea::new(
+                    &root.form,
+                    AdapterInput::NAME,
+                    TextareaState::new,
+                    window,
+                    cx,
+                ),
+            )
+        })
+    });
+    let textarea = (*control).clone();
+
+    cx.update(|window, cx| {
+        textarea.update(cx, |textarea, cx| {
+            textarea.set_value("first line\nsecond line", window, cx);
+            cx.emit(InputEvent::Change);
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        assert_eq!(AdapterInput::NAME.get(&form, cx), "first line\nsecond line");
+        AdapterInput::NAME.set(&form, String::new(), cx);
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| textarea.update(cx, |_, cx| cx.emit(InputEvent::Blur)));
+    cx.run_until_parked();
+    cx.update(|_, cx| assert!(!AdapterInput::NAME.errors(&form, cx).is_empty()));
+}
+
+#[gpui::test]
+fn editor_highlighter_changes_keep_form_binding_active(cx: &mut TestAppContext) {
+    let window = open_harness(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).expect("adapter harness root");
+    let (form, control) = cx.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            (
+                root.form.clone(),
+                FormEditor::new(
+                    &root.form,
+                    AdapterInput::NAME,
+                    |window, cx| EditorState::new(window, cx).language("rust"),
+                    window,
+                    cx,
+                ),
+            )
+        })
+    });
+    let editor = (*control).clone();
+
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.set_highlighter("json", cx);
+            editor.set_value("{\n  \"value\": true\n}", window, cx);
+            cx.emit(InputEvent::Change);
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        assert_eq!(AdapterInput::NAME.get(&form, cx), "{\n  \"value\": true\n}");
+        AdapterInput::NAME.set(&form, "external editor value".to_string(), cx);
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| assert_eq!(editor.read(cx).value().as_ref(), "external editor value"));
 }
 
 #[gpui::test]

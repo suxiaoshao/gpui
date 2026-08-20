@@ -59,6 +59,10 @@ fn main() {
         "Windows.Storage.Streams.IBuffer".to_string(),
         "--filter".to_string(),
         "Windows.Graphics.Imaging.SoftwareBitmap".to_string(),
+        // The bindings are included inside `ocr::windows::ai_bindings`, whose
+        // outer attribute owns the generated-code lint policy. An inner
+        // `#![allow(...)]` is not valid at that `include!` site.
+        "--no-allow".to_string(),
         "--no-comment".to_string(),
     ];
 
@@ -68,11 +72,4 @@ fn main() {
         warnings.to_string(),
     )
     .expect("write windows ai warnings");
-    let generated = fs::read_to_string(&out_file).expect("read generated windows ai bindings");
-    let generated = generated.replacen(
-        "#![allow(\n    non_snake_case,\n    non_upper_case_globals,\n    non_camel_case_types,\n    dead_code,\n    clippy::all\n)]\n\n",
-        "",
-        1,
-    );
-    fs::write(&out_file, generated).expect("rewrite generated windows ai bindings");
 }

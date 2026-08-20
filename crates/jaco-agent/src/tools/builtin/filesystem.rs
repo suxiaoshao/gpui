@@ -13,7 +13,7 @@ use crate::{
 use async_trait::async_trait;
 use ignore::WalkBuilder;
 use jaco_core::{ToolAccessKind, ToolExecutionPolicy, ToolInvocationOutput, ToolSource};
-use similar::TextDiff;
+use similar::{Algorithm, TextDiff};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -425,7 +425,9 @@ fn is_hidden(path: &Path) -> bool {
 }
 
 fn unified_diff(old: &str, new: &str, path: &Path) -> String {
-    TextDiff::from_lines(old, new)
+    TextDiff::configure()
+        .algorithm(Algorithm::RawMyers)
+        .diff_lines(old, new)
         .unified_diff()
         .header(
             &format!("a/{}", path.to_string_lossy()),
@@ -524,6 +526,17 @@ mod tests {
         let schema = edit_file_schema();
 
         assert_eq!(schema["properties"]["oldText"]["minLength"], json!(1));
+    }
+
+    #[test]
+    fn unified_diff_keeps_raw_myers_output_for_repeated_lines() {
+        let old = "header\nrepeat\nalpha\nrepeat\nbeta\nrepeat\ntail\n";
+        let new = "header\nrepeat\nalpha changed\nrepeat\nbeta\nrepeat\ngamma\nrepeat\ntail\n";
+
+        assert_eq!(
+            unified_diff(old, new, Path::new("repeated.txt")),
+            "--- a/repeated.txt\n+++ b/repeated.txt\n@@ -1,7 +1,9 @@\n header\n repeat\n-alpha\n+alpha changed\n repeat\n beta\n repeat\n+gamma\n+repeat\n tail\n"
+        );
     }
 
     #[tokio::test]

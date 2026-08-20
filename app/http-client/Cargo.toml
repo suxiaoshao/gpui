@@ -38,22 +38,22 @@ unic-langid = "0.9.6"
 sys-locale = "0.3.2"
 
 url = "2.5.8"
-http = "1.4.2"
+http = "1.5.0"
 mime = "0.3.17"
 mime_guess = "2.0.5"
-base64 = { version = "0.23.0", default-features = false, features = ["std"] }
+base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 async-channel = "2.5.0"
-async-compression = { version = "0.4.42", default-features = false, features = [
+async-compression = { version = "0.4.43", default-features = false, features = [
   "tokio",
   "brotli",
   "gzip",
   "zlib",
   "zstd",
 ] }
-bytes = "1.12.0"
-bytemuck = { version = "1.25.0", features = ["extern_crate_alloc"] }
+bytes = "1.12.1"
+bytemuck = { version = "1.25.2", features = ["extern_crate_alloc"] }
 encoding_rs = "0.8.35"
-futures-util = "0.3.33"
+futures-util = "0.3.34"
 hayro = "0.7.1"
 image = { version = "0.25.10", default-features = false, features = [
   "gif",
@@ -82,7 +82,7 @@ reqwest = { version = "0.13.4", default-features = false, features = [
 ] }
 serde_json = "1.0.151"
 tempfile = "3.27.0"
-thiserror = "2.0.19"
+thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["fs", "io-util", "time"] }
 tokio-util = { version = "0.7.19", features = ["io"] }
 

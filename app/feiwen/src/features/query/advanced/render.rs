@@ -656,7 +656,7 @@ where
         .menu_max_h(rems(12.))
         .disabled(disabled)
         .render_trigger(move |ctx, _, cx| {
-            let items = ctx.selection;
+            let items = ctx.selection();
             if items.is_empty() {
                 return div()
                     .text_color(cx.theme().muted_foreground)

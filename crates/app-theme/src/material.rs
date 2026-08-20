@@ -115,7 +115,6 @@ struct MaterialSurfaceTokens {
     background: SharedString,
     border: SharedString,
     accordion: SharedString,
-    accordion_hover: SharedString,
     group_box: SharedString,
     group_box_foreground: SharedString,
     group_box_title_foreground: SharedString,
@@ -268,7 +267,6 @@ fn material_surface_tokens(
         background: hex(scheme.surface),
         border: palette.divider.clone(),
         accordion: hex(scheme.surface_container_low),
-        accordion_hover: hex(scheme.surface_container),
         group_box: hex(scheme.surface_container_low),
         group_box_foreground: hex(scheme.on_surface),
         group_box_title_foreground: hex(scheme.on_surface_variant),
@@ -406,7 +404,6 @@ impl From<MaterialThemeColors> for ThemeConfigColors {
         colors.accent = Some(interaction.accent);
         colors.accent_foreground = Some(interaction.accent_foreground);
         colors.accordion = Some(surface.accordion);
-        colors.accordion_hover = Some(surface.accordion_hover);
         colors.background = Some(surface.background);
         colors.border = Some(surface.border);
         colors.button = Some(control.secondary.background.clone());

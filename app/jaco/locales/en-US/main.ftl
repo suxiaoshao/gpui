@@ -320,6 +320,14 @@ sidebar-project-remove = Remove Project
 sidebar-search-title = Search Conversations
 sidebar-search-placeholder = Search conversations
 sidebar-search-no-results = No matching conversations
+sidebar-search-announcement-loading = Searching conversations
+sidebar-search-announcement-error = Search failed: { $error }
+sidebar-search-announcement-empty = No matching conversations
+sidebar-search-announcement-results =
+    { $count ->
+        [one] 1 conversation found
+       *[other] { $count } conversations found
+    }
 sidebar-rename-project-title = Rename Project
 sidebar-rename-project-placeholder = Project name
 sidebar-remove-project-title = Remove Project

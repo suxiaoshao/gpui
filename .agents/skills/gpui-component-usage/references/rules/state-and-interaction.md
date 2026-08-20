@@ -40,6 +40,20 @@ Use this file when building custom interactions or wiring component state.
   delegate. Use it after catalog replacement when the authoritative selection
   must be projected against the new options; it does not represent user input.
 
+## Command Search Authority
+
+- Use `Command` for a dismissible action palette or action-search surface, not
+  as a form value owner or a permanent navigation list.
+- The built-in matcher is fixed case-insensitive substring matching over label
+  and keywords; there is no custom predicate or scorer hook.
+- When a database, provider, or application service owns matching, render its
+  current results and set `.filterable(false)`. Keep debounce, cancellation,
+  stale-result rejection, errors, retry, and stable domain identity in that
+  owner. `CommandState::set_loading` only controls palette presentation.
+- `on_confirm` returns the latest model's `IndexPath`. Map it through the
+  owner-held result vector immediately; do not persist the index as domain
+  identity.
+
 ## Form And Dynamic Configuration Boundaries
 
 Component state is often a physical container for three semantically different

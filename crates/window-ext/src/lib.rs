@@ -1,4 +1,3 @@
-#![allow(deprecated)]
 mod platform;
 #[cfg(target_os = "macos")]
 mod quick_look;
@@ -18,7 +17,7 @@ use objc2_foundation::NSURL;
 use platform::*;
 #[cfg(target_os = "macos")]
 use raw_window_handle::AppKitWindowHandle;
-use raw_window_handle::{HandleError, HasRawWindowHandle, RawWindowHandle};
+use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle};
 use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::{cell::RefCell, ptr, sync::OnceLock};

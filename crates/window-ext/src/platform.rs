@@ -78,9 +78,9 @@ pub(super) fn get_scale_factor_for_monitor(monitor: HMONITOR) -> windows::core::
 }
 
 pub(super) fn get_raw_window(window: &Window) -> Result<RawWindowHandle, WindowExtError> {
-    let raw_window = window
-        .raw_window_handle()
-        .map_err(WindowExtError::FailedToGetHandle)?;
+    let raw_window = HasWindowHandle::window_handle(window)
+        .map_err(WindowExtError::FailedToGetHandle)?
+        .as_raw();
     Ok(raw_window)
 }
 

@@ -1,7 +1,7 @@
 use crate::foundation::{I18n, assets::IconName};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, Sizable, Size, StyledExt,
+    ActiveTheme, Sizable, Size, StyledExt, ThemeStyled,
     button::{Button, ButtonVariants},
     h_flex,
 };
@@ -340,6 +340,8 @@ impl View for HotkeyInput {
         };
         let outer_focus_handle = self.state.read(cx).outer_focus_handle.clone();
         let capture_focus_handle = self.state.read(cx).capture_focus_handle.clone();
+        let is_focused =
+            outer_focus_handle.is_focused(window) || capture_focus_handle.is_focused(window);
         let had_value = self.value.is_some();
         let start_action_state = self.state.clone();
         let stop_action_state = self.state.clone();
@@ -385,7 +387,7 @@ impl View for HotkeyInput {
             .border_color(cx.theme().input)
             .border_1()
             .when(cx.theme().shadow, |this| this.shadow_xs())
-            .focus(|this| this.focused_border(cx))
+            .when(is_focused, |this| this.focus_ring_style(window, cx))
             .when(is_recording, |this| this.border_color(cx.theme().primary))
             .child(
                 div()

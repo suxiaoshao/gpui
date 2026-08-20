@@ -1,0 +1,14 @@
+[package]
+name = "lestty"
+version = "0.1.0"
+description = "A lightweight terminal application."
+authors = ["suxiaoshao <48886207+suxiaoshao@users.noreply.github.com>"]
+license = "MIT"
+repository = "https://github.com/suxiaoshao/gpui"
+homepage = "https://github.com/suxiaoshao/gpui"
+edition = "2024"
+
+[dependencies]
+gpui.workspace = true
+gpui-base.workspace = true
+gpui_platform.workspace = true

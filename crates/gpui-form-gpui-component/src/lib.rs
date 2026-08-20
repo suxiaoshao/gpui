@@ -8,7 +8,7 @@ mod select;
 
 pub use combobox::FormCombobox;
 pub use error::{FormIntegerInputBuildError, IntegerInputPolicyError};
-pub use input::FormInput;
+pub use input::{FormEditor, FormInput, FormTextarea};
 pub use integer_input::{
     FormIntegerInput, IntegerInput, IntegerInputError, IntegerInputEvent, IntegerInputPolicy,
     IntegerInputState, IntegerValue,

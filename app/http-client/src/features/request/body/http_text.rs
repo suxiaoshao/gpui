@@ -4,12 +4,12 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme as _,
-    input::{Input, InputState},
+    input::{Editor, EditorState},
     select::{SelectItem, SelectState},
     v_flex,
 };
 use gpui_form::{ControlBinding, ControlProjection, DynamicPath, Form};
-use gpui_form_gpui_component::FormInput;
+use gpui_form_gpui_component::FormEditor;
 
 use crate::{
     features::request::{
@@ -50,7 +50,7 @@ const TEXT_BODY_FORMATS: [TextBodyFormat; 6] = [
 
 pub(super) struct HttpTextView {
     format_preset: FormScalarSelect<RequestDraft, TextFormatOptions, TextBodyFormat>,
-    content: FormInput,
+    content: FormEditor,
     _syntax_binding: ControlBinding,
 }
 
@@ -64,13 +64,12 @@ impl HttpTextView {
         let format_path = text.clone().then(TextBodyDraft::FORMAT);
         let content_path = text.then(TextBodyDraft::CONTENT);
         let initial_format = format_path.try_get(&form, cx).unwrap_or_default();
-        let content = FormInput::try_new(
+        let content = FormEditor::try_new(
             &form,
             content_path,
             move |window, cx| {
-                InputState::new(window, cx)
-                    .multi_line(true)
-                    .code_editor(initial_format.editor_language())
+                EditorState::new(window, cx)
+                    .language(initial_format.editor_language())
                     .line_number(true)
                     .searchable(true)
             },
@@ -125,7 +124,7 @@ impl Render for HttpTextView {
             )
             .child(
                 div().flex_1().min_h(px(0.)).overflow_hidden().child(
-                    Input::new(&self.content)
+                    Editor::new(&self.content)
                         .size_full()
                         .font_family(cx.theme().mono_font_family.clone()),
                 ),

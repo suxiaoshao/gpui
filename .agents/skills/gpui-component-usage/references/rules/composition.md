@@ -5,7 +5,7 @@ Use this file when choosing how to assemble app UI from gpui-component pieces.
 ## Use Existing Components First
 
 - Use `Button` for actions before styling a raw `div` as a button.
-- Use `Input`, `Select`, `Checkbox`, `Radio`, `Switch`, `Slider`, `DatePicker`, `ColorPicker`, or `OtpInput` for form controls before custom input markup.
+- Use `Input`, `Textarea`, `Editor`, `Select`, `Checkbox`, `Radio`, `Switch`, `Slider`, `DatePicker`, `ColorPicker`, or `OtpInput` for form controls before custom input markup.
 - Use `Dialog`, `AlertDialog`, `Sheet`, `Popover`, `HoverCard`, and `Tooltip` for overlay behavior before manually positioning floating containers.
 - Use `Table`, `DataTable`, `List`, `Tree`, and `VirtualList` for structured data instead of app-local list/table frameworks.
 - Use `Alert`, `Notification`, `Progress`, `Spinner`, `Skeleton`, `Badge`, and `Tag` for status and feedback.
@@ -13,7 +13,7 @@ Use this file when choosing how to assemble app UI from gpui-component pieces.
 ## Compose by Role
 
 - Settings and preference pages usually compose `Settings`, `Form`, `GroupBox`, `Label`, `DescriptionList`, and existing form controls.
-- Command or menu surfaces usually compose `Button`, `DropdownButton`, `Menu`, `Popover`, and keyboard focus patterns already used by the app.
+- Command palettes and action-search surfaces use `Command`; application and remote search owners disable its local filtering. Menu surfaces compose `Button`, `DropdownButton`, `Menu`, `Popover`, and the app's action/focus model.
 - Empty or lightweight card-like areas should start with ordinary GPUI layout plus `GroupBox`, `Alert`, `Skeleton`, `Icon`, `Button`, or `Tag` as needed. Do not introduce a generic app-local card component only because a Web example uses Card.
 - Data-heavy views should choose `DataTable`, `Table`, `List`, `Tree`, or `VirtualList` based on size and interaction needs.
 

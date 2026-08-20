@@ -13,6 +13,12 @@ Use this file when translating visual specs or building app-local controls.
 - Continue using semantic `Hsla` fields for text, icons, borders, caret,
   low-level paint quads, and color calculations that cannot accept a
   `Background`.
+- `Theme::change(...)` projects the selected component theme into
+  `gpui_base::Theme`. After mutating public fields through
+  `Theme::global_mut(cx)`, call `Theme::sync_base(cx)` so base-owned
+  scrollbars, resize handles, and semantic tokens observe the same theme.
+  Do not write a competing base theme in a full-component app because the next
+  component-theme sync replaces it.
 - Prefer component variants such as `.primary()`, `.secondary()`, `.danger()`, `.ghost()`, `.outline()`, or `.link()` before custom colors.
 - Keep custom overrides local to the feature. If many screens need the same override, look for an existing token or component variant first.
 
@@ -23,10 +29,11 @@ Use this file when translating visual specs or building app-local controls.
 - Input editors and rendered Markdown code blocks share the installed
   `HighlightThemeStyle` content palette. Their surfaces may differ because an
   editor and an inline Markdown code block are different contexts.
-- At gpui-component `5b45bcb`, rendered `CodeBlock` still keeps a parse-time
-  highlight theme and a theme-independent style cache. Treat this as an upstream
-  lifecycle blocker: do not add app-side theme subscriptions, same-value
-  `set_text`, forced reparsing, or a second syntax palette as a workaround.
+- At target `5e5a1a304b2a5a3d725c03b8759e9ba2b4ad58b3`, rendered `CodeBlock`
+  styles follow the current `HighlightTheme`. Its cache retains parsed
+  highlighter state but recomputes styles when the palette changes. Do not add
+  app-side theme subscriptions, same-value `set_text`, forced reparsing, or a
+  second syntax palette.
 
 ## Size System
 

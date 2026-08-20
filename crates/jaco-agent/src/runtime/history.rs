@@ -9,15 +9,21 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use jaco_core::*;
 use jaco_db::{AttachmentRecord, ConversationEntryRecord};
 use rig::{
-    OneOrMany,
     completion::{AssistantContent, Message as RigMessage},
     message::{
         self, DocumentMediaType, ImageDetail, ImageMediaType, MimeType, ToolCall, ToolFunction,
-        ToolResult, ToolResultContent, UserContent,
+        ToolResultContent, UserContent,
     },
 };
 
 type AttachmentMap<'a> = HashMap<&'a str, &'a AttachmentRecord>;
+type ToolCallMap<'a> = HashMap<&'a str, ToolCallMetadata<'a>>;
+
+#[derive(Clone, Copy)]
+struct ToolCallMetadata<'a> {
+    name: &'a str,
+    provider_item_id: Option<&'a str>,
+}
 
 pub(crate) struct PromptHistory {
     pub(crate) prompt: RigMessage,
@@ -48,6 +54,7 @@ pub(crate) fn build_prompt_history_with_options(
     options: PromptHistoryOptions,
 ) -> Result<PromptHistory> {
     let attachment_map = attachment_map(attachments);
+    let tool_calls = tool_call_map(items);
     let user_index = items
         .iter()
         .position(|item| item.id == trigger_entry_id)
@@ -65,6 +72,7 @@ pub(crate) fn build_prompt_history_with_options(
         conversation_entry_to_rig_message_with_options(
             &items[user_index],
             &attachment_map,
+            &tool_calls,
             options,
         )?
         .ok_or_else(|| {
@@ -82,8 +90,13 @@ pub(crate) fn build_prompt_history_with_options(
     let history = items[..user_index]
         .iter()
         .filter_map(|item| {
-            conversation_entry_to_rig_message_with_options(item, &attachment_map, options)
-                .transpose()
+            conversation_entry_to_rig_message_with_options(
+                item,
+                &attachment_map,
+                &tool_calls,
+                options,
+            )
+            .transpose()
         })
         .collect::<Result<Vec<_>>>()?;
     let mut input_item_ids = items[..=user_index]
@@ -103,9 +116,11 @@ pub(crate) fn conversation_entry_to_rig_message(
     item: &ConversationEntryRecord,
     attachments: &AttachmentMap<'_>,
 ) -> Result<Option<RigMessage>> {
+    let tool_calls = ToolCallMap::new();
     conversation_entry_to_rig_message_with_options(
         item,
         attachments,
+        &tool_calls,
         PromptHistoryOptions::default(),
     )
 }
@@ -113,6 +128,7 @@ pub(crate) fn conversation_entry_to_rig_message(
 fn conversation_entry_to_rig_message_with_options(
     item: &ConversationEntryRecord,
     attachments: &AttachmentMap<'_>,
+    tool_calls: &ToolCallMap<'_>,
     options: PromptHistoryOptions,
 ) -> Result<Option<RigMessage>> {
     Ok(match &item.payload {
@@ -128,7 +144,7 @@ fn conversation_entry_to_rig_message_with_options(
                     None
                 } else {
                     Some(RigMessage::User {
-                        content: one_or_many_user_content(content, &item.id)?,
+                        content: non_empty_user_content(content, &item.id)?,
                     })
                 }
             }
@@ -145,31 +161,43 @@ fn conversation_entry_to_rig_message_with_options(
             );
             Some(RigMessage::Assistant {
                 id: item.provider_item_id.clone(),
-                content: OneOrMany::one(AssistantContent::Reasoning(reasoning)),
+                content: vec![AssistantContent::Reasoning(reasoning)],
             })
         }
         ConversationEntryPayload::Reasoning { .. } => None,
         ConversationEntryPayload::ToolCall(_) if !options.preserve_tool_protocol => None,
         ConversationEntryPayload::ToolCall(call) => Some(RigMessage::Assistant {
             id: item.provider_item_id.clone(),
-            content: OneOrMany::one(AssistantContent::ToolCall(
-                ToolCall::new(
-                    call.call_id.clone(),
-                    ToolFunction::new(call.runtime_tool_name.clone(), call.arguments.value.clone()),
-                )
-                .with_call_id(call.call_id.clone()),
-            )),
+            content: vec![AssistantContent::ToolCall(tool_call_from_entry(item, call))],
         }),
         ConversationEntryPayload::ToolResult(result) if !options.preserve_tool_protocol => {
             Some(RigMessage::user(textualized_tool_result(result)))
         }
-        ConversationEntryPayload::ToolResult(result) => Some(RigMessage::User {
-            content: OneOrMany::one(UserContent::ToolResult(ToolResult {
-                id: result.call_id.clone(),
-                call_id: Some(result.call_id.clone()),
-                content: OneOrMany::one(ToolResultContent::text(tool_result_model_text(result))),
-            })),
-        }),
+        ConversationEntryPayload::ToolResult(result) => {
+            let tool_call = tool_calls.get(result.call_id.as_str()).ok_or_else(|| {
+                AgentRuntimeError::Invariant(format!(
+                    "tool result {} has no matching tool call in conversation history",
+                    result.call_id
+                ))
+            })?;
+            let content = vec![ToolResultContent::text(tool_result_model_text(result))];
+            let result = match tool_call.provider_item_id {
+                Some(item_id) => UserContent::tool_result_with_call_id(
+                    item_id,
+                    result.call_id.clone(),
+                    tool_call.name,
+                    content,
+                ),
+                None => UserContent::tool_result_from_wire(
+                    result.call_id.clone(),
+                    tool_call.name,
+                    content,
+                ),
+            };
+            Some(RigMessage::User {
+                content: vec![result],
+            })
+        }
         ConversationEntryPayload::Error(error) => Some(RigMessage::system(format!(
             "Previous run error [{}]: {}",
             error.code, error.message
@@ -215,13 +243,37 @@ fn user_content_parts(
     Ok(result)
 }
 
-fn one_or_many_user_content(
-    content: Vec<UserContent>,
-    item_id: &str,
-) -> Result<OneOrMany<UserContent>> {
-    OneOrMany::many(content).map_err(|_| {
-        AgentRuntimeError::Invariant(format!("message item {item_id} has no model content"))
-    })
+fn non_empty_user_content(content: Vec<UserContent>, item_id: &str) -> Result<Vec<UserContent>> {
+    if content.is_empty() {
+        return Err(AgentRuntimeError::Invariant(format!(
+            "message item {item_id} has no model content"
+        )));
+    }
+    Ok(content)
+}
+
+fn tool_call_map(items: &[ConversationEntryRecord]) -> ToolCallMap<'_> {
+    items
+        .iter()
+        .filter_map(|item| match &item.payload {
+            ConversationEntryPayload::ToolCall(call) => Some((
+                call.call_id.as_str(),
+                ToolCallMetadata {
+                    name: call.runtime_tool_name.as_str(),
+                    provider_item_id: item.provider_item_id.as_deref(),
+                },
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+fn tool_call_from_entry(item: &ConversationEntryRecord, call: &ToolCallEntry) -> ToolCall {
+    let function = ToolFunction::new(call.runtime_tool_name.clone(), call.arguments.value.clone());
+    match item.provider_item_id.as_deref() {
+        Some(item_id) => ToolCall::from_dual_wire(item_id, call.call_id.clone(), function),
+        None => ToolCall::from_wire(call.call_id.clone(), function),
+    }
 }
 
 fn image_attachment_content(
@@ -465,7 +517,7 @@ fn user_prompt_with_skill_context(
         content.push(UserContent::text(skill_activation_context(skill)));
     }
     Ok(RigMessage::User {
-        content: one_or_many_user_content(content, &user_item.id)?,
+        content: non_empty_user_content(content, &user_item.id)?,
     })
 }
 
@@ -752,6 +804,87 @@ mod tests {
                 "current-user".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn prompt_history_pairs_tool_results_with_dual_wire_calls() {
+        let mut call = conversation_entry_with_payload(
+            "tool-call",
+            1,
+            Some("run-1"),
+            ConversationEntryKind::ToolCall,
+            ConversationEntryPayload::ToolCall(ToolCallEntry {
+                tool_invocation_id: None,
+                call_id: "call_previous".to_string(),
+                source: ToolSource::Local,
+                name: "echo".to_string(),
+                runtime_tool_name: "echo".to_string(),
+                arguments: ToolArguments {
+                    value: serde_json::json!({"text": "hello"}),
+                },
+            }),
+        );
+        call.provider_item_id = Some("fc_previous".to_string());
+        let result = conversation_entry_with_payload(
+            "tool-result",
+            2,
+            Some("run-1"),
+            ConversationEntryKind::ToolResult,
+            ConversationEntryPayload::ToolResult(ToolResultEntry {
+                tool_invocation_id: None,
+                call_id: "call_previous".to_string(),
+                content: vec![ContentPart::Text {
+                    text: "hello".to_string(),
+                }],
+                is_error: false,
+                structured_output: None,
+                raw_output: None,
+            }),
+        );
+        let current = conversation_entry_with_payload(
+            "current-user",
+            3,
+            None,
+            ConversationEntryKind::Message,
+            ConversationEntryPayload::Message {
+                role: TranscriptRole::User,
+                content: vec![ContentPart::Text {
+                    text: "continue".to_string(),
+                }],
+            },
+        );
+
+        let history = build_prompt_history_with_options(
+            &[call, result, current],
+            &[],
+            "current-user",
+            "run-2",
+            PromptHistoryOptions::default(),
+        )
+        .unwrap();
+
+        let RigMessage::Assistant { content, .. } = &history.history[0] else {
+            panic!("expected assistant tool call");
+        };
+        let AssistantContent::ToolCall(call) = &content[0] else {
+            panic!("expected tool call content");
+        };
+        assert_eq!(call.id, "call_previous");
+        let provider = call.provider.as_ref().expect("dual-wire provider identity");
+        assert_eq!(provider.call_id, "call_previous");
+        assert_eq!(provider.item_id.as_deref(), Some("fc_previous"));
+
+        let RigMessage::User { content } = &history.history[1] else {
+            panic!("expected user tool result");
+        };
+        let UserContent::ToolResult(result) = &content[0] else {
+            panic!("expected tool result content");
+        };
+        assert_eq!(result.call, "call_previous");
+        assert_eq!(result.name, "echo");
+        let provider = result.provider.as_ref().expect("dual-wire result identity");
+        assert_eq!(provider.call_id, "call_previous");
+        assert_eq!(provider.item_id.as_deref(), Some("fc_previous"));
     }
 
     fn conversation_entry(id: &str, content: Vec<ContentPart>) -> ConversationEntryRecord {
