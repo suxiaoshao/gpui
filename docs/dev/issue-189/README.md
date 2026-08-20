@@ -2,7 +2,7 @@
 
 ## 状态与范围
 
-- 状态：`In progress`（`agent-message-request-usage-plan.md` 保留最终验证项；composer 的 `WP-102`、`WP-202`、`WP-302`、`WP-402`、`WP-502` 已 `Implemented`；workspace-wide gates、现场provider refresh/新请求、完整人工矩阵与三平台 CI 待做；Settings 计划仍为 `Draft`）
+- 状态：`In progress`（`agent-message-request-usage-plan.md` 保留最终验证项；composer 与 Settings 的工作包均已 `Implemented`；workspace-wide gates、现场provider refresh/新请求、完整人工矩阵与三平台 CI 待做）
 - 关联 issue：[#189](https://github.com/suxiaoshao/gpui/issues/189)
 - 父 issue：[#159](https://github.com/suxiaoshao/gpui/issues/159)
 - Plan ID：`issue-189`
@@ -10,7 +10,7 @@
 - 根索引：[Workspace development plans](../README.md)
 - 分支：`codex/189-jaco-show-context-usage`
 - 最近更新：2026-08-20
-- 实施引用：composer 工作包已实现；implementation commit/PR `Pending`
+- 实施引用：composer 与 Settings 工作包已实现；Settings implementation commit / PR `Pending`
 
 ## 三个独立执行文档
 
@@ -18,7 +18,7 @@
 | --- | --- | --- | --- |
 | 1 | [Agent 消息单次请求用量](agent-message-request-usage-plan.md) | `In progress` | 最终 agent 消息与 provider step 的单次 usage 关联、Copy/时间工具栏入口、始终可hover的图标与group-hover total摘要、原生HoverCard、实时与重载一致性 |
 | 2 | [输入框上下文占用](composer-context-occupancy-plan.md) | `Implemented` | 当前模型 context window、最新成功请求占用、模型切换与未知状态、footer Gauge + 百分比 HoverCard |
-| 3 | [设置页时间范围使用统计](settings-usage-analytics-plan.md) | `Draft` | 本地日历范围、数据库聚合、趋势、provider/model 分组与设置页状态 |
+| 3 | [设置页时间范围使用统计](settings-usage-analytics-plan.md) | `Implemented` | 本地日历范围、数据库聚合、趋势、provider/model 分组与设置页状态 |
 
 三个文档共享 persisted `usage_events`，但不共享展示语义：消息显示单次 request usage，输入框显示 context occupancy，设置页显示范围聚合。任何执行文档都不得用另一个文档的投影替代自己的数据契约。
 
@@ -37,6 +37,11 @@
 - Composer 整组摘要使用原生 pointer-only `HoverCard` 默认延迟；不提供点击固定、Escape、键盘打开或 focus return。
 - Composer numerator 使用当前 conversation 最新成功请求唯一 usage event 的 `total_tokens`；running、failed、canceled 不替换上一个成功请求。
 - 最新成功请求如果是 partial、unreported 或 missing usage，则显示 unknown 且不向前回找；当前 provider/model 与 latest fact 不匹配时同样不回找历史。
+- Settings 提供 Today、This week、This month、This year、All time 五个固定周期；默认 This month，不持久化选择。
+- Settings 有限周期按刷新时捕获的当前本地 fixed offset计算，This week从周一开始；使用UTC半开边界查询并以同一offset按本地日历分桶。
+- 首次进入或重新选择Usage、切换周期、错误Retry时查询；不增加常驻Refresh按钮、轮询或focus refresh。
+- Settings的一次request等于一条persisted usage event；同一turn的多个completed provider steps分别计数。
+- Settings索引直接写入schema version 1的fresh schema，不新增migration或旧库兼容层；已有本地数据库由使用者自行重建或手工加索引。
 
 ## 共享非目标
 
@@ -53,20 +58,21 @@
 - Agent 消息计划不修改 SQLite schema、migration 或已持久化 `ProviderUsageSnapshot` JSON。
 - Composer 计划若扩展 capability/run snapshot，必须以 serde default 保持旧 JSON 可读。
 - Settings 聚合必须独立定义本地日历边界与覆盖率，不能复用消息或 composer 投影。
+- Settings 的created-at索引直接修改schema version 1的fresh schema；不新增migration、旧库检测或自动repair，现有本地数据库由使用者自行处理。
 
 ## 计划映射
 
-前两个执行文档复用同一组 owner 计划入口；各 owner README 分开登记 `WP-?01` 的已实施证据与 `WP-?02` 的 composer Ready contract：
+三个执行文档复用同一组 owner 计划入口；各 owner README 分开登记已实施的 `WP-?01`/`WP-?02` 与 Settings 的 `WP-203`/`WP-503`：
 
 | Owner | 文档 | 职责 |
 | --- | --- | --- |
-| `crates/jaco-core` | [owner plan](../../../crates/jaco-core/docs/dev/issue-189/README.md) | usage contract；context capability、latest request fact、Conversation change/effect |
-| `crates/jaco-db` | [owner plan](../../../crates/jaco-db/docs/dev/issue-189/README.md) | message projection；composer selector/assembler 与 reload/finalization 事务边界 |
-| `crates/jaco-conversation` | [owner plan](../../../crates/jaco-conversation/docs/dev/issue-189/README.md) | message collection 与 composer singular fact hydration |
-| `crates/jaco-agent` | [owner plan](../../../crates/jaco-agent/docs/dev/issue-189/README.md) | message live publication；capability discovery 与 composer live publication |
-| `app/jaco` | [owner plan](../../../app/jaco/docs/dev/issue-189/README.md) | message action row；composer projection、footer HoverCard、图标、Fluent与UI验证 |
+| `crates/jaco-core` | [owner plan](../../../crates/jaco-core/docs/dev/issue-189/README.md) | usage contract；context capability、latest request fact、Conversation change/effect；无Settings WP |
+| `crates/jaco-db` | [owner plan](../../../crates/jaco-db/docs/dev/issue-189/README.md) | message projection；composer selector/assembler；Settings analytics projection、fresh-schema index与聚合查询 |
+| `crates/jaco-conversation` | [owner plan](../../../crates/jaco-conversation/docs/dev/issue-189/README.md) | message collection与composer singular fact hydration；无Settings WP |
+| `crates/jaco-agent` | [owner plan](../../../crates/jaco-agent/docs/dev/issue-189/README.md) | message live publication；capability discovery与composer live publication；无Settings WP |
+| `app/jaco` | [owner plan](../../../app/jaco/docs/dev/issue-189/README.md) | message action row；composer footer；Settings Usage页面、Operation、图表/表格、Fluent与UI验证 |
 
-Settings owner/WP 映射在第三执行文档完成时补充；不得直接复用 composer singular fact 做范围聚合。
+Settings只增加 `jaco-db/WP-203` 与 `app/jaco/WP-503`；typed snapshot留在DB query boundary，不直接复用composer singular fact，也不为单一consumer增加core/conversation/agent contract。
 
 ## 跨文档顺序
 
@@ -87,5 +93,5 @@ Settings owner/WP 映射在第三执行文档完成时补充；不得直接复�
 | Implementation commits / PR | `Pending` |
 | Agent 消息执行文档 | `In progress`，代码、本地自动化已完成，最终HoverCard交互已由用户检查确认；真实provider请求和三平台CI待执行 |
 | Composer 执行文档 | `Implemented`；`WP-102`、`WP-202`、`WP-302`、`WP-402`、`WP-502` 的聚焦验证已通过；旧模型缓存保持unknown直至用户refresh；workspace-wide gates、现场provider refresh/新请求、最终bundle、完整人工矩阵与三平台 CI 待执行 |
-| Settings 执行文档 | `Draft` |
-| 自动化、人工与 CI | Composer focused tests、`cargo fmt`、selected-package combined strict clippy 与 `cargo check -p jaco` 通过；此前UI构建的隔离配置fresh no-model `Gauge —`、AX label、默认HoverCard/details/layout已验证；移除读取时兼容补全后的最终bundle、workspace-wide build/test/clippy、现场provider refresh/新请求、完整人工矩阵与CI未执行 |
+| Settings 执行文档 | `Implemented`；`WP-203`、`WP-503` 聚焦测试、Entity/Window lifecycle tests、check、strict clippy与格式检查通过；隔离bundle已完成核心UI smoke，剩余人工边界和远端 CI 待执行 |
+| 自动化、人工与 CI | Composer 与 Settings focused tests、`cargo fmt`、selected-package strict clippy 与 `cargo check -p jaco` 通过；隔离构建已验证消息/composer既有场景及Settings的empty、五周期、趋势/AllTime、精确统计、AX与search lifecycle；Settings横向scroll/error/degraded/现场语言切换、workspace-wide build/test/clippy、现场provider refresh/新请求与CI未执行 |

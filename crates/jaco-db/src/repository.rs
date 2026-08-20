@@ -1,4 +1,7 @@
 mod agent;
+mod analytics;
+#[cfg(test)]
+pub(crate) use analytics::{DAILY_FINITE_SQL, PROVIDER_MODELS_FINITE_SQL, SUMMARY_FINITE_SQL};
 #[path = "repository/conversations.rs"]
 mod conversation_repository;
 #[path = "repository/projects.rs"]

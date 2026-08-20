@@ -4,4 +4,4 @@
 
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
-| [#189](https://github.com/suxiaoshao/gpui/issues/189) Message usage 与 composer context projections | `In progress`；message final association 已实施，composer selector/assembler 正在实施 | [issue-189/README.md](issue-189/README.md) |
+| [#189](https://github.com/suxiaoshao/gpui/issues/189) Message usage、composer context 与 Settings analytics projections | `In progress`；三个 owner 工作包均已实施，root 最终门待做 | [issue-189/README.md](issue-189/README.md) |

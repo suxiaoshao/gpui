@@ -1,16 +1,16 @@
-# jaco-db：构造 Issue #189 usage 与 context projections
+# jaco-db：构造 Issue #189 usage、context 与 analytics projections
 
 ## 根计划与 owner 边界
 
 - Plan ID：`issue-189`
 - Root hub：[Issue #189](../../../../../docs/dev/issue-189/README.md)
-- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)
+- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)、[Settings usage analytics](../../../../../docs/dev/issue-189/settings-usage-analytics-plan.md)
 - Owner directory：`crates/jaco-db`
-- Owner status：`In progress`（`WP-201`、`WP-202` 均已 `Implemented`；root-level workspace/known-provider/CI gates待做）
-- 消费 root IDs：`C-02`、`C-03`、`C-12`、`D-01`、`D-02`、`D-06`、`D-14`–`D-18`、`DB-01`、`DB-02`、`DB-11`、`DB-12`、`R-01`–`R-08`、`R-24`–`R-27`
-- Assigned WP：`WP-201`、`WP-202`
-- Owns：conversation usage query、message projection assembler、composer latest-step selector/assembler、reload records、finalization transaction result与repository tests
-- Does not own：usage写入基数/schema、core语义、agent event、provider discovery、UI或Settings aggregate
+- Owner status：`In progress`（`WP-201`、`WP-202`、`WP-203` 已 `Implemented`；root-level workspace/known-provider/CI gates待做）
+- 消费 root IDs：`C-02`、`C-03`、`C-12`、`C-21`、`D-01`、`D-02`、`D-06`、`D-14`–`D-18`、`D-31`–`D-38`、`DB-01`、`DB-02`、`DB-11`、`DB-12`、`DB-21`–`DB-23`、`R-01`–`R-08`、`R-24`–`R-27`、`R-42`–`R-51`
+- Assigned WP：`WP-201`、`WP-202`、`WP-203`
+- Owns：conversation usage query、message projection assembler、composer latest-step selector/assembler、reload/finalization results、Settings analytics projection、range aggregation、fresh-schema index与repository tests
+- Does not own：usage写入基数/serialized JSON、core语义、agent event、provider discovery、local calendar preset计算、Settings Operation或UI
 
 ## Owner-local 证据与决定
 
@@ -18,9 +18,12 @@
 - `E-202`：`complete_provider_step_with_usage` 已原子完成step与usage；本计划不改变它。
 - `E-203`：`conversation_timeline_records` 当前一次加载conversation数据，但usage只支持按step查询。
 - `E-204`：`finish_agent_run_with_conn` 在一个transaction内确定final run/final entry。
+- `E-205`：Settings全局范围查询必须按`created_at`过滤；现有`(conversation_id, date_key)`索引不能支持该access path。
+- `E-206`：app已直接依赖jaco-db，analytics snapshot只有DB producer与Settings consumer，不需要提升到core。
 - `D-201`：reload一次查询conversation usage events，再以内存ID map与已加载runs/entries/steps调用同一helper。
 - `D-202`：finalization也调用同一helper；missing event是 `usage: None`，identity mismatch仍为invariant。
-- `D-203`：无migration/index/schema变化；查询沿provider-step/run的现有关联按权威conversation归属取event，并由assembler校验event冗余identity。
+- `D-203`：`WP-201`/`WP-202` 无migration/index/schema变化；查询沿provider-step/run的现有关联按权威conversation归属取event，并由assembler校验event冗余identity。
+- `D-204`：`WP-203` 在schema version 1的0001 fresh schema直接增加created-at index与DB-owned typed aggregate；不新增migration/旧库兼容层，不改usage rows/JSON，也不让app加载全量events。
 
 ## 文件与 ownership tree
 
@@ -239,3 +242,102 @@ git diff --check
 - `WP-202` 已 `Implemented`；`cargo test -p jaco-db`：55 passed，`cargo test -p jaco-db composer_context`：7 passed，包含 corrupt-candidate 回归与 finalization/reload parity。
 - `cargo fmt` 与 `cargo clippy -p jaco -p jaco-agent -p jaco-db --all-targets --all-features -- -D warnings` 通过；workspace-wide build/test/clippy、known/provider 场景与三平台 CI 未执行。
 - migration、schema、index、Cargo manifests、`Cargo.lock` 与 serialized usage format 无 diff；implementation commit/PR：`Pending`。
+
+## Settings extension — `WP-203`（Implemented）
+
+本节只登记 [Settings analytics 执行文档](../../../../../docs/dev/issue-189/settings-usage-analytics-plan.md) 的 DB owner contract。`WP-201`/`WP-202` 的message/composer实现和证据保持不变。
+
+### Owner-local 文件与边界
+
+```text
+crates/jaco-db/src/
+├── migrations.rs                         # F-221 [Modify] version 1 fresh created_at index
+├── records.rs                            # F-222 [Modify] module/export
+├── records/analytics.rs                  # F-223 [Add] C-21 public query projection
+├── repository.rs                         # F-224 [Modify] module declaration
+├── repository/analytics.rs               # F-225 [Add] aggregate transaction/queries
+├── tests.rs                              # F-226 [Modify] test module
+└── tests/analytics.rs                    # F-227 [Add] focused DB tests
+```
+
+- public analytics types只放 `records/analytics.rs` 并经现有records exports导出；SQL row structs留在repository module私有。
+- 不修改`records/agent.rs::UsageEventRecord`、usage write transaction、`schema.rs`、serialized `usage_json`、Cargo manifests或`Cargo.lock`。
+- repository不接受period enum或系统时区；app传入已经确定的 `UsageAnalyticsRange`。
+
+### `DB-221`：Public query boundary
+
+严格实现root `C-21`：
+
+```rust
+impl FreshRepository {
+    pub fn usage_analytics(
+        &self,
+        range: UsageAnalyticsRange,
+    ) -> Result<UsageAnalyticsSnapshot>;
+}
+```
+
+方法从pool取一个connection，在同一个read transaction中依次构造summary、finite daily与provider/model buckets。empty是成功的zero summary；DB/parse/overflow/invariant失败都返回`Err`，不返回partial snapshot。
+
+### `DB-222`：Filter、coverage 与 exact aggregation
+
+- finite filter只有 `created_at >= start_utc AND created_at < end_utc`；start/end使用`TimestamptzSqlite` bind，AllTime无range predicate。
+- daily key使用 `strftime('%Y-%m-%d', created_at, printf('%+d seconds', ?))`，绑定`UtcOffset::whole_seconds()` integer；不读取`date_key`。
+- all-zero predicate必须检查input/output/cache-read/cache-write/reasoning/total全部六列。
+- reported predicate是六列任一非零，包含只有`total_tokens`非零的row；total-covered只检查`total_tokens > 0`。
+- 所有SUM只用`COALESCE(..., 0)`处理empty-row SQL NULL；六列分别direct SUM，禁止将cache或reasoning再次加到input/total。
+- 同一SQL row额外返回negative-field count；非零时`DbError::Invariant`。所有SQLite signed结果checked-convert到u64；SUM overflow保持Diesel error。
+- finite结果由repository补齐 `[local_start, local_end)` 每个local date的zero bucket；AllTime `daily` 固定为空。
+
+### `DB-223`：Stable grouping、labels 与 invariants
+
+- aggregate CTE只按`usage_events.provider_id, usage_events.model_id`分组。
+- CTE完成后left join `providers.id` 与 `provider_models(provider_id, model_id)`；label是当前显示projection，不能成为identity/group key。
+- sort：`total_tokens DESC, provider_id ASC, model_id ASC`。
+- 每个aggregate及snapshot验证`reported + unreported == requests`、`total-covered <= reported`。
+- finite daily与provider/model buckets的requests、coverage counts和六个token sums分别重新checked-sum，并与summary完全相等。
+- conversation/run/entry status不进入query；存在的每条usage event都是一个eligible request。
+
+### `DB-224`：Schema v1 fresh index 与 query plan
+
+`migrations.rs` 的 `CREATE_FRESH_SCHEMA_SQL` usage index区追加：
+
+```sql
+CREATE INDEX idx_usage_events_created_at ON usage_events(created_at);
+```
+
+`SCHEMA_VERSION`固定保持1，`MIGRATIONS`固定保持唯一`0001_create_fresh_schema`。不新增0002、旧库检测、自动repair/backfill或兼容错误。fresh DB直接得到index；已有本地DB由使用者自行重建或手工执行同一SQL，缺index只影响query plan、不改变结果语义。`schema.rs`无index表示，因此不得产生diff。production同形finite predicate的`EXPLAIN QUERY PLAN`必须包含使用该index的`SEARCH`；不预先增加复合宽index。
+
+### Tests 与验证
+
+| T-ID | Owner test |
+| --- | --- |
+| `T-221` | finite range rejects empty/reversed/non-midnight-local bounds |
+| `T-222` | UTC half-open start/end与故意错误`date_key` |
+| `T-223` | positive/negative/sub-hour offset daily bucket |
+| `T-224` | one turn multiple steps remain multiple requests |
+| `T-225` | all-zero/partial/total-covered predicates include all six columns |
+| `T-226` | six independent sums、cache no-double-count与large exact integer |
+| `T-227` | negative stored value与SUM overflow fail explicitly |
+| `T-228` | dense finite days、AllTime no daily、deterministic date order |
+| `T-229` | stable provider/model IDs、label rename/missing与deterministic sort |
+| `T-230` | summary/daily/group cross-total invariants与empty snapshot |
+| `T-231` | fresh schema remains version1/one migration and contains created-at index; no upgrade path |
+| `T-232` | production-shaped range query uses `idx_usage_events_created_at` |
+
+```sh
+cargo fmt
+cargo test -p jaco-db usage_analytics
+cargo test -p jaco-db bootstrap
+cargo clippy -p jaco-db --all-targets --all-features -- -D warnings
+git diff --check
+```
+
+完成条件：root `C-21`、`DB-21`–`DB-23`、`R-42`–`R-51`与`T-221`–`T-232`通过；schema version仍为1且只有0001，fresh SQL只增加index，usage rows/JSON、Diesel schema、Cargo与lockfile无其他变化。
+
+## Settings 完成证据
+
+- `WP-203`：`Implemented`。`records/analytics.rs` 与 `repository/analytics.rs` 已落地；0001 fresh schema在version 1直接增加`idx_usage_events_created_at`，无upgrade/compatibility path。
+- `cargo test -p jaco-db usage_analytics`：11 passed；覆盖真实同run多completed steps后run失败仍逐event计数、六字段coverage/sum、边界/offset/dense dates、错误/invariant、stable IDs/labels，以及直接复用三条生产SQL的query-plan断言。
+- `cargo test -p jaco-db bootstrap`：5 passed；strict jaco-db clippy、`cargo fmt`与`git diff --check`通过。
+- Manual Settings matrix、workspace-wide gates、three-platform CI与implementation commit/PR：`Pending`。

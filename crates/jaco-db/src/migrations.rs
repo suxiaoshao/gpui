@@ -303,6 +303,7 @@ ON provider_steps(provider_id, provider_response_id)
 WHERE provider_response_id IS NOT NULL;
 CREATE INDEX idx_tool_invocations_agent_run_id ON tool_invocations(agent_run_id);
 CREATE INDEX idx_usage_events_conversation_date ON usage_events(conversation_id, date_key);
+CREATE INDEX idx_usage_events_created_at ON usage_events(created_at);
 CREATE UNIQUE INDEX idx_usage_events_provider_step ON usage_events(provider_step_id);
 "#;
 

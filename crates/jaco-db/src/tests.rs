@@ -17,6 +17,7 @@ use std::{collections::HashSet, fs};
 use tempfile::tempdir;
 
 mod agent;
+mod analytics;
 mod attachments;
 mod bootstrap;
 mod catalog;
