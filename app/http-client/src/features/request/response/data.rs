@@ -413,7 +413,6 @@ mod tests {
     use std::sync::Arc;
 
     use tempfile::NamedTempFile;
-    use tokio::io::AsyncWriteExt as _;
 
     use super::*;
 
