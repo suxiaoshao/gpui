@@ -261,6 +261,7 @@ impl RenderOnce for ContextOccupancyDisclosure {
             }
         };
         let [title, token_summary] = context_occupancy_content_lines(&self.projection, i18n);
+        let accessible_description = token_summary.clone();
         let content = v_flex()
             .id("conversation-context-occupancy-content-body")
             .debug_selector(|| "conversation-context-occupancy-content".into())
@@ -278,10 +279,14 @@ impl RenderOnce for ContextOccupancyDisclosure {
             .debug_selector(|| "conversation-context-occupancy-trigger".into())
             .role(Role::Image)
             .aria_label(accessible_label)
+            .aria_description(accessible_description)
+            .tab_index(0)
             .items_center()
             .gap_1()
             .flex_shrink_0()
+            .rounded(cx.theme().radius)
             .text_color(cx.theme().muted_foreground)
+            .focus_visible(|this| this.bg(cx.theme().tokens.secondary_hover.background))
             .child(Icon::new(IconName::Gauge).xsmall())
             .child(
                 Label::new(summary)

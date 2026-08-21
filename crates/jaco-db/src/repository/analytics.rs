@@ -1,9 +1,9 @@
 use super::*;
 use diesel::{
     Connection, QueryableByName,
-    sql_types::{BigInt, Integer, Nullable, Text, TimestamptzSqlite},
+    sql_types::{BigInt, Nullable, Text, TimestamptzSqlite},
 };
-use time::Date;
+use time::{Date, OffsetDateTime};
 
 const SUMMARY_ALL_TIME_SQL: &str = r#"
 SELECT
@@ -100,7 +100,7 @@ WHERE created_at >= ?1 AND created_at < ?2
 
 pub(crate) const DAILY_FINITE_SQL: &str = r#"
 SELECT
-    strftime('%Y-%m-%d', created_at, printf('%+d seconds', ?3)) AS local_date,
+    jaco_local_date(created_at) AS local_date,
     COUNT(*) AS request_count,
     COALESCE(SUM(CASE WHEN
         input_tokens != 0 OR output_tokens != 0 OR cached_input_tokens != 0 OR
@@ -133,7 +133,7 @@ ORDER BY local_date ASC
 
 pub(crate) const COST_DAILY_FINITE_SQL: &str = r#"
 SELECT
-    strftime('%Y-%m-%d', created_at, printf('%+d seconds', ?3)) AS local_date,
+    jaco_local_date(created_at) AS local_date,
     COUNT(*) AS priced_request_count,
     COALESCE(SUM(cost_amount_nano_usd), 0) AS estimated_cost_nano_usd
 FROM usage_events
@@ -145,7 +145,7 @@ ORDER BY local_date ASC
 
 const COST_DAILY_ALL_TIME_SQL: &str = r#"
 SELECT
-    strftime('%Y-%m-%d', created_at, printf('%+d seconds', ?1)) AS local_date,
+    jaco_local_date(created_at) AS local_date,
     COUNT(*) AS priced_request_count,
     COALESCE(SUM(cost_amount_nano_usd), 0) AS estimated_cost_nano_usd
 FROM usage_events
@@ -352,13 +352,19 @@ fn usage_analytics_with_conn(
     conn: &mut SqliteConnection,
     query: UsageAnalyticsQuery,
 ) -> Result<UsageAnalyticsSnapshot> {
+    let time_zone = query.activity_range.time_zone();
+    if let UsageAnalyticsRange::Finite(selected_range) = query.selected_range
+        && selected_range.time_zone() != time_zone
+    {
+        return Err(DbError::Invariant(
+            "usage analytics ranges use different local time zones".to_string(),
+        ));
+    }
+    register_local_date_function(conn, time_zone)?;
+
     let selected_summary = load_summary(conn, query.selected_range)?;
     validate_aggregate(&selected_summary, "selected summary")?;
-    let selected_cost_offset = match query.selected_range {
-        UsageAnalyticsRange::Finite(range) => range.local_offset(),
-        UsageAnalyticsRange::AllTime => query.activity_range.local_offset(),
-    };
-    let selected_cost_daily = load_cost_daily(conn, query.selected_range, selected_cost_offset)?;
+    let selected_cost_daily = load_cost_daily(conn, query.selected_range)?;
     validate_cost_daily_totals(&selected_cost_daily, &selected_summary)?;
     let provider_models = load_provider_models(conn, query.selected_range)?;
     validate_bucket_totals(
@@ -388,6 +394,24 @@ fn usage_analytics_with_conn(
             daily: activity_daily,
         },
     })
+}
+
+pub(crate) fn register_local_date_function(
+    conn: &mut SqliteConnection,
+    time_zone: UsageAnalyticsTimeZone,
+) -> Result<()> {
+    conn.register_sql_function::<
+        TimestamptzSqlite,
+        Nullable<Text>,
+        OffsetDateTime,
+        Option<String>,
+        _,
+    >("jaco_local_date", false, move |created_at| {
+        time_zone
+            .local_date_at(created_at)
+            .map(|date| date.to_string())
+    })?;
+    Ok(())
 }
 
 fn load_summary(
@@ -426,7 +450,6 @@ fn load_daily(
     let rows = sql_query(DAILY_FINITE_SQL)
         .bind::<TimestamptzSqlite, _>(range.start_utc())
         .bind::<TimestamptzSqlite, _>(range.end_utc())
-        .bind::<Integer, _>(range.local_offset().whole_seconds())
         .load::<DailyAggregateSqlRow>(conn)?;
 
     let mut queried = std::collections::BTreeMap::new();
@@ -446,24 +469,8 @@ fn load_daily(
         }
     }
 
-    let start_date = range
-        .start_utc()
-        .checked_to_offset(range.local_offset())
-        .ok_or_else(|| {
-            DbError::Invariant(
-                "finite analytics start is outside the supported local date range".to_string(),
-            )
-        })?
-        .date();
-    let end_date = range
-        .end_utc()
-        .checked_to_offset(range.local_offset())
-        .ok_or_else(|| {
-            DbError::Invariant(
-                "finite analytics end is outside the supported local date range".to_string(),
-            )
-        })?
-        .date();
+    let start_date = range.start_date();
+    let end_date = range.end_date();
     let mut local_date = start_date;
     let mut daily = Vec::new();
     while local_date < end_date {
@@ -486,17 +493,15 @@ fn load_daily(
 fn load_cost_daily(
     conn: &mut SqliteConnection,
     range: UsageAnalyticsRange,
-    local_offset: time::UtcOffset,
 ) -> Result<Vec<UsageAnalyticsCostDailyBucket>> {
     let rows = match range {
         UsageAnalyticsRange::Finite(range) => sql_query(COST_DAILY_FINITE_SQL)
             .bind::<TimestamptzSqlite, _>(range.start_utc())
             .bind::<TimestamptzSqlite, _>(range.end_utc())
-            .bind::<Integer, _>(local_offset.whole_seconds())
             .load::<CostDailySqlRow>(conn)?,
-        UsageAnalyticsRange::AllTime => sql_query(COST_DAILY_ALL_TIME_SQL)
-            .bind::<Integer, _>(local_offset.whole_seconds())
-            .load::<CostDailySqlRow>(conn)?,
+        UsageAnalyticsRange::AllTime => {
+            sql_query(COST_DAILY_ALL_TIME_SQL).load::<CostDailySqlRow>(conn)?
+        }
     };
 
     let format =
@@ -683,24 +688,8 @@ fn validate_daily_shape(
     range: UsageAnalyticsFiniteRange,
     context: &str,
 ) -> Result<()> {
-    let start_date = range
-        .start_utc()
-        .checked_to_offset(range.local_offset())
-        .ok_or_else(|| {
-            DbError::Invariant(format!(
-                "{context} range start is outside the supported local date range"
-            ))
-        })?
-        .date();
-    let end_date = range
-        .end_utc()
-        .checked_to_offset(range.local_offset())
-        .ok_or_else(|| {
-            DbError::Invariant(format!(
-                "{context} range end is outside the supported local date range"
-            ))
-        })?
-        .date();
+    let start_date = range.start_date();
+    let end_date = range.end_date();
 
     let mut expected_date = start_date;
     for bucket in daily {

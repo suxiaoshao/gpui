@@ -1599,7 +1599,7 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use crate::features::skills::GlobalSkillEntry;
-    use gpui::{AppContext as _, TestAppContext, VisualTestContext, px, size};
+    use gpui::{TestAppContext, VisualTestContext, px, size};
     use jaco_core::SkillSourceKind;
 
     use super::*;

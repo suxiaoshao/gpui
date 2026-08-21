@@ -28,7 +28,7 @@ use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh
 use jaco_db::{
     UsageAnalyticsAggregate, UsageAnalyticsCostDailyBucket, UsageAnalyticsFiniteRange,
     UsageAnalyticsProviderModelBucket, UsageAnalyticsQuery, UsageAnalyticsRange,
-    UsageAnalyticsSnapshot,
+    UsageAnalyticsSnapshot, UsageAnalyticsTimeZone,
 };
 use std::fmt;
 use time::{Date, Duration, Month, OffsetDateTime, UtcOffset};
@@ -117,17 +117,9 @@ impl UsageActivityViewData {
         }
 
         let range = snapshot.activity.range;
-        let offset = range.local_offset();
-        let expected_start = range
-            .start_utc()
-            .checked_to_offset(offset)
-            .ok_or(UsageActivityInvariant::RangeStart)?
-            .date();
+        let expected_start = range.start_date();
         let expected_end = range
-            .end_utc()
-            .checked_to_offset(offset)
-            .ok_or(UsageActivityInvariant::RangeEnd)?
-            .date()
+            .end_date()
             .previous_day()
             .ok_or(UsageActivityInvariant::RangeEnd)?;
 
@@ -1240,23 +1232,33 @@ fn current_usage_query(
     period: UsageAnalyticsPeriod,
     now_utc: OffsetDateTime,
 ) -> Result<UsageAnalyticsQuery, UsageAnalyticsProblem> {
-    let local_offset =
-        UtcOffset::local_offset_at(now_utc).map_err(|source| UsageAnalyticsProblem {
-            period,
-            query: None,
-            source: UsageAnalyticsProblemSource::LocalOffset(source),
-        })?;
-    usage_query_for_offset(period, now_utc, local_offset).ok_or(UsageAnalyticsProblem {
+    UtcOffset::local_offset_at(now_utc).map_err(|source| UsageAnalyticsProblem {
         period,
         query: None,
-        source: UsageAnalyticsProblemSource::CalendarRange,
-    })
+        source: UsageAnalyticsProblemSource::LocalOffset(source),
+    })?;
+    usage_query_for_time_zone(period, now_utc, UsageAnalyticsTimeZone::system()).ok_or(
+        UsageAnalyticsProblem {
+            period,
+            query: None,
+            source: UsageAnalyticsProblemSource::CalendarRange,
+        },
+    )
 }
 
+#[cfg(test)]
 fn usage_query_for_offset(
     period: UsageAnalyticsPeriod,
     now_utc: OffsetDateTime,
     local_offset: UtcOffset,
+) -> Option<UsageAnalyticsQuery> {
+    usage_query_for_time_zone(period, now_utc, UsageAnalyticsTimeZone::fixed(local_offset))
+}
+
+fn usage_query_for_time_zone(
+    period: UsageAnalyticsPeriod,
+    now_utc: OffsetDateTime,
+    time_zone: UsageAnalyticsTimeZone,
 ) -> Option<UsageAnalyticsQuery> {
     // `time`'s large-date representation can reach years where offset
     // conversion trips its internal standard-range assertions. One year of
@@ -1264,16 +1266,16 @@ fn usage_query_for_offset(
     if !(-9_998..=9_998).contains(&now_utc.year()) {
         return None;
     }
-    let today = now_utc.checked_to_offset(local_offset)?.date();
+    let today = time_zone.local_date_at(now_utc)?;
     let activity_start = today.checked_sub(Duration::days((ACTIVITY_DAY_COUNT - 1) as i64))?;
     let activity_end = today.next_day()?;
-    let activity_range = finite_range_for_dates(activity_start, activity_end, local_offset)?;
+    let activity_range = finite_range_for_dates(activity_start, activity_end, time_zone)?;
 
     let selected_range = match period {
         UsageAnalyticsPeriod::Today => UsageAnalyticsRange::Finite(finite_range_for_dates(
             today,
             today.next_day()?,
-            local_offset,
+            time_zone,
         )?),
         UsageAnalyticsPeriod::ThisWeek => {
             let days = i64::from(today.weekday().number_days_from_monday());
@@ -1281,20 +1283,20 @@ fn usage_query_for_offset(
             UsageAnalyticsRange::Finite(finite_range_for_dates(
                 start,
                 start.checked_add(Duration::days(7))?,
-                local_offset,
+                time_zone,
             )?)
         }
         UsageAnalyticsPeriod::ThisMonth => {
             let start = Date::from_calendar_date(today.year(), today.month(), 1).ok()?;
             let (year, month) = next_month(start.year(), start.month())?;
             let end = Date::from_calendar_date(year, month, 1).ok()?;
-            UsageAnalyticsRange::Finite(finite_range_for_dates(start, end, local_offset)?)
+            UsageAnalyticsRange::Finite(finite_range_for_dates(start, end, time_zone)?)
         }
         UsageAnalyticsPeriod::ThisYear => {
             let start = Date::from_calendar_date(today.year(), Month::January, 1).ok()?;
             let end =
                 Date::from_calendar_date(today.year().checked_add(1)?, Month::January, 1).ok()?;
-            UsageAnalyticsRange::Finite(finite_range_for_dates(start, end, local_offset)?)
+            UsageAnalyticsRange::Finite(finite_range_for_dates(start, end, time_zone)?)
         }
         UsageAnalyticsPeriod::AllTime => UsageAnalyticsRange::AllTime,
     };
@@ -1308,22 +1310,9 @@ fn usage_query_for_offset(
 fn finite_range_for_dates(
     start_date: Date,
     end_date: Date,
-    local_offset: UtcOffset,
+    time_zone: UsageAnalyticsTimeZone,
 ) -> Option<UsageAnalyticsFiniteRange> {
-    if !(-9_998..=9_998).contains(&start_date.year())
-        || !(-9_998..=9_998).contains(&end_date.year())
-    {
-        return None;
-    }
-    let start_utc = start_date
-        .midnight()
-        .assume_offset(local_offset)
-        .checked_to_offset(UtcOffset::UTC)?;
-    let end_utc = end_date
-        .midnight()
-        .assume_offset(local_offset)
-        .checked_to_offset(UtcOffset::UTC)?;
-    UsageAnalyticsFiniteRange::new(start_utc, end_utc, local_offset)
+    UsageAnalyticsFiniteRange::for_local_dates(start_date, end_date, time_zone)
 }
 
 fn next_month(year: i32, month: Month) -> Option<(i32, Month)> {
@@ -1850,7 +1839,7 @@ mod tests {
     use jaco_db::{
         UsageAnalyticsActivity, UsageAnalyticsAggregate, UsageAnalyticsCostDailyBucket,
         UsageAnalyticsDailyBucket, UsageAnalyticsFiniteRange, UsageAnalyticsProviderModelBucket,
-        UsageAnalyticsQuery, UsageAnalyticsRange, UsageAnalyticsSnapshot,
+        UsageAnalyticsQuery, UsageAnalyticsRange, UsageAnalyticsSnapshot, UsageAnalyticsTimeZone,
     };
     use tempfile::{TempDir, tempdir};
     use time::{Date, Month, OffsetDateTime, Time, UtcOffset};
@@ -1910,7 +1899,7 @@ mod tests {
                 utc(2026, Month::August, 20, 20),
                 offset,
             );
-            assert_eq!(range.local_offset(), offset);
+            assert_eq!(range.time_zone(), UsageAnalyticsTimeZone::fixed(offset));
             assert_eq!(range.start_utc().to_offset(offset).time(), Time::MIDNIGHT);
             assert_eq!(range.end_utc().to_offset(offset).time(), Time::MIDNIGHT);
             assert_eq!((range.end_utc() - range.start_utc()).whole_hours(), 24);
@@ -1935,7 +1924,7 @@ mod tests {
             expected.end_utc().to_offset(offset).date(),
             Date::from_calendar_date(2024, Month::March, 1).unwrap()
         );
-        assert_eq!(expected.local_offset(), offset);
+        assert_eq!(expected.time_zone(), UsageAnalyticsTimeZone::fixed(offset));
     }
 
     #[test]
@@ -2755,7 +2744,7 @@ mod tests {
         range: UsageAnalyticsFiniteRange,
         nonzero: &[(usize, u64)],
     ) -> UsageAnalyticsActivity {
-        let start = range.start_utc().to_offset(range.local_offset()).date();
+        let start = range.start_date();
         let daily = (0..ACTIVITY_DAY_COUNT)
             .map(|index| {
                 let total_tokens = nonzero

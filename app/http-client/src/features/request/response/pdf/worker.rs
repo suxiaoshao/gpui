@@ -505,7 +505,7 @@ pub(super) fn reserve_image_budget(width: u32, height: u32) -> Result<(), PdfPro
 }
 
 pub(super) fn rgba_to_bgra(bytes: &mut [u8]) {
-    for pixel in bytes.chunks_exact_mut(4) {
+    for pixel in bytes.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
 }

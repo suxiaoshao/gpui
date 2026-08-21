@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     UsageAnalyticsAggregate, UsageAnalyticsFiniteRange, UsageAnalyticsQuery, UsageAnalyticsRange,
+    UsageAnalyticsTimeZone,
 };
 use diesel::sql_types::{BigInt, Nullable, Text, TimestamptzSqlite};
 use time::{Date, Month, OffsetDateTime, UtcOffset};
@@ -184,7 +185,7 @@ fn usage_analytics_finite_range_requires_ordered_local_midnights() {
     let range = UsageAnalyticsFiniteRange::new(start, end, offset).unwrap();
     assert_eq!(range.start_utc().offset(), UtcOffset::UTC);
     assert_eq!(range.end_utc().offset(), UtcOffset::UTC);
-    assert_eq!(range.local_offset(), offset);
+    assert_eq!(range.time_zone(), UsageAnalyticsTimeZone::fixed(offset));
     assert!(UsageAnalyticsFiniteRange::new(start, start, offset).is_none());
     assert!(UsageAnalyticsFiniteRange::new(end, start, offset).is_none());
     assert!(
@@ -555,17 +556,17 @@ fn usage_analytics_cost_daily_is_sparse_and_uses_captured_fixed_offset() {
 }
 
 #[test]
-fn usage_analytics_cost_daily_keeps_dst_transition_offsets_fixed() {
+fn usage_analytics_resolves_each_date_with_its_dst_offset() {
     let (_dir, store) = fresh_store();
     for (id, created_at, cost) in [
         (
-            "dst-before-fallback",
+            "dst-day-start",
             datetime(2026, 11, 1, 7, 30, UtcOffset::UTC),
             1,
         ),
         (
-            "dst-after-fallback",
-            datetime(2026, 11, 1, 8, 30, UtcOffset::UTC),
+            "dst-day-end",
+            datetime(2026, 11, 2, 7, 30, UtcOffset::UTC),
             2,
         ),
     ] {
@@ -584,70 +585,48 @@ fn usage_analytics_cost_daily_keeps_dst_transition_offsets_fixed() {
         set_usage_cost(&store, id, cost).unwrap();
     }
 
-    let summer_offset = UtcOffset::from_hms(-7, 0, 0).unwrap();
-    let summer_selected_range = UsageAnalyticsFiniteRange::new(
-        datetime(2026, 10, 30, 0, 0, summer_offset),
-        datetime(2026, 11, 3, 0, 0, summer_offset),
-        summer_offset,
+    let daylight_offset = UtcOffset::from_hms(-7, 0, 0).unwrap();
+    let standard_offset = UtcOffset::from_hms(-8, 0, 0).unwrap();
+    let time_zone = UsageAnalyticsTimeZone::transition(
+        datetime(2026, 11, 1, 9, 0, UtcOffset::UTC),
+        daylight_offset,
+        standard_offset,
+    );
+    let selected_range = UsageAnalyticsFiniteRange::for_local_dates(
+        Date::from_calendar_date(2026, Month::October, 30).unwrap(),
+        Date::from_calendar_date(2026, Month::November, 3).unwrap(),
+        time_zone,
     )
     .unwrap();
-    let summer_activity_range = UsageAnalyticsFiniteRange::new(
-        datetime(2026, 10, 31, 0, 0, summer_offset),
-        datetime(2026, 11, 2, 0, 0, summer_offset),
-        summer_offset,
+    let activity_range = UsageAnalyticsFiniteRange::for_local_dates(
+        Date::from_calendar_date(2026, Month::October, 31).unwrap(),
+        Date::from_calendar_date(2026, Month::November, 2).unwrap(),
+        time_zone,
     )
     .unwrap();
-    let summer = store
+    assert_eq!(
+        (activity_range.end_utc() - activity_range.start_utc()).whole_hours(),
+        49
+    );
+
+    let snapshot = store
         .repository()
         .usage_analytics(UsageAnalyticsQuery {
-            selected_range: UsageAnalyticsRange::Finite(summer_selected_range),
-            activity_range: summer_activity_range,
+            selected_range: UsageAnalyticsRange::Finite(selected_range),
+            activity_range,
         })
         .unwrap();
     assert_eq!(
-        summer.selected_cost_daily,
+        snapshot.selected_cost_daily,
         vec![crate::UsageAnalyticsCostDailyBucket {
             local_date: Date::from_calendar_date(2026, Month::November, 1).unwrap(),
             priced_request_count: 2,
             estimated_cost_nano_usd: 3,
         }]
     );
-
-    let winter_offset = UtcOffset::from_hms(-8, 0, 0).unwrap();
-    let winter_selected_range = UsageAnalyticsFiniteRange::new(
-        datetime(2026, 10, 30, 0, 0, winter_offset),
-        datetime(2026, 11, 3, 0, 0, winter_offset),
-        winter_offset,
-    )
-    .unwrap();
-    let winter_activity_range = UsageAnalyticsFiniteRange::new(
-        datetime(2026, 10, 31, 0, 0, winter_offset),
-        datetime(2026, 11, 2, 0, 0, winter_offset),
-        winter_offset,
-    )
-    .unwrap();
-    let winter = store
-        .repository()
-        .usage_analytics(UsageAnalyticsQuery {
-            selected_range: UsageAnalyticsRange::Finite(winter_selected_range),
-            activity_range: winter_activity_range,
-        })
-        .unwrap();
-    assert_eq!(
-        winter.selected_cost_daily,
-        vec![
-            crate::UsageAnalyticsCostDailyBucket {
-                local_date: Date::from_calendar_date(2026, Month::October, 31).unwrap(),
-                priced_request_count: 1,
-                estimated_cost_nano_usd: 1,
-            },
-            crate::UsageAnalyticsCostDailyBucket {
-                local_date: Date::from_calendar_date(2026, Month::November, 1).unwrap(),
-                priced_request_count: 1,
-                estimated_cost_nano_usd: 2,
-            },
-        ]
-    );
+    assert_eq!(snapshot.activity.summary.request_count, 2);
+    assert_eq!(snapshot.activity.daily.len(), 2);
+    assert_eq!(snapshot.activity.daily[1].aggregate.request_count, 2);
 }
 
 #[test]
@@ -1094,6 +1073,11 @@ fn usage_analytics_fresh_schema_and_production_query_shapes_use_created_at_index
 
     let start = datetime(2026, 8, 1, 0, 0, UtcOffset::UTC);
     let end = datetime(2026, 9, 1, 0, 0, UtcOffset::UTC);
+    crate::repository::register_local_date_function(
+        &mut conn,
+        UsageAnalyticsTimeZone::fixed(UtcOffset::UTC),
+    )
+    .unwrap();
     let summary_plan = sql_query(format!(
         "EXPLAIN QUERY PLAN {}",
         crate::repository::SUMMARY_FINITE_SQL
@@ -1110,7 +1094,6 @@ fn usage_analytics_fresh_schema_and_production_query_shapes_use_created_at_index
     ))
     .bind::<TimestamptzSqlite, _>(start)
     .bind::<TimestamptzSqlite, _>(end)
-    .bind::<diesel::sql_types::Integer, _>(0)
     .load::<QueryPlanRow>(&mut conn)
     .unwrap();
     assert_plan_uses_created_at_index(&daily_plan, "daily");
@@ -1121,7 +1104,6 @@ fn usage_analytics_fresh_schema_and_production_query_shapes_use_created_at_index
     ))
     .bind::<TimestamptzSqlite, _>(start)
     .bind::<TimestamptzSqlite, _>(end)
-    .bind::<diesel::sql_types::Integer, _>(0)
     .load::<QueryPlanRow>(&mut conn)
     .unwrap();
     assert_plan_uses_created_at_index(&cost_daily_plan, "cost daily");

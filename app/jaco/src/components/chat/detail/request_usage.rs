@@ -52,6 +52,7 @@ impl RenderOnce for RequestUsageDisclosure {
         let step_id = self.request_usage.provider_step_id.clone();
         let compact_total = request_usage_compact_total(&self.request_usage, i18n);
         let content = request_usage_fields(&self.request_usage, i18n);
+        let accessible_description = request_usage_accessible_description(&content, i18n);
         let content_id = format!("conversation-request-usage-content-body-{step_id}");
         let content_debug_selector = format!("conversation-request-usage-content-{step_id}");
         let compact_total_debug_selector =
@@ -94,6 +95,8 @@ impl RenderOnce for RequestUsageDisclosure {
             .debug_selector(move || trigger_debug_selector.clone())
             .role(Role::Image)
             .aria_label(tooltip)
+            .aria_description(accessible_description)
+            .tab_index(0)
             .h_5()
             .min_w_5()
             .flex()
@@ -103,6 +106,7 @@ impl RenderOnce for RequestUsageDisclosure {
             .rounded(cx.theme().radius)
             .text_color(cx.theme().secondary_foreground)
             .hover(|this| this.bg(cx.theme().tokens.secondary_hover.background))
+            .focus_visible(|this| this.bg(cx.theme().tokens.secondary_hover.background))
             .child(Icon::new(IconName::ChartNoAxesColumn).xsmall());
 
         h_flex()
@@ -202,6 +206,18 @@ fn request_usage_compact_total(
     let mut args = FluentArgs::new();
     args.set("tokens", tokens);
     Some(i18n.t_with_args("conversation-request-usage-compact-total", &args))
+}
+
+fn request_usage_accessible_description(content: &RequestUsageContent, i18n: &I18n) -> String {
+    match content {
+        RequestUsageContent::Unavailable => i18n.t("conversation-request-usage-unavailable"),
+        RequestUsageContent::Unreported => i18n.t("conversation-request-usage-unreported"),
+        RequestUsageContent::Fields(fields) => fields
+            .iter()
+            .map(|(label, value)| format!("{label}: {value}"))
+            .collect::<Vec<_>>()
+            .join("; "),
+    }
 }
 
 fn format_rate(value: f64) -> String {
@@ -316,6 +332,37 @@ mod tests {
         assert!(!rendered.to_ascii_lowercase().contains("context"));
         assert!(!rendered.to_ascii_lowercase().contains("ttft"));
         assert!(!rendered.to_ascii_lowercase().contains("token/s"));
+    }
+
+    #[test]
+    fn request_usage_accessible_description_exposes_the_hidden_breakdown() {
+        let i18n = I18n::english_for_test();
+        assert_eq!(
+            request_usage_accessible_description(&RequestUsageContent::Unavailable, &i18n),
+            "Request usage is unavailable"
+        );
+        assert_eq!(
+            request_usage_accessible_description(&RequestUsageContent::Unreported, &i18n),
+            "Provider did not report token usage"
+        );
+
+        let content = request_usage_fields(
+            &request_usage(Some(usage(24_716, 416, 24_448, 17, 31, 25_132))),
+            &i18n,
+        );
+        let description = request_usage_accessible_description(&content, &i18n);
+        for expected in [
+            "Input tokens: 24,716",
+            "Output tokens: 416",
+            "Cache read: 24,448",
+            "Cache hit rate: 98.9%",
+            "Cache write: 17",
+            "Reasoning tokens: 31",
+            "Total tokens: 25,132",
+        ] {
+            assert!(description.contains(expected), "missing {expected}");
+        }
+        assert!(!description.contains("must-not-render"));
     }
 
     #[test]

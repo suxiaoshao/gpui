@@ -3,6 +3,7 @@ mod analytics;
 #[cfg(test)]
 pub(crate) use analytics::{
     COST_DAILY_FINITE_SQL, DAILY_FINITE_SQL, PROVIDER_MODELS_FINITE_SQL, SUMMARY_FINITE_SQL,
+    register_local_date_function,
 };
 #[path = "repository/conversations.rs"]
 mod conversation_repository;
