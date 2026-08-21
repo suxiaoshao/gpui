@@ -138,6 +138,7 @@ pub struct ProviderStep {
     pub state_snapshot: Option<ProviderRunStateSnapshot>,
     pub continuation: Option<ProviderContinuationSnapshot>,
     pub settings_snapshot: RunSettingsSnapshot,
+    pub pricing_snapshot: Option<ProviderModelPricingSnapshot>,
     pub error: Option<RunErrorPayload>,
     pub created_at: OffsetDateTime,
     pub started_at: Option<OffsetDateTime>,

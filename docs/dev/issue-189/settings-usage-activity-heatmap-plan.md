@@ -1,5 +1,7 @@
 # Issue #189 执行计划：设置页 Token 用量活动热力图
 
+> 后续扩展说明（2026-08-21）：本计划的heatmap仍只显示固定365日total tokens；[Settings 请求费用统计计划](settings-usage-cost-analytics-plan.md)只扩展selected summary与provider/model Table，不修改`gpui-heatmap`或activity projection。
+
 ## 状态与范围
 
 - 状态：`Implemented`
@@ -36,7 +38,7 @@
 - 为 365 个日期创建 FocusHandle、Tab stop、Entity、Task、timer、subscription 或 app-local hover state。
 - 在组件 crate 中读取系统时区、Fluent、Jaco repository、usage event 或业务 period。
 - 新 schema、migration、schema version、旧库兼容层或 usage event 回填。
-- 本轮费用统计；现有 provider/model identity 仍保留在 `usage_events`，后续费用设计另行决定价格来源与价格版本快照。
+- 热力图中的费用统计；现有 provider/model identity 仍保留在 `usage_events`，价格来源、step-local版本快照与Settings费用展示由第五份执行计划独立负责。
 
 ### 已确认的用户决定
 
@@ -101,7 +103,7 @@
 7. 当前gpui-component checkout `57a9903` 没有heatmap/calendar-activity组件；`Plot` + `#[derive(IntoPlot)]`提供stable-id pointer tooltip，`Tooltip`使用组件主题。`ScrollableElement::overflow_x_scrollbar()`的状态id来自source callsite；可复用组件需使用caller id派生的keyed `ScrollHandle`，再显式渲染可指定id的`gpui_component::scroll::Scrollbar`。
 8. `ActiveTheme` 暴露`secondary`、`chart_1`、`border`、`muted_foreground`等语义token；无需维护独立亮/暗色板。
 9. `format_token_count` 已在Jaco以整数算法输出精确千分位值；activity caption、tooltip和AX可直接复用。
-10. provider/model identity持久化在`usage_events`，当前精简Table仍需要该聚合投影；费用设计仍需独立的价格来源与版本快照。
+10. provider/model identity持久化在`usage_events`，当前精简Table仍需要该聚合投影；第五份执行计划独立增加价格来源、step-local版本快照与费用聚合，activity projection保持token-only。
 
 ### 证据登记
 
@@ -145,7 +147,7 @@
 Cargo.toml                                      # F-061 [Modify] workspace dependency path
 Cargo.lock                                      # F-062 [Modify] 仅正常workspace package记录
 docs/dev/issue-189/
-├── README.md                                   # F-063 [Modify] 四个执行文档与状态
+├── README.md                                   # F-063 [Modify] root执行文档与状态
 ├── settings-usage-analytics-plan.md             # F-064 [Modify] 定向supersede说明
 └── settings-usage-activity-heatmap-plan.md      # F-065 [Add] 本执行计划
 

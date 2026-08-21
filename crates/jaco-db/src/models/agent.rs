@@ -75,6 +75,7 @@ pub(crate) struct SqlProviderStepRow {
     pub(crate) started_at: Option<OffsetDateTime>,
     pub(crate) completed_at: Option<OffsetDateTime>,
     pub(crate) updated_at: OffsetDateTime,
+    pub(crate) pricing_snapshot_json: Option<Value>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -101,6 +102,7 @@ pub(crate) struct SqlNewProviderStepRow {
     pub(crate) started_at: Option<OffsetDateTime>,
     pub(crate) completed_at: Option<OffsetDateTime>,
     pub(crate) updated_at: OffsetDateTime,
+    pub(crate) pricing_snapshot_json: Option<Value>,
 }
 
 #[derive(Debug, Clone, AsChangeset)]
@@ -236,6 +238,7 @@ pub(crate) struct SqlUsageEventRow {
     pub(crate) total_tokens: i64,
     pub(crate) usage_json: Value,
     pub(crate) created_at: OffsetDateTime,
+    pub(crate) cost_amount_nano_usd: Option<i64>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -255,6 +258,7 @@ pub(crate) struct SqlNewUsageEventRow {
     pub(crate) total_tokens: i64,
     pub(crate) usage_json: Value,
     pub(crate) created_at: OffsetDateTime,
+    pub(crate) cost_amount_nano_usd: Option<i64>,
 }
 
 impl TryFrom<SqlAgentRunRow> for AgentRunRecord {
@@ -319,6 +323,7 @@ impl TryFrom<SqlProviderStepRow> for ProviderStepRecord {
             started_at: row.started_at,
             completed_at: row.completed_at,
             updated_at: row.updated_at,
+            pricing_snapshot: from_json_opt(row.pricing_snapshot_json)?,
         })
     }
 }
@@ -413,6 +418,18 @@ impl TryFrom<SqlUsageEventRow> for UsageEventRecord {
             total_tokens: row.total_tokens,
             usage: from_json(row.usage_json)?,
             created_at: row.created_at,
+            cost_amount: row
+                .cost_amount_nano_usd
+                .map(|amount| {
+                    let amount = u64::try_from(amount).map_err(|_| {
+                        DbError::Invariant(
+                            "usage event cost amount must be non-negative".to_string(),
+                        )
+                    })?;
+                    UsdNanoAmount::new(amount)
+                        .map_err(|error| DbError::Invariant(error.to_string()))
+                })
+                .transpose()?,
         })
     }
 }

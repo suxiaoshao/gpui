@@ -82,6 +82,7 @@ CREATE TABLE provider_models (
     fetched_at DateTime NOT NULL,
     created_at DateTime NOT NULL,
     updated_at DateTime NOT NULL,
+    pricing_json JSON,
     UNIQUE(provider_id, model_id)
 );
 
@@ -171,6 +172,7 @@ CREATE TABLE provider_steps (
     started_at DateTime,
     completed_at DateTime,
     updated_at DateTime NOT NULL,
+    pricing_snapshot_json JSON,
     UNIQUE(agent_run_id, seq),
     CHECK (
         (status = 'queued'
@@ -275,7 +277,9 @@ CREATE TABLE usage_events (
     reasoning_tokens INTEGER NOT NULL DEFAULT 0,
     total_tokens INTEGER NOT NULL DEFAULT 0,
     usage_json JSON NOT NULL,
-    created_at DateTime NOT NULL
+    created_at DateTime NOT NULL,
+    cost_amount_nano_usd INTEGER
+        CHECK (cost_amount_nano_usd IS NULL OR cost_amount_nano_usd >= 0)
 );
 
 CREATE TABLE shortcuts (

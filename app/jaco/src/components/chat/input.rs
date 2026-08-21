@@ -1880,6 +1880,7 @@ mod tests {
             display_name: None,
             enabled: true,
             capabilities,
+            pricing: None,
             metadata: ProviderModelMetadata {
                 display_name: None,
                 family: None,

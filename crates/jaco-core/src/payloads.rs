@@ -8,6 +8,7 @@ mod app;
 mod capabilities;
 mod conversation;
 mod foundation;
+mod pricing;
 mod resources;
 
 pub use agent::*;
@@ -15,6 +16,7 @@ pub use app::*;
 pub use capabilities::*;
 pub use conversation::*;
 pub use foundation::*;
+pub use pricing::*;
 pub use resources::*;
 
 #[cfg(test)]

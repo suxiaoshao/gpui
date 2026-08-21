@@ -1,6 +1,6 @@
 # Issue #189 执行计划：设置页时间范围使用统计
 
-> 后续替换说明（2026-08-21）：本计划仍是已实施的period selector、selected-range summary、provider/model bucket/query/label join、精简breakdown Table、page-local Operation、fresh-schema index及其证据的authority。finite daily LineChart及“年度heatmap为非目标”的部分，已由[设置页 Token 用量活动热力图计划](settings-usage-activity-heatmap-plan.md)定向替代；整个本计划不回写为`Superseded`，`WP-203`/`WP-503`的历史实施证据继续保留。
+> 后续扩展说明（2026-08-21）：本计划仍是已实施的period selector、selected-range token summary、provider/model bucket/query/label join、精简breakdown Table、page-local Operation、fresh-schema index及其证据的authority。finite daily LineChart及“年度heatmap为非目标”的部分，已由[设置页 Token 用量活动热力图计划](settings-usage-activity-heatmap-plan.md)定向替代；cost/pricing非目标由[Settings 请求费用统计计划](settings-usage-cost-analytics-plan.md)定向扩展。整个本计划不回写为`Superseded`，`WP-203`/`WP-503`的历史实施证据继续保留。
 
 ## 状态与范围
 

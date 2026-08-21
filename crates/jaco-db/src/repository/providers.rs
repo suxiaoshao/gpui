@@ -52,6 +52,10 @@ impl FreshRepository {
     pub fn update_provider(&self, id: &str, input: UpdateProvider) -> Result<ProviderRecord> {
         let mut conn = self.conn()?;
         conn.immediate_transaction(|conn| {
+            let previous = provider_row(conn, id)?.ok_or(diesel::result::Error::NotFound)?;
+            let previous_settings: ProviderSettingsPayload = from_json(previous.settings_json)?;
+            let route_changed = official_provider_pricing_route(&previous_settings)
+                != official_provider_pricing_route(&input.settings);
             diesel::update(providers::table.find(id))
                 .set((
                     providers::display_name.eq(input.display_name),
@@ -61,7 +65,17 @@ impl FreshRepository {
                     providers::updated_at.eq(now_string()?),
                 ))
                 .returning(SqlProviderRow::as_returning())
-                .get_result::<SqlProviderRow>(conn)?
+                .get_result::<SqlProviderRow>(conn)
+                .and_then(|row| {
+                    if route_changed {
+                        diesel::update(
+                            provider_models::table.filter(provider_models::provider_id.eq(id)),
+                        )
+                        .set(provider_models::pricing_json.eq(None::<serde_json::Value>))
+                        .execute(conn)?;
+                    }
+                    Ok(row)
+                })?
                 .try_into()
         })
     }
@@ -86,6 +100,7 @@ impl FreshRepository {
                 fetched_at: now,
                 created_at: now,
                 updated_at: now,
+                pricing_json: to_json_opt(&input.pricing)?,
             };
             diesel::insert_into(provider_models::table)
                 .values(&row)
@@ -96,6 +111,7 @@ impl FreshRepository {
                     provider_models::capabilities_json
                         .eq(excluded(provider_models::capabilities_json)),
                     provider_models::metadata_json.eq(excluded(provider_models::metadata_json)),
+                    provider_models::pricing_json.eq(excluded(provider_models::pricing_json)),
                     provider_models::fetched_at.eq(excluded(provider_models::fetched_at)),
                     provider_models::updated_at.eq(excluded(provider_models::updated_at)),
                 ))
@@ -148,6 +164,7 @@ impl FreshRepository {
                     fetched_at: now,
                     created_at: now,
                     updated_at: now,
+                    pricing_json: to_json_opt(&input.pricing)?,
                 };
                 let record = diesel::insert_into(provider_models::table)
                     .values(&row)
@@ -158,6 +175,7 @@ impl FreshRepository {
                         provider_models::capabilities_json
                             .eq(excluded(provider_models::capabilities_json)),
                         provider_models::metadata_json.eq(excluded(provider_models::metadata_json)),
+                        provider_models::pricing_json.eq(excluded(provider_models::pricing_json)),
                         provider_models::fetched_at.eq(excluded(provider_models::fetched_at)),
                         provider_models::updated_at.eq(excluded(provider_models::updated_at)),
                     ))

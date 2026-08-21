@@ -3,18 +3,22 @@ use crate::{
     foundation::{I18n, conversation_format::format_token_count},
 };
 use fluent_bundle::FluentArgs;
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     ActiveTheme, IndexPath, Sizable, Size, StyledExt,
     alert::Alert,
     button::Button,
+    chart::PieChart,
     group_box::{GroupBox, GroupBoxVariants},
     h_flex,
     label::Label,
+    progress::Progress,
     scroll::ScrollableElement,
     select::{Select, SelectEvent, SelectItem, SelectState},
     skeleton::Skeleton,
     table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_heatmap::{
@@ -22,8 +26,9 @@ use gpui_heatmap::{
 };
 use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh};
 use jaco_db::{
-    UsageAnalyticsAggregate, UsageAnalyticsFiniteRange, UsageAnalyticsProviderModelBucket,
-    UsageAnalyticsQuery, UsageAnalyticsRange, UsageAnalyticsSnapshot,
+    UsageAnalyticsAggregate, UsageAnalyticsCostDailyBucket, UsageAnalyticsFiniteRange,
+    UsageAnalyticsProviderModelBucket, UsageAnalyticsQuery, UsageAnalyticsRange,
+    UsageAnalyticsSnapshot,
 };
 use std::fmt;
 use time::{Date, Duration, Month, OffsetDateTime, UtcOffset};
@@ -514,16 +519,27 @@ impl UsageSettingsPage {
         aggregate: &UsageAnalyticsAggregate,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let i18n = cx.global::<I18n>();
+        let i18n = cx.global::<I18n>().clone();
         let metrics = usage_summary_metrics(aggregate);
+        let estimated_cost = estimated_cost_value(aggregate, &i18n);
+        let priced_requests = priced_requests_coverage(aggregate, &i18n);
 
         let title = i18n.t("settings-usage-summary-title");
-        let group =
-            GroupBox::new()
-                .outline()
-                .title(Label::new(title.clone()).text_sm())
-                .child(h_flex().items_start().flex_wrap().gap_4().children(
-                    metrics.into_iter().map(|(key, value)| {
+        let group = GroupBox::new()
+            .outline()
+            .title(Label::new(title.clone()).text_sm())
+            .child(
+                h_flex()
+                    .items_start()
+                    .flex_wrap()
+                    .gap_4()
+                    .child(summary_cost_metric(
+                        i18n.t("settings-usage-estimated-cost-subtotal"),
+                        estimated_cost,
+                        priced_requests,
+                        cx,
+                    ))
+                    .children(metrics.into_iter().map(|(key, value)| {
                         v_flex()
                             .min_w(px(150.))
                             .gap_1()
@@ -537,12 +553,17 @@ impl UsageSettingsPage {
                                     .text_sm()
                                     .font_medium(),
                             )
-                    }),
-                ));
+                    })),
+            )
+            .child(
+                Label::new(i18n.t("settings-usage-cost-disclaimer"))
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground),
+            );
         div()
             .id("settings-usage-summary")
             .role(Role::Group)
-            .aria_label(summary_accessible_label(aggregate, i18n))
+            .aria_label(summary_accessible_label(aggregate, &i18n))
             .child(group)
             .into_any_element()
     }
@@ -630,6 +651,304 @@ impl UsageSettingsPage {
             .into_any_element()
     }
 
+    fn render_cost_trend(
+        &self,
+        daily: &[UsageAnalyticsCostDailyBucket],
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let i18n = cx.global::<I18n>().clone();
+        let data = cost_daily_chart_data(daily, &i18n);
+        if data.is_empty() {
+            return None;
+        }
+
+        let items = data
+            .iter()
+            .map(|datum| {
+                let mut args = FluentArgs::new();
+                args.set("date", datum.date.to_string());
+                args.set("amount", datum.formatted_cost.to_string());
+                args.set("priced", datum.priced_request_count);
+                i18n.t_with_args("settings-usage-cost-trend-item-accessible", &args)
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let mut accessible_args = FluentArgs::new();
+        accessible_args.set("items", items);
+        let accessible = i18n.t_with_args("settings-usage-cost-trend-accessible", &accessible_args);
+        let all_free = data.iter().all(|datum| datum.cost_nano_usd == 0);
+        let chart_width = px((data.len() as f32 * 24.).max(640.));
+        let free_items = all_free.then(|| {
+            let legend_i18n = i18n.clone();
+            h_flex()
+                .w_full()
+                .flex_wrap()
+                .gap_3()
+                .children(data.clone().into_iter().map(move |datum| {
+                    let mut args = FluentArgs::new();
+                    args.set("date", datum.date.to_string());
+                    args.set("amount", datum.formatted_cost.to_string());
+                    args.set("priced", datum.priced_request_count);
+                    Label::new(
+                        legend_i18n.t_with_args("settings-usage-cost-trend-free-item", &args),
+                    )
+                    .text_xs()
+                }))
+                .into_any_element()
+        });
+        let color = cx.theme().chart_1;
+        let max_cost = data
+            .iter()
+            .map(|datum| datum.cost_nano_usd)
+            .max()
+            .unwrap_or_default();
+        let chart = h_flex()
+            .w_full()
+            .h(px(180.))
+            .items_end()
+            .gap(px(2.))
+            .children(data.into_iter().map(|datum| {
+                let height = cost_bar_height(datum.cost_nano_usd, max_cost, 180.);
+                let tooltip = {
+                    let mut args = FluentArgs::new();
+                    args.set("date", datum.date.to_string());
+                    args.set("amount", datum.formatted_cost.to_string());
+                    args.set("priced", datum.priced_request_count);
+                    i18n.t_with_args("settings-usage-cost-trend-item-accessible", &args)
+                };
+                v_flex()
+                    .id(format!(
+                        "settings-usage-cost-trend-item-{}",
+                        datum.local_date
+                    ))
+                    .h_full()
+                    .flex_1()
+                    .justify_end()
+                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                    .child(
+                        div()
+                            .relative()
+                            .w_full()
+                            .h(px(height))
+                            .bg(color.opacity(0.34))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .bottom_0()
+                                    .w_full()
+                                    .h(px(2.))
+                                    .bg(color),
+                            ),
+                    )
+            }));
+
+        Some(
+            div()
+                .id("settings-usage-cost-trend-section")
+                .role(Role::Group)
+                .aria_label(accessible)
+                .child(
+                    GroupBox::new()
+                        .outline()
+                        .title(Label::new(i18n.t("settings-usage-cost-trend-title")).text_sm())
+                        .child(
+                            v_flex()
+                                .w_full()
+                                .gap_3()
+                                .child(
+                                    Label::new(i18n.t("settings-usage-cost-trend-description"))
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .when(all_free, |this| {
+                                    this.child(
+                                        Label::new(i18n.t("settings-usage-known-free-description"))
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                })
+                                .when_some(free_items, |this, items| this.child(items))
+                                .when(!all_free, |this| {
+                                    this.child(
+                                        div()
+                                            .w_full()
+                                            .overflow_x_scrollbar()
+                                            .child(div().w(chart_width).child(chart)),
+                                    )
+                                }),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn render_provider_costs(
+        &self,
+        buckets: &[UsageAnalyticsProviderModelBucket],
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let i18n = cx.global::<I18n>().clone();
+        let providers = provider_cost_chart_data(buckets)?;
+        if providers.is_empty() {
+            return None;
+        }
+
+        let total_cost = providers.iter().try_fold(0_u64, |total, provider| {
+            total.checked_add(provider.cost_nano_usd)
+        })?;
+        let accessible = provider_cost_chart_accessible_label(
+            "settings-usage-provider-cost-accessible",
+            &providers,
+            total_cost,
+            &i18n,
+        );
+        let colors = chart_colors(cx);
+        let top_providers = providers.iter().take(5).cloned().collect::<Vec<_>>();
+        let provider_max_cost = top_providers
+            .iter()
+            .map(|provider| provider.cost_nano_usd)
+            .max()
+            .unwrap_or_default();
+        let bars = cost_progress_rows(
+            top_providers,
+            provider_max_cost,
+            colors,
+            "settings-usage-provider-cost-progress",
+        );
+
+        let content = if total_cost == 0 {
+            v_flex()
+                .w_full()
+                .gap_3()
+                .child(
+                    Label::new(i18n.t("settings-usage-known-free-description"))
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground),
+                )
+                .child(bars)
+                .into_any_element()
+        } else {
+            let pie_colors = colors;
+            let pie = PieChart::new(providers.clone())
+                .value(move |provider| cost_ratio(provider.cost_nano_usd, total_cost))
+                .color(move |provider| pie_colors[provider.color_index % pie_colors.len()])
+                .outer_radius(64.);
+            v_flex()
+                .w_full()
+                .gap_4()
+                .child(
+                    v_flex()
+                        .w_full()
+                        .max_w_full()
+                        .min_w(px(0.))
+                        .items_center()
+                        .gap_2()
+                        .child(div().size(px(128.)).child(pie))
+                        .child(provider_cost_legend(providers.clone(), total_cost, colors)),
+                )
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(
+                            Label::new(i18n.t("settings-usage-provider-top-five"))
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .child(bars),
+                )
+                .into_any_element()
+        };
+        Some(
+            div()
+                .id("settings-usage-provider-cost-section")
+                .role(Role::Group)
+                .aria_label(accessible)
+                .child(
+                    GroupBox::new()
+                        .outline()
+                        .title(Label::new(i18n.t("settings-usage-provider-cost-title")).text_sm())
+                        .child(
+                            v_flex()
+                                .w_full()
+                                .gap_3()
+                                .child(
+                                    Label::new(i18n.t("settings-usage-provider-cost-description"))
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .child(content),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn render_model_costs(
+        &self,
+        buckets: &[UsageAnalyticsProviderModelBucket],
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let i18n = cx.global::<I18n>().clone();
+        let models = model_cost_chart_data(buckets, &i18n);
+        if models.is_empty() {
+            return None;
+        }
+
+        let accessible =
+            cost_chart_accessible_label("settings-usage-model-cost-accessible", &models, &i18n);
+        let colors = chart_colors(cx);
+        let model_max_cost = models
+            .iter()
+            .map(|model| model.cost_nano_usd)
+            .max()
+            .unwrap_or_default();
+        let bars = cost_progress_rows(
+            models.clone(),
+            model_max_cost,
+            colors,
+            "settings-usage-model-cost-progress",
+        );
+        let all_free = models.iter().all(|model| model.cost_nano_usd == 0);
+
+        Some(
+            div()
+                .id("settings-usage-model-cost-section")
+                .role(Role::Group)
+                .aria_label(accessible)
+                .child(
+                    GroupBox::new()
+                        .outline()
+                        .title(Label::new(i18n.t("settings-usage-model-cost-title")).text_sm())
+                        .child(
+                            v_flex()
+                                .w_full()
+                                .gap_3()
+                                .child(
+                                    Label::new(i18n.t("settings-usage-model-cost-description"))
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .when(all_free, |this| {
+                                    this.child(
+                                        Label::new(i18n.t("settings-usage-known-free-description"))
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .overflow_x_scrollbar()
+                                        .child(div().min_w(px(420.)).child(bars)),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn render_breakdown(
         &self,
         buckets: &[UsageAnalyticsProviderModelBucket],
@@ -671,18 +990,14 @@ impl UsageSettingsPage {
                         .child(numeric_cell(row, 4, aggregate.output_tokens))
                         .child(numeric_cell(row, 5, aggregate.cached_input_tokens))
                         .child(numeric_cell(row, 6, aggregate.cache_write_input_tokens))
+                        .child(cost_cell(row, 7, aggregate, i18n))
                 })),
             );
 
-        v_flex()
+        GroupBox::new()
             .id("settings-usage-breakdown-section")
-            .w_full()
-            .gap_2()
-            .child(
-                Label::new(i18n.t("settings-usage-breakdown-title"))
-                    .text_sm()
-                    .font_medium(),
-            )
+            .outline()
+            .title(Label::new(i18n.t("settings-usage-breakdown-title")).text_sm())
             .child(
                 div()
                     .id("settings-usage-breakdown-table-scroll")
@@ -708,6 +1023,41 @@ impl UsageSettingsPage {
         }
         dashboard = dashboard.child(self.render_activity(data, cx));
         if !selected_empty {
+            if let Some(cost_trend) = self.render_cost_trend(&data.snapshot.selected_cost_daily, cx)
+            {
+                dashboard = dashboard.child(cost_trend);
+            }
+            let provider_costs = self.render_provider_costs(&data.snapshot.provider_models, cx);
+            let model_costs = self.render_model_costs(&data.snapshot.provider_models, cx);
+            if provider_costs.is_some() || model_costs.is_some() {
+                dashboard = dashboard.child(
+                    h_flex()
+                        .w_full()
+                        .items_start()
+                        .flex_wrap()
+                        .gap_4()
+                        .when_some(provider_costs, |this, chart| {
+                            this.child(
+                                div()
+                                    .w(px(460.))
+                                    .max_w_full()
+                                    .min_w(px(0.))
+                                    .flex_1()
+                                    .child(chart),
+                            )
+                        })
+                        .when_some(model_costs, |this, chart| {
+                            this.child(
+                                div()
+                                    .w(px(460.))
+                                    .max_w_full()
+                                    .min_w(px(0.))
+                                    .flex_1()
+                                    .child(chart),
+                            )
+                        }),
+                );
+            }
             dashboard = dashboard.child(self.render_breakdown(&data.snapshot.provider_models, cx));
         }
         dashboard.into_any_element()
@@ -1041,7 +1391,286 @@ fn display_label(label: Option<&str>, fallback: &str) -> SharedString {
         .into()
 }
 
-const USAGE_BREAKDOWN_COLUMNS: [(&str, bool); 7] = [
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DailyCostChartDatum {
+    local_date: Date,
+    date: SharedString,
+    cost_nano_usd: u64,
+    priced_request_count: u64,
+    formatted_cost: SharedString,
+}
+
+fn cost_daily_chart_data(
+    daily: &[UsageAnalyticsCostDailyBucket],
+    i18n: &I18n,
+) -> Vec<DailyCostChartDatum> {
+    let mut data = daily
+        .iter()
+        .filter(|bucket| bucket.priced_request_count > 0)
+        .map(|bucket| DailyCostChartDatum {
+            local_date: bucket.local_date,
+            date: localized_date(bucket.local_date, i18n).into(),
+            cost_nano_usd: bucket.estimated_cost_nano_usd,
+            priced_request_count: bucket.priced_request_count,
+            formatted_cost: format_nano_usd(bucket.estimated_cost_nano_usd).into(),
+        })
+        .collect::<Vec<_>>();
+    data.sort_by_key(|datum| datum.local_date);
+    data
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CostChartDatum {
+    id: SharedString,
+    label: SharedString,
+    cost_nano_usd: u64,
+    priced_request_count: u64,
+    request_count: u64,
+    formatted_cost: SharedString,
+    color_index: usize,
+}
+
+fn provider_cost_chart_data(
+    buckets: &[UsageAnalyticsProviderModelBucket],
+) -> Option<Vec<CostChartDatum>> {
+    #[derive(Clone)]
+    struct ProviderCost {
+        provider_id: String,
+        label: SharedString,
+        cost_nano_usd: u64,
+        priced_request_count: u64,
+        request_count: u64,
+    }
+
+    let mut providers = Vec::<ProviderCost>::new();
+    for bucket in buckets {
+        if let Some(provider) = providers
+            .iter_mut()
+            .find(|provider| provider.provider_id == bucket.provider_id)
+        {
+            provider.cost_nano_usd = provider
+                .cost_nano_usd
+                .checked_add(bucket.aggregate.estimated_cost_nano_usd)?;
+            provider.priced_request_count = provider
+                .priced_request_count
+                .checked_add(bucket.aggregate.priced_request_count)?;
+            provider.request_count = provider
+                .request_count
+                .checked_add(bucket.aggregate.request_count)?;
+        } else {
+            providers.push(ProviderCost {
+                provider_id: bucket.provider_id.clone(),
+                label: display_label(bucket.provider_label.as_deref(), &bucket.provider_id),
+                cost_nano_usd: bucket.aggregate.estimated_cost_nano_usd,
+                priced_request_count: bucket.aggregate.priced_request_count,
+                request_count: bucket.aggregate.request_count,
+            });
+        }
+    }
+
+    providers.retain(|provider| provider.priced_request_count > 0);
+    providers.sort_by_key(|provider| std::cmp::Reverse(provider.cost_nano_usd));
+    Some(
+        providers
+            .into_iter()
+            .enumerate()
+            .map(|(color_index, provider)| CostChartDatum {
+                id: provider.provider_id.into(),
+                label: provider.label,
+                cost_nano_usd: provider.cost_nano_usd,
+                priced_request_count: provider.priced_request_count,
+                request_count: provider.request_count,
+                formatted_cost: format_nano_usd(provider.cost_nano_usd).into(),
+                color_index,
+            })
+            .collect(),
+    )
+}
+
+fn model_cost_chart_data(
+    buckets: &[UsageAnalyticsProviderModelBucket],
+    i18n: &I18n,
+) -> Vec<CostChartDatum> {
+    let mut models = buckets
+        .iter()
+        .filter(|bucket| bucket.aggregate.priced_request_count > 0)
+        .map(|bucket| {
+            let model = display_label(bucket.model_label.as_deref(), &bucket.model_id);
+            let provider = display_label(bucket.provider_label.as_deref(), &bucket.provider_id);
+            let mut args = FluentArgs::new();
+            args.set("model", model.to_string());
+            args.set("provider", provider.to_string());
+            CostChartDatum {
+                id: format!("{}:{}", bucket.provider_id, bucket.model_id).into(),
+                label: i18n
+                    .t_with_args("settings-usage-model-provider-label", &args)
+                    .into(),
+                cost_nano_usd: bucket.aggregate.estimated_cost_nano_usd,
+                priced_request_count: bucket.aggregate.priced_request_count,
+                request_count: bucket.aggregate.request_count,
+                formatted_cost: format_nano_usd(bucket.aggregate.estimated_cost_nano_usd).into(),
+                color_index: 0,
+            }
+        })
+        .collect::<Vec<_>>();
+    models.sort_by_key(|model| std::cmp::Reverse(model.cost_nano_usd));
+    models.truncate(10);
+    for (color_index, model) in models.iter_mut().enumerate() {
+        model.color_index = color_index;
+    }
+    models
+}
+
+fn chart_colors(cx: &Context<UsageSettingsPage>) -> [Hsla; 5] {
+    [
+        cx.theme().chart_1,
+        cx.theme().chart_2,
+        cx.theme().chart_3,
+        cx.theme().chart_4,
+        cx.theme().chart_5,
+    ]
+}
+
+fn cost_progress_rows(
+    data: Vec<CostChartDatum>,
+    max_cost: u64,
+    colors: [Hsla; 5],
+    id_prefix: &'static str,
+) -> AnyElement {
+    v_flex()
+        .w_full()
+        .gap_3()
+        .children(data.into_iter().map(move |datum| {
+            let color = colors[datum.color_index % colors.len()];
+            v_flex()
+                .w_full()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(Label::new(datum.label).text_sm())
+                        .child(Label::new(datum.formatted_cost).text_sm()),
+                )
+                .child(
+                    Progress::new(format!("{id_prefix}-{}", datum.id))
+                        .value(cost_progress_percent(datum.cost_nano_usd, max_cost))
+                        .color(color),
+                )
+        }))
+        .into_any_element()
+}
+
+fn provider_cost_legend(
+    providers: Vec<CostChartDatum>,
+    total_cost: u64,
+    colors: [Hsla; 5],
+) -> AnyElement {
+    h_flex()
+        .w_full()
+        .flex_wrap()
+        .justify_center()
+        .gap_3()
+        .children(providers.into_iter().map(move |provider| {
+            let label = format!(
+                "{} ({})",
+                provider.label,
+                format_cost_percentage(provider.cost_nano_usd, total_cost)
+            );
+            h_flex()
+                .min_w(px(180.))
+                .gap_2()
+                .child(
+                    div()
+                        .size_2()
+                        .rounded_full()
+                        .bg(colors[provider.color_index % colors.len()]),
+                )
+                .child(Label::new(label).text_xs())
+        }))
+        .into_any_element()
+}
+
+fn cost_ratio(amount: u64, total: u64) -> f32 {
+    if total == 0 {
+        0.
+    } else {
+        let scaled = (u128::from(amount) * 1_000_000 + u128::from(total) / 2) / u128::from(total);
+        (scaled as f32 / 1_000_000.).min(1.)
+    }
+}
+
+fn cost_progress_percent(amount: u64, max: u64) -> f32 {
+    cost_ratio(amount, max) * 100.
+}
+
+fn cost_bar_height(amount: u64, max: u64, chart_height: f32) -> f32 {
+    if amount == 0 || max == 0 {
+        0.
+    } else {
+        const ALMA_MIN_SCALE_NANO_USD: u64 = 1_000_000;
+        cost_ratio(amount, max.max(ALMA_MIN_SCALE_NANO_USD)) * chart_height
+    }
+}
+
+fn format_cost_percentage(amount: u64, total: u64) -> String {
+    if total == 0 {
+        return "0%".to_owned();
+    }
+
+    let tenths = (u128::from(amount) * 1000 + u128::from(total) / 2) / u128::from(total);
+    let whole = tenths / 10;
+    let fraction = tenths % 10;
+    if fraction == 0 {
+        format!("{whole}%")
+    } else {
+        format!("{whole}.{fraction}%")
+    }
+}
+
+fn cost_chart_accessible_label(key: &str, data: &[CostChartDatum], i18n: &I18n) -> String {
+    let items = data
+        .iter()
+        .map(|datum| {
+            let mut args = FluentArgs::new();
+            args.set("label", datum.label.to_string());
+            args.set("amount", datum.formatted_cost.to_string());
+            args.set("priced", datum.priced_request_count);
+            args.set("total", datum.request_count);
+            i18n.t_with_args("settings-usage-cost-chart-item-accessible", &args)
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let mut args = FluentArgs::new();
+    args.set("items", items);
+    i18n.t_with_args(key, &args)
+}
+
+fn provider_cost_chart_accessible_label(
+    key: &str,
+    data: &[CostChartDatum],
+    total_cost: u64,
+    i18n: &I18n,
+) -> String {
+    let data = data
+        .iter()
+        .cloned()
+        .map(|mut datum| {
+            datum.label = format!(
+                "{} ({})",
+                datum.label,
+                format_cost_percentage(datum.cost_nano_usd, total_cost)
+            )
+            .into();
+            datum
+        })
+        .collect::<Vec<_>>();
+    cost_chart_accessible_label(key, &data, i18n)
+}
+
+const USAGE_BREAKDOWN_COLUMNS: [(&str, bool); 8] = [
     ("settings-usage-model", false),
     ("settings-usage-provider", false),
     ("settings-usage-requests", true),
@@ -1049,23 +1678,12 @@ const USAGE_BREAKDOWN_COLUMNS: [(&str, bool); 7] = [
     ("settings-usage-output-tokens", true),
     ("settings-usage-cached-input-tokens", true),
     ("settings-usage-cache-write-input-tokens", true),
+    ("settings-usage-estimated-cost", true),
 ];
 
-fn usage_summary_metrics(aggregate: &UsageAnalyticsAggregate) -> [(&'static str, u64); 10] {
+fn usage_summary_metrics(aggregate: &UsageAnalyticsAggregate) -> [(&'static str, u64); 5] {
     [
         ("settings-usage-requests", aggregate.request_count),
-        (
-            "settings-usage-reported-requests",
-            aggregate.reported_request_count,
-        ),
-        (
-            "settings-usage-unreported-requests",
-            aggregate.unreported_request_count,
-        ),
-        (
-            "settings-usage-total-covered-requests",
-            aggregate.total_covered_request_count,
-        ),
         ("settings-usage-input-tokens", aggregate.input_tokens),
         ("settings-usage-output-tokens", aggregate.output_tokens),
         (
@@ -1076,28 +1694,95 @@ fn usage_summary_metrics(aggregate: &UsageAnalyticsAggregate) -> [(&'static str,
             "settings-usage-cache-write-input-tokens",
             aggregate.cache_write_input_tokens,
         ),
-        (
-            "settings-usage-reasoning-tokens",
-            aggregate.reasoning_tokens,
-        ),
-        ("settings-usage-total-tokens", aggregate.total_tokens),
     ]
 }
 
 fn summary_accessible_label(aggregate: &UsageAnalyticsAggregate, i18n: &I18n) -> String {
-    let metrics = usage_summary_metrics(aggregate)
-        .into_iter()
-        .map(|(key, value)| {
-            let mut args = FluentArgs::new();
-            args.set("label", i18n.t(key));
-            args.set("value", format_token_count(value));
-            i18n.t_with_args("settings-usage-metric-accessible", &args)
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
+    let mut cost_args = FluentArgs::new();
+    cost_args.set("label", i18n.t("settings-usage-estimated-cost-subtotal"));
+    cost_args.set("value", estimated_cost_value(aggregate, i18n));
+    cost_args.set("coverage", priced_requests_coverage(aggregate, i18n));
+    let mut metric_labels =
+        vec![i18n.t_with_args("settings-usage-cost-metric-accessible", &cost_args)];
+    metric_labels.extend(
+        usage_summary_metrics(aggregate)
+            .into_iter()
+            .map(|(key, value)| {
+                let mut args = FluentArgs::new();
+                args.set("label", i18n.t(key));
+                args.set("value", format_token_count(value));
+                i18n.t_with_args("settings-usage-metric-accessible", &args)
+            }),
+    );
+    let metrics = metric_labels.join("; ");
     let mut args = FluentArgs::new();
     args.set("metrics", metrics);
     i18n.t_with_args("settings-usage-summary-accessible", &args)
+}
+
+fn summary_cost_metric(
+    label: String,
+    value: String,
+    coverage: String,
+    cx: &mut Context<UsageSettingsPage>,
+) -> AnyElement {
+    v_flex()
+        .min_w(px(180.))
+        .gap_1()
+        .child(
+            Label::new(label)
+                .text_xs()
+                .text_color(cx.theme().muted_foreground),
+        )
+        .child(Label::new(value).text_sm().font_medium())
+        .child(
+            Label::new(coverage)
+                .text_xs()
+                .text_color(cx.theme().muted_foreground),
+        )
+        .into_any_element()
+}
+
+fn estimated_cost_value(aggregate: &UsageAnalyticsAggregate, i18n: &I18n) -> String {
+    if aggregate.priced_request_count == 0 {
+        i18n.t("settings-usage-unpriced")
+    } else if aggregate.estimated_cost_nano_usd == 0 {
+        i18n.t("settings-usage-explicit-free")
+    } else {
+        format_nano_usd(aggregate.estimated_cost_nano_usd)
+    }
+}
+
+fn priced_requests_coverage(aggregate: &UsageAnalyticsAggregate, i18n: &I18n) -> String {
+    let percent = coverage_percent(aggregate.priced_request_count, aggregate.request_count);
+    let mut args = FluentArgs::new();
+    args.set("priced", aggregate.priced_request_count);
+    args.set("total", aggregate.request_count);
+    args.set("percent", percent);
+    i18n.t_with_args("settings-usage-priced-requests-coverage", &args)
+}
+
+fn coverage_percent(priced: u64, total: u64) -> u64 {
+    if total == 0 {
+        return 0;
+    }
+    u64::try_from((u128::from(priced) * 100 + u128::from(total) / 2) / u128::from(total))
+        .unwrap_or(u64::MAX)
+}
+
+fn format_nano_usd(amount: u64) -> String {
+    const NANOS_PER_USD: u64 = 1_000_000_000;
+    let whole = amount / NANOS_PER_USD;
+    let fraction = amount % NANOS_PER_USD;
+    if fraction == 0 {
+        return format!("${whole}");
+    }
+
+    let mut fraction = format!("{fraction:09}");
+    while fraction.ends_with('0') {
+        fraction.pop();
+    }
+    format!("${whole}.{fraction}")
 }
 
 fn accessible_table_text(id: impl Into<ElementId>, text: SharedString) -> AnyElement {
@@ -1117,6 +1802,34 @@ fn numeric_cell(row: usize, column: usize, value: u64) -> TableCell {
     ))
 }
 
+fn cost_cell(
+    row: usize,
+    column: usize,
+    aggregate: &UsageAnalyticsAggregate,
+    i18n: &I18n,
+) -> TableCell {
+    let amount = estimated_cost_value(aggregate, i18n);
+    let mut args = FluentArgs::new();
+    args.set("amount", amount);
+    args.set("priced", aggregate.priced_request_count);
+    args.set("total", aggregate.request_count);
+    let visible = i18n.t_with_args("settings-usage-cost-cell", &args);
+
+    let mut accessible_args = FluentArgs::new();
+    accessible_args.set("amount", estimated_cost_value(aggregate, i18n));
+    accessible_args.set("priced", aggregate.priced_request_count);
+    accessible_args.set("total", aggregate.request_count);
+    let accessible = i18n.t_with_args("settings-usage-cost-cell-accessible", &accessible_args);
+
+    TableCell::new().text_right().child(
+        div()
+            .id(format!("settings-usage-cell-{row}-{column}"))
+            .role(Role::Label)
+            .aria_label(accessible)
+            .child(Label::new(visible)),
+    )
+}
+
 const ACTIVITY_DAY_COUNT: usize = 365;
 
 #[cfg(test)]
@@ -1124,17 +1837,20 @@ mod tests {
     use super::{
         ACTIVITY_DAY_COUNT, USAGE_BREAKDOWN_COLUMNS, UsageActivityInvariant, UsageAnalyticsData,
         UsageAnalyticsOperation, UsageAnalyticsPeriod, UsageContentComposition, UsageSettingsPage,
-        cancel_active_query, complete_query, display_label, localized_date, localized_month_labels,
-        query_result_matches, summary_accessible_label, usage_content_composition,
-        usage_data_matches, usage_query_for_offset,
+        cancel_active_query, complete_query, cost_bar_height, cost_daily_chart_data,
+        cost_progress_percent, display_label, estimated_cost_value, format_cost_percentage,
+        format_nano_usd, localized_date, localized_month_labels, model_cost_chart_data,
+        priced_requests_coverage, provider_cost_chart_data, query_result_matches,
+        summary_accessible_label, usage_content_composition, usage_data_matches,
+        usage_query_for_offset,
     };
     use crate::{database, foundation::I18n};
     use gpui::{AppContext as _, Task, TestAppContext, VisualTestContext, WindowHandle};
     use gpui_operation::{Load, Transition, refresh};
     use jaco_db::{
-        UsageAnalyticsActivity, UsageAnalyticsAggregate, UsageAnalyticsDailyBucket,
-        UsageAnalyticsFiniteRange, UsageAnalyticsQuery, UsageAnalyticsRange,
-        UsageAnalyticsSnapshot,
+        UsageAnalyticsActivity, UsageAnalyticsAggregate, UsageAnalyticsCostDailyBucket,
+        UsageAnalyticsDailyBucket, UsageAnalyticsFiniteRange, UsageAnalyticsProviderModelBucket,
+        UsageAnalyticsQuery, UsageAnalyticsRange, UsageAnalyticsSnapshot,
     };
     use tempfile::{TempDir, tempdir};
     use time::{Date, Month, OffsetDateTime, Time, UtcOffset};
@@ -1528,7 +2244,174 @@ mod tests {
                 ("settings-usage-output-tokens", true),
                 ("settings-usage-cached-input-tokens", true),
                 ("settings-usage-cache-write-input-tokens", true),
+                ("settings-usage-estimated-cost", true),
             ]
+        );
+    }
+
+    #[test]
+    fn nano_usd_formatter_preserves_integer_precision_and_trims_fraction_zeros() {
+        assert_eq!(format_nano_usd(0), "$0");
+        assert_eq!(format_nano_usd(1), "$0.000000001");
+        assert_eq!(format_nano_usd(1_230_000_000), "$1.23");
+        assert_eq!(format_nano_usd(i64::MAX as u64), "$9223372036.854775807");
+    }
+
+    #[test]
+    fn cost_visuals_follow_alma_linear_normalization() {
+        assert_eq!(cost_progress_percent(0, 100), 0.);
+        assert_eq!(cost_progress_percent(25, 100), 25.);
+        assert_eq!(cost_progress_percent(100, 100), 100.);
+        assert_eq!(cost_progress_percent(100, 0), 0.);
+        assert_eq!(cost_bar_height(0, 1_000_000, 180.), 0.);
+        assert_eq!(cost_bar_height(250_000, 500_000, 180.), 45.);
+        assert_eq!(cost_bar_height(1_000_000, 2_000_000, 180.), 90.);
+        assert_eq!(cost_bar_height(2_000_000, 2_000_000, 180.), 180.);
+    }
+
+    #[test]
+    fn provider_cost_percentage_uses_decimal_percentages_without_float_drift() {
+        assert_eq!(format_cost_percentage(642, 1000), "64.2%");
+        assert_eq!(format_cost_percentage(358, 1000), "35.8%");
+        assert_eq!(format_cost_percentage(1, 3), "33.3%");
+        assert_eq!(format_cost_percentage(0, 0), "0%");
+    }
+
+    #[test]
+    fn cost_summary_distinguishes_unknown_free_partial_and_full_coverage() {
+        let i18n = I18n::for_locale_tag("en-US");
+        let mut aggregate = UsageAnalyticsAggregate {
+            request_count: 2,
+            ..Default::default()
+        };
+        assert_eq!(estimated_cost_value(&aggregate, &i18n), "—");
+        assert_eq!(
+            priced_requests_coverage(&aggregate, &i18n),
+            "Priced requests 0 / 2 (0%)"
+        );
+
+        aggregate.priced_request_count = 1;
+        assert_eq!(estimated_cost_value(&aggregate, &i18n), "$0");
+        assert_eq!(
+            priced_requests_coverage(&aggregate, &i18n),
+            "Priced requests 1 / 2 (50%)"
+        );
+
+        aggregate.estimated_cost_nano_usd = 1_500_000_000;
+        assert_eq!(estimated_cost_value(&aggregate, &i18n), "$1.5");
+
+        aggregate.priced_request_count = 2;
+        aggregate.estimated_cost_nano_usd = 3_000_000_000;
+        assert_eq!(estimated_cost_value(&aggregate, &i18n), "$3");
+        assert_eq!(
+            priced_requests_coverage(&aggregate, &i18n),
+            "Priced requests 2 / 2 (100%)"
+        );
+    }
+
+    #[test]
+    fn daily_cost_chart_is_sparse_sorted_and_keeps_explicit_free_days() {
+        let august_1 = Date::from_calendar_date(2026, Month::August, 1).unwrap();
+        let august_2 = Date::from_calendar_date(2026, Month::August, 2).unwrap();
+        let august_3 = Date::from_calendar_date(2026, Month::August, 3).unwrap();
+        let daily = [
+            UsageAnalyticsCostDailyBucket {
+                local_date: august_3,
+                priced_request_count: 2,
+                estimated_cost_nano_usd: 3_000_000_001,
+            },
+            UsageAnalyticsCostDailyBucket {
+                local_date: august_2,
+                priced_request_count: 0,
+                estimated_cost_nano_usd: 0,
+            },
+            UsageAnalyticsCostDailyBucket {
+                local_date: august_1,
+                priced_request_count: 1,
+                estimated_cost_nano_usd: 0,
+            },
+        ];
+
+        let data = cost_daily_chart_data(&daily, &I18n::for_locale_tag("en-US"));
+        assert_eq!(
+            data.iter()
+                .map(|datum| (
+                    datum.local_date,
+                    datum.cost_nano_usd,
+                    datum.formatted_cost.as_ref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (august_1, 0, "$0"),
+                (august_3, 3_000_000_001, "$3.000000001")
+            ]
+        );
+    }
+
+    #[test]
+    fn provider_cost_chart_checked_aggregates_and_stably_sorts_known_costs() {
+        let buckets = vec![
+            provider_model_cost_bucket("provider-a", "model-a", Some("Provider A"), 2, 1, 10),
+            provider_model_cost_bucket("provider-b", "model-b", Some("Provider B"), 1, 1, 10),
+            provider_model_cost_bucket("provider-c", "model-f", Some("Provider C"), 1, 1, 10),
+            provider_model_cost_bucket("provider-a", "model-c", Some("Provider A"), 3, 2, 5),
+            provider_model_cost_bucket("provider-free", "model-d", None, 1, 1, 0),
+            provider_model_cost_bucket("provider-unknown", "model-e", None, 4, 0, 0),
+        ];
+
+        let providers = provider_cost_chart_data(&buckets).expect("checked provider totals");
+        assert_eq!(
+            providers
+                .iter()
+                .map(|provider| (
+                    provider.label.as_ref(),
+                    provider.cost_nano_usd,
+                    provider.priced_request_count,
+                    provider.request_count,
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Provider A", 15, 3, 5),
+                ("Provider B", 10, 1, 1),
+                ("Provider C", 10, 1, 1),
+                ("provider-free", 0, 1, 1),
+            ]
+        );
+
+        let overflow = vec![
+            provider_model_cost_bucket("provider-a", "model-a", None, u64::MAX, 1, u64::MAX),
+            provider_model_cost_bucket("provider-a", "model-b", None, 1, 1, 1),
+        ];
+        assert_eq!(provider_cost_chart_data(&overflow), None);
+    }
+
+    #[test]
+    fn model_cost_chart_stably_sorts_top_ten_and_omits_unknown_rows() {
+        let mut buckets = (0_u64..12)
+            .map(|index| {
+                provider_model_cost_bucket(
+                    "provider",
+                    &format!("model-{index:02}"),
+                    Some("Provider"),
+                    1,
+                    1,
+                    20 - index,
+                )
+            })
+            .collect::<Vec<_>>();
+        buckets.insert(
+            0,
+            provider_model_cost_bucket("unknown", "unknown", None, 3, 0, 0),
+        );
+
+        let models = model_cost_chart_data(&buckets, &I18n::for_locale_tag("en-US"));
+        assert_eq!(models.len(), 10);
+        assert_eq!(models[0].label, "model-00 · Provider");
+        assert_eq!(models[9].label, "model-09 · Provider");
+        assert!(
+            models
+                .windows(2)
+                .all(|pair| pair[0].cost_nano_usd >= pair[1].cost_nano_usd)
         );
     }
 
@@ -1539,6 +2422,8 @@ mod tests {
             reported_request_count: 2,
             unreported_request_count: 3,
             total_covered_request_count: 4,
+            priced_request_count: 1,
+            estimated_cost_nano_usd: 6_000_000_001,
             input_tokens: 5,
             output_tokens: 6,
             cached_input_tokens: 7,
@@ -1549,20 +2434,28 @@ mod tests {
         let accessible = summary_accessible_label(&aggregate, &I18n::for_locale_tag("en-US"));
 
         for metric in [
+            "Estimated cost subtotal: $6.000000001; Priced requests 1 / 1 (100%)",
             "Requests: 1",
-            "Reported: 2",
-            "Unreported: 3",
-            "Requests with total: 4",
             "Input tokens: 5",
             "Output tokens: 6",
             "Cache read: 7",
             "Cache write: 8",
-            "Reasoning tokens: 9",
-            "Total tokens: 10",
         ] {
             assert!(
                 accessible.contains(metric),
                 "missing {metric}: {accessible}"
+            );
+        }
+        for removed in [
+            "Reported: 2",
+            "Unreported: 3",
+            "Requests with total: 4",
+            "Reasoning tokens: 9",
+            "Total tokens: 10",
+        ] {
+            assert!(
+                !accessible.contains(removed),
+                "removed summary metric leaked into accessibility: {accessible}"
             );
         }
     }
@@ -1593,6 +2486,7 @@ mod tests {
         let snapshot = UsageAnalyticsSnapshot {
             selected_range: query.selected_range,
             selected_summary: UsageAnalyticsAggregate::default(),
+            selected_cost_daily: Vec::new(),
             provider_models: Vec::new(),
             activity: activity_for_range(query.activity_range, &[(4, 99), (7, 99), (10, 1)]),
         };
@@ -1628,6 +2522,7 @@ mod tests {
             UsageAnalyticsSnapshot {
                 selected_range: query.selected_range,
                 selected_summary: UsageAnalyticsAggregate::default(),
+                selected_cost_daily: Vec::new(),
                 provider_models: Vec::new(),
                 activity: short_activity,
             },
@@ -1645,6 +2540,7 @@ mod tests {
             UsageAnalyticsSnapshot {
                 selected_range: query.selected_range,
                 selected_summary: UsageAnalyticsAggregate::default(),
+                selected_cost_daily: Vec::new(),
                 provider_models: Vec::new(),
                 activity: gapped_activity,
             },
@@ -1668,6 +2564,7 @@ mod tests {
                 request_count: selected_requests,
                 ..Default::default()
             },
+            selected_cost_daily: Vec::new(),
             provider_models: Vec::new(),
             activity: UsageAnalyticsActivity {
                 range: query.activity_range,
@@ -1717,6 +2614,10 @@ mod tests {
             "settings-usage-empty-title",
             "settings-usage-empty-description",
             "settings-usage-summary-title",
+            "settings-usage-estimated-cost-subtotal",
+            "settings-usage-unpriced",
+            "settings-usage-explicit-free",
+            "settings-usage-cost-disclaimer",
             "settings-usage-requests",
             "settings-usage-reported-requests",
             "settings-usage-unreported-requests",
@@ -1731,9 +2632,19 @@ mod tests {
             "settings-usage-activity-description",
             "settings-usage-activity-less",
             "settings-usage-activity-more",
+            "settings-usage-cost-trend-title",
+            "settings-usage-cost-trend-description",
+            "settings-usage-provider-cost-title",
+            "settings-usage-provider-cost-description",
+            "settings-usage-provider-all",
+            "settings-usage-provider-top-five",
+            "settings-usage-model-cost-title",
+            "settings-usage-model-cost-description",
+            "settings-usage-known-free-description",
             "settings-usage-breakdown-title",
             "settings-usage-provider",
             "settings-usage-model",
+            "settings-usage-estimated-cost",
         ];
         for locale in ["en-US", "zh-CN"] {
             let i18n = I18n::for_locale_tag(locale);
@@ -1758,6 +2669,15 @@ mod tests {
             args.set("peakDate", "2026-08-20");
             args.set("peakTokens", "1,000");
             args.set("month", "January");
+            args.set("priced", "2");
+            args.set("percent", "67");
+            args.set("amount", "$1.23");
+            args.set("total", "3");
+            args.set("coverage", "Priced requests 2 / 3 (67%)");
+            args.set("items", "Provider: $1.23");
+            args.set("date", "2026-08-21");
+            args.set("model", "gpt-5");
+            args.set("provider", "OpenAI");
             for key in [
                 "settings-usage-date-value",
                 "settings-usage-summary-accessible",
@@ -1767,6 +2687,18 @@ mod tests {
                 "settings-usage-activity-month-label",
                 "settings-usage-activity-accessible",
                 "settings-usage-activity-accessible-no-peak",
+                "settings-usage-priced-requests-coverage",
+                "settings-usage-cost-metric-accessible",
+                "settings-usage-cost-trend-accessible",
+                "settings-usage-cost-trend-item-accessible",
+                "settings-usage-cost-trend-free-item",
+                "settings-usage-provider-cost-accessible",
+                "settings-usage-model-cost-accessible",
+                "settings-usage-model-provider-label",
+                "settings-usage-cost-chart-item-accessible",
+                "settings-usage-cost-legend-value",
+                "settings-usage-cost-cell",
+                "settings-usage-cost-cell-accessible",
             ] {
                 assert_ne!(
                     i18n.t_with_args(key, &args),
@@ -1811,6 +2743,7 @@ mod tests {
                     request_count: 999,
                     ..Default::default()
                 },
+                selected_cost_daily: Vec::new(),
                 provider_models: Vec::new(),
                 activity: activity_for_range(query.activity_range, &[]),
             },
@@ -1849,6 +2782,28 @@ mod tests {
                 ..Default::default()
             },
             daily,
+        }
+    }
+
+    fn provider_model_cost_bucket(
+        provider_id: &str,
+        model_id: &str,
+        provider_label: Option<&str>,
+        request_count: u64,
+        priced_request_count: u64,
+        estimated_cost_nano_usd: u64,
+    ) -> UsageAnalyticsProviderModelBucket {
+        UsageAnalyticsProviderModelBucket {
+            provider_id: provider_id.to_owned(),
+            model_id: model_id.to_owned(),
+            provider_label: provider_label.map(str::to_owned),
+            model_label: None,
+            aggregate: UsageAnalyticsAggregate {
+                request_count,
+                priced_request_count,
+                estimated_cost_nano_usd,
+                ..Default::default()
+            },
         }
     }
 

@@ -206,6 +206,7 @@ async fn streaming_text_delta_updates_single_assistant_item() {
         .unwrap();
     assert_eq!(usage_events.len(), 1);
     assert_eq!(usage_events[0].usage.total_tokens, 7);
+    assert!(usage_events[0].cost_amount.is_none());
     assert!(handle.events.iter().any(|event| matches!(
         event,
         AgentRunEvent::ProviderStepEvent {
@@ -213,6 +214,113 @@ async fn streaming_text_delta_updates_single_assistant_item() {
             ..
         } if text == "world"
     )));
+}
+
+#[tokio::test]
+async fn successful_non_streaming_and_streaming_usage_use_frozen_pricing() {
+    let usage = priced_usage();
+
+    let non_streaming = Fixture::new_priced("priced-non-streaming");
+    let runtime = AgentRuntime::from_repository(non_streaming.repo.clone());
+    let handle = runtime
+        .run_with_model(
+            non_streaming.request(),
+            MockCompletionModel::new([MockTurn::text("priced").with_usage(usage)]),
+        )
+        .await
+        .unwrap();
+    let non_streaming_cost = completed_usage_cost(&non_streaming, &handle.agent_run.id);
+
+    let streaming = Fixture::new_priced("priced-streaming");
+    let runtime = AgentRuntime::from_repository(streaming.repo.clone());
+    let handle = runtime
+        .run_with_model(
+            streaming.streaming_request(),
+            MockCompletionModel::from_stream_turns([[
+                MockStreamEvent::text("priced"),
+                MockStreamEvent::final_response(usage),
+            ]]),
+        )
+        .await
+        .unwrap();
+    let streaming_cost = completed_usage_cost(&streaming, &handle.agent_run.id);
+
+    assert_eq!(non_streaming_cost.as_u64(), 195_000);
+    assert_eq!(streaming_cost, non_streaming_cost);
+}
+
+#[tokio::test]
+async fn catalog_refresh_only_changes_pricing_for_new_provider_steps() {
+    let fixture = Fixture::new_priced("priced-refresh");
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
+    let request = fixture.streaming_request();
+    let task = tokio::spawn(async move {
+        runtime
+            .run_with_model(
+                request,
+                DelayedUsageStreamModel {
+                    delay: Duration::from_millis(100),
+                    usage: priced_usage(),
+                },
+            )
+            .await
+    });
+
+    let mut observed_running_step = false;
+    for _ in 0..50 {
+        if fixture
+            .repo
+            .agent_runs_by_status(AgentRunStatus::Running)
+            .unwrap()
+            .iter()
+            .any(|run| {
+                !fixture
+                    .repo
+                    .provider_steps_for_run(&run.id)
+                    .unwrap()
+                    .is_empty()
+            })
+        {
+            observed_running_step = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        observed_running_step,
+        "priced step starts before catalog refresh"
+    );
+    fixture
+        .repo
+        .upsert_provider_model(NewProviderModel {
+            provider_id: fixture.model.provider_id.clone(),
+            model_id: fixture.model.model_id.clone(),
+            display_name: fixture.model.display_name.clone(),
+            enabled: fixture.model.enabled,
+            capabilities: fixture.model.capabilities.clone(),
+            metadata: fixture.model.metadata.clone(),
+            pricing: Some(test_model_pricing(2)),
+        })
+        .unwrap();
+
+    let old_step = task.await.unwrap().unwrap();
+    assert_eq!(
+        completed_usage_cost(&fixture, &old_step.agent_run.id).as_u64(),
+        195_000
+    );
+
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
+    let new_step = runtime
+        .run_with_model(
+            fixture.request(),
+            MockCompletionModel::new([MockTurn::text("new price").with_usage(priced_usage())]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        completed_usage_cost(&fixture, &new_step.agent_run.id).as_u64(),
+        390_000
+    );
 }
 
 #[tokio::test]
@@ -3068,6 +3176,14 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Self {
+        Self::new_with_pricing(name, false)
+    }
+
+    fn new_priced(name: &str) -> Self {
+        Self::new_with_pricing(name, true)
+    }
+
+    fn new_with_pricing(name: &str, priced: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let store =
             FreshStore::open_or_create_initial(dir.path().join(jaco_db::DATABASE_FILE)).unwrap();
@@ -3108,6 +3224,7 @@ impl Fixture {
                     family: Some("gpt".to_string()),
                     raw: None,
                 },
+                pricing: priced.then(|| test_model_pricing(1)),
             })
             .unwrap();
         let conversation = repo
@@ -3190,6 +3307,53 @@ impl Fixture {
             },
         )
     }
+}
+
+fn test_model_pricing(multiplier: u64) -> ProviderModelPricingSnapshot {
+    ProviderModelPricingSnapshot::new(
+        "openai",
+        "gpt-5.2",
+        official_provider_pricing_route(&provider_settings()).unwrap(),
+        time::OffsetDateTime::UNIX_EPOCH,
+        ProviderTokenPriceSnapshot::new(
+            UsdNanoPerMillionTokens::new(1_000_000_000 * multiplier),
+            UsdNanoPerMillionTokens::new(2_000_000_000 * multiplier),
+            Some(UsdNanoPerMillionTokens::new(500_000_000 * multiplier)),
+            Some(UsdNanoPerMillionTokens::new(1_500_000_000 * multiplier)),
+        ),
+        Vec::new(),
+    )
+    .unwrap()
+}
+
+fn priced_usage() -> Usage {
+    Usage {
+        input_tokens: 100,
+        output_tokens: 50,
+        total_tokens: 150,
+        cached_input_tokens: 20,
+        cache_creation_input_tokens: 10,
+        tool_use_prompt_tokens: 0,
+        reasoning_tokens: 25,
+    }
+}
+
+fn completed_usage_cost(fixture: &Fixture, agent_run_id: &str) -> UsdNanoAmount {
+    let step = fixture
+        .repo
+        .provider_steps_for_run(agent_run_id)
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("completed provider step");
+    fixture
+        .repo
+        .usage_events_for_provider_step(&step.id)
+        .unwrap()
+        .into_iter()
+        .next()
+        .and_then(|usage| usage.cost_amount)
+        .expect("priced usage amount")
 }
 
 #[derive(Clone)]
@@ -3353,6 +3517,51 @@ impl CompletionModel for DelayedFinalStreamModel {
                     true,
                 ))
             }
+        });
+        let stream: StreamingResult<Self::StreamingResponse> = Box::pin(stream);
+        Ok(StreamingCompletionResponse::stream(stream))
+    }
+}
+
+#[derive(Clone)]
+struct DelayedUsageStreamModel {
+    delay: Duration,
+    usage: Usage,
+}
+
+impl CompletionModel for DelayedUsageStreamModel {
+    type Response = MockResponse;
+    type StreamingResponse = MockResponse;
+    type Client = ();
+
+    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
+        Self {
+            delay: Duration::ZERO,
+            usage: Usage::new(),
+        }
+    }
+
+    async fn completion(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+        Err(CompletionError::ProviderError(
+            "delayed usage model only supports streaming".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
+    {
+        let delay = self.delay;
+        let usage = self.usage;
+        let stream = futures::stream::once(async move {
+            tokio::time::sleep(delay).await;
+            Ok(RawStreamingChoice::FinalResponse(MockResponse::with_usage(
+                usage,
+            )))
         });
         let stream: StreamingResult<Self::StreamingResponse> = Box::pin(stream);
         Ok(StreamingCompletionResponse::stream(stream))

@@ -1,16 +1,16 @@
-# jaco-core：Issue #189 usage 与 context domain contract
+# jaco-core：Issue #189 usage、context 与 pricing domain contract
 
 ## 根计划与 owner 边界
 
 - Plan ID：`issue-189`
 - Root hub：[Issue #189](../../../../../docs/dev/issue-189/README.md)
-- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)
+- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)、[Settings 请求费用统计](../../../../../docs/dev/issue-189/settings-usage-cost-analytics-plan.md)
 - Owner directory：`crates/jaco-core`
-- Owner status：`In progress`（`WP-101`、`WP-102` 均已 `Implemented`；root-level workspace/known-provider/CI gates待做）
-- 消费 root IDs：`C-01`–`C-03`、`C-11`、`C-12`、`D-01`、`D-03`、`D-04`、`D-08`、`D-11`、`D-12`、`D-18`、`D-22`、`R-01`–`R-08`、`R-21`、`R-23`、`R-27`
-- Assigned WP：`WP-101`、`WP-102`
-- Owns：usage coverage/cache纯函数、消息 projection、context capability snapshot、latest context request fact、Conversation collection/change/effect/transition
-- Does not own：DB association/selection、provider discovery mapping、agent publication、GPUI、Settings aggregate或#194 manual editor
+- Owner status：`Implemented`（`WP-101`、`WP-102`、`WP-103`均已实施）
+- 消费 root IDs：既有IDs，以及`C-81`、`R-81`–`R-87`
+- Assigned WP：`WP-101`、`WP-102`、`WP-103`
+- Owns：usage/context contracts；fixed-point USD、model pricing snapshot与既有usage纯计价器
+- Does not own：DB association/persistence、models.dev HTTP、provider runtime、GPUI、Settings aggregate SQL或#194 manual editor
 
 ## Owner-local 证据与决定
 
@@ -169,3 +169,46 @@ git diff --check
 - `WP-102` 已 `Implemented`；`cargo test -p jaco-core`：31 passed，覆盖旧 capability JSON、discovered/Manual round trip 与 context request transition。
 - `cargo fmt` 与 `cargo clippy -p jaco -p jaco-agent -p jaco-db --all-targets --all-features -- -D warnings` 通过；workspace-wide build/test/clippy、known/provider 场景与三平台 CI 未执行。
 - implementation commit/PR：`Pending`。
+
+## Cost extension — `WP-103`（Implemented）
+
+本节登记[Settings 请求费用统计计划](../../../../../docs/dev/issue-189/settings-usage-cost-analytics-plan.md)的core owner contract。既有usage/context类型与生命周期不变。
+
+### Owner-local文件与边界
+
+```text
+crates/jaco-core/src/
+├── payloads.rs
+└── payloads/pricing.rs  # [Add] fixed-point price/amount、tier与纯usage estimator
+```
+
+- 新增`UsdNanoPerMillionTokens`、`UsdNanoAmount`、`ProviderTokenPriceSnapshot`、`ProviderTokenPriceTierSnapshot`、`ProviderPricingRouteKey`与`ProviderModelPricingSnapshot`；非法route/rate/tier/amount只能通过validated constructor拒绝。
+- 金额上限为`i64::MAX`以适配SQLite INTEGER。decimal解析与Token乘加不经过`f64`；使用`u128`求和后统一half-up。
+- `estimate_request_cost(provider_kind, usage, pricing)`只读取现有`ProviderUsageSnapshot`：Anthropic input与cache分离，其余已支持provider对inclusive input做checked subtraction；cache专价缺失时使用input rate；全部output按output rate，reasoning不重复相加。
+- tier按该请求`input_tokens >= threshold`选择最大命中值。all-zero sentinel、underflow或overflow返回`None`。
+- 同一个core helper从built-in official provider settings生成typed route key，custom/local settings返回None；pricing只进入provider model catalog与provider step快照，不修改`ProviderUsageSnapshot`、`RunSettingsSnapshot`、conversation、shortcut或provider runtime contract。
+- 不定义provider-reported amount、raw evidence、billable-axis审计或runtime state类型；不增加新package。
+
+### Tests与验证
+
+| T-ID | Owner test |
+| --- | --- |
+| `T-181` | decimal普通/科学计数、负数/超精度拒绝、nano rounding与i64 amount边界 |
+| `T-182` | Anthropic separated input、其他provider inclusive input、cache fallback与reasoning不double count |
+| `T-183` | tier boundary/最大命中、all-zero、underflow与u128 overflow返回None |
+| `T-184` | pricing serde roundtrip、exact provider/model/endpoint provenance与非法tier拒绝 |
+| `T-185` | 既有usage/context/RunSettings/shortcut JSON contract无变化 |
+
+```sh
+cargo fmt
+cargo test -p jaco-core pricing
+cargo clippy -p jaco-core --all-targets --all-features -- -D warnings
+git diff --check -- crates/jaco-core
+```
+
+完成条件：root `C-81`、core-owned `R-81`–`R-87`与`T-181`–`T-185`通过；计算只依赖已有usage与step price，不出现provider raw/reporting或runtime生命周期contract；`WP-101`/`WP-102`回归保持通过。
+
+### Cost 实施证据（2026-08-21）
+
+- fixed-point rate/amount、validated route/model/tier snapshots、精确decimal parser与共享usage estimator已落地。
+- `cargo test -p jaco-core pricing`：10 passed；四package strict clippy、全局`cargo fmt`与`git diff --check`通过。

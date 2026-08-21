@@ -1,16 +1,16 @@
-# jaco-agent：Issue #189 provider discovery 与 live publication
+# jaco-agent：Issue #189 provider discovery、cost finalization 与 live publication
 
 ## 根计划与 owner 边界
 
 - Plan ID：`issue-189`
 - Root hub：[Issue #189](../../../../../docs/dev/issue-189/README.md)
-- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)
+- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)、[Settings 请求费用统计](../../../../../docs/dev/issue-189/settings-usage-cost-analytics-plan.md)
 - Owner directory：`crates/jaco-agent`
-- Owner status：`In progress`（`WP-401`、`WP-402` 均已 `Implemented`；root-level workspace/known-provider/CI gates待做）
-- 消费 root IDs：`C-02`、`C-03`、`C-11`、`C-13`、`D-02`、`D-07`、`D-11`–`D-13`、`D-18`、`D-22`、`ST-01`、`ST-11`、`R-02`、`R-07`、`R-08`、`R-22`、`R-23`、`R-26`、`R-27`
-- Assigned WP：`WP-401`、`WP-402`
-- Owns：在DB run-finalization commit后发布typed changes，以及Rig/Gemini/OpenRouter/Ollama的权威context-window discovery mapping与exact OpenAI GPT-5.6官方文档profile
-- Does not own：usage association/重算、provider-step query、schema、core coverage、GPUI、Settings或#194 manual editor
+- Owner status：`Implemented`（`WP-401`、`WP-402`、`WP-403`均已实施）
+- 消费 root IDs：既有IDs，以及`C-81`–`C-83`、`R-81`–`R-88`
+- Assigned WP：`WP-401`、`WP-402`、`WP-403`
+- Owns：既有publication/capability discovery；models.dev exact model pricing与现有usage completion计价接线
+- Does not own：DB schema/aggregation、core arithmetic、provider-reported/raw response、GPUI、Settings呈现、本地手工迁移或#194 manual editor
 
 ## 证据与决定
 
@@ -182,3 +182,68 @@ git diff --check
 - `WP-402` 已 `Implemented`；`cargo test -p jaco-agent`：131 passed，`cargo test -p jaco-agent composer_context`：2 passed。
 - capability 回归覆盖 provider discovery、invalid-value、exact OpenAI GPT-5.6 official-doc profile、official/compatible endpoint 与 discovered/manual precedence；`cargo fmt` 与 `cargo clippy -p jaco -p jaco-agent -p jaco-db --all-targets --all-features -- -D warnings` 通过。
 - provider mapping自动化覆盖exact GPT-5.6 official-doc capability；app不再对旧缓存做读取时补全。workspace-wide gates、现场provider refresh/新请求与三平台 CI 未执行；implementation commit/PR：`Pending`。
+
+## Cost extension — `WP-403`（Implemented）
+
+本节登记[Settings 请求费用统计计划](../../../../../docs/dev/issue-189/settings-usage-cost-analytics-plan.md)的agent owner contract。message/composer publication、provider-step lifecycle和现有usage completion顺序保持不变。
+
+### Owner-local文件与边界
+
+```text
+crates/jaco-agent/
+├── Cargo.toml                     # workspace serde_json arbitrary_precision feature；无新package
+└── src/
+    ├── providers.rs               # Fetch Models exact price merge
+    ├── providers/models_dev.rs    # [Add] fixed catalog client/parser
+    └── persistence/provider_step.rs # 现有成功usage completion调用core estimator
+```
+
+最终实现如需在已有provider success helper附近放置薄adapter，可以使用当前owner模块；不得为费用新增runtime、streaming或tool-call state machine。
+
+### `L-421`：models.dev Fetch Models
+
+- 仅built-in official OpenAI、Anthropic、Gemini/Google、OpenRouter、DeepSeek、Mistral endpoint eligible；Ollama、custom base/custom OpenAI-compatible与manual model不请求或不附加目录价。
+- 固定`https://models.dev/api.json`，无auth/query；10秒总超时、32MiB响应上限，不记录body、provider key或用户内容。
+- 在workspace现有`serde_json`启用`arbitrary_precision`；价格词法直接进入core fixed-point parser，不使用`as_f64`。
+- 只接受top-level provider key、payload provider ID和Jaco固定mapping一致，以及model map key、payload model ID和Fetch Models exact model ID一致的条目；无family/bare/display-name/cross-provider回退。
+- 只解析base input/output/cache_read/cache_write与input threshold tiers；experimental modes、reasoning专价、账单附加项和provider-reported amount全部忽略。
+- provider listing与models.dev network/decode成功后才返回priced model batch；失败沿用现有Fetch Models错误且DB零mutation。这是有意的all-or-nothing边界，避免临时catalog故障清空已有price；成功catalog没有exact价格仍是合法`pricing=None`。
+- pricing snapshot携带core typed official route key、models.dev provider/model ID和fetched_at；不进入RunSettings、shortcut或conversation。
+- 不新增startup、TTL、polling或background refresh。
+
+### `L-422`：复用现有usage completion计价
+
+- 每个当前已经持久化`ProviderUsageSnapshot`的成功completion路径，从对应`ProviderStepRecord.pricing_snapshot`读取frozen price并调用core `estimate_request_cost`。
+- 结果作为`Option<UsdNanoAmount>`交给现有`CompleteProviderStep`；price missing、all-zero usage、underflow或overflow为None，不新增reason enum、审计列或日志协议。
+- estimator不读取provider raw response、provider-reported cost或completion时的current catalog。
+- 不移动、不增加也不删除provider-step terminalization、CompletionCall、tool hook、invalid-call、cancel/error或usage-event边界。现有路径此前没有usage event时，本计划不另行制造费用event。
+- DB写失败沿用现有completion rollback/error语义；估算不可用不得让成功provider request失败。
+
+### Tests与验证
+
+| T-ID | Owner test |
+| --- | --- |
+| `T-481` | provider mapping与official/custom endpoint eligibility |
+| `T-482` | provider/model三方exact identity、missing/unpriced与无family/cross-provider fallback |
+| `T-483` | timeout/status/body cap/decode/invalid price使Fetch Models零mutation |
+| `T-484` | arbitrary-precision decimal、base/cache/tier parse与unsupported字段忽略 |
+| `T-485` | existing non-streaming success usage调用同一estimator并写amount/None |
+| `T-486` | existing streaming success usage调用同一estimator；event/step顺序与旧fixture完全一致 |
+| `T-487` | catalog refresh后旧step继续使用frozen price，新step使用新price |
+| `T-488` | custom/unmatched/all-zero/underflow/overflow不阻断completion且cost None |
+| `T-489` | tool/invalid/cancel/error现有生命周期回归；费用实现没有新增completion event |
+| `T-490` | provider credentials、raw response和prompt不进入models.dev请求或日志 |
+
+```sh
+cargo fmt
+cargo test -p jaco-agent pricing
+cargo clippy -p jaco-agent --all-targets --all-features -- -D warnings
+git diff --check -- crates/jaco-agent
+```
+
+完成条件：root `C-81`–`C-83`、agent-owned `R-81`–`R-88`与`T-481`–`T-490`通过；models.dev exact merge和现有usage completion计价完成；没有provider-reported/raw evidence、runtime state、completion lifecycle或后台刷新变化；无新package。
+
+### Cost 实施证据（2026-08-21）
+
+- models.dev constrained client/exact merge已接入现有Fetch Models；现有non-streaming与streaming成功completion读取step frozen price并复用core estimator。
+- `cargo test -p jaco-agent pricing`：7 passed；`cargo test -p jaco-agent`：138 passed；strict clippy与scoped diff check通过。

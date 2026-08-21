@@ -61,6 +61,7 @@ pub struct CompleteProviderStep {
     pub state_snapshot: ProviderRunStateSnapshot,
     pub continuation: Option<ProviderContinuationSnapshot>,
     pub usage: ProviderUsageSnapshot,
+    pub cost_amount: Option<UsdNanoAmount>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -124,6 +125,7 @@ pub struct UsageEventRecord {
     pub total_tokens: i64,
     pub usage: ProviderUsageSnapshot,
     pub created_at: OffsetDateTime,
+    pub cost_amount: Option<UsdNanoAmount>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

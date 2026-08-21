@@ -71,6 +71,8 @@ pub struct UsageAnalyticsAggregate {
     pub cache_write_input_tokens: u64,
     pub reasoning_tokens: u64,
     pub total_tokens: u64,
+    pub priced_request_count: u64,
+    pub estimated_cost_nano_usd: u64,
 }
 
 impl UsageAnalyticsAggregate {
@@ -88,6 +90,13 @@ impl UsageAnalyticsAggregate {
 pub struct UsageAnalyticsDailyBucket {
     pub local_date: time::Date,
     pub aggregate: UsageAnalyticsAggregate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageAnalyticsCostDailyBucket {
+    pub local_date: time::Date,
+    pub priced_request_count: u64,
+    pub estimated_cost_nano_usd: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +125,7 @@ pub struct UsageAnalyticsQuery {
 pub struct UsageAnalyticsSnapshot {
     pub selected_range: UsageAnalyticsRange,
     pub selected_summary: UsageAnalyticsAggregate,
+    pub selected_cost_daily: Vec<UsageAnalyticsCostDailyBucket>,
     pub provider_models: Vec<UsageAnalyticsProviderModelBucket>,
     pub activity: UsageAnalyticsActivity,
 }

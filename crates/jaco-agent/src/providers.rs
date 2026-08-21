@@ -1,4 +1,5 @@
 mod capabilities;
+mod models_dev;
 pub(crate) mod openai;
 
 use std::collections::BTreeMap;
@@ -73,14 +74,10 @@ pub async fn fetch_provider_models(
     request: ProviderModelFetchRequest,
 ) -> Result<Vec<NewProviderModel>, ProviderModelFetchError> {
     let provider_kind = request.provider.kind.as_str();
-    match provider_kind {
-        "ollama" => return fetch_ollama_models(&request).await,
-        "gemini" => return fetch_gemini_models(&request).await,
-        "openrouter" => return fetch_openrouter_models(&request).await,
-        _ => {}
-    }
-
     let models = match provider_kind {
+        "ollama" => fetch_ollama_models(&request).await?,
+        "gemini" => fetch_gemini_models(&request).await?,
+        "openrouter" => fetch_openrouter_models(&request).await?,
         "openai" => {
             let client = apply_base_url(
                 rig_openai::Client::builder()
@@ -89,7 +86,7 @@ pub async fn fetch_provider_models(
             )?
             .build()
             .map_err(invalid_config)?;
-            list_models(provider_kind, client).await?
+            models_from_rig_listing(&request.provider, list_models(provider_kind, client).await?)
         }
         "anthropic" => {
             let client = apply_base_url(
@@ -98,7 +95,7 @@ pub async fn fetch_provider_models(
             )?
             .build()
             .map_err(invalid_config)?;
-            list_models(provider_kind, client).await?
+            models_from_rig_listing(&request.provider, list_models(provider_kind, client).await?)
         }
         "deepseek" => {
             let client = apply_base_url(
@@ -107,7 +104,7 @@ pub async fn fetch_provider_models(
             )?
             .build()
             .map_err(invalid_config)?;
-            list_models(provider_kind, client).await?
+            models_from_rig_listing(&request.provider, list_models(provider_kind, client).await?)
         }
         "mistral" => {
             let client = apply_base_url(
@@ -116,20 +113,24 @@ pub async fn fetch_provider_models(
             )?
             .build()
             .map_err(invalid_config)?;
-            list_models(provider_kind, client).await?
+            models_from_rig_listing(&request.provider, list_models(provider_kind, client).await?)
         }
         _ => {
             return Err(ProviderModelFetchError::ManualModelsRequired {
-                provider_kind: request.provider.kind,
+                provider_kind: request.provider.kind.clone(),
             });
         }
     };
 
-    Ok(models
+    models_dev::attach_pricing(&request.provider, models).await
+}
+
+fn models_from_rig_listing(provider: &ProviderRecord, models: ModelList) -> Vec<NewProviderModel> {
+    models
         .data
         .into_iter()
-        .map(|model| provider_model_from_rig_model(&request.provider, model))
-        .collect())
+        .map(|model| provider_model_from_rig_model(provider, model))
+        .collect()
 }
 
 pub(crate) async fn run_saved_provider_model(
@@ -396,6 +397,7 @@ pub fn provider_model_from_rig_model(provider: &ProviderRecord, model: Model) ->
             family: model.owned_by,
             raw,
         },
+        pricing: None,
     }
 }
 
@@ -554,6 +556,7 @@ async fn fetch_ollama_models(
                 family: Some(show.details.family),
                 raw,
             },
+            pricing: None,
         });
     }
     models.sort_by(|left, right| left.model_id.cmp(&right.model_id));
@@ -625,6 +628,7 @@ fn provider_model_from_gemini_model(
             family: None,
             raw,
         },
+        pricing: None,
     })
 }
 
@@ -674,6 +678,7 @@ async fn fetch_openrouter_models(
                     family: None,
                     raw,
                 },
+                pricing: None,
             }
         })
         .collect::<Vec<_>>();

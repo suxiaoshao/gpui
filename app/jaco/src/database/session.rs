@@ -307,6 +307,13 @@ impl AgentPersistence for SessionAgentPersistence {
         repository_call!(self, insert_provider_step(input))
     }
 
+    async fn provider_step(
+        &self,
+        id: ProviderStepId,
+    ) -> jaco_db::Result<Option<ProviderStepRecord>> {
+        repository_call!(self, get_provider_step(&id))
+    }
+
     async fn provider_steps_for_run(
         &self,
         id: AgentRunId,

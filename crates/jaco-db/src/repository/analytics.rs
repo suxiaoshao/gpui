@@ -24,10 +24,15 @@ SELECT
     COALESCE(SUM(cache_write_input_tokens), 0) AS cache_write_input_tokens,
     COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
     COALESCE(SUM(total_tokens), 0) AS total_tokens,
+    COALESCE(SUM(CASE WHEN cost_amount_nano_usd IS NOT NULL THEN 1 ELSE 0 END), 0)
+        AS priced_request_count,
+    COALESCE(SUM(cost_amount_nano_usd), 0) AS estimated_cost_nano_usd,
     COALESCE(SUM(CASE WHEN
         input_tokens < 0 OR output_tokens < 0 OR cached_input_tokens < 0 OR
         cache_write_input_tokens < 0 OR reasoning_tokens < 0 OR total_tokens < 0
-        THEN 1 ELSE 0 END), 0) AS invalid_request_count
+        THEN 1 ELSE 0 END), 0) AS invalid_request_count,
+    COALESCE(SUM(CASE WHEN cost_amount_nano_usd < 0 THEN 1 ELSE 0 END), 0)
+        AS invalid_cost_count
 FROM usage_events
 "#;
 
@@ -50,10 +55,45 @@ SELECT
     COALESCE(SUM(cache_write_input_tokens), 0) AS cache_write_input_tokens,
     COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
     COALESCE(SUM(total_tokens), 0) AS total_tokens,
+    COALESCE(SUM(CASE WHEN cost_amount_nano_usd IS NOT NULL THEN 1 ELSE 0 END), 0)
+        AS priced_request_count,
+    COALESCE(SUM(cost_amount_nano_usd), 0) AS estimated_cost_nano_usd,
     COALESCE(SUM(CASE WHEN
         input_tokens < 0 OR output_tokens < 0 OR cached_input_tokens < 0 OR
         cache_write_input_tokens < 0 OR reasoning_tokens < 0 OR total_tokens < 0
-        THEN 1 ELSE 0 END), 0) AS invalid_request_count
+        THEN 1 ELSE 0 END), 0) AS invalid_request_count,
+    COALESCE(SUM(CASE WHEN cost_amount_nano_usd < 0 THEN 1 ELSE 0 END), 0)
+        AS invalid_cost_count
+FROM usage_events
+WHERE created_at >= ?1 AND created_at < ?2
+"#;
+
+const ACTIVITY_SUMMARY_FINITE_SQL: &str = r#"
+SELECT
+    COUNT(*) AS request_count,
+    COALESCE(SUM(CASE WHEN
+        input_tokens != 0 OR output_tokens != 0 OR cached_input_tokens != 0 OR
+        cache_write_input_tokens != 0 OR reasoning_tokens != 0 OR total_tokens != 0
+        THEN 1 ELSE 0 END), 0) AS reported_request_count,
+    COALESCE(SUM(CASE WHEN
+        input_tokens = 0 AND output_tokens = 0 AND cached_input_tokens = 0 AND
+        cache_write_input_tokens = 0 AND reasoning_tokens = 0 AND total_tokens = 0
+        THEN 1 ELSE 0 END), 0) AS unreported_request_count,
+    COALESCE(SUM(CASE WHEN total_tokens > 0 THEN 1 ELSE 0 END), 0)
+        AS total_covered_request_count,
+    COALESCE(SUM(input_tokens), 0) AS input_tokens,
+    COALESCE(SUM(output_tokens), 0) AS output_tokens,
+    COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
+    COALESCE(SUM(cache_write_input_tokens), 0) AS cache_write_input_tokens,
+    COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+    COALESCE(SUM(total_tokens), 0) AS total_tokens,
+    0 AS priced_request_count,
+    0 AS estimated_cost_nano_usd,
+    COALESCE(SUM(CASE WHEN
+        input_tokens < 0 OR output_tokens < 0 OR cached_input_tokens < 0 OR
+        cache_write_input_tokens < 0 OR reasoning_tokens < 0 OR total_tokens < 0
+        THEN 1 ELSE 0 END), 0) AS invalid_request_count,
+    0 AS invalid_cost_count
 FROM usage_events
 WHERE created_at >= ?1 AND created_at < ?2
 "#;
@@ -78,12 +118,38 @@ SELECT
     COALESCE(SUM(cache_write_input_tokens), 0) AS cache_write_input_tokens,
     COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
     COALESCE(SUM(total_tokens), 0) AS total_tokens,
+    0 AS priced_request_count,
+    0 AS estimated_cost_nano_usd,
     COALESCE(SUM(CASE WHEN
         input_tokens < 0 OR output_tokens < 0 OR cached_input_tokens < 0 OR
         cache_write_input_tokens < 0 OR reasoning_tokens < 0 OR total_tokens < 0
-        THEN 1 ELSE 0 END), 0) AS invalid_request_count
+        THEN 1 ELSE 0 END), 0) AS invalid_request_count,
+    0 AS invalid_cost_count
 FROM usage_events
 WHERE created_at >= ?1 AND created_at < ?2
+GROUP BY local_date
+ORDER BY local_date ASC
+"#;
+
+pub(crate) const COST_DAILY_FINITE_SQL: &str = r#"
+SELECT
+    strftime('%Y-%m-%d', created_at, printf('%+d seconds', ?3)) AS local_date,
+    COUNT(*) AS priced_request_count,
+    COALESCE(SUM(cost_amount_nano_usd), 0) AS estimated_cost_nano_usd
+FROM usage_events
+WHERE created_at >= ?1 AND created_at < ?2
+  AND cost_amount_nano_usd IS NOT NULL
+GROUP BY local_date
+ORDER BY local_date ASC
+"#;
+
+const COST_DAILY_ALL_TIME_SQL: &str = r#"
+SELECT
+    strftime('%Y-%m-%d', created_at, printf('%+d seconds', ?1)) AS local_date,
+    COUNT(*) AS priced_request_count,
+    COALESCE(SUM(cost_amount_nano_usd), 0) AS estimated_cost_nano_usd
+FROM usage_events
+WHERE cost_amount_nano_usd IS NOT NULL
 GROUP BY local_date
 ORDER BY local_date ASC
 "#;
@@ -110,10 +176,15 @@ WITH aggregates AS (
         COALESCE(SUM(cache_write_input_tokens), 0) AS cache_write_input_tokens,
         COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
         COALESCE(SUM(total_tokens), 0) AS total_tokens,
+        COALESCE(SUM(CASE WHEN cost_amount_nano_usd IS NOT NULL THEN 1 ELSE 0 END), 0)
+            AS priced_request_count,
+        COALESCE(SUM(cost_amount_nano_usd), 0) AS estimated_cost_nano_usd,
         COALESCE(SUM(CASE WHEN
             input_tokens < 0 OR output_tokens < 0 OR cached_input_tokens < 0 OR
             cache_write_input_tokens < 0 OR reasoning_tokens < 0 OR total_tokens < 0
-            THEN 1 ELSE 0 END), 0) AS invalid_request_count
+            THEN 1 ELSE 0 END), 0) AS invalid_request_count,
+        COALESCE(SUM(CASE WHEN cost_amount_nano_usd < 0 THEN 1 ELSE 0 END), 0)
+            AS invalid_cost_count
     FROM usage_events
     GROUP BY provider_id, model_id
 )
@@ -132,7 +203,10 @@ SELECT
     aggregates.cache_write_input_tokens,
     aggregates.reasoning_tokens,
     aggregates.total_tokens,
-    aggregates.invalid_request_count
+    aggregates.priced_request_count,
+    aggregates.estimated_cost_nano_usd,
+    aggregates.invalid_request_count,
+    aggregates.invalid_cost_count
 FROM aggregates
 LEFT JOIN providers ON providers.id = aggregates.provider_id
 LEFT JOIN provider_models ON
@@ -163,10 +237,15 @@ WITH aggregates AS (
         COALESCE(SUM(cache_write_input_tokens), 0) AS cache_write_input_tokens,
         COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
         COALESCE(SUM(total_tokens), 0) AS total_tokens,
+        COALESCE(SUM(CASE WHEN cost_amount_nano_usd IS NOT NULL THEN 1 ELSE 0 END), 0)
+            AS priced_request_count,
+        COALESCE(SUM(cost_amount_nano_usd), 0) AS estimated_cost_nano_usd,
         COALESCE(SUM(CASE WHEN
             input_tokens < 0 OR output_tokens < 0 OR cached_input_tokens < 0 OR
             cache_write_input_tokens < 0 OR reasoning_tokens < 0 OR total_tokens < 0
-            THEN 1 ELSE 0 END), 0) AS invalid_request_count
+            THEN 1 ELSE 0 END), 0) AS invalid_request_count,
+        COALESCE(SUM(CASE WHEN cost_amount_nano_usd < 0 THEN 1 ELSE 0 END), 0)
+            AS invalid_cost_count
     FROM usage_events
     WHERE created_at >= ?1 AND created_at < ?2
     GROUP BY provider_id, model_id
@@ -186,7 +265,10 @@ SELECT
     aggregates.cache_write_input_tokens,
     aggregates.reasoning_tokens,
     aggregates.total_tokens,
-    aggregates.invalid_request_count
+    aggregates.priced_request_count,
+    aggregates.estimated_cost_nano_usd,
+    aggregates.invalid_request_count,
+    aggregates.invalid_cost_count
 FROM aggregates
 LEFT JOIN providers ON providers.id = aggregates.provider_id
 LEFT JOIN provider_models ON
@@ -218,7 +300,13 @@ struct AggregateSqlRow {
     #[diesel(sql_type = BigInt)]
     total_tokens: i64,
     #[diesel(sql_type = BigInt)]
+    priced_request_count: i64,
+    #[diesel(sql_type = BigInt)]
+    estimated_cost_nano_usd: i64,
+    #[diesel(sql_type = BigInt)]
     invalid_request_count: i64,
+    #[diesel(sql_type = BigInt)]
+    invalid_cost_count: i64,
 }
 
 #[derive(Debug, QueryableByName)]
@@ -227,6 +315,16 @@ struct DailyAggregateSqlRow {
     local_date: Option<String>,
     #[diesel(embed)]
     aggregate: AggregateSqlRow,
+}
+
+#[derive(Debug, QueryableByName)]
+struct CostDailySqlRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    local_date: Option<String>,
+    #[diesel(sql_type = BigInt)]
+    priced_request_count: i64,
+    #[diesel(sql_type = BigInt)]
+    estimated_cost_nano_usd: i64,
 }
 
 #[derive(Debug, QueryableByName)]
@@ -256,6 +354,12 @@ fn usage_analytics_with_conn(
 ) -> Result<UsageAnalyticsSnapshot> {
     let selected_summary = load_summary(conn, query.selected_range)?;
     validate_aggregate(&selected_summary, "selected summary")?;
+    let selected_cost_offset = match query.selected_range {
+        UsageAnalyticsRange::Finite(range) => range.local_offset(),
+        UsageAnalyticsRange::AllTime => query.activity_range.local_offset(),
+    };
+    let selected_cost_daily = load_cost_daily(conn, query.selected_range, selected_cost_offset)?;
+    validate_cost_daily_totals(&selected_cost_daily, &selected_summary)?;
     let provider_models = load_provider_models(conn, query.selected_range)?;
     validate_bucket_totals(
         provider_models.iter().map(|bucket| &bucket.aggregate),
@@ -263,7 +367,7 @@ fn usage_analytics_with_conn(
         "provider/model",
     )?;
 
-    let activity_summary = load_summary(conn, UsageAnalyticsRange::Finite(query.activity_range))?;
+    let activity_summary = load_activity_summary(conn, query.activity_range)?;
     validate_aggregate(&activity_summary, "activity summary")?;
     let activity_daily = load_daily(conn, query.activity_range)?;
     validate_daily_shape(&activity_daily, query.activity_range, "activity daily")?;
@@ -276,6 +380,7 @@ fn usage_analytics_with_conn(
     Ok(UsageAnalyticsSnapshot {
         selected_range: query.selected_range,
         selected_summary,
+        selected_cost_daily,
         provider_models,
         activity: UsageAnalyticsActivity {
             range: query.activity_range,
@@ -299,6 +404,17 @@ fn load_summary(
         }
     };
     row.try_into()
+}
+
+fn load_activity_summary(
+    conn: &mut SqliteConnection,
+    range: UsageAnalyticsFiniteRange,
+) -> Result<UsageAnalyticsAggregate> {
+    sql_query(ACTIVITY_SUMMARY_FINITE_SQL)
+        .bind::<TimestamptzSqlite, _>(range.start_utc())
+        .bind::<TimestamptzSqlite, _>(range.end_utc())
+        .get_result::<AggregateSqlRow>(conn)?
+        .try_into()
 }
 
 fn load_daily(
@@ -367,6 +483,55 @@ fn load_daily(
     Ok(daily)
 }
 
+fn load_cost_daily(
+    conn: &mut SqliteConnection,
+    range: UsageAnalyticsRange,
+    local_offset: time::UtcOffset,
+) -> Result<Vec<UsageAnalyticsCostDailyBucket>> {
+    let rows = match range {
+        UsageAnalyticsRange::Finite(range) => sql_query(COST_DAILY_FINITE_SQL)
+            .bind::<TimestamptzSqlite, _>(range.start_utc())
+            .bind::<TimestamptzSqlite, _>(range.end_utc())
+            .bind::<Integer, _>(local_offset.whole_seconds())
+            .load::<CostDailySqlRow>(conn)?,
+        UsageAnalyticsRange::AllTime => sql_query(COST_DAILY_ALL_TIME_SQL)
+            .bind::<Integer, _>(local_offset.whole_seconds())
+            .load::<CostDailySqlRow>(conn)?,
+    };
+
+    let format =
+        time::format_description::parse_borrowed::<3>("[year]-[month]-[day]").map_err(|error| {
+            DbError::Invariant(format!("cost daily date format is invalid: {error}"))
+        })?;
+    let mut daily = Vec::with_capacity(rows.len());
+    for row in rows {
+        let local_date = row.local_date.ok_or_else(|| {
+            DbError::Invariant(
+                "priced usage event timestamp could not be grouped by local date".to_string(),
+            )
+        })?;
+        let local_date = Date::parse(&local_date, &format)?;
+        if let Some(previous_date) = daily
+            .last()
+            .map(|bucket: &UsageAnalyticsCostDailyBucket| bucket.local_date)
+            && previous_date >= local_date
+        {
+            return Err(DbError::Invariant(format!(
+                "cost daily analytics rows are not strictly ordered at {local_date}"
+            )));
+        }
+        daily.push(UsageAnalyticsCostDailyBucket {
+            local_date,
+            priced_request_count: checked_u64(row.priced_request_count, "priced request count")?,
+            estimated_cost_nano_usd: checked_u64(
+                row.estimated_cost_nano_usd,
+                "estimated cost nano USD",
+            )?,
+        });
+    }
+    Ok(daily)
+}
+
 fn load_provider_models(
     conn: &mut SqliteConnection,
     range: UsageAnalyticsRange,
@@ -400,9 +565,9 @@ impl TryFrom<AggregateSqlRow> for UsageAnalyticsAggregate {
     type Error = DbError;
 
     fn try_from(row: AggregateSqlRow) -> Result<Self> {
-        if row.invalid_request_count != 0 {
+        if row.invalid_request_count != 0 || row.invalid_cost_count != 0 {
             return Err(DbError::Invariant(
-                "usage analytics encountered a negative token value".to_string(),
+                "usage analytics encountered a negative token or cost value".to_string(),
             ));
         }
         Ok(Self {
@@ -428,6 +593,11 @@ impl TryFrom<AggregateSqlRow> for UsageAnalyticsAggregate {
             )?,
             reasoning_tokens: checked_u64(row.reasoning_tokens, "reasoning tokens")?,
             total_tokens: checked_u64(row.total_tokens, "total tokens")?,
+            priced_request_count: checked_u64(row.priced_request_count, "priced request count")?,
+            estimated_cost_nano_usd: checked_u64(
+                row.estimated_cost_nano_usd,
+                "estimated cost nano USD",
+            )?,
         })
     }
 }
@@ -455,6 +625,11 @@ fn validate_aggregate(aggregate: &UsageAnalyticsAggregate, context: &str) -> Res
             "{context} total-covered request count exceeds reported request count"
         )));
     }
+    if aggregate.priced_request_count > aggregate.request_count {
+        return Err(DbError::Invariant(format!(
+            "{context} priced request count exceeds request count"
+        )));
+    }
     Ok(())
 }
 
@@ -471,6 +646,34 @@ fn validate_bucket_totals<'a>(
         return Err(DbError::Invariant(format!(
             "{context} usage analytics totals do not match summary"
         )));
+    }
+    Ok(())
+}
+
+fn validate_cost_daily_totals(
+    daily: &[UsageAnalyticsCostDailyBucket],
+    summary: &UsageAnalyticsAggregate,
+) -> Result<()> {
+    let mut priced_request_count = 0_u64;
+    let mut estimated_cost_nano_usd = 0_u64;
+    for bucket in daily {
+        priced_request_count = priced_request_count
+            .checked_add(bucket.priced_request_count)
+            .ok_or_else(|| {
+                DbError::Invariant("cost daily priced request count overflowed".to_string())
+            })?;
+        estimated_cost_nano_usd = estimated_cost_nano_usd
+            .checked_add(bucket.estimated_cost_nano_usd)
+            .ok_or_else(|| {
+                DbError::Invariant("cost daily estimated cost overflowed".to_string())
+            })?;
+    }
+    if priced_request_count != summary.priced_request_count
+        || estimated_cost_nano_usd != summary.estimated_cost_nano_usd
+    {
+        return Err(DbError::Invariant(
+            "cost daily usage analytics totals do not match selected summary".to_string(),
+        ));
     }
     Ok(())
 }
@@ -544,5 +747,7 @@ fn checked_add_aggregate(
     checked_add_field!(cache_write_input_tokens);
     checked_add_field!(reasoning_tokens);
     checked_add_field!(total_tokens);
+    checked_add_field!(priced_request_count);
+    checked_add_field!(estimated_cost_nano_usd);
     Ok(())
 }

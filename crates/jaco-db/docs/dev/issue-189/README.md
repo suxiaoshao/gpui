@@ -1,16 +1,16 @@
-# jaco-db：构造 Issue #189 usage、context 与 analytics projections
+# jaco-db：构造 Issue #189 usage、context、analytics 与 cost projections
 
 ## 根计划与 owner 边界
 
 - Plan ID：`issue-189`
 - Root hub：[Issue #189](../../../../../docs/dev/issue-189/README.md)
-- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)、[Settings usage analytics](../../../../../docs/dev/issue-189/settings-usage-analytics-plan.md)、[Settings activity heatmap](../../../../../docs/dev/issue-189/settings-usage-activity-heatmap-plan.md)
+- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)、[Settings usage analytics](../../../../../docs/dev/issue-189/settings-usage-analytics-plan.md)、[Settings activity heatmap](../../../../../docs/dev/issue-189/settings-usage-activity-heatmap-plan.md)、[Settings 请求费用统计](../../../../../docs/dev/issue-189/settings-usage-cost-analytics-plan.md)
 - Owner directory：`crates/jaco-db`
-- Owner status：`Implemented`（`WP-201`–`WP-204`均已实施；root最终门禁与远端CI待执行）
-- 消费 root IDs：`C-02`、`C-03`、`C-12`、`C-21`、`C-22`、`D-01`、`D-02`、`D-06`、`D-14`–`D-18`、`D-31`–`D-38`、`D-61`–`D-68`、`DB-01`、`DB-02`、`DB-11`、`DB-12`、`DB-21`–`DB-23`、`DB-31`–`DB-33`、`R-01`–`R-08`、`R-24`–`R-27`、`R-42`–`R-51`、`R-61`–`R-66`、`R-77`–`R-78`
-- Assigned WP：`WP-201`、`WP-202`、`WP-203`、`WP-204`
-- Owns：conversation usage query、message projection assembler、composer latest-step selector/assembler、reload/finalization results、Settings selected/activity analytics projection、range aggregation、fresh-schema index与repository tests
-- Does not own：usage写入基数/serialized JSON、core语义、agent event、provider discovery、local calendar preset计算、Settings Operation或UI
+- Owner status：`Implemented`（`WP-201`–`WP-205`均已实施）
+- 消费 root IDs：既有IDs，以及`C-83`、`C-84`、`R-87`–`R-90`、`R-93`
+- Assigned WP：`WP-201`、`WP-202`、`WP-203`、`WP-204`、`WP-205`
+- Owns：既有usage/context/analytics projections；provider model price、step price snapshot、usage-event amount原子持久化、cost聚合与schema tests
+- Does not own：models.dev HTTP、Token price calculation、local calendar preset、Settings Operation/UI或本地手工迁移执行
 
 ## Owner-local 证据与决定
 
@@ -440,3 +440,90 @@ git diff --check -- crates/jaco-db
 - 最终snapshot保留`selected_range`、`selected_summary`、`provider_models`与`activity`；selected daily snapshot/query已删除。selected provider/model与activity daily分别在同一read transaction中完成checked cross-total。
 - `cargo test -p jaco-db usage_analytics --no-fail-fast`通过12项；`cargo test -p jaco-db --no-fail-fast`通过67项；strict clippy、`cargo fmt --package jaco-db`与scoped diff check通过。
 - 无schema、migration、version或兼容API变化；`WP-601`组件实现不受影响。
+
+## Cost extension — `WP-205`（Implemented）
+
+本节登记[Settings 请求费用统计计划](../../../../../docs/dev/issue-189/settings-usage-cost-analytics-plan.md)的DB owner contract。既有usage/context/analytics authority、created-at index与activity token projection保持不变。
+
+### Owner-local文件与边界
+
+```text
+crates/jaco-db/src/
+├── migrations.rs
+├── schema.rs
+├── records/
+│   ├── analytics.rs
+│   ├── provider_step.rs
+│   ├── resources.rs
+│   └── usage.rs
+└── repository/
+    ├── analytics.rs
+    ├── provider_step.rs
+    └── resources.rs
+```
+
+### `DB-241`：Fresh schema与catalog price
+
+Fresh schema version 1只追加三个nullable列：
+
+```sql
+provider_models.pricing_json JSON NULL
+provider_steps.pricing_snapshot_json JSON NULL
+usage_events.cost_amount_nano_usd INTEGER NULL
+    CHECK (cost_amount_nano_usd IS NULL OR cost_amount_nano_usd >= 0)
+```
+
+- `ProviderModelRecord`/`NewProviderModel`原样roundtrip core pricing snapshot；missing/unmatched price保持NULL。
+- 不新增`0002`、schema version、runtime detection、repair、compatibility或backfill；仓库不保存本地手工迁移SQL。
+- 不增加cost index；selected analytics继续使用现有created-at路径。
+
+### `DB-242`：Provider-step request-time snapshot
+
+- `NewProviderStep`不接受caller-supplied price。
+- `insert_provider_step`在插入Running step的同一transaction中，按本地provider ID与provider-facing model ID查当前`provider_models.pricing_json`。
+- 只有row provider/model、pricing models.dev model ID以及pricing route key与从step settings生成的typed route key完全一致时才写`pricing_snapshot_json`；missing或mismatch写NULL，禁止family/cross-provider借价。
+- 返回的`ProviderStepRecord`携带typed frozen snapshot；目录refresh只影响以后插入的step，不修改running/completed step。
+
+### `DB-243`：Usage amount原子持久化
+
+- `CompleteProviderStep`增加`cost_amount: Option<UsdNanoAmount>`。
+- 既有complete-step transaction同时写terminal state、usage event和nullable amount；DB不解析models.dev、不读取current catalog重新定价，也不计算Token费用。
+- amount必须可表示为non-negative SQLite INTEGER。unknown为NULL，explicit free为0。
+- failed/canceled step、缺usage event的既有路径和unique provider-step usage约束保持不变；DB失败整体rollback。
+
+### `DB-244`：Selected analytics
+
+- `UsageAnalyticsAggregate`与provider/model bucket增加`priced_request_count`和`estimated_cost_nano_usd`。
+- SQL以`cost_amount_nano_usd IS NOT NULL`统计coverage并只SUM non-NULL金额；所有count/sum都checked转成u64。
+- selected summary与provider/model buckets对request、priced count和amount做cross-total。
+- snapshot增加`selected_cost_daily`稀疏投影：finite使用selected range offset，AllTime使用同query捕获的activity offset；只聚合cost非NULL事件，explicit zero保留，不补缺失日期，并与selected summary的priced count/amount做checked cross-total。
+- activity summary/daily、heatmap与provider/model token排序保持不变。
+
+### Tests与验证
+
+| T-ID | Owner test |
+| --- | --- |
+| `T-281` | fresh schema version1、既有单一migration与三个nullable列/CHECK；无upgrade path |
+| `T-282` | provider model pricing create/list/replace/None roundtrip |
+| `T-283` | step insert exact provider/model/kind/endpoint lookup、mismatch冻结None与refresh不改旧step |
+| `T-284` | completion原子写usage+amount，unknown/free区分、duplicate/rollback |
+| `T-285` | amount负值/overflow与step/usage identity corruption拒绝 |
+| `T-286` | selected summary exact subtotal、priced coverage与finite/AllTime sparse local-day cost |
+| `T-287` | provider/model partial coverage、known zero、daily与summary cross-total |
+| `T-288` | activity token-only regression与created-at EXPLAIN |
+
+```sh
+cargo fmt
+cargo test -p jaco-db pricing
+cargo test -p jaco-db usage_analytics
+cargo clippy -p jaco-db --all-targets --all-features -- -D warnings
+git diff --check -- crates/jaco-db
+```
+
+完成条件：root `C-83`/`C-84`、DB-owned `R-87`–`R-90`/`R-93`与`T-281`–`T-288`通过；fresh v1只增加catalog price、step snapshot和usage amount三列；step insert冻结exact price，completion原子写usage+amount，analytics准确聚合coverage；无额外source/audit列或兼容代码；本地迁移只由root `WP-006`执行。
+
+### Cost 实施证据（2026-08-21）
+
+- fresh v1 schema、catalog pricing roundtrip、request-start snapshot、completion amount、selected analytics coverage与sparse daily cost已落地；activity保持token-only。
+- `cargo test -p jaco-db usage_analytics --no-fail-fast`：15 passed；四package strict clippy、目标package `cargo fmt`与`git diff --check`通过。
+- root `WP-006` 已对真实本地数据库完成online backup、三列transactional migration、完整性/外键/row-count核对；仓库未新增migration或手工SQL。

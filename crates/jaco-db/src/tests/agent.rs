@@ -26,7 +26,6 @@ fn request_usage_context(repo: &crate::FreshRepository, suffix: &str) -> Request
             input: agent_run_input(&trigger.id, &provider.id, &model.model_id),
         })
         .unwrap();
-
     RequestUsageContext {
         conversation_id: conversation.id,
         provider_id: provider.id,
@@ -68,6 +67,7 @@ fn request_usage_step(
                     state_snapshot: provider_run_state(&context.provider_id),
                     continuation: None,
                     usage,
+                    cost_amount: None,
                 },
             )
             .unwrap()
@@ -242,9 +242,16 @@ fn complete_provider_step_commits_usage_and_continuation_atomically() {
         .unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
     let provider = repo.insert_provider(provider()).unwrap();
-    let model = repo
-        .upsert_provider_model(provider_model(&provider.id, "gpt-5.6", "GPT-5.6"))
-        .unwrap();
+    let pricing = model_pricing(
+        "gpt-5.6",
+        2_500_000_000,
+        15_000_000_000,
+        Some(250_000_000),
+        Some(3_125_000_000),
+    );
+    let mut model_input = provider_model(&provider.id, "gpt-5.6", "GPT-5.6");
+    model_input.pricing = Some(pricing.clone());
+    let model = repo.upsert_provider_model(model_input).unwrap();
     let trigger = repo
         .append_conversation_entry(message_item(&conversation.id, "run"))
         .unwrap();
@@ -268,6 +275,7 @@ fn complete_provider_step_commits_usage_and_continuation_atomically() {
             error: None,
         })
         .unwrap();
+    assert_eq!(step.pricing_snapshot, Some(pricing));
     let continuation = ProviderContinuationSnapshot::openai_responses(
         "resp_1".to_string(),
         "all_turns".to_string(),
@@ -279,6 +287,7 @@ fn complete_provider_step_commits_usage_and_continuation_atomically() {
         state_snapshot: provider_run_state(&provider.id),
         continuation: Some(continuation.clone()),
         usage: usage_snapshot(),
+        cost_amount: Some(UsdNanoAmount::new(322_375).unwrap()),
     };
 
     let completed = repo
@@ -287,6 +296,10 @@ fn complete_provider_step_commits_usage_and_continuation_atomically() {
     assert_eq!(completed.step.status, ProviderStepStatus::Completed);
     assert_eq!(completed.step.continuation, Some(continuation));
     assert_eq!(completed.usage.usage, usage_snapshot());
+    assert_eq!(
+        completed.usage.cost_amount,
+        Some(UsdNanoAmount::new(322_375).unwrap())
+    );
     assert_eq!(
         repo.usage_events_for_provider_step(&step.id).unwrap().len(),
         1
@@ -303,6 +316,91 @@ fn complete_provider_step_commits_usage_and_continuation_atomically() {
         repo.complete_provider_step_with_usage(&step.id, completion)
             .is_err()
     );
+}
+
+#[test]
+fn provider_step_freezes_exact_catalog_price_at_insert_time() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let project = repo
+        .insert_project(project("step-pricing-snapshot"))
+        .unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let first_pricing = model_pricing("gpt-5.6", 1_000_000_000, 2_000_000_000, None, None);
+    let mut first_model = provider_model(&provider.id, "gpt-5.6", "GPT-5.6");
+    first_model.pricing = Some(first_pricing.clone());
+    let model = repo.upsert_provider_model(first_model).unwrap();
+    let trigger = repo
+        .append_conversation_entry(message_item(&conversation.id, "run"))
+        .unwrap();
+    let run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id,
+            trigger_entry_id: trigger.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            input: agent_run_input(&trigger.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+
+    let first_step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: run.id.clone(),
+            seq: 1,
+            status: ProviderStepStatus::Running,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &trigger.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+    assert_eq!(first_step.pricing_snapshot, Some(first_pricing.clone()));
+
+    let second_pricing = model_pricing("gpt-5.6", 3_000_000_000, 4_000_000_000, None, None);
+    let mut refreshed_model = provider_model(&provider.id, "gpt-5.6", "GPT-5.6 refreshed");
+    refreshed_model.pricing = Some(second_pricing.clone());
+    repo.upsert_provider_model(refreshed_model).unwrap();
+    assert_eq!(
+        repo.get_provider_step(&first_step.id)
+            .unwrap()
+            .unwrap()
+            .pricing_snapshot,
+        Some(first_pricing)
+    );
+
+    let second_step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: run.id.clone(),
+            seq: 2,
+            status: ProviderStepStatus::Running,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &trigger.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+    assert_eq!(second_step.pricing_snapshot, Some(second_pricing));
+
+    let mut custom_settings = run_settings(&provider.id, &model.model_id);
+    custom_settings.provider_settings.fields[0].value = ProviderSettingValue::String {
+        value: "https://proxy.example.com/v1".to_string(),
+    };
+    let custom_step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: run.id,
+            seq: 3,
+            status: ProviderStepStatus::Running,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &trigger.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: custom_settings,
+            error: None,
+        })
+        .unwrap();
+    assert_eq!(custom_step.pricing_snapshot, None);
 }
 
 #[test]
@@ -364,6 +462,7 @@ fn complete_provider_step_rolls_back_when_usage_insert_fails() {
             state_snapshot: provider_run_state(&provider.id),
             continuation: Some(continuation),
             usage: usage_snapshot(),
+            cost_amount: None,
         },
     );
 
@@ -984,6 +1083,7 @@ fn previous_id_fallback_persists_failed_and_completed_attempts() {
             state_snapshot: provider_run_state(&provider.id),
             continuation: Some(continuation),
             usage: usage_snapshot(),
+            cost_amount: None,
         },
     )
     .unwrap();

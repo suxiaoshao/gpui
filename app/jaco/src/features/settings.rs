@@ -760,7 +760,7 @@ fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 9] {
             page_usage.clone(),
             settings_search_text(
                 [page_usage.as_str()],
-                "usage token tokens statistics analytics request requests provider model cache activity heatmap calendar daily year 使用 用量 统计 令牌 请求 提供商 模型 缓存 活动 热力图 日历 每日 年度 shiyong yongliang tongji lingpai qingqiu tigongshang moxing huancun huodong relitu rili meiri niandu sy yl tj lp qq tgs mx hc hd rlt rl mr nd",
+                "usage token tokens statistics analytics request requests provider model cache activity heatmap calendar daily year cost costs price pricing estimated subtotal priced coverage 使用 用量 统计 令牌 请求 提供商 模型 缓存 活动 热力图 日历 每日 年度 费用 花费 成本 价格 计价 覆盖率 估算 shiyong yongliang tongji lingpai qingqiu tigongshang moxing huancun huodong relitu rili meiri niandu feiyong huafei chengben jiage jijiag fugaishu gusuan sy yl tj lp qq tgs mx hc hd rlt rl mr nd fy hf cb jg jj fgs gs",
             ),
         ),
         SettingsPageSpec::new(
@@ -1016,6 +1016,14 @@ mod tests {
             "calendar",
             "daily",
             "year",
+            "cost",
+            "price",
+            "费用",
+            "花费",
+            "价格",
+            "feiyong",
+            "huafei",
+            "jiage",
             "用量",
             "统计",
             "提供商",

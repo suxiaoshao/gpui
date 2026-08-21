@@ -1,16 +1,16 @@
-# Jaco：Issue #189 message usage、composer context 与 Settings analytics UI
+# Jaco：Issue #189 message usage、composer context、Settings analytics 与 cost UI
 
 ## 根计划与 owner 边界
 
 - Plan ID：`issue-189`
 - Root hub：[Issue #189](../../../../../docs/dev/issue-189/README.md)
-- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)、[Settings usage analytics](../../../../../docs/dev/issue-189/settings-usage-analytics-plan.md)、[Settings activity heatmap](../../../../../docs/dev/issue-189/settings-usage-activity-heatmap-plan.md)
+- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)、[Settings usage analytics](../../../../../docs/dev/issue-189/settings-usage-analytics-plan.md)、[Settings activity heatmap](../../../../../docs/dev/issue-189/settings-usage-activity-heatmap-plan.md)、[Settings 请求费用统计](../../../../../docs/dev/issue-189/settings-usage-cost-analytics-plan.md)
 - Owner directory：`app/jaco`
-- Owner status：`Implemented`（`WP-501`–`WP-504`均已实施；root最终门禁、修正后人工矩阵与远端CI待执行）
-- 消费 root IDs：`C-01`–`C-03`、`C-12`、`C-21`–`C-23`、`D-05`、`D-06`、`D-08`、`D-19`–`D-21`、`D-32`、`D-39`–`D-46`、`D-61`–`D-76`、`ST-01`、`ST-11`、`ST-21`、`ST-61`、`ERR-21`、`ERR-61`、`R-01`–`R-13`、`R-27`–`R-34`、`R-41`、`R-43`、`R-52`–`R-80`
-- Assigned WP：`WP-501`、`WP-502`、`WP-503`、`WP-504`
-- Owns：Conversation effect消费、timeline message usage、composer projection/footer、Settings Usage selected/activity range、Operation/UI、heatmap adapter、shared formatter、typed icons、Fluent、GPUI tests/manual validation
-- Does not own：DB association/selection、usage authority/aggregate SQL、analytics fresh-schema index、provider raw parsing、capability persistence或#194 editor
+- Owner status：`Implemented`（`WP-501`–`WP-505`均已实施）
+- 消费 root IDs：既有IDs，以及`C-82`、`C-84`、`R-90`–`R-92`
+- Assigned WP：`WP-501`、`WP-502`、`WP-503`、`WP-504`、`WP-505`
+- Owns：既有message/composer/Settings UI；Provider Fetch Models price catalog流转、Settings estimated-cost/coverage、Fluent、AX与人工验证
+- Does not own：DB schema/SQL、models.dev parsing、cost arithmetic、ProviderModelChoice/RunSettings/shortcut/conversation pricing、gpui-heatmap或#194 editor
 
 ## Owner-local 证据与决定
 
@@ -651,3 +651,72 @@ git diff --check -- app/jaco Cargo.toml Cargo.lock
 - 最终页面顺序为selected summary/empty status → rolling 365-day activity → selected provider/model Table；LineChart、trend helpers与dead Fluent keys已删除，精简7列表格、双语breakdown keys、provider/model与activity搜索词及显式AX文本已保留。
 - `gpui-heatmap`接入、rolling 365-day query、完整query identity、单Operation/Task与activity adapter保持有效。Usage tests通过19项，Settings tests通过16项，i18n tests通过11项，`cargo check -p jaco`、strict clippy与scoped diff check通过。
 - 修正后的bundle与light/dark/system、两locale、窄宽滚动两端tooltip、degraded refresh、Table/AX Inspector人工矩阵待执行。
+
+## Cost extension — `WP-505`（Implemented）
+
+本节登记[Settings 请求费用统计计划](../../../../../docs/dev/issue-189/settings-usage-cost-analytics-plan.md)的Jaco owner contract。message action row、composer footer、heatmap和既有Usage/Fetch Models Operation保持原行为。
+
+### Owner-local文件与边界
+
+```text
+app/jaco/
+├── src/
+│   ├── state/providers.rs
+│   └── features/settings/
+│       ├── provider.rs       # 现有Fetch Models priced batch流转
+│       └── usage.rs          # amount formatter、summary、Table与tests
+└── locales/{en-US,zh-CN}/main.ftl
+```
+
+### `L-551`：Catalog price流转
+
+- 现有Fetch Models Operation把agent返回的priced`NewProviderModel`原样交给repository；app不解析models.dev、不计算费用，也不建立第二份价格缓存。
+- Operation的loading/error/cancel/exact-provider identity继续使用现有行为；models.dev失败复用当前Fetch Models错误与Retry。
+- pricing不进入`ProviderModelChoice`、RunSettings、shortcut、conversation、Provider Settings表单或model picker展示。
+- 不增加Store、Global、Form、background Task、timer或polling。
+
+### `L-552`：Settings composition
+
+- 页面顺序为selected summary/empty → rolling token activity → selected sparse cost trend → provider/model cost charts → provider/model Table。
+- summary固定为六项：估算费用小计、请求数、输入、输出、缓存读取、缓存写入；coverage作为费用项secondary text显示`priced / total`与百分比。
+- 0 priced显示`—`；known zero显示`$0`；partial显示已知估算subtotal与coverage。
+- cost trend对每个有已计价请求的本地日期显示一根柱；不补零或重新分段。provider图显示全量实心饼图与Top 5横向进度条，model图显示Top 10横向进度条；全unknown隐藏，known-free保留可读`$0`说明。
+- provider/model Table由7列变8列，只增加一个“估算费用”组合列；cell显示金额和`priced/requests`，保持total-token排序与横向scroll。
+- nano-USD formatter使用整数生成`$`文本，最多9位小数并trim trailing zeros；详情不使用`k/M`或`f64`。
+- heatmap caption/cells/tooltips继续只使用total tokens；message/composer无cost字段。
+- 页面显示免责声明：金额按请求时models.dev目录价与已记录Token估算，不代表provider最终账单。
+
+### `L-553`：Fluent与accessibility
+
+- 两locale增加estimated subtotal、priced coverage、unpriced、explicit free、disclaimer与table column keys。
+- summary Group的显式aria label加入exact金额、`priced/total`和estimate语义；费用cell延续unique-ID `Role::Label`模式。
+- search命中费用/cost/price/花费/价格及既有中英文/拼音词；不新增focusable control。
+
+### Tests与验证
+
+| T-ID | Owner test |
+| --- | --- |
+| `T-581` | Fetch Models priced result原样写catalog；app无second cache或RunSettings传播 |
+| `T-582` | nano-USD formatter zero/fraction/trim/i64 max |
+| `T-583` | unknown/free/partial/full六项summary、coverage与estimate disclaimer |
+| `T-584` | sparse日趋势、provider实心饼图/Top 5进度条、model Top 10进度条、Table固定8列、组合cell、token sort与horizontal scroll |
+| `T-585` | heatmap仍token-only，message/composer/Provider Settings无cost节点 |
+| `T-586` | en-US/zh-CN key parity、search与AX exact text |
+| `T-587` | Usage和Fetch Models Operation loading/error/stale completion regression |
+
+```sh
+cargo fmt
+cargo test -p jaco features::settings::usage::tests --no-fail-fast
+cargo test -p jaco features::settings::provider --no-fail-fast
+cargo test -p jaco i18n --no-fail-fast
+cargo check -p jaco
+cargo clippy -p jaco --all-targets --all-features -- -D warnings
+git diff --check -- app/jaco
+```
+
+完成条件：root `C-82`/`C-84`、app-owned `R-90`–`R-92`与`T-581`–`T-587`通过；summary固定六项，稀疏日趋势与provider/model图、8列Table和token排序正确，heatmap/message/composer/Provider Settings无费用变化，两locale与AX语义完整。
+
+### Cost 实施证据（2026-08-21）
+
+- Settings六项summary、coverage、sparse日趋势、provider全量实心饼图/Top 5进度条、model Top 10进度条、8列表格、精确nano-USD formatter、免责声明、双语搜索与AX文本已落地；heatmap/message/composer保持无费用展示。
+- Usage tests：24 passed；Provider tests：30 passed；i18n tests：11 passed；`cargo check -p jaco`、四package strict clippy、目标package `cargo fmt`与`git diff --check`通过。

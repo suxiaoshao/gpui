@@ -4,4 +4,4 @@
 
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
-| [#189](https://github.com/suxiaoshao/gpui/issues/189) Message usage、composer context 与 Settings selected/activity projections | `In progress`；`WP-201`–`WP-204`已实施，最终聚合门待做 | [issue-189/README.md](issue-189/README.md) |
+| [#189](https://github.com/suxiaoshao/gpui/issues/189) Message/context、Settings selected/activity与cost projections | `Implemented`；`WP-201`–`WP-205`已实施，本地DB手工迁移已由root完成 | [issue-189/README.md](issue-189/README.md) |

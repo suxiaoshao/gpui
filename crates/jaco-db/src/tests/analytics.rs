@@ -163,6 +163,18 @@ fn insert_usage(
     conn.batch_execute("PRAGMA foreign_keys = ON;").unwrap();
 }
 
+fn set_usage_cost(
+    store: &FreshStore,
+    id: &str,
+    cost_amount_nano_usd: i64,
+) -> diesel::QueryResult<usize> {
+    let mut conn = store.pool().get().unwrap();
+    sql_query("UPDATE usage_events SET cost_amount_nano_usd = ?2 WHERE id = ?1")
+        .bind::<Text, _>(id)
+        .bind::<BigInt, _>(cost_amount_nano_usd)
+        .execute(&mut conn)
+}
+
 #[test]
 fn usage_analytics_finite_range_requires_ordered_local_midnights() {
     let offset = UtcOffset::from_hms(5, 30, 0).unwrap();
@@ -364,6 +376,281 @@ fn usage_analytics_counts_each_event_and_applies_coverage_predicates() {
 }
 
 #[test]
+fn usage_analytics_sums_estimated_cost_and_counts_known_zero_as_priced() {
+    let (_dir, store) = fresh_store();
+    for (id, provider_id, model_id, total) in [
+        ("priced", "provider-a", "model-a", 3),
+        ("unknown", "provider-a", "model-a", 2),
+        ("free", "provider-b", "model-b", 1),
+    ] {
+        insert_usage(
+            &store,
+            id,
+            provider_id,
+            model_id,
+            "ignored",
+            datetime(2026, 8, 2, 12, 0, UtcOffset::UTC),
+            TokenCounts {
+                total,
+                ..TokenCounts::ZERO
+            },
+        );
+    }
+    set_usage_cost(&store, "priced", 125).unwrap();
+    set_usage_cost(&store, "free", 0).unwrap();
+
+    let snapshot = store
+        .repository()
+        .usage_analytics(all_time_query(finite_range(2026, 8, 1, 4, UtcOffset::UTC)))
+        .unwrap();
+    assert_eq!(snapshot.selected_summary.request_count, 3);
+    assert_eq!(snapshot.selected_summary.priced_request_count, 2);
+    assert_eq!(snapshot.selected_summary.estimated_cost_nano_usd, 125);
+    assert_eq!(
+        snapshot.selected_cost_daily,
+        vec![crate::UsageAnalyticsCostDailyBucket {
+            local_date: Date::from_calendar_date(2026, Month::August, 2).unwrap(),
+            priced_request_count: 2,
+            estimated_cost_nano_usd: 125,
+        }]
+    );
+    assert_eq!(snapshot.activity.summary.priced_request_count, 0);
+    assert_eq!(snapshot.activity.summary.estimated_cost_nano_usd, 0);
+    assert!(snapshot.activity.daily.iter().all(|bucket| {
+        bucket.aggregate.priced_request_count == 0 && bucket.aggregate.estimated_cost_nano_usd == 0
+    }));
+
+    let provider_a = snapshot
+        .provider_models
+        .iter()
+        .find(|bucket| bucket.provider_id == "provider-a")
+        .unwrap();
+    assert_eq!(provider_a.aggregate.request_count, 2);
+    assert_eq!(provider_a.aggregate.priced_request_count, 1);
+    assert_eq!(provider_a.aggregate.estimated_cost_nano_usd, 125);
+    let provider_b = snapshot
+        .provider_models
+        .iter()
+        .find(|bucket| bucket.provider_id == "provider-b")
+        .unwrap();
+    assert_eq!(provider_b.aggregate.request_count, 1);
+    assert_eq!(provider_b.aggregate.priced_request_count, 1);
+    assert_eq!(provider_b.aggregate.estimated_cost_nano_usd, 0);
+
+    assert!(set_usage_cost(&store, "unknown", -1).is_err());
+}
+
+#[test]
+fn usage_analytics_cost_daily_is_sparse_and_uses_captured_fixed_offset() {
+    let (_dir, store) = fresh_store();
+    for (id, created_at, total) in [
+        (
+            "local-day-one",
+            datetime(2026, 8, 1, 0, 0, UtcOffset::UTC),
+            1,
+        ),
+        (
+            "local-day-two-priced",
+            datetime(2026, 8, 1, 23, 30, UtcOffset::UTC),
+            2,
+        ),
+        (
+            "local-day-two-free",
+            datetime(2026, 8, 2, 15, 30, UtcOffset::UTC),
+            3,
+        ),
+        (
+            "local-day-three-unpriced",
+            datetime(2026, 8, 2, 15, 45, UtcOffset::UTC),
+            4,
+        ),
+        (
+            "outside-selected",
+            datetime(2026, 8, 3, 12, 0, UtcOffset::UTC),
+            5,
+        ),
+    ] {
+        insert_usage(
+            &store,
+            id,
+            "provider",
+            "model",
+            "ignored",
+            created_at,
+            TokenCounts {
+                total,
+                ..TokenCounts::ZERO
+            },
+        );
+    }
+    set_usage_cost(&store, "local-day-one", 50).unwrap();
+    set_usage_cost(&store, "local-day-two-priced", 100).unwrap();
+    set_usage_cost(&store, "local-day-two-free", 0).unwrap();
+    set_usage_cost(&store, "outside-selected", 400).unwrap();
+
+    let captured_offset = UtcOffset::from_hms(8, 0, 0).unwrap();
+    let selected_range = finite_range(2026, 8, 1, 3, captured_offset);
+    let activity_range = finite_range(2026, 8, 1, 4, captured_offset);
+    let finite = store
+        .repository()
+        .usage_analytics(UsageAnalyticsQuery {
+            selected_range: UsageAnalyticsRange::Finite(selected_range),
+            activity_range,
+        })
+        .unwrap();
+    assert_eq!(finite.selected_summary.request_count, 4);
+    assert_eq!(finite.selected_summary.priced_request_count, 3);
+    assert_eq!(finite.selected_summary.estimated_cost_nano_usd, 150);
+    assert_eq!(
+        finite.selected_cost_daily,
+        vec![
+            crate::UsageAnalyticsCostDailyBucket {
+                local_date: Date::from_calendar_date(2026, Month::August, 1).unwrap(),
+                priced_request_count: 1,
+                estimated_cost_nano_usd: 50,
+            },
+            crate::UsageAnalyticsCostDailyBucket {
+                local_date: Date::from_calendar_date(2026, Month::August, 2).unwrap(),
+                priced_request_count: 2,
+                estimated_cost_nano_usd: 100,
+            },
+        ]
+    );
+
+    let all_time = store
+        .repository()
+        .usage_analytics(all_time_query(activity_range))
+        .unwrap();
+    assert_eq!(all_time.selected_summary.request_count, 5);
+    assert_eq!(all_time.selected_summary.priced_request_count, 4);
+    assert_eq!(all_time.selected_summary.estimated_cost_nano_usd, 550);
+    assert_eq!(
+        all_time
+            .selected_cost_daily
+            .iter()
+            .map(|bucket| (
+                bucket.local_date,
+                bucket.priced_request_count,
+                bucket.estimated_cost_nano_usd
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                Date::from_calendar_date(2026, Month::August, 1).unwrap(),
+                1,
+                50
+            ),
+            (
+                Date::from_calendar_date(2026, Month::August, 2).unwrap(),
+                2,
+                100
+            ),
+            (
+                Date::from_calendar_date(2026, Month::August, 3).unwrap(),
+                1,
+                400
+            ),
+        ]
+    );
+}
+
+#[test]
+fn usage_analytics_cost_daily_keeps_dst_transition_offsets_fixed() {
+    let (_dir, store) = fresh_store();
+    for (id, created_at, cost) in [
+        (
+            "dst-before-fallback",
+            datetime(2026, 11, 1, 7, 30, UtcOffset::UTC),
+            1,
+        ),
+        (
+            "dst-after-fallback",
+            datetime(2026, 11, 1, 8, 30, UtcOffset::UTC),
+            2,
+        ),
+    ] {
+        insert_usage(
+            &store,
+            id,
+            "provider",
+            "model",
+            "ignored",
+            created_at,
+            TokenCounts {
+                total: 1,
+                ..TokenCounts::ZERO
+            },
+        );
+        set_usage_cost(&store, id, cost).unwrap();
+    }
+
+    let summer_offset = UtcOffset::from_hms(-7, 0, 0).unwrap();
+    let summer_selected_range = UsageAnalyticsFiniteRange::new(
+        datetime(2026, 10, 30, 0, 0, summer_offset),
+        datetime(2026, 11, 3, 0, 0, summer_offset),
+        summer_offset,
+    )
+    .unwrap();
+    let summer_activity_range = UsageAnalyticsFiniteRange::new(
+        datetime(2026, 10, 31, 0, 0, summer_offset),
+        datetime(2026, 11, 2, 0, 0, summer_offset),
+        summer_offset,
+    )
+    .unwrap();
+    let summer = store
+        .repository()
+        .usage_analytics(UsageAnalyticsQuery {
+            selected_range: UsageAnalyticsRange::Finite(summer_selected_range),
+            activity_range: summer_activity_range,
+        })
+        .unwrap();
+    assert_eq!(
+        summer.selected_cost_daily,
+        vec![crate::UsageAnalyticsCostDailyBucket {
+            local_date: Date::from_calendar_date(2026, Month::November, 1).unwrap(),
+            priced_request_count: 2,
+            estimated_cost_nano_usd: 3,
+        }]
+    );
+
+    let winter_offset = UtcOffset::from_hms(-8, 0, 0).unwrap();
+    let winter_selected_range = UsageAnalyticsFiniteRange::new(
+        datetime(2026, 10, 30, 0, 0, winter_offset),
+        datetime(2026, 11, 3, 0, 0, winter_offset),
+        winter_offset,
+    )
+    .unwrap();
+    let winter_activity_range = UsageAnalyticsFiniteRange::new(
+        datetime(2026, 10, 31, 0, 0, winter_offset),
+        datetime(2026, 11, 2, 0, 0, winter_offset),
+        winter_offset,
+    )
+    .unwrap();
+    let winter = store
+        .repository()
+        .usage_analytics(UsageAnalyticsQuery {
+            selected_range: UsageAnalyticsRange::Finite(winter_selected_range),
+            activity_range: winter_activity_range,
+        })
+        .unwrap();
+    assert_eq!(
+        winter.selected_cost_daily,
+        vec![
+            crate::UsageAnalyticsCostDailyBucket {
+                local_date: Date::from_calendar_date(2026, Month::October, 31).unwrap(),
+                priced_request_count: 1,
+                estimated_cost_nano_usd: 1,
+            },
+            crate::UsageAnalyticsCostDailyBucket {
+                local_date: Date::from_calendar_date(2026, Month::November, 1).unwrap(),
+                priced_request_count: 1,
+                estimated_cost_nano_usd: 2,
+            },
+        ]
+    );
+}
+
+#[test]
 fn usage_analytics_counts_completed_steps_independently_after_their_run_fails() {
     let (_dir, store) = fresh_store();
     let repo = store.repository();
@@ -409,6 +696,7 @@ fn usage_analytics_counts_completed_steps_independently_after_their_run_fails() 
                     state_snapshot: provider_run_state(&provider.id),
                     continuation: None,
                     usage: usage_snapshot(),
+                    cost_amount: None,
                 },
             )
             .unwrap();
@@ -544,6 +832,29 @@ fn usage_analytics_rejects_negative_values_and_sqlite_sum_overflow() {
                 )),
                 activity_range: finite_range(2026, 8, 1, 4, UtcOffset::UTC),
             }),
+        Err(crate::DbError::Diesel(_))
+    ));
+
+    let (_dir, cost_overflow_store) = fresh_store();
+    for id in ["cost-overflow-a", "cost-overflow-b"] {
+        insert_usage(
+            &cost_overflow_store,
+            id,
+            "provider",
+            "model",
+            "ignored",
+            datetime(2026, 8, 2, 12, 0, UtcOffset::UTC),
+            TokenCounts {
+                total: 1,
+                ..TokenCounts::ZERO
+            },
+        );
+        set_usage_cost(&cost_overflow_store, id, i64::MAX).unwrap();
+    }
+    assert!(matches!(
+        cost_overflow_store
+            .repository()
+            .usage_analytics(all_time_query(finite_range(2026, 8, 1, 4, UtcOffset::UTC,))),
         Err(crate::DbError::Diesel(_))
     ));
 }
@@ -742,6 +1053,7 @@ fn usage_analytics_empty_snapshot_preserves_requested_shape() {
     assert!(snapshot.selected_summary.is_empty());
     assert_eq!(snapshot.selected_summary.partial_request_count(), Some(0));
     assert!(snapshot.provider_models.is_empty());
+    assert!(snapshot.selected_cost_daily.is_empty());
     assert_eq!(snapshot.activity.range, activity_range);
     assert!(snapshot.activity.summary.is_empty());
     assert_eq!(snapshot.activity.daily.len(), 365);
@@ -802,6 +1114,17 @@ fn usage_analytics_fresh_schema_and_production_query_shapes_use_created_at_index
     .load::<QueryPlanRow>(&mut conn)
     .unwrap();
     assert_plan_uses_created_at_index(&daily_plan, "daily");
+
+    let cost_daily_plan = sql_query(format!(
+        "EXPLAIN QUERY PLAN {}",
+        crate::repository::COST_DAILY_FINITE_SQL
+    ))
+    .bind::<TimestamptzSqlite, _>(start)
+    .bind::<TimestamptzSqlite, _>(end)
+    .bind::<diesel::sql_types::Integer, _>(0)
+    .load::<QueryPlanRow>(&mut conn)
+    .unwrap();
+    assert_plan_uses_created_at_index(&cost_daily_plan, "cost daily");
 
     let provider_model_plan = sql_query(format!(
         "EXPLAIN QUERY PLAN {}",

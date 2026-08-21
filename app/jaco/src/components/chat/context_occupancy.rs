@@ -6,19 +6,15 @@ use gpui::{
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Icon, Sizable as _, StyledExt as _, description_list::DescriptionList,
-    h_flex, hover_card::HoverCard, label::Label, v_flex,
+    ActiveTheme as _, Icon, Sizable as _, StyledExt as _, h_flex, hover_card::HoverCard,
+    label::Label, v_flex,
 };
 use jaco_core::{
     ConversationContextRequestUsage, ProviderId, ProviderModelId, ProviderUsageCoverage,
 };
 
 use crate::{
-    foundation::{
-        I18n,
-        assets::IconName,
-        conversation_format::{format_token_count, timestamp_label},
-    },
+    foundation::{I18n, assets::IconName, conversation_format::format_token_count},
     state::providers::{ProviderModelChoice, ProviderModelKey},
 };
 
@@ -163,10 +159,33 @@ fn percentage_text(i18n: &I18n, key: &str, percentage_tenths: u128) -> String {
     i18n.t_with_args(key, &args)
 }
 
-fn token_text(i18n: &I18n, tokens: u64) -> String {
+fn context_occupancy_token_summary(projection: &ComposerContextProjection, i18n: &I18n) -> String {
+    let unknown = || i18n.t("conversation-context-occupancy-unknown-value");
+    let used = match projection.occupancy {
+        ComposerContextOccupancy::Known { used_tokens, .. } => format_token_count(used_tokens),
+        ComposerContextOccupancy::Unknown(_) => unknown(),
+    };
+    let context_window = projection
+        .current_choice
+        .as_ref()
+        .and_then(|choice| choice.context_window_tokens)
+        .map(format_token_count)
+        .unwrap_or_else(unknown);
+
     let mut args = FluentArgs::new();
-    args.set("tokens", format_token_count(tokens));
-    i18n.t_with_args("conversation-context-occupancy-token-value", &args)
+    args.set("used", used);
+    args.set("context_window", context_window);
+    i18n.t_with_args("conversation-context-occupancy-token-summary", &args)
+}
+
+fn context_occupancy_content_lines(
+    projection: &ComposerContextProjection,
+    i18n: &I18n,
+) -> [String; 2] {
+    [
+        i18n.t("conversation-context-occupancy-title"),
+        context_occupancy_token_summary(projection, i18n),
+    ]
 }
 
 fn unknown_reason_key(reason: ComposerContextUnknownReason) -> &'static str {
@@ -216,7 +235,7 @@ impl ContextOccupancyDisclosure {
 impl RenderOnce for ContextOccupancyDisclosure {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let i18n = cx.global::<I18n>();
-        let (summary, accessible_label, content_summary) = match self.projection.occupancy {
+        let (summary, accessible_label) = match self.projection.occupancy {
             ComposerContextOccupancy::Known {
                 percentage_tenths, ..
             } => (
@@ -230,11 +249,6 @@ impl RenderOnce for ContextOccupancyDisclosure {
                     "conversation-context-occupancy-accessible-known",
                     percentage_tenths,
                 ),
-                percentage_text(
-                    i18n,
-                    "conversation-context-occupancy-percentage-value",
-                    percentage_tenths,
-                ),
             ),
             ComposerContextOccupancy::Unknown(reason) => {
                 let reason = i18n.t(unknown_reason_key(reason));
@@ -243,30 +257,21 @@ impl RenderOnce for ContextOccupancyDisclosure {
                 (
                     i18n.t("conversation-context-occupancy-summary-unknown"),
                     i18n.t_with_args("conversation-context-occupancy-accessible-unknown", &args),
-                    reason,
                 )
             }
         };
-        let details = context_occupancy_fields(&self.projection, i18n);
+        let [title, token_summary] = context_occupancy_content_lines(&self.projection, i18n);
         let content = v_flex()
             .id("conversation-context-occupancy-content-body")
             .debug_selector(|| "conversation-context-occupancy-content".into())
             .min_w(px(280.))
             .gap_2()
-            .child(Label::new(i18n.t("conversation-context-occupancy-title")).font_semibold())
+            .child(Label::new(title).font_semibold())
             .child(
-                Label::new(content_summary)
+                Label::new(token_summary)
                     .text_sm()
-                    .text_color(cx.theme().muted_foreground),
-            )
-            .child(
-                DescriptionList::horizontal()
-                    .columns(1)
-                    .bordered(false)
-                    .small()
-                    .children(details.into_iter().map(|(label, value)| {
-                        gpui_component::description_list::DescriptionItem::new(label).value(value)
-                    })),
+                    .text_color(cx.theme().muted_foreground)
+                    .whitespace_nowrap(),
             );
         let trigger = h_flex()
             .id(self.id)
@@ -292,64 +297,6 @@ impl RenderOnce for ContextOccupancyDisclosure {
                 .child(content),
         )
     }
-}
-
-fn context_occupancy_fields(
-    projection: &ComposerContextProjection,
-    i18n: &I18n,
-) -> Vec<(String, String)> {
-    let unknown = || i18n.t("conversation-context-occupancy-unknown-value");
-    let current_choice = projection.current_choice.as_ref();
-    let provider = current_choice
-        .map(|choice| choice.provider_label.to_string())
-        .unwrap_or_else(unknown);
-    let model = current_choice
-        .map(|choice| choice.model_label.to_string())
-        .unwrap_or_else(unknown);
-    let context_window = current_choice
-        .and_then(|choice| choice.context_window_tokens)
-        .map(|tokens| token_text(i18n, tokens))
-        .unwrap_or_else(unknown);
-    let request_completed = projection
-        .latest_request
-        .as_ref()
-        .map(|request| timestamp_label(request.provider_step_completed_at, i18n))
-        .unwrap_or_else(unknown);
-    let (used_context, occupancy) = match projection.occupancy {
-        ComposerContextOccupancy::Known {
-            used_tokens,
-            percentage_tenths,
-        } => (
-            token_text(i18n, used_tokens),
-            percentage_text(
-                i18n,
-                "conversation-context-occupancy-percentage-value",
-                percentage_tenths,
-            ),
-        ),
-        ComposerContextOccupancy::Unknown(_) => (unknown(), unknown()),
-    };
-
-    vec![
-        (
-            i18n.t("conversation-context-occupancy-used-tokens"),
-            used_context,
-        ),
-        (
-            i18n.t("conversation-context-occupancy-context-window"),
-            context_window,
-        ),
-        (
-            i18n.t("conversation-context-occupancy-percentage"),
-            occupancy,
-        ),
-        (i18n.t("conversation-context-occupancy-provider"), provider),
-        (i18n.t("conversation-context-occupancy-model"), model),
-        (
-            i18n.t("conversation-context-occupancy-request-completed"),
-            request_completed,
-        ),
-    ]
 }
 
 #[cfg(test)]
@@ -506,41 +453,31 @@ mod tests {
     }
 
     #[test]
-    fn context_occupancy_details_keep_exact_values_and_known_metadata() {
+    fn context_occupancy_content_has_only_title_and_token_summary() {
         let i18n = I18n::english_for_test();
         let selected = selected_model();
         let reported_request = request("provider-1", "model-1", Some(usage(48_000, 48_000)));
         let reported_projection =
             projection(Some(&selected), Some(128_000), Some(&reported_request));
-        let fields = context_occupancy_fields(&reported_projection, &i18n);
+        let lines = context_occupancy_content_lines(&reported_projection, &i18n);
 
-        assert_eq!(
-            fields[0],
-            ("Used context".to_string(), "48,000 Token".to_string())
-        );
-        assert_eq!(
-            fields[1],
-            ("Context window".to_string(), "128,000 Token".to_string())
-        );
-        assert_eq!(fields[2], ("Occupancy".to_string(), "37.5%".to_string()));
-        assert_eq!(
-            fields[3],
-            ("Provider".to_string(), "Provider One".to_string())
-        );
-        assert_eq!(fields[4], ("Model".to_string(), "Model One".to_string()));
-        assert_ne!(
-            fields[5].1,
-            i18n.t("conversation-context-occupancy-unknown-value")
-        );
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "Context occupancy");
+        assert_eq!(lines[1], "48,000 / 128,000 Token");
+        assert_eq!(lines[1].matches("Token").count(), 1);
+        let content = lines.join("\n");
+        for excluded in ["Provider One", "Model One", "Request completed", "%"] {
+            assert!(
+                !content.contains(excluded),
+                "unexpected {excluded} in {content}"
+            );
+        }
 
         let partial = request("provider-1", "model-1", Some(usage(0, 24)));
         let partial_projection = projection(Some(&selected), Some(128_000), Some(&partial));
-        let fields = context_occupancy_fields(&partial_projection, &i18n);
-        assert_eq!(fields[0].1, "—");
-        assert_eq!(fields[1].1, "128,000 Token");
-        assert_eq!(fields[2].1, "—");
-        assert_eq!(fields[3].1, "Provider One");
-        assert_eq!(fields[4].1, "Model One");
+        let lines = context_occupancy_content_lines(&partial_projection, &i18n);
+        assert_eq!(lines[0], "Context occupancy");
+        assert_eq!(lines[1], "— / 128,000 Token");
         assert_eq!(
             i18n.t(unknown_reason_key(
                 ComposerContextUnknownReason::UsagePartial
@@ -551,7 +488,7 @@ mod tests {
 
     #[test]
     fn context_occupancy_localization_keys_exist_in_both_runtime_locales() {
-        const KEYS: [&str; 22] = [
+        const KEYS: [&str; 23] = [
             "conversation-context-occupancy-tooltip",
             "conversation-context-occupancy-title",
             "conversation-context-occupancy-summary-known",
@@ -565,6 +502,7 @@ mod tests {
             "conversation-context-occupancy-model",
             "conversation-context-occupancy-request-completed",
             "conversation-context-occupancy-token-value",
+            "conversation-context-occupancy-token-summary",
             "conversation-context-occupancy-percentage-value",
             "conversation-context-occupancy-unknown-value",
             "conversation-context-occupancy-reason-no-model",
@@ -595,6 +533,12 @@ mod tests {
                     "conversation-context-occupancy-token-value" => {
                         let mut args = FluentArgs::new();
                         args.set("tokens", "128,000");
+                        i18n.t_with_args(key, &args)
+                    }
+                    "conversation-context-occupancy-token-summary" => {
+                        let mut args = FluentArgs::new();
+                        args.set("used", "48,000");
+                        args.set("context_window", "128,000");
                         i18n.t_with_args(key, &args)
                     }
                     _ => i18n.t(key),

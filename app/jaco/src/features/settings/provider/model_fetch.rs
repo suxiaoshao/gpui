@@ -40,6 +40,7 @@ pub(super) fn manual_model(
         display_name: display_name.clone(),
         enabled: true,
         capabilities: conservative_capabilities(kind),
+        pricing: None,
         metadata: jaco_core::ProviderModelMetadata {
             display_name,
             family: None,

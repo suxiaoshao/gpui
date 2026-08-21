@@ -1,8 +1,8 @@
-# Issue #189：Jaco 消息请求用量、输入框上下文占用与使用统计
+# Issue #189：Jaco 消息请求用量、输入框上下文占用、使用统计与费用
 
 ## 状态与范围
 
-- 状态：`In progress`（`agent-message-request-usage-plan.md` 保留最终验证项；composer、Settings analytics与activity heatmap工作包已 `Implemented`；workspace-wide gates、完整人工矩阵与三平台 CI 待做）
+- 状态：`In progress`（五份计划均已实施或保留最终验证项；workspace-wide gates、完整人工矩阵与三平台 CI 待做）
 - 关联 issue：[#189](https://github.com/suxiaoshao/gpui/issues/189)
 - 父 issue：[#159](https://github.com/suxiaoshao/gpui/issues/159)
 - Plan ID：`issue-189`
@@ -10,9 +10,9 @@
 - 根索引：[Workspace development plans](../README.md)
 - 分支：`codex/189-jaco-show-context-usage`
 - 最近更新：2026-08-21
-- 实施引用：composer、既有 Settings与activity heatmap工作包已实现；activity heatmap implementation commit / PR `Pending`
+- 实施引用：composer、既有 Settings、activity heatmap与费用工作包已实现；implementation commit / PR `Pending`
 
-## 四个独立执行文档
+## 五个独立执行文档
 
 | 顺序 | 执行文档 | 状态 | 独立职责 |
 | --- | --- | --- | --- |
@@ -20,12 +20,13 @@
 | 2 | [输入框上下文占用](composer-context-occupancy-plan.md) | `Implemented` | 当前模型 context window、最新成功请求占用、模型切换与未知状态、footer Gauge + 百分比 HoverCard |
 | 3 | [设置页时间范围使用统计](settings-usage-analytics-plan.md) | `Implemented` | 本地日历范围、数据库聚合、selected summary、provider/model Table与设置页状态；finite LineChart由第4份计划定向替代 |
 | 4 | [设置页 Token 用量活动热力图](settings-usage-activity-heatmap-plan.md) | `Implemented` | 固定最近365个本地日历日、独立gpui-heatmap组件、selected + activity一致快照、LineChart替换与页面接入 |
+| 5 | [Settings 请求费用统计](settings-usage-cost-analytics-plan.md) | `Implemented` | models.dev exact provider/model目录价、provider-step请求前冻结、已有Token整数计价、usage-event金额持久化、六项summary、稀疏日趋势、provider/model费用图与本地DB手工迁移 |
 
-四个文档共享 persisted `usage_events`，但不共享展示语义：消息显示单次 request usage，输入框显示 context occupancy，Settings summary/Table显示用户所选范围聚合，activity heatmap固定显示最近365个本地日历日。任何执行文档都不得用另一个文档的投影替代自己的数据契约。
+五个文档共享 persisted `usage_events`，但不共享展示语义：消息显示单次 request usage，输入框显示 context occupancy，Settings token summary/Table显示用户所选范围聚合，activity heatmap固定显示最近365个本地日历日，费用计划只聚合每条event在请求完成时保存的估算金额与coverage。任何执行文档都不得用另一个文档的投影替代自己的数据契约。
 
 ## 已确认的用户决定
 
-- 一个 issue 内完成三个产品面；Settings的既有统计与后续activity heatmap使用两个独立执行文档，共四份执行文档。
+- 一个 issue 内完成消息、composer与Settings产品面；Settings的token analytics、activity heatmap与费用扩展分别使用独立执行文档，共五份执行文档。
 - 先完成 `agent-message-request-usage-plan.md`。
 - Agent 消息用量入口放在复制按钮与完成时间所在的 action row。
 - Agent消息HoverCard参考Alma：输入、输出、缓存读取、缓存命中率、缓存写入、推理与总Token。
@@ -34,7 +35,7 @@
 - 消息用量是纯pointer HoverCard；不提供点击固定、Escape、键盘打开或focus return，也不在app层维护hover状态/Task。
 - Agent 消息不显示 context window 或占用百分比；上下文占用只属于 composer。
 - #189 不采集或展示 TTFT、Token/秒、延迟或吞吐指标。
-- Composer 常驻摘要采用 `Gauge + 百分比`；未知显示 `Gauge + —`，完整精确值和原因放入详情。
+- Composer 常驻摘要采用 `Gauge + 百分比`；未知显示 `Gauge + —`。HoverCard按Alma收敛为标题与单行`已用 / context window Token`，不重复provider、model、时间或百分比详情。
 - Composer 整组摘要使用原生 pointer-only `HoverCard` 默认延迟；不提供点击固定、Escape、键盘打开或 focus return。
 - Composer numerator 使用当前 conversation 最新成功请求唯一 usage event 的 `total_tokens`；running、failed、canceled 不替换上一个成功请求。
 - 最新成功请求如果是 partial、unreported 或 missing usage，则显示 unknown 且不向前回找；当前 provider/model 与 latest fact 不匹配时同样不回找历史。
@@ -48,10 +49,20 @@
 - 只有真实日期cell提供pointer tooltip，内容为本地化日期和精确总Token；整图提供一个accessibility summary，不建立365个Tab stop或键盘打开路径。
 - 热力图通过独立`gpui-heatmap` crate实现，复用gpui-component Plot tooltip、theme与Scrollbar，并以caller component id隔离多实例scroll state；Jaco负责fixed offset、本地日期、Fluent与业务caption。
 - 精简provider/model Table继续保留；activity heatmap替换“每日总 Token”LineChart，失去consumer的selected daily snapshot/query随新计划删除。
+- 费用只显示在Settings Usage；金额仅由请求开始前冻结的models.dev exact provider/model目录价乘以该step已有的persisted Token计算。
+- models.dev只用于eligible official endpoint与exact provider/model；local/custom/manual/unmatched model保持unpriced，不提供manual price editor。
+- unknown cost显示`—`，显式free显示`$0`；partial coverage显示已估算subtotal与priced request比例。
+- Settings顶部固定显示估算费用、请求数、输入、输出、缓存读取、缓存写入六项；coverage作为费用项secondary text，不单独占一项。
+- 费用趋势按所选范围的本地日期稀疏展示，每个存在已计价请求的日期一根柱，不补零或重新切成固定段；provider显示全量实心饼图与Top 5进度条，model显示Top 10进度条，详细Table继续保留。
+- 每个provider step在实际网络请求发出前，由DB在插入step的同一事务中按exact provider/model冻结`provider_steps.pricing_snapshot_json`；最终nullable金额与usage event同事务保存，目录价格更新不重算已插入step或历史event。
+- 费用扩展复用现有provider step与usage completion边界，不读取provider-reported amount或raw response，不修改streaming、tool-call、invalid-call或completion lifecycle。
+- 费用扩展直接修改schema version 1 fresh schema，不增加版本、0002或兼容层；实现完成后由本任务备份并一次性手工迁移本地数据库，临时SQL不进入仓库。
 
 ## 共享非目标
 
-- Provider pricing、成本、账单、预算或 quota。
+- Provider账单对账、余额、预算、quota、费用告警、预测或provider-reported amount；本issue只保存按request-time目录价与已有Token计算的估算金额。
+- Agent消息、composer与activity heatmap中的费用展示；费用热力图、固定周/月重采样或远程telemetry。
+- Manual/custom provider定价编辑、family/bare-model价格回退与历史费用回算。
 - 将未知 context window 替换成通用、family-wide 或启发式默认值；官方文档对精确型号公布的正整数上限可作为带 provenance 的 capability profile。
 - 对未发送草稿做 tokenizer 或下一次请求估算。
 - 自动 compact、截断、阻止发送或 context-limit enforcement。
@@ -60,26 +71,29 @@
 
 ## 兼容与迁移策略
 
-- 三个工作面以当前 `usage_events` 为持久化 authority；旧记录缺失 usage 时保留 unknown/unavailable，不回填猜测值。
+- 三个产品面以当前 `usage_events` 为持久化 authority；旧记录缺失 usage 或cost时保留 unknown/unavailable，不回填猜测值。
 - Agent 消息计划不修改 SQLite schema、migration 或已持久化 `ProviderUsageSnapshot` JSON。
 - Composer 计划若扩展 capability/run snapshot，必须以 serde default 保持旧 JSON 可读。
 - Settings 聚合必须独立定义本地日历边界与覆盖率，不能复用消息或 composer 投影。
 - Settings 的created-at索引直接修改schema version 1的fresh schema；不新增migration、旧库检测或自动repair，现有本地数据库由使用者自行处理。
+- 费用计划同样直接修改version 1 fresh schema，增加provider model pricing、provider-step pricing snapshot与usage-event cost列；没有runtime migration、repair或backfill。代码实施完成后执行root `WP-006`：关闭app、备份真实DB、在repo外手工迁移、核对完整性并删除临时SQL。
 
 ## 计划映射
 
-四个执行文档复用同一组 owner 计划入口；各 owner README 分开登记已实施的 `WP-?01`/`WP-?02`、既有 Settings `WP-203`/`WP-503`，以及activity heatmap的`WP-204`/`WP-601`/`WP-504`：
+五个执行文档复用同一组 owner 计划入口；费用扩展新增`WP-103`、`WP-205`、`WP-403`、`WP-505`与root operational `WP-006`：
 
 | Owner | 文档 | 职责 |
 | --- | --- | --- |
-| `crates/jaco-core` | [owner plan](../../../crates/jaco-core/docs/dev/issue-189/README.md) | usage contract；context capability、latest request fact、Conversation change/effect；无Settings WP |
-| `crates/jaco-db` | [owner plan](../../../crates/jaco-db/docs/dev/issue-189/README.md) | message projection；composer selector/assembler；Settings selected + activity analytics projection、fresh-schema index与聚合查询 |
+| `crates/jaco-core` | [owner plan](../../../crates/jaco-core/docs/dev/issue-189/README.md) | usage/context contract；`WP-103` fixed-point pricing与既有usage四项计价器 |
+| `crates/jaco-db` | [owner plan](../../../crates/jaco-db/docs/dev/issue-189/README.md) | message/composer projections；Settings selected + activity analytics；`WP-205` catalog pricing、step-start snapshot、cost persistence与聚合 |
 | `crates/jaco-conversation` | [owner plan](../../../crates/jaco-conversation/docs/dev/issue-189/README.md) | message collection与composer singular fact hydration；无Settings WP |
-| `crates/jaco-agent` | [owner plan](../../../crates/jaco-agent/docs/dev/issue-189/README.md) | message live publication；capability discovery与composer live publication；无Settings WP |
+| `crates/jaco-agent` | [owner plan](../../../crates/jaco-agent/docs/dev/issue-189/README.md) | message/composer publication；`WP-403` models.dev exact merge与现有usage completion计价接线 |
 | `crates/gpui-heatmap` | [owner plan](../../../crates/gpui-heatmap/docs/dev/issue-189/README.md) | `WP-601`独立、可复用的GPUI活动热力图组件、Plot tooltip、主题、AX与测试；已`Implemented` |
-| `app/jaco` | [owner plan](../../../app/jaco/docs/dev/issue-189/README.md) | message action row；composer footer；Settings Usage页面、Operation、selected/activity范围、heatmap消费、Fluent与UI验证 |
+| `app/jaco` | [owner plan](../../../app/jaco/docs/dev/issue-189/README.md) | message/composer UI；Settings selected/activity；`WP-505` catalog pricing流转、estimate subtotal/coverage、Fluent与UI验证 |
 
 已实施的Settings基础工作包仍是 `jaco-db/WP-203` 与 `app/jaco/WP-503`；activity替换使用`jaco-db/WP-204`、`gpui-heatmap/WP-601`与`app/jaco/WP-504`。typed snapshot留在DB query boundary，不复用composer singular fact，也不为单一consumer增加core/conversation/agent contract。
+
+费用使用独立typed contract与请求时snapshot：`WP-103 -> WP-205 -> WP-403/WP-505 -> WP-006`。`jaco-conversation`与`gpui-heatmap`无费用工作包；heatmap继续只消费total tokens。
 
 ## 跨文档顺序
 
@@ -87,10 +101,11 @@
 2. 在不改变历史消息语义的前提下完成 composer context occupancy。
 3. 以全部 eligible usage events 为 universe 完成 Settings 聚合。
 4. `WP-601`组件与`WP-204`数据库投影并行实施，随后由`WP-504`以固定365日activity替换LineChart并保留精简Table。
+5. `WP-103`先固定fixed-point/pricing/cost contract，`WP-205`落地schema与analytics，`WP-403`和`WP-505`接入runtime/UI；全部自动化通过后执行`WP-006`本地DB手工迁移与现场验证。
 
 ## 聚合完成条件
 
-- 四个执行文档均达到 `Done`，且各自的指标、unknown/empty语义和测试互不替代。
+- 五个执行文档均达到 `Done`，且各自的指标、unknown/empty/unpriced语义和测试互不替代。
 - 记录实际 commits、PR、变更文件、自动化、人工场景、跨平台 CI 和未验证边界。
 - 同步 root/owner 索引与最终稳定 owner README；若产生长期跨 issue 约束，再单独评估 ADR。
 
@@ -103,4 +118,5 @@
 | Composer 执行文档 | `Implemented`；`WP-102`、`WP-202`、`WP-302`、`WP-402`、`WP-502` 的聚焦验证已通过；旧模型缓存保持unknown直至用户refresh；workspace-wide gates、现场provider refresh/新请求、最终bundle、完整人工矩阵与三平台 CI 待执行 |
 | Settings 执行文档 | `Implemented`；`WP-203`、`WP-503` 聚焦测试、Entity/Window lifecycle tests、check、strict clippy与格式检查通过；隔离bundle已完成核心UI smoke，剩余人工边界和远端 CI 待执行 |
 | Settings activity heatmap执行文档 | `Implemented`；热力图替换LineChart并保留精简Table；`WP-601`、`WP-204`、`WP-504`聚焦测试、selected-package strict clippy与格式检查通过，修正后人工矩阵与远端CI待执行 |
-| 自动化、人工与 CI | Composer、Settings与activity focused tests、`cargo fmt`、selected-package strict clippy与`cargo check -p jaco`通过；澄清前的中间activity bundle曾以隔离目录启动，最终修正实现尚未重建bundle。当前macOS图形会话锁定，横向滚动两端tooltip、light/dark/system、两locale、degraded refresh与AX Inspector未执行；workspace-wide build/test/clippy、现场provider refresh/新请求与CI未执行 |
+| Settings费用执行文档 | `Implemented`；`WP-103`、`WP-205`、`WP-403`、`WP-505`、六项summary/稀疏日趋势/provider-model图、聚焦验证与本地DB三列手工迁移已完成；真实付费provider请求未自动发送 |
+| 自动化、人工与 CI | Composer、Settings、activity与cost focused tests、`cargo fmt`、目标package strict clippy、`cargo check -p jaco`与最终macOS bundle通过；本地数据库已备份、迁移并由新bundle成功打开。横向滚动两端tooltip、light/dark/system、两locale、degraded refresh、AX Inspector、真实provider价格正例、workspace-wide gates与三平台CI仍未执行 |

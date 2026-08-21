@@ -367,20 +367,23 @@ fn material_interaction_tokens(
 }
 
 fn material_status_tokens(scheme: &MaterializedScheme) -> MaterialStatusTokens {
-    let primary_roles = material_semantic_roles_for_palette(scheme, scheme.primary_palette.clone());
     let danger_roles = material_semantic_roles_for_palette(scheme, scheme.error_palette.clone());
     let info_roles = material_semantic_roles_for_seed(scheme, INFO_SEED_COLOR);
     let success_roles = material_semantic_roles_for_seed(scheme, SUCCESS_SEED_COLOR);
     let warning_roles = material_semantic_roles_for_seed(scheme, WARNING_SEED_COLOR);
-    let chart_extra_roles = material_semantic_roles_for_seed(scheme, CHART_EXTRA_SEED_COLOR);
+    let chart_1_roles = material_semantic_roles_for_seed(scheme, CHART_1_SEED_COLOR);
+    let chart_2_roles = material_semantic_roles_for_seed(scheme, CHART_2_SEED_COLOR);
+    let chart_3_roles = material_semantic_roles_for_seed(scheme, CHART_3_SEED_COLOR);
+    let chart_4_roles = material_semantic_roles_for_seed(scheme, CHART_4_SEED_COLOR);
+    let chart_5_roles = material_semantic_roles_for_seed(scheme, CHART_5_SEED_COLOR);
     let states = MaterialButtonStateLayers::material_3();
 
     MaterialStatusTokens {
-        chart_1: hex(primary_roles.color),
-        chart_2: hex(info_roles.color),
-        chart_3: hex(success_roles.color),
-        chart_4: hex(warning_roles.color),
-        chart_5: hex(chart_extra_roles.color),
+        chart_1: hex(chart_1_roles.color),
+        chart_2: hex(chart_2_roles.color),
+        chart_3: hex(chart_3_roles.color),
+        chart_4: hex(chart_4_roles.color),
+        chart_5: hex(chart_5_roles.color),
         chart_bullish: hex(success_roles.color),
         chart_bearish: hex(danger_roles.color),
         danger: material_button_tokens(danger_roles, states),

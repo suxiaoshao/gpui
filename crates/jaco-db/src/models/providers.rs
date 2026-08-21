@@ -41,6 +41,7 @@ pub(crate) struct SqlProviderModelRow {
     pub(crate) fetched_at: OffsetDateTime,
     pub(crate) created_at: OffsetDateTime,
     pub(crate) updated_at: OffsetDateTime,
+    pub(crate) pricing_json: Option<Value>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -56,6 +57,7 @@ pub(crate) struct SqlNewProviderModelRow {
     pub(crate) fetched_at: OffsetDateTime,
     pub(crate) created_at: OffsetDateTime,
     pub(crate) updated_at: OffsetDateTime,
+    pub(crate) pricing_json: Option<Value>,
 }
 
 impl TryFrom<SqlProviderRow> for ProviderRecord {
@@ -90,6 +92,7 @@ impl TryFrom<SqlProviderModelRow> for ProviderModelRecord {
             fetched_at: row.fetched_at,
             created_at: row.created_at,
             updated_at: row.updated_at,
+            pricing: from_json_opt(row.pricing_json)?,
         })
     }
 }
