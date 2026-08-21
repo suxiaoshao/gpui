@@ -76,10 +76,30 @@ settings-usage-cached-input-tokens = Cache read
 settings-usage-cache-write-input-tokens = Cache write
 settings-usage-reasoning-tokens = Reasoning tokens
 settings-usage-total-tokens = Total tokens
-settings-usage-trend-title = Daily total tokens
-settings-usage-trend-description = Total tokens recorded for each local calendar day.
-settings-usage-trend-accessible = { $range }: { $total } total tokens across { $requests } requests; { $covered } requests reported a total.
 settings-usage-date-value = { $year }-{ $month }-{ $day }
+settings-usage-selected-period-empty = No usage for { $range }.
+settings-usage-activity-title = Activity
+settings-usage-activity-description = Total tokens recorded for each local calendar day during the past 365 days.
+settings-usage-activity-caption = { $total } tokens over the past { $days } days
+settings-usage-activity-less = Less
+settings-usage-activity-more = More
+settings-usage-activity-month-label =
+    { $month ->
+        [January] Jan
+        [February] Feb
+        [March] Mar
+        [April] Apr
+        [May] May
+        [June] Jun
+        [July] Jul
+        [August] Aug
+        [September] Sep
+        [October] Oct
+        [November] Nov
+       *[December] Dec
+    }
+settings-usage-activity-accessible = Activity from { $start } through { $end }: { $total } total tokens across { $activeDays } active days; peak { $peakTokens } tokens on { $peakDate }.
+settings-usage-activity-accessible-no-peak = Activity from { $start } through { $end }: { $total } total tokens across { $activeDays } active days; no recorded activity.
 settings-usage-breakdown-title = Provider and model breakdown
 settings-usage-provider = Provider
 settings-usage-model = Model

@@ -4,12 +4,12 @@
 
 - Plan ID：`issue-189`
 - Root hub：[Issue #189](../../../../../docs/dev/issue-189/README.md)
-- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)、[Settings usage analytics](../../../../../docs/dev/issue-189/settings-usage-analytics-plan.md)
+- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)、[Settings usage analytics](../../../../../docs/dev/issue-189/settings-usage-analytics-plan.md)、[Settings activity heatmap](../../../../../docs/dev/issue-189/settings-usage-activity-heatmap-plan.md)
 - Owner directory：`app/jaco`
-- Owner status：`In progress`（`WP-501`、`WP-502`、`WP-503` 已 `Implemented`；root-level workspace/known-provider/CI gates待做）
-- 消费 root IDs：`C-01`–`C-03`、`C-12`、`C-21`、`D-05`、`D-06`、`D-08`、`D-19`–`D-21`、`D-32`、`D-39`–`D-46`、`ST-01`、`ST-11`、`ST-21`、`ERR-21`、`R-01`–`R-13`、`R-27`–`R-34`、`R-41`、`R-43`、`R-52`–`R-56`
-- Assigned WP：`WP-501`、`WP-502`、`WP-503`
-- Owns：Conversation effect消费、timeline message usage、composer projection/footer、Settings Usage period/range/Operation/UI、shared formatter、typed icons、Fluent、GPUI tests/manual validation
+- Owner status：`Implemented`（`WP-501`–`WP-504`均已实施；root最终门禁、修正后人工矩阵与远端CI待执行）
+- 消费 root IDs：`C-01`–`C-03`、`C-12`、`C-21`–`C-23`、`D-05`、`D-06`、`D-08`、`D-19`–`D-21`、`D-32`、`D-39`–`D-46`、`D-61`–`D-76`、`ST-01`、`ST-11`、`ST-21`、`ST-61`、`ERR-21`、`ERR-61`、`R-01`–`R-13`、`R-27`–`R-34`、`R-41`、`R-43`、`R-52`–`R-80`
+- Assigned WP：`WP-501`、`WP-502`、`WP-503`、`WP-504`
+- Owns：Conversation effect消费、timeline message usage、composer projection/footer、Settings Usage selected/activity range、Operation/UI、heatmap adapter、shared formatter、typed icons、Fluent、GPUI tests/manual validation
 - Does not own：DB association/selection、usage authority/aggregate SQL、analytics fresh-schema index、provider raw parsing、capability persistence或#194 editor
 
 ## Owner-local 证据与决定
@@ -463,3 +463,191 @@ git diff --check
 - `cargo check -p jaco`、strict jaco clippy、`cargo fmt`与`git diff --check`通过。
 - `cargo run -p xtask -- bundle jaco`通过；以临时`JACO_CONFIG_DIR`启动该bundle并预置4条隔离usage event，已验证fresh empty、reselect刷新、五个period、keyboard Select、finite trend、AllTime无trend、exact summary/provider-model rows、AX tree及search-derived进入/离开。
 - 横向table scroll、error/degraded、运行中快速切period、现场语言切换、workspace-wide gates、three-platform CI与implementation commit/PR：`Pending`。隔离临时目录已删除；`actool`因本机CoreSimulator不可用跳过Liquid Glass图标注入，普通图标bundle成功。
+
+## Activity heatmap extension — `WP-504`（Implemented）
+
+本节只登记[Settings activity heatmap执行文档](../../../../../docs/dev/issue-189/settings-usage-activity-heatmap-plan.md)的Jaco owner contract。它定向替换`WP-503`的finite LineChart；period selector、summary、精简provider/model breakdown Table、Operation、navigation、retry/degraded与既有实施证据继续有效。
+
+### Owner-local 文件与边界
+
+```text
+app/jaco/
+├── Cargo.toml                              # F-541 [Modify] gpui-heatmap workspace dep
+├── src/features/settings.rs                # F-542 [Modify] Usage search terms/test
+├── src/features/settings/usage.rs          # F-543 [Modify] query/range/adapter/UI/tests
+├── locales/
+│   ├── en-US/main.ftl                      # F-544 [Modify] activity/dead keys
+│   └── zh-CN/main.ftl                      # F-545 [Modify] parity
+└── docs/dev/issue-189/README.md            # F-546 [Modify] this extension
+```
+
+- 页面仍只调用`FreshRepository::usage_analytics`并消费typed snapshot；不读取、解析或聚合原始events。
+- `gpui-heatmap`负责grid/tooltip/theme/AX component；Jaco负责range、business caption、Fluent、GroupBox和Operation states。
+- 不增加Store、Global、Form、DatePicker、action/keybinding、detached Task、timer、polling、focus refresh或费用状态。
+
+### `L-541`：Query builder与exact identity
+
+用`UsageAnalyticsQuery`替换单range identity：
+
+```rust
+struct UsageSettingsPage {
+    selected_period: UsageAnalyticsPeriod,
+    active_query: Option<UsageAnalyticsQuery>,
+    period_select: Entity<SelectState<Vec<UsagePeriodOption>>>,
+    operation: UsageAnalyticsOperation,
+    _subscriptions: Vec<Subscription>,
+}
+```
+
+`current_usage_query(period, now_utc)`对所有period（包括AllTime）只调用一次`UtcOffset::local_offset_at(now_utc)`；pure `usage_query_for_offset`在同一个offset中构造：
+
+```text
+today         = checked local date at now_utc
+activity start = today - 364 days, local midnight
+activity end   = tomorrow, local midnight
+selected       = existing Today/Week/Month/Year/AllTime semantics
+```
+
+- start/end通过checked `assume_offset(...).checked_to_offset(UTC)`后交给`UsageAnalyticsFiniteRange::new`。
+- 保留time `-9998..=9998` year headroom；rolling/period date计算后，每个local midnight boundary在`assume_offset`前再次检查其year，再执行checked UTC转换。date subtraction、next day与offset任一失败都成为`CalendarRange`，不panic或fallback UTC。
+- `ThisYear`仍是自然年；activity独立rolling 365 days。
+- `active_query`与completion保存完整copy。matching data要求period、snapshot selected range、snapshot activity range都与active query相等；跨午夜/offset/period旧data不显示。
+- `UsageAnalyticsProblem`把现有`range: Option<UsageAnalyticsRange>`替换为`query: Option<UsageAnalyticsQuery>`；DB/invariant错误携带完整query identity，offset/calendar构造失败时为`None`。
+
+### `ST-541`：一个Operation、一个Task
+
+- `start_query`一次捕获now/offset/query，一次调用repository，一次创建Operation-owned Task。
+- Idle/Ready/Degraded/Unavailable继续分别走Load/Refresh/Refresh/Retry；running phase不并发。
+- period change、离开Usage、DB离开Ready和window/entity drop继续Cancel唯一Task并清除`active_query`。
+- exact-query Refreshing/Degraded可显示settled snapshot；query mismatch只显示loading/blocking error。
+- selected和activity作为一个result完成或失败，不创建第二Operation、cache、generation counter或partial completion。
+- i18n/theme变化只重建component props，不触发DB query；明确重新选择Usage仍按既有规则refresh。
+
+### `L-542`：Activity adapter
+
+Operation data扩展为已验证的render projection：
+
+```rust
+struct UsageAnalyticsData {
+    period: UsageAnalyticsPeriod,
+    snapshot: UsageAnalyticsSnapshot,
+    activity: UsageActivityViewData,
+}
+
+struct UsageActivityViewData {
+    series: ActivityHeatmapSeries,
+    active_days: u64,
+    peak: Option<(Date, u64)>,
+}
+```
+
+DB future拿到snapshot后调用`UsageAnalyticsData::try_new(period, snapshot)`，成功才发送Operation `Complete(Ok(data))`。该constructor验证：
+
+1. length必须为365；
+2. first date等于activity range本地start，last date等于end-exclusive前一日；
+3. 相邻date严格相差一天；
+4. values逐项使用`bucket.aggregate.total_tokens`；
+5. `ActivityHeatmapSeries::try_new`必须成功。
+
+任何失败转为typed activity错误，由现有Operation error/degraded路径处理；render只消费已验证projection，不执行fallible transition。禁止静默隐藏heatmap或以零值替代：
+
+```rust
+#[derive(Debug)]
+enum UsageActivityInvariant {
+    BucketCount { actual: usize },
+    RangeStart,
+    RangeEnd,
+    NonContiguous { index: usize },
+    Series(ActivityHeatmapSeriesError),
+}
+
+enum UsageAnalyticsProblemSource {
+    // existing variants
+    Activity(UsageActivityInvariant),
+}
+```
+
+两种类型实现`Display + Error`，只携带variant/index/count；range identity已在`UsageAnalyticsProblem.query`中，不携带raw payload。
+
+constructor以checked转换缓存active days；peak以`total_tokens DESC, date ASC`确定（相同最大值取最早日期）。render使用snapshot `activity.summary.total_tokens`生成exact caption，并使用缓存的active days/peak生成AX；全零使用独立no-peak accessibility key。
+
+### `L-543`：页面composition与empty states
+
+最终顺序：
+
+```text
+[Description                                  Period Select]
+[Selected-period Summary]
+[Rolling 365-day Activity GroupBox]
+[Selected-period provider/model breakdown Table]
+```
+
+- 删除LineChart import、`render_trend`、`DailyChartPoint`、tick/dot helpers及其tests；保留`UsageAnalyticsProviderModelBucket`/Table imports、`USAGE_BREAKDOWN_COLUMNS`、`render_breakdown`、`display_label`、`accessible_table_text`、`numeric_cell`及其tests。
+- `settings.rs`的Usage search terms同时保留provider/model并增加activity/heatmap/calendar/daily/year与活动/热力图/日历/每日/年度及拼音；page position、typed icon和navigation保持不变。
+- Activity使用`GroupBox::new().outline()`，title/description归app；内部构造`ActivityHeatmap::new("settings-usage-activity", series, labels, accessible).caption(caption).format_date(...).format_value(...)`，默认Medium。
+- month labels由January..December迭代调用Fluent select key生成；`less`/`more`/`value`均由Fluent提供。
+- tooltip日期复用`settings-usage-date-value`，token值复用`format_token_count`，详情不compact。
+- selected非empty：summary + activity + provider/model Table。
+- selected empty、activity nonempty：显示compact selected-period empty status与activity，不渲染空Table。
+- selected nonempty、activity empty：保留summary/Table并显示全零365 grid，表达最近一年无活动。
+- 两个summary都empty：沿用全局empty页面，不渲染grid。
+- refreshing/degraded时只有完整query matching data可按上述规则显示。
+
+### `L-544`：Fluent与accessibility
+
+两locale新增且parity：
+
+```text
+settings-usage-selected-period-empty
+settings-usage-activity-title
+settings-usage-activity-description
+settings-usage-activity-caption
+settings-usage-activity-less
+settings-usage-activity-more
+settings-usage-activity-month-label
+settings-usage-activity-accessible
+settings-usage-activity-accessible-no-peak
+```
+
+- `selected-period-empty`使用当前period本地化label `$range`；`month-label`以`$month` Fluent select覆盖12个月，不在Rust硬编码English/Chinese月份。
+- caption变量固定为exact `total`、`days = 365`；accessible变量含`start`、`end`、`total`、`activeDays`，有peak时再含`peakDate`、`peakTokens`。
+- exact counts一律复用`format_token_count`；日期复用`localized_date`。
+- 整图由component暴露一个`Role::Image` summary；Jaco不为cell增加focus、role或Tab stop。
+- Table与`settings-usage-breakdown-title`、`settings-usage-provider`、`settings-usage-model`继续保留；LineChart删除后以`rg`确认无consumer再删除`settings-usage-trend-title`、`settings-usage-trend-description`、`settings-usage-trend-accessible`；不改macOS bundle keys。
+
+### Tests 与验证
+
+| T-ID | Owner test |
+| --- | --- |
+| `T-551` | 五个period均生成同一次捕获offset的365-day activity query |
+| `T-552` | Monday selected week与rolling跨年/leap/half-hour offset |
+| `T-553` | Date::MIN/MAX、rolling后boundary year与极端offset无panic并返回CalendarRange |
+| `T-554` | direct/reselect activate single-flight，完整query进入repository |
+| `T-555` | period/query/range/running mismatch completion不发布 |
+| `T-556` | leave/DB unavailable/drop取消唯一Task；exact reentry refresh |
+| `T-557` | 365 dense/continuous adapter与empty/gap/length invariant失败 |
+| `T-558` | selected empty/activity nonempty、selected nonempty/activity zero、both empty composition |
+| `T-559` | AllTime有activity与provider/model Table；LineChart节点不存在 |
+| `T-560` | caption/tooltip/AX exact、active-days和peak tie确定 |
+| `T-561` | en-US/zh-CN key parity、12 month branches与i18n reprojection |
+| `T-562` | Usage search同时命中activity/heatmap与provider/model的中英文及拼音词 |
+
+```sh
+cargo fmt
+cargo test -p jaco features::settings::usage::tests --no-fail-fast
+cargo test -p jaco features::settings::tests --no-fail-fast
+cargo test -p jaco i18n --no-fail-fast
+cargo check -p jaco
+cargo clippy -p jaco --all-targets --all-features -- -D warnings
+git diff --check -- app/jaco Cargo.toml Cargo.lock
+```
+
+人工阻断场景：五period、selected/activity三种empty组合、light/dark/system、两locale、常规与窄宽度、未滚动/滚动最右tooltip完整性、refresh degraded、AX image summary与Tab sequence。
+
+完成条件：root `C-22`/`C-23`、`ST-61`、`ERR-61`、`R-61`–`R-80`中app-owned条款及`T-551`–`T-562`通过；message/composer UI与Settings navigation/Operation回归保持通过。
+
+### Activity实施证据
+
+- 最终页面顺序为selected summary/empty status → rolling 365-day activity → selected provider/model Table；LineChart、trend helpers与dead Fluent keys已删除，精简7列表格、双语breakdown keys、provider/model与activity搜索词及显式AX文本已保留。
+- `gpui-heatmap`接入、rolling 365-day query、完整query identity、单Operation/Task与activity adapter保持有效。Usage tests通过19项，Settings tests通过16项，i18n tests通过11项，`cargo check -p jaco`、strict clippy与scoped diff check通过。
+- 修正后的bundle与light/dark/system、两locale、窄宽滚动两端tooltip、degraded refresh、Table/AX Inspector人工矩阵待执行。

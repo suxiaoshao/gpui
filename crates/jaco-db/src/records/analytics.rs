@@ -100,9 +100,22 @@ pub struct UsageAnalyticsProviderModelBucket {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UsageAnalyticsSnapshot {
-    pub range: UsageAnalyticsRange,
+pub struct UsageAnalyticsActivity {
+    pub range: UsageAnalyticsFiniteRange,
     pub summary: UsageAnalyticsAggregate,
     pub daily: Vec<UsageAnalyticsDailyBucket>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsageAnalyticsQuery {
+    pub selected_range: UsageAnalyticsRange,
+    pub activity_range: UsageAnalyticsFiniteRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageAnalyticsSnapshot {
+    pub selected_range: UsageAnalyticsRange,
+    pub selected_summary: UsageAnalyticsAggregate,
     pub provider_models: Vec<UsageAnalyticsProviderModelBucket>,
+    pub activity: UsageAnalyticsActivity,
 }

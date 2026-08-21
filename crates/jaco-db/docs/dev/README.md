@@ -4,4 +4,4 @@
 
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
-| [#189](https://github.com/suxiaoshao/gpui/issues/189) Message usage、composer context 与 Settings analytics projections | `In progress`；三个 owner 工作包均已实施，root 最终门待做 | [issue-189/README.md](issue-189/README.md) |
+| [#189](https://github.com/suxiaoshao/gpui/issues/189) Message usage、composer context 与 Settings selected/activity projections | `In progress`；`WP-201`–`WP-204`已实施，最终聚合门待做 | [issue-189/README.md](issue-189/README.md) |

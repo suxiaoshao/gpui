@@ -76,10 +76,30 @@ settings-usage-cached-input-tokens = 缓存读取
 settings-usage-cache-write-input-tokens = 缓存写入
 settings-usage-reasoning-tokens = 推理 Token
 settings-usage-total-tokens = 总 Token
-settings-usage-trend-title = 每日总 Token
-settings-usage-trend-description = 按本地日历日展示记录的总 Token。
-settings-usage-trend-accessible = { $range }：共 { $total } Token，包含 { $requests } 次请求，其中 { $covered } 次报告了总量。
 settings-usage-date-value = { $year }年{ $month }月{ $day }日
+settings-usage-selected-period-empty = { $range }内暂无用量。
+settings-usage-activity-title = 活动热力图
+settings-usage-activity-description = 按本地日历日展示过去 365 天记录的总 Token。
+settings-usage-activity-caption = 过去 { $days } 天共 { $total } Token
+settings-usage-activity-less = 较少
+settings-usage-activity-more = 较多
+settings-usage-activity-month-label =
+    { $month ->
+        [January] 1月
+        [February] 2月
+        [March] 3月
+        [April] 4月
+        [May] 5月
+        [June] 6月
+        [July] 7月
+        [August] 8月
+        [September] 9月
+        [October] 10月
+        [November] 11月
+       *[December] 12月
+    }
+settings-usage-activity-accessible = { $start } 至 { $end } 的活动：共 { $total } Token，{ $activeDays } 个活跃日；峰值为 { $peakDate } 的 { $peakTokens } Token。
+settings-usage-activity-accessible-no-peak = { $start } 至 { $end } 的活动：共 { $total } Token，{ $activeDays } 个活跃日；暂无记录的活动。
 settings-usage-breakdown-title = 提供商与模型明细
 settings-usage-provider = 提供商
 settings-usage-model = 模型

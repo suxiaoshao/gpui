@@ -5,10 +5,9 @@ use crate::{
 use fluent_bundle::FluentArgs;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, IndexPath, Sizable, StyledExt,
+    ActiveTheme, IndexPath, Sizable, Size, StyledExt,
     alert::Alert,
     button::Button,
-    chart::LineChart,
     group_box::{GroupBox, GroupBoxVariants},
     h_flex,
     label::Label,
@@ -18,10 +17,13 @@ use gpui_component::{
     table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
     v_flex,
 };
+use gpui_heatmap::{
+    ActivityHeatmap, ActivityHeatmapLabels, ActivityHeatmapSeries, ActivityHeatmapSeriesError,
+};
 use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh};
 use jaco_db::{
     UsageAnalyticsAggregate, UsageAnalyticsFiniteRange, UsageAnalyticsProviderModelBucket,
-    UsageAnalyticsRange, UsageAnalyticsSnapshot,
+    UsageAnalyticsQuery, UsageAnalyticsRange, UsageAnalyticsSnapshot,
 };
 use std::fmt;
 use time::{Date, Duration, Month, OffsetDateTime, UtcOffset};
@@ -54,19 +56,6 @@ impl UsageAnalyticsPeriod {
             Self::AllTime => "settings-usage-period-all-time",
         }
     }
-
-    fn chart_tick_margin(self) -> usize {
-        match self {
-            Self::Today | Self::ThisWeek => 1,
-            Self::ThisMonth => 5,
-            Self::ThisYear => 30,
-            Self::AllTime => 1,
-        }
-    }
-
-    fn chart_has_dots(self) -> bool {
-        matches!(self, Self::Today | Self::ThisWeek | Self::ThisMonth)
-    }
 }
 
 #[derive(Clone)]
@@ -90,12 +79,99 @@ impl SelectItem for UsagePeriodOption {
 struct UsageAnalyticsData {
     period: UsageAnalyticsPeriod,
     snapshot: UsageAnalyticsSnapshot,
+    activity: UsageActivityViewData,
+}
+
+impl UsageAnalyticsData {
+    fn try_new(
+        period: UsageAnalyticsPeriod,
+        snapshot: UsageAnalyticsSnapshot,
+    ) -> Result<Self, UsageActivityInvariant> {
+        let activity = UsageActivityViewData::try_new(&snapshot)?;
+        Ok(Self {
+            period,
+            snapshot,
+            activity,
+        })
+    }
+}
+
+struct UsageActivityViewData {
+    series: ActivityHeatmapSeries,
+    active_days: u64,
+    peak: Option<(Date, u64)>,
+}
+
+impl UsageActivityViewData {
+    fn try_new(snapshot: &UsageAnalyticsSnapshot) -> Result<Self, UsageActivityInvariant> {
+        let daily = &snapshot.activity.daily;
+        if daily.len() != ACTIVITY_DAY_COUNT {
+            return Err(UsageActivityInvariant::BucketCount {
+                actual: daily.len(),
+            });
+        }
+
+        let range = snapshot.activity.range;
+        let offset = range.local_offset();
+        let expected_start = range
+            .start_utc()
+            .checked_to_offset(offset)
+            .ok_or(UsageActivityInvariant::RangeStart)?
+            .date();
+        let expected_end = range
+            .end_utc()
+            .checked_to_offset(offset)
+            .ok_or(UsageActivityInvariant::RangeEnd)?
+            .date()
+            .previous_day()
+            .ok_or(UsageActivityInvariant::RangeEnd)?;
+
+        if daily.first().map(|bucket| bucket.local_date) != Some(expected_start) {
+            return Err(UsageActivityInvariant::RangeStart);
+        }
+        if daily.last().map(|bucket| bucket.local_date) != Some(expected_end) {
+            return Err(UsageActivityInvariant::RangeEnd);
+        }
+        for (index, buckets) in daily.windows(2).enumerate() {
+            if buckets[0].local_date.next_day() != Some(buckets[1].local_date) {
+                return Err(UsageActivityInvariant::NonContiguous { index: index + 1 });
+            }
+        }
+
+        let values = daily
+            .iter()
+            .map(|bucket| bucket.aggregate.total_tokens)
+            .collect::<Vec<_>>();
+        let active_count = values.iter().filter(|value| **value > 0).count();
+        let active_days =
+            u64::try_from(active_count).map_err(|_| UsageActivityInvariant::BucketCount {
+                actual: active_count,
+            })?;
+        let peak = daily
+            .iter()
+            .filter(|bucket| bucket.aggregate.total_tokens > 0)
+            .max_by(|left, right| {
+                left.aggregate
+                    .total_tokens
+                    .cmp(&right.aggregate.total_tokens)
+                    .then_with(|| right.local_date.cmp(&left.local_date))
+            })
+            .map(|bucket| (bucket.local_date, bucket.aggregate.total_tokens));
+        let series = ActivityHeatmapSeries::try_new(expected_start, values)
+            .map_err(UsageActivityInvariant::Series)?;
+
+        Ok(Self {
+            series,
+            active_days,
+            peak,
+        })
+    }
 }
 
 #[derive(Debug)]
 struct UsageAnalyticsProblem {
     period: UsageAnalyticsPeriod,
-    range: Option<UsageAnalyticsRange>,
+    query: Option<UsageAnalyticsQuery>,
     source: UsageAnalyticsProblemSource,
 }
 
@@ -103,7 +179,48 @@ struct UsageAnalyticsProblem {
 enum UsageAnalyticsProblemSource {
     LocalOffset(time::error::IndeterminateOffset),
     CalendarRange,
-    Database(jaco_db::DbError),
+    Database(Box<jaco_db::DbError>),
+    Activity(UsageActivityInvariant),
+}
+
+#[derive(Debug)]
+enum UsageActivityInvariant {
+    BucketCount { actual: usize },
+    RangeStart,
+    RangeEnd,
+    NonContiguous { index: usize },
+    Series(ActivityHeatmapSeriesError),
+}
+
+impl fmt::Display for UsageActivityInvariant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BucketCount { actual } => {
+                write!(
+                    f,
+                    "activity requires {ACTIVITY_DAY_COUNT} buckets, received {actual}"
+                )
+            }
+            Self::RangeStart => f.write_str("activity start does not match its range"),
+            Self::RangeEnd => f.write_str("activity end does not match its range"),
+            Self::NonContiguous { index } => {
+                write!(f, "activity bucket {index} is not contiguous")
+            }
+            Self::Series(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for UsageActivityInvariant {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Series(error) => Some(error),
+            Self::BucketCount { .. }
+            | Self::RangeStart
+            | Self::RangeEnd
+            | Self::NonContiguous { .. } => None,
+        }
+    }
 }
 
 impl fmt::Display for UsageAnalyticsProblem {
@@ -116,6 +233,7 @@ impl fmt::Display for UsageAnalyticsProblem {
                 f.write_str("usage analytics calendar range is not representable")
             }
             UsageAnalyticsProblemSource::Database(error) => error.fmt(f),
+            UsageAnalyticsProblemSource::Activity(error) => error.fmt(f),
         }
     }
 }
@@ -126,6 +244,7 @@ impl std::error::Error for UsageAnalyticsProblem {
             UsageAnalyticsProblemSource::LocalOffset(error) => Some(error),
             UsageAnalyticsProblemSource::CalendarRange => None,
             UsageAnalyticsProblemSource::Database(error) => Some(error),
+            UsageAnalyticsProblemSource::Activity(error) => Some(error),
         }
     }
 }
@@ -136,7 +255,7 @@ type UsagePeriodSelectState = SelectState<Vec<UsagePeriodOption>>;
 
 pub(super) struct UsageSettingsPage {
     selected_period: UsageAnalyticsPeriod,
-    active_range: Option<UsageAnalyticsRange>,
+    active_query: Option<UsageAnalyticsQuery>,
     period_select: Entity<UsagePeriodSelectState>,
     operation: UsageAnalyticsOperation,
     _subscriptions: Vec<Subscription>,
@@ -166,7 +285,7 @@ impl UsageSettingsPage {
 
         Self {
             selected_period,
-            active_range: None,
+            active_query: None,
             period_select,
             operation: UsageAnalyticsOperation::new(),
             _subscriptions: vec![period_subscription],
@@ -181,7 +300,7 @@ impl UsageSettingsPage {
     }
 
     pub(super) fn deactivate(&mut self, cx: &mut Context<Self>) {
-        cancel_active_query(&mut self.operation, &mut self.active_range);
+        cancel_active_query(&mut self.operation, &mut self.active_query);
         cx.notify();
     }
 
@@ -203,7 +322,7 @@ impl UsageSettingsPage {
         if period == self.selected_period {
             return;
         }
-        cancel_active_query(&mut self.operation, &mut self.active_range);
+        cancel_active_query(&mut self.operation, &mut self.active_query);
         self.selected_period = period;
         if database::is_ready(cx) {
             self.start_query(window, cx);
@@ -223,41 +342,49 @@ impl UsageSettingsPage {
 
         let period = self.selected_period;
         let now_utc = OffsetDateTime::now_utc();
-        let range = current_usage_range(period, now_utc);
-        self.active_range = range.as_ref().ok().copied();
-        let completion_range = self.active_range;
+        let query = current_usage_query(period, now_utc);
+        self.active_query = query.as_ref().ok().copied();
+        let completion_query = self.active_query;
         let page = cx.entity().downgrade();
 
-        let task = match range {
-            Ok(range) => match database::ready_executor(cx) {
+        let task = match query {
+            Ok(query) => match database::ready_executor(cx) {
                 Ok(executor) => window.spawn(cx, async move |cx| {
                     let result = executor
-                        .execute(move |repository| repository.usage_analytics(range))
+                        .execute(move |repository| repository.usage_analytics(query))
                         .await
-                        .map(|snapshot| UsageAnalyticsData { period, snapshot })
                         .map_err(|source| UsageAnalyticsProblem {
                             period,
-                            range: Some(range),
-                            source: UsageAnalyticsProblemSource::Database(source),
+                            query: Some(query),
+                            source: UsageAnalyticsProblemSource::Database(Box::new(source)),
+                        })
+                        .and_then(|snapshot| {
+                            UsageAnalyticsData::try_new(period, snapshot).map_err(|source| {
+                                UsageAnalyticsProblem {
+                                    period,
+                                    query: Some(query),
+                                    source: UsageAnalyticsProblemSource::Activity(source),
+                                }
+                            })
                         });
-                    complete_query(page, period, completion_range, result, cx);
+                    complete_query(page, period, completion_query, result, cx);
                 }),
                 Err(source) => window.spawn(cx, async move |cx| {
                     complete_query(
                         page,
                         period,
-                        completion_range,
+                        completion_query,
                         Err(UsageAnalyticsProblem {
                             period,
-                            range: Some(range),
-                            source: UsageAnalyticsProblemSource::Database(source),
+                            query: Some(query),
+                            source: UsageAnalyticsProblemSource::Database(Box::new(source)),
                         }),
                         cx,
                     );
                 }),
             },
             Err(problem) => window.spawn(cx, async move |cx| {
-                complete_query(page, period, completion_range, Err(problem), cx);
+                complete_query(page, period, completion_query, Err(problem), cx);
             }),
         };
 
@@ -278,7 +405,7 @@ impl UsageSettingsPage {
     fn matching_data(&self) -> Option<&UsageAnalyticsData> {
         self.operation
             .data()
-            .filter(|data| usage_data_matches(self.selected_period, self.active_range, data))
+            .filter(|data| usage_data_matches(self.selected_period, self.active_query, data))
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -420,77 +547,87 @@ impl UsageSettingsPage {
             .into_any_element()
     }
 
-    fn render_trend(
+    fn render_selected_period_empty(
         &self,
         data: &UsageAnalyticsData,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        if data.period == UsageAnalyticsPeriod::AllTime {
-            return None;
-        }
+    ) -> AnyElement {
         let i18n = cx.global::<I18n>();
-        let points = data
-            .snapshot
-            .daily
-            .iter()
-            .map(|bucket| DailyChartPoint {
-                label: localized_date(bucket.local_date, i18n).into(),
-                total_tokens: bucket.aggregate.total_tokens as f64,
-            })
-            .collect::<Vec<_>>();
         let mut args = FluentArgs::new();
         args.set("range", i18n.t(data.period.i18n_key()));
-        args.set(
-            "total",
-            format_token_count(data.snapshot.summary.total_tokens),
-        );
-        args.set(
-            "covered",
-            format_token_count(data.snapshot.summary.total_covered_request_count),
-        );
-        args.set(
-            "requests",
-            format_token_count(data.snapshot.summary.request_count),
-        );
-        let accessible = i18n.t_with_args("settings-usage-trend-accessible", &args);
-        let chart = LineChart::new(points)
-            .x(|point| point.label.clone())
-            .y(|point| point.total_tokens)
-            .linear()
-            .tick_margin(data.period.chart_tick_margin());
-        let chart = if data.period.chart_has_dots() {
-            chart.dot()
-        } else {
-            chart
-        };
+        let text = i18n.t_with_args("settings-usage-selected-period-empty", &args);
 
-        Some(
-            v_flex()
-                .id("settings-usage-trend-section")
-                .w_full()
-                .gap_2()
-                .child(
-                    Label::new(i18n.t("settings-usage-trend-title"))
-                        .text_sm()
-                        .font_medium(),
-                )
-                .child(
-                    Label::new(i18n.t("settings-usage-trend-description"))
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground),
-                )
-                .child(
-                    div()
-                        .id("settings-usage-trend-chart")
-                        .debug_selector(|| "settings-usage-trend-chart".into())
-                        .role(Role::Image)
-                        .aria_label(accessible)
-                        .w_full()
-                        .h(px(240.))
-                        .child(chart),
-                )
-                .into_any_element(),
+        div()
+            .id("settings-usage-selected-period-empty")
+            .role(Role::Status)
+            .aria_label(text.clone())
+            .w_full()
+            .child(
+                Label::new(text)
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .into_any_element()
+    }
+
+    fn render_activity(&self, data: &UsageAnalyticsData, cx: &mut Context<Self>) -> AnyElement {
+        let i18n = cx.global::<I18n>();
+        let total = format_token_count(data.snapshot.activity.summary.total_tokens);
+        let mut caption_args = FluentArgs::new();
+        caption_args.set("total", total.clone());
+        caption_args.set("days", ACTIVITY_DAY_COUNT.to_string());
+        let caption = i18n.t_with_args("settings-usage-activity-caption", &caption_args);
+
+        let start = localized_date(data.activity.series.start_date(), i18n);
+        let end = localized_date(data.activity.series.end_date(), i18n);
+        let mut accessible_args = FluentArgs::new();
+        accessible_args.set("start", start);
+        accessible_args.set("end", end);
+        accessible_args.set("total", total);
+        accessible_args.set("activeDays", format_token_count(data.activity.active_days));
+        let accessible = if let Some((peak_date, peak_tokens)) = data.activity.peak {
+            accessible_args.set("peakDate", localized_date(peak_date, i18n));
+            accessible_args.set("peakTokens", format_token_count(peak_tokens));
+            i18n.t_with_args("settings-usage-activity-accessible", &accessible_args)
+        } else {
+            i18n.t_with_args(
+                "settings-usage-activity-accessible-no-peak",
+                &accessible_args,
+            )
+        };
+        let labels = ActivityHeatmapLabels {
+            months: localized_month_labels(i18n),
+            less: i18n.t("settings-usage-activity-less").into(),
+            more: i18n.t("settings-usage-activity-more").into(),
+            value: i18n.t("settings-usage-total-tokens").into(),
+        };
+        let heatmap = ActivityHeatmap::new(
+            "settings-usage-activity",
+            data.activity.series.clone(),
+            labels,
+            accessible,
         )
+        .caption(caption)
+        .format_date(|date| localized_date(date, i18n).into())
+        .format_value(|value| format_token_count(value).into())
+        .with_size(Size::Medium);
+
+        GroupBox::new()
+            .id("settings-usage-activity-section")
+            .outline()
+            .title(Label::new(i18n.t("settings-usage-activity-title")).text_sm())
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_3()
+                    .child(
+                        Label::new(i18n.t("settings-usage-activity-description"))
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(heatmap),
+            )
+            .into_any_element()
     }
 
     fn render_breakdown(
@@ -499,24 +636,21 @@ impl UsageSettingsPage {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let i18n = cx.global::<I18n>();
-        let headers = USAGE_BREAKDOWN_COLUMNS;
         let table = Table::new()
             .small()
             .min_w(px(960.))
-            .child(
-                TableHeader::new().child(
-                    TableRow::new().children(headers.into_iter().enumerate().map(
-                        |(column, (key, numeric))| {
-                            let text: SharedString = i18n.t(key).into();
-                            let head = TableHead::new().child(accessible_table_text(
-                                format!("settings-usage-column-{column}"),
-                                text,
-                            ));
-                            if numeric { head.text_right() } else { head }
-                        },
-                    )),
-                ),
-            )
+            .child(TableHeader::new().child(
+                TableRow::new().children(USAGE_BREAKDOWN_COLUMNS.into_iter().enumerate().map(
+                    |(column, (key, numeric))| {
+                        let text: SharedString = i18n.t(key).into();
+                        let head = TableHead::new().child(accessible_table_text(
+                            format!("settings-usage-column-{column}"),
+                            text,
+                        ));
+                        if numeric { head.text_right() } else { head }
+                    },
+                )),
+            ))
             .child(
                 TableBody::new().children(buckets.iter().enumerate().map(|(row, bucket)| {
                     let aggregate = &bucket.aggregate;
@@ -562,21 +696,31 @@ impl UsageSettingsPage {
     }
 
     fn render_dashboard(&self, data: &UsageAnalyticsData, cx: &mut Context<Self>) -> AnyElement {
-        v_flex()
-            .id("settings-usage-dashboard")
-            .w_full()
-            .gap_4()
-            .child(self.render_summary(&data.snapshot.summary, cx))
-            .children(self.render_trend(data, cx))
-            .child(self.render_breakdown(&data.snapshot.provider_models, cx))
-            .into_any_element()
+        let selected_empty = matches!(
+            usage_content_composition(&data.snapshot),
+            UsageContentComposition::SelectedEmptyActivityReady
+        );
+        let mut dashboard = v_flex().id("settings-usage-dashboard").w_full().gap_4();
+        if selected_empty {
+            dashboard = dashboard.child(self.render_selected_period_empty(data, cx));
+        } else {
+            dashboard = dashboard.child(self.render_summary(&data.snapshot.selected_summary, cx));
+        }
+        dashboard = dashboard.child(self.render_activity(data, cx));
+        if !selected_empty {
+            dashboard = dashboard.child(self.render_breakdown(&data.snapshot.provider_models, cx));
+        }
+        dashboard.into_any_element()
     }
 
     fn render_data(&self, data: &UsageAnalyticsData, cx: &mut Context<Self>) -> AnyElement {
-        if data.snapshot.summary.is_empty() {
-            self.render_empty(cx)
-        } else {
-            self.render_dashboard(data, cx)
+        match usage_content_composition(&data.snapshot) {
+            UsageContentComposition::GlobalEmpty => self.render_empty(cx),
+            UsageContentComposition::SelectedEmptyActivityReady
+            | UsageContentComposition::SelectedReadyActivityEmpty
+            | UsageContentComposition::SelectedReadyActivityReady => {
+                self.render_dashboard(data, cx)
+            }
         }
     }
 
@@ -663,14 +807,15 @@ impl Render for UsageSettingsPage {
 fn complete_query(
     page: WeakEntity<UsageSettingsPage>,
     period: UsageAnalyticsPeriod,
-    range: Option<UsageAnalyticsRange>,
+    query: Option<UsageAnalyticsQuery>,
     result: Result<UsageAnalyticsData, UsageAnalyticsProblem>,
     cx: &mut AsyncWindowContext,
 ) {
     let _ = page.update_in(cx, |page, _window, cx| {
         if page.selected_period != period
-            || page.active_range != range
+            || page.active_query != query
             || !page.operation.is_running()
+            || !query_result_matches(period, query, &result)
         {
             return;
         }
@@ -678,7 +823,7 @@ fn complete_query(
             event!(
                 Level::ERROR,
                 period = ?problem.period,
-                range = ?problem.range,
+                query = ?problem.query,
                 error = ?problem.source,
                 "load settings usage analytics failed"
             );
@@ -688,52 +833,81 @@ fn complete_query(
     });
 }
 
+fn query_result_matches(
+    period: UsageAnalyticsPeriod,
+    query: Option<UsageAnalyticsQuery>,
+    result: &Result<UsageAnalyticsData, UsageAnalyticsProblem>,
+) -> bool {
+    match result {
+        Ok(data) => usage_data_matches(period, query, data),
+        Err(problem) => problem.period == period && problem.query == query,
+    }
+}
+
 fn cancel_active_query(
     operation: &mut UsageAnalyticsOperation,
-    active_range: &mut Option<UsageAnalyticsRange>,
+    active_query: &mut Option<UsageAnalyticsQuery>,
 ) {
     if operation.is_running() {
         operation.transition(Cancel);
     }
-    *active_range = None;
+    *active_query = None;
 }
 
 fn usage_data_matches(
     selected_period: UsageAnalyticsPeriod,
-    active_range: Option<UsageAnalyticsRange>,
+    active_query: Option<UsageAnalyticsQuery>,
     data: &UsageAnalyticsData,
 ) -> bool {
-    data.period == selected_period && Some(data.snapshot.range) == active_range
+    data.period == selected_period
+        && active_query.is_some_and(|query| {
+            data.snapshot.selected_range == query.selected_range
+                && data.snapshot.activity.range == query.activity_range
+        })
 }
 
-fn current_usage_range(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UsageContentComposition {
+    GlobalEmpty,
+    SelectedEmptyActivityReady,
+    SelectedReadyActivityEmpty,
+    SelectedReadyActivityReady,
+}
+
+fn usage_content_composition(snapshot: &UsageAnalyticsSnapshot) -> UsageContentComposition {
+    match (
+        snapshot.selected_summary.is_empty(),
+        snapshot.activity.summary.is_empty(),
+    ) {
+        (true, true) => UsageContentComposition::GlobalEmpty,
+        (true, false) => UsageContentComposition::SelectedEmptyActivityReady,
+        (false, true) => UsageContentComposition::SelectedReadyActivityEmpty,
+        (false, false) => UsageContentComposition::SelectedReadyActivityReady,
+    }
+}
+
+fn current_usage_query(
     period: UsageAnalyticsPeriod,
     now_utc: OffsetDateTime,
-) -> Result<UsageAnalyticsRange, UsageAnalyticsProblem> {
-    if period == UsageAnalyticsPeriod::AllTime {
-        return Ok(UsageAnalyticsRange::AllTime);
-    }
+) -> Result<UsageAnalyticsQuery, UsageAnalyticsProblem> {
     let local_offset =
         UtcOffset::local_offset_at(now_utc).map_err(|source| UsageAnalyticsProblem {
             period,
-            range: None,
+            query: None,
             source: UsageAnalyticsProblemSource::LocalOffset(source),
         })?;
-    usage_range_for_offset(period, now_utc, local_offset).ok_or(UsageAnalyticsProblem {
+    usage_query_for_offset(period, now_utc, local_offset).ok_or(UsageAnalyticsProblem {
         period,
-        range: None,
+        query: None,
         source: UsageAnalyticsProblemSource::CalendarRange,
     })
 }
 
-fn usage_range_for_offset(
+fn usage_query_for_offset(
     period: UsageAnalyticsPeriod,
     now_utc: OffsetDateTime,
     local_offset: UtcOffset,
-) -> Option<UsageAnalyticsRange> {
-    if period == UsageAnalyticsPeriod::AllTime {
-        return Some(UsageAnalyticsRange::AllTime);
-    }
+) -> Option<UsageAnalyticsQuery> {
     // `time`'s large-date representation can reach years where offset
     // conversion trips its internal standard-range assertions. One year of
     // headroom covers every legal UTC offset in both directions.
@@ -741,27 +915,56 @@ fn usage_range_for_offset(
         return None;
     }
     let today = now_utc.checked_to_offset(local_offset)?.date();
-    let (start_date, end_date) = match period {
-        UsageAnalyticsPeriod::Today => (today, today.next_day()?),
+    let activity_start = today.checked_sub(Duration::days((ACTIVITY_DAY_COUNT - 1) as i64))?;
+    let activity_end = today.next_day()?;
+    let activity_range = finite_range_for_dates(activity_start, activity_end, local_offset)?;
+
+    let selected_range = match period {
+        UsageAnalyticsPeriod::Today => UsageAnalyticsRange::Finite(finite_range_for_dates(
+            today,
+            today.next_day()?,
+            local_offset,
+        )?),
         UsageAnalyticsPeriod::ThisWeek => {
             let days = i64::from(today.weekday().number_days_from_monday());
             let start = today.checked_sub(Duration::days(days))?;
-            (start, start.checked_add(Duration::days(7))?)
+            UsageAnalyticsRange::Finite(finite_range_for_dates(
+                start,
+                start.checked_add(Duration::days(7))?,
+                local_offset,
+            )?)
         }
         UsageAnalyticsPeriod::ThisMonth => {
             let start = Date::from_calendar_date(today.year(), today.month(), 1).ok()?;
             let (year, month) = next_month(start.year(), start.month())?;
             let end = Date::from_calendar_date(year, month, 1).ok()?;
-            (start, end)
+            UsageAnalyticsRange::Finite(finite_range_for_dates(start, end, local_offset)?)
         }
         UsageAnalyticsPeriod::ThisYear => {
             let start = Date::from_calendar_date(today.year(), Month::January, 1).ok()?;
             let end =
                 Date::from_calendar_date(today.year().checked_add(1)?, Month::January, 1).ok()?;
-            (start, end)
+            UsageAnalyticsRange::Finite(finite_range_for_dates(start, end, local_offset)?)
         }
-        UsageAnalyticsPeriod::AllTime => unreachable!(),
+        UsageAnalyticsPeriod::AllTime => UsageAnalyticsRange::AllTime,
     };
+
+    Some(UsageAnalyticsQuery {
+        selected_range,
+        activity_range,
+    })
+}
+
+fn finite_range_for_dates(
+    start_date: Date,
+    end_date: Date,
+    local_offset: UtcOffset,
+) -> Option<UsageAnalyticsFiniteRange> {
+    if !(-9_998..=9_998).contains(&start_date.year())
+        || !(-9_998..=9_998).contains(&end_date.year())
+    {
+        return None;
+    }
     let start_utc = start_date
         .midnight()
         .assume_offset(local_offset)
@@ -771,7 +974,6 @@ fn usage_range_for_offset(
         .assume_offset(local_offset)
         .checked_to_offset(UtcOffset::UTC)?;
     UsageAnalyticsFiniteRange::new(start_utc, end_utc, local_offset)
-        .map(UsageAnalyticsRange::Finite)
 }
 
 fn next_month(year: i32, month: Month) -> Option<(i32, Month)> {
@@ -805,6 +1007,29 @@ fn localized_date(date: Date, i18n: &I18n) -> String {
     args.set("month", format!("{:02}", u8::from(date.month())));
     args.set("day", format!("{:02}", date.day()));
     i18n.t_with_args("settings-usage-date-value", &args)
+}
+
+fn localized_month_labels(i18n: &I18n) -> [SharedString; 12] {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    MONTHS.map(|month| {
+        let mut args = FluentArgs::new();
+        args.set("month", month);
+        i18n.t_with_args("settings-usage-activity-month-label", &args)
+            .into()
+    })
 }
 
 fn display_label(label: Option<&str>, fallback: &str) -> SharedString {
@@ -892,22 +1117,25 @@ fn numeric_cell(row: usize, column: usize, value: u64) -> TableCell {
     ))
 }
 
-struct DailyChartPoint {
-    label: SharedString,
-    total_tokens: f64,
-}
+const ACTIVITY_DAY_COUNT: usize = 365;
 
 #[cfg(test)]
 mod tests {
     use super::{
-        USAGE_BREAKDOWN_COLUMNS, UsageAnalyticsData, UsageAnalyticsOperation, UsageAnalyticsPeriod,
-        UsageSettingsPage, cancel_active_query, complete_query, display_label, localized_date,
-        summary_accessible_label, usage_data_matches, usage_range_for_offset,
+        ACTIVITY_DAY_COUNT, USAGE_BREAKDOWN_COLUMNS, UsageActivityInvariant, UsageAnalyticsData,
+        UsageAnalyticsOperation, UsageAnalyticsPeriod, UsageContentComposition, UsageSettingsPage,
+        cancel_active_query, complete_query, display_label, localized_date, localized_month_labels,
+        query_result_matches, summary_accessible_label, usage_content_composition,
+        usage_data_matches, usage_query_for_offset,
     };
     use crate::{database, foundation::I18n};
     use gpui::{AppContext as _, Task, TestAppContext, VisualTestContext, WindowHandle};
     use gpui_operation::{Load, Transition, refresh};
-    use jaco_db::{UsageAnalyticsAggregate, UsageAnalyticsRange, UsageAnalyticsSnapshot};
+    use jaco_db::{
+        UsageAnalyticsActivity, UsageAnalyticsAggregate, UsageAnalyticsDailyBucket,
+        UsageAnalyticsFiniteRange, UsageAnalyticsQuery, UsageAnalyticsRange,
+        UsageAnalyticsSnapshot,
+    };
     use tempfile::{TempDir, tempdir};
     use time::{Date, Month, OffsetDateTime, Time, UtcOffset};
 
@@ -923,16 +1151,25 @@ mod tests {
         now: OffsetDateTime,
         offset: UtcOffset,
     ) -> jaco_db::UsageAnalyticsFiniteRange {
-        let UsageAnalyticsRange::Finite(range) =
-            usage_range_for_offset(period, now, offset).unwrap()
+        let UsageAnalyticsRange::Finite(range) = usage_query_for_offset(period, now, offset)
+            .unwrap()
+            .selected_range
         else {
             panic!("expected a finite range")
         };
         range
     }
 
+    fn query(
+        period: UsageAnalyticsPeriod,
+        now: OffsetDateTime,
+        offset: UtcOffset,
+    ) -> UsageAnalyticsQuery {
+        usage_query_for_offset(period, now, offset).expect("representable usage query")
+    }
+
     #[test]
-    fn usage_periods_keep_product_order_and_default_chart_policy() {
+    fn usage_periods_keep_product_order() {
         assert_eq!(
             UsageAnalyticsPeriod::ALL,
             [
@@ -943,12 +1180,6 @@ mod tests {
                 UsageAnalyticsPeriod::AllTime,
             ]
         );
-        assert_eq!(UsageAnalyticsPeriod::Today.chart_tick_margin(), 1);
-        assert_eq!(UsageAnalyticsPeriod::ThisWeek.chart_tick_margin(), 1);
-        assert_eq!(UsageAnalyticsPeriod::ThisMonth.chart_tick_margin(), 5);
-        assert_eq!(UsageAnalyticsPeriod::ThisYear.chart_tick_margin(), 30);
-        assert!(UsageAnalyticsPeriod::ThisMonth.chart_has_dots());
-        assert!(!UsageAnalyticsPeriod::ThisYear.chart_has_dots());
     }
 
     #[test]
@@ -968,6 +1199,27 @@ mod tests {
             assert_eq!(range.end_utc().to_offset(offset).time(), Time::MIDNIGHT);
             assert_eq!((range.end_utc() - range.start_utc()).whole_hours(), 24);
         }
+    }
+
+    #[test]
+    fn every_period_uses_the_same_rolling_365_day_activity_range() {
+        let now = utc(2024, Month::February, 29, 8);
+        let offset = UtcOffset::from_hms(5, 30, 0).unwrap();
+        let queries = UsageAnalyticsPeriod::ALL.map(|period| query(period, now, offset));
+        let expected = queries[0].activity_range;
+
+        for query in queries {
+            assert_eq!(query.activity_range, expected);
+        }
+        assert_eq!(
+            expected.start_utc().to_offset(offset).date(),
+            Date::from_calendar_date(2023, Month::March, 2).unwrap()
+        );
+        assert_eq!(
+            expected.end_utc().to_offset(offset).date(),
+            Date::from_calendar_date(2024, Month::March, 1).unwrap()
+        );
+        assert_eq!(expected.local_offset(), offset);
     }
 
     #[test]
@@ -1013,27 +1265,37 @@ mod tests {
     }
 
     #[test]
-    fn all_time_does_not_need_a_local_offset() {
+    fn all_time_keeps_the_rolling_activity_range() {
+        let query = query(
+            UsageAnalyticsPeriod::AllTime,
+            OffsetDateTime::UNIX_EPOCH,
+            UtcOffset::UTC,
+        );
+        assert_eq!(query.selected_range, UsageAnalyticsRange::AllTime);
         assert_eq!(
-            usage_range_for_offset(
-                UsageAnalyticsPeriod::AllTime,
-                OffsetDateTime::UNIX_EPOCH,
-                UtcOffset::UTC,
-            ),
-            Some(UsageAnalyticsRange::AllTime)
+            query.activity_range.start_utc().date(),
+            Date::from_calendar_date(1969, Month::January, 2).unwrap()
+        );
+        assert_eq!(
+            query.activity_range.end_utc().date(),
+            Date::from_calendar_date(1970, Month::January, 2).unwrap()
         );
     }
 
     #[test]
-    fn cancellation_clears_active_range_and_restores_previous_operation_state() {
+    fn cancellation_clears_active_query_and_restores_previous_operation_state() {
         let mut operation = UsageAnalyticsOperation::new();
         operation.transition(Load(Task::ready(())));
-        let mut active_range = Some(UsageAnalyticsRange::AllTime);
+        let mut active_query = Some(query(
+            UsageAnalyticsPeriod::AllTime,
+            OffsetDateTime::UNIX_EPOCH,
+            UtcOffset::UTC,
+        ));
 
-        cancel_active_query(&mut operation, &mut active_range);
+        cancel_active_query(&mut operation, &mut active_query);
 
         assert_eq!(operation.phase(), refresh::Phase::Idle);
-        assert_eq!(active_range, None);
+        assert_eq!(active_query, None);
     }
 
     #[gpui::test]
@@ -1043,27 +1305,27 @@ mod tests {
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let page = window.root(&mut cx).expect("usage settings page");
 
-        let first_range = cx.update(|window, cx| {
+        let first_query = cx.update(|window, cx| {
             page.update(cx, |page, cx| page.activate(window, cx));
-            let first_range = page.read(cx).active_range;
+            let first_query = page.read(cx).active_query;
             page.update(cx, |page, cx| page.activate(window, cx));
             assert_eq!(page.read(cx).operation.phase(), refresh::Phase::Loading);
-            assert_eq!(page.read(cx).active_range, first_range);
-            first_range
+            assert_eq!(page.read(cx).active_query, first_query);
+            first_query
         });
-        assert!(first_range.is_some());
+        assert!(first_query.is_some());
 
         cx.update(|_window, cx| {
             page.update(cx, |page, cx| page.deactivate(cx));
             assert_eq!(page.read(cx).operation.phase(), refresh::Phase::Idle);
-            assert_eq!(page.read(cx).active_range, None);
+            assert_eq!(page.read(cx).active_query, None);
         });
         cx.run_until_parked();
         assert_eq!(
             page.read_with(&cx, |page, _| page.operation.phase()),
             refresh::Phase::Idle
         );
-        assert_eq!(page.read_with(&cx, |page, _| page.active_range), None);
+        assert_eq!(page.read_with(&cx, |page, _| page.active_query), None);
     }
 
     #[gpui::test]
@@ -1076,15 +1338,20 @@ mod tests {
             .expect("period mismatch page");
         period_cx.update(|window, cx| {
             let weak_page = period_page.downgrade();
+            let stale_query = query(
+                UsageAnalyticsPeriod::ThisMonth,
+                utc(2026, Month::August, 20, 8),
+                UtcOffset::UTC,
+            );
             window
                 .spawn(cx, async move |cx| {
                     complete_query(
                         weak_page,
                         UsageAnalyticsPeriod::ThisMonth,
-                        Some(UsageAnalyticsRange::AllTime),
+                        Some(stale_query),
                         Ok(marked_usage_data(
                             UsageAnalyticsPeriod::ThisMonth,
-                            UsageAnalyticsRange::AllTime,
+                            stale_query,
                         )),
                         cx,
                     );
@@ -1099,7 +1366,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn entity_rejects_stale_completion_for_range_mismatch(cx: &mut TestAppContext) {
+    fn entity_rejects_stale_completion_for_query_mismatch(cx: &mut TestAppContext) {
         let _dir = init_usage_settings_test(cx);
         let range_window = open_usage_settings_window(cx);
         let mut range_cx = VisualTestContext::from_window(range_window.into(), cx);
@@ -1108,15 +1375,20 @@ mod tests {
             .expect("range mismatch page");
         range_cx.update(|window, cx| {
             let weak_page = range_page.downgrade();
+            let stale_query = query(
+                UsageAnalyticsPeriod::ThisMonth,
+                utc(2026, Month::August, 20, 8),
+                UtcOffset::UTC,
+            );
             window
                 .spawn(cx, async move |cx| {
                     complete_query(
                         weak_page,
                         UsageAnalyticsPeriod::ThisMonth,
-                        Some(UsageAnalyticsRange::AllTime),
+                        Some(stale_query),
                         Ok(marked_usage_data(
                             UsageAnalyticsPeriod::ThisMonth,
-                            UsageAnalyticsRange::AllTime,
+                            stale_query,
                         )),
                         cx,
                     );
@@ -1136,6 +1408,11 @@ mod tests {
         let idle_page = idle_window.root(&mut idle_cx).expect("idle page");
         idle_cx.update(|window, cx| {
             let weak_page = idle_page.downgrade();
+            let stale_query = query(
+                UsageAnalyticsPeriod::ThisMonth,
+                utc(2026, Month::August, 20, 8),
+                UtcOffset::UTC,
+            );
             window
                 .spawn(cx, async move |cx| {
                     complete_query(
@@ -1144,7 +1421,7 @@ mod tests {
                         None,
                         Ok(marked_usage_data(
                             UsageAnalyticsPeriod::ThisMonth,
-                            UsageAnalyticsRange::AllTime,
+                            stale_query,
                         )),
                         cx,
                     );
@@ -1157,35 +1434,28 @@ mod tests {
             refresh::Phase::Idle
         );
         assert_eq!(
-            idle_page.read_with(&idle_cx, |page, _| page.active_range),
+            idle_page.read_with(&idle_cx, |page, _| page.active_query),
             None
         );
     }
 
     #[test]
-    fn stale_data_requires_exact_period_and_range_and_all_zero_usage_is_not_empty() {
-        let data = UsageAnalyticsData {
-            period: UsageAnalyticsPeriod::AllTime,
-            snapshot: UsageAnalyticsSnapshot {
-                range: UsageAnalyticsRange::AllTime,
-                summary: UsageAnalyticsAggregate {
-                    request_count: 1,
-                    unreported_request_count: 1,
-                    ..Default::default()
-                },
-                daily: Vec::new(),
-                provider_models: Vec::new(),
-            },
-        };
+    fn stale_data_requires_exact_period_and_query_and_all_zero_usage_is_not_empty() {
+        let active_query = query(
+            UsageAnalyticsPeriod::AllTime,
+            OffsetDateTime::UNIX_EPOCH,
+            UtcOffset::UTC,
+        );
+        let data = marked_usage_data(UsageAnalyticsPeriod::AllTime, active_query);
 
         assert!(usage_data_matches(
             UsageAnalyticsPeriod::AllTime,
-            Some(UsageAnalyticsRange::AllTime),
+            Some(active_query),
             &data,
         ));
         assert!(!usage_data_matches(
             UsageAnalyticsPeriod::ThisMonth,
-            Some(UsageAnalyticsRange::AllTime),
+            Some(active_query),
             &data,
         ));
         assert!(!usage_data_matches(
@@ -1193,11 +1463,37 @@ mod tests {
             None,
             &data,
         ));
-        assert!(!data.snapshot.summary.is_empty());
+        let activity_only_mismatch = query(
+            UsageAnalyticsPeriod::AllTime,
+            OffsetDateTime::UNIX_EPOCH + time::Duration::days(1),
+            UtcOffset::UTC,
+        );
+        assert_eq!(
+            activity_only_mismatch.selected_range,
+            active_query.selected_range
+        );
+        assert_ne!(
+            activity_only_mismatch.activity_range,
+            active_query.activity_range
+        );
+        assert!(!usage_data_matches(
+            UsageAnalyticsPeriod::AllTime,
+            Some(activity_only_mismatch),
+            &data,
+        ));
+        assert!(!query_result_matches(
+            UsageAnalyticsPeriod::AllTime,
+            Some(active_query),
+            &Ok(marked_usage_data(
+                UsageAnalyticsPeriod::AllTime,
+                activity_only_mismatch,
+            )),
+        ));
+        assert!(!data.snapshot.selected_summary.is_empty());
     }
 
     #[test]
-    fn labels_use_current_name_or_stable_id_and_dates_are_localized() {
+    fn labels_use_current_name_or_stable_id_and_dates_and_months_are_localized() {
         assert_eq!(display_label(Some("  OpenAI  "), "provider-id"), "OpenAI");
         assert_eq!(display_label(Some("  "), "provider-id"), "provider-id");
         assert_eq!(display_label(None, "provider-id"), "provider-id");
@@ -1209,6 +1505,14 @@ mod tests {
         assert_eq!(
             localized_date(date, &I18n::for_locale_tag("zh-CN")),
             "2026年08月20日"
+        );
+        assert_eq!(
+            localized_month_labels(&I18n::for_locale_tag("en-US"))[0],
+            "Jan"
+        );
+        assert_eq!(
+            localized_month_labels(&I18n::for_locale_tag("zh-CN"))[11],
+            "12月"
         );
     }
 
@@ -1272,11 +1576,125 @@ mod tests {
 
         for (now, offset) in [(minimum, positive), (maximum, negative)] {
             let result = std::panic::catch_unwind(|| {
-                usage_range_for_offset(UsageAnalyticsPeriod::Today, now, offset)
+                usage_query_for_offset(UsageAnalyticsPeriod::Today, now, offset)
             });
             assert!(result.is_ok(), "range construction must not panic");
             assert_eq!(result.unwrap(), None);
         }
+    }
+
+    #[test]
+    fn activity_adapter_validates_dense_range_and_uses_earliest_peak() {
+        let query = query(
+            UsageAnalyticsPeriod::ThisMonth,
+            utc(2026, Month::August, 20, 8),
+            UtcOffset::UTC,
+        );
+        let snapshot = UsageAnalyticsSnapshot {
+            selected_range: query.selected_range,
+            selected_summary: UsageAnalyticsAggregate::default(),
+            provider_models: Vec::new(),
+            activity: activity_for_range(query.activity_range, &[(4, 99), (7, 99), (10, 1)]),
+        };
+        let data = UsageAnalyticsData::try_new(UsageAnalyticsPeriod::ThisMonth, snapshot)
+            .expect("valid dense activity");
+
+        assert_eq!(data.activity.series.values().len(), ACTIVITY_DAY_COUNT);
+        assert_eq!(data.activity.active_days, 3);
+        assert_eq!(
+            data.activity.peak,
+            Some((
+                data.activity
+                    .series
+                    .start_date()
+                    .checked_add(time::Duration::days(4))
+                    .unwrap(),
+                99,
+            ))
+        );
+    }
+
+    #[test]
+    fn activity_adapter_rejects_wrong_length_and_noncontiguous_dates() {
+        let query = query(
+            UsageAnalyticsPeriod::ThisMonth,
+            utc(2026, Month::August, 20, 8),
+            UtcOffset::UTC,
+        );
+        let mut short_activity = activity_for_range(query.activity_range, &[]);
+        short_activity.daily.pop();
+        let short = UsageAnalyticsData::try_new(
+            UsageAnalyticsPeriod::ThisMonth,
+            UsageAnalyticsSnapshot {
+                selected_range: query.selected_range,
+                selected_summary: UsageAnalyticsAggregate::default(),
+                provider_models: Vec::new(),
+                activity: short_activity,
+            },
+        );
+        assert!(matches!(
+            short,
+            Err(UsageActivityInvariant::BucketCount { actual: 364 })
+        ));
+
+        let mut gapped_activity = activity_for_range(query.activity_range, &[]);
+        gapped_activity.daily[12].local_date =
+            gapped_activity.daily[12].local_date.next_day().unwrap();
+        let gapped = UsageAnalyticsData::try_new(
+            UsageAnalyticsPeriod::ThisMonth,
+            UsageAnalyticsSnapshot {
+                selected_range: query.selected_range,
+                selected_summary: UsageAnalyticsAggregate::default(),
+                provider_models: Vec::new(),
+                activity: gapped_activity,
+            },
+        );
+        assert!(matches!(
+            gapped,
+            Err(UsageActivityInvariant::NonContiguous { index: 12 })
+        ));
+    }
+
+    #[test]
+    fn selected_and_activity_empty_states_are_distinct() {
+        let query = query(
+            UsageAnalyticsPeriod::ThisMonth,
+            utc(2026, Month::August, 20, 8),
+            UtcOffset::UTC,
+        );
+        let snapshot = |selected_requests, activity_requests| UsageAnalyticsSnapshot {
+            selected_range: query.selected_range,
+            selected_summary: UsageAnalyticsAggregate {
+                request_count: selected_requests,
+                ..Default::default()
+            },
+            provider_models: Vec::new(),
+            activity: UsageAnalyticsActivity {
+                range: query.activity_range,
+                summary: UsageAnalyticsAggregate {
+                    request_count: activity_requests,
+                    ..Default::default()
+                },
+                daily: Vec::new(),
+            },
+        };
+
+        assert_eq!(
+            usage_content_composition(&snapshot(0, 0)),
+            UsageContentComposition::GlobalEmpty
+        );
+        assert_eq!(
+            usage_content_composition(&snapshot(0, 1)),
+            UsageContentComposition::SelectedEmptyActivityReady
+        );
+        assert_eq!(
+            usage_content_composition(&snapshot(1, 0)),
+            UsageContentComposition::SelectedReadyActivityEmpty
+        );
+        assert_eq!(
+            usage_content_composition(&snapshot(1, 1)),
+            UsageContentComposition::SelectedReadyActivityReady
+        );
     }
 
     #[test]
@@ -1309,8 +1727,10 @@ mod tests {
             "settings-usage-cache-write-input-tokens",
             "settings-usage-reasoning-tokens",
             "settings-usage-total-tokens",
-            "settings-usage-trend-title",
-            "settings-usage-trend-description",
+            "settings-usage-activity-title",
+            "settings-usage-activity-description",
+            "settings-usage-activity-less",
+            "settings-usage-activity-more",
             "settings-usage-breakdown-title",
             "settings-usage-provider",
             "settings-usage-model",
@@ -1331,11 +1751,22 @@ mod tests {
             args.set("metrics", "Requests: 1");
             args.set("label", "Requests");
             args.set("value", "1");
+            args.set("days", "365");
+            args.set("start", "2025-08-22");
+            args.set("end", "2026-08-21");
+            args.set("activeDays", "2");
+            args.set("peakDate", "2026-08-20");
+            args.set("peakTokens", "1,000");
+            args.set("month", "January");
             for key in [
-                "settings-usage-trend-accessible",
                 "settings-usage-date-value",
                 "settings-usage-summary-accessible",
                 "settings-usage-metric-accessible",
+                "settings-usage-selected-period-empty",
+                "settings-usage-activity-caption",
+                "settings-usage-activity-month-label",
+                "settings-usage-activity-accessible",
+                "settings-usage-activity-accessible-no-peak",
             ] {
                 assert_ne!(
                     i18n.t_with_args(key, &args),
@@ -1343,24 +1774,81 @@ mod tests {
                     "missing {key} in {locale}"
                 );
             }
+            for month in [
+                "January",
+                "February",
+                "March",
+                "April",
+                "May",
+                "June",
+                "July",
+                "August",
+                "September",
+                "October",
+                "November",
+                "December",
+            ] {
+                args.set("month", month);
+                let label = i18n.t_with_args("settings-usage-activity-month-label", &args);
+                assert_ne!(label, "settings-usage-activity-month-label");
+                assert!(
+                    !label.is_empty(),
+                    "empty month label for {month} in {locale}"
+                );
+            }
         }
     }
 
     fn marked_usage_data(
         period: UsageAnalyticsPeriod,
-        range: UsageAnalyticsRange,
+        query: UsageAnalyticsQuery,
     ) -> UsageAnalyticsData {
-        UsageAnalyticsData {
+        UsageAnalyticsData::try_new(
             period,
-            snapshot: UsageAnalyticsSnapshot {
-                range,
-                summary: UsageAnalyticsAggregate {
+            UsageAnalyticsSnapshot {
+                selected_range: query.selected_range,
+                selected_summary: UsageAnalyticsAggregate {
                     request_count: 999,
                     ..Default::default()
                 },
-                daily: Vec::new(),
                 provider_models: Vec::new(),
+                activity: activity_for_range(query.activity_range, &[]),
             },
+        )
+        .expect("valid marked activity projection")
+    }
+
+    fn activity_for_range(
+        range: UsageAnalyticsFiniteRange,
+        nonzero: &[(usize, u64)],
+    ) -> UsageAnalyticsActivity {
+        let start = range.start_utc().to_offset(range.local_offset()).date();
+        let daily = (0..ACTIVITY_DAY_COUNT)
+            .map(|index| {
+                let total_tokens = nonzero
+                    .iter()
+                    .find_map(|(candidate, value)| (*candidate == index).then_some(*value))
+                    .unwrap_or(0);
+                UsageAnalyticsDailyBucket {
+                    local_date: start
+                        .checked_add(time::Duration::days(index as i64))
+                        .expect("activity fixture date"),
+                    aggregate: UsageAnalyticsAggregate {
+                        request_count: u64::from(total_tokens > 0),
+                        total_tokens,
+                        ..Default::default()
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        UsageAnalyticsActivity {
+            range,
+            summary: UsageAnalyticsAggregate {
+                request_count: nonzero.len() as u64,
+                total_tokens: nonzero.iter().map(|(_, value)| value).sum(),
+                ..Default::default()
+            },
+            daily,
         }
     }
 
@@ -1376,7 +1864,7 @@ mod tests {
                 page.matching_data()
                     .expect("fresh matching usage data")
                     .snapshot
-                    .summary
+                    .selected_summary
                     .request_count,
                 0
             );

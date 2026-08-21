@@ -1,5 +1,7 @@
 use super::*;
-use crate::{UsageAnalyticsAggregate, UsageAnalyticsFiniteRange, UsageAnalyticsRange};
+use crate::{
+    UsageAnalyticsAggregate, UsageAnalyticsFiniteRange, UsageAnalyticsQuery, UsageAnalyticsRange,
+};
 use diesel::sql_types::{BigInt, Nullable, Text, TimestamptzSqlite};
 use time::{Date, Month, OffsetDateTime, UtcOffset};
 
@@ -45,15 +47,38 @@ fn finite_range(
     start_day: u8,
     end_day: u8,
     offset: UtcOffset,
-) -> UsageAnalyticsRange {
-    UsageAnalyticsRange::Finite(
-        UsageAnalyticsFiniteRange::new(
-            datetime(year, month, start_day, 0, 0, offset),
-            datetime(year, month, end_day, 0, 0, offset),
-            offset,
-        )
-        .unwrap(),
+) -> UsageAnalyticsFiniteRange {
+    UsageAnalyticsFiniteRange::new(
+        datetime(year, month, start_day, 0, 0, offset),
+        datetime(year, month, end_day, 0, 0, offset),
+        offset,
     )
+    .unwrap()
+}
+
+fn finite_range_for_days(
+    year: i32,
+    month: u8,
+    start_day: u8,
+    day_count: i64,
+    offset: UtcOffset,
+) -> UsageAnalyticsFiniteRange {
+    let start = datetime(year, month, start_day, 0, 0, offset);
+    UsageAnalyticsFiniteRange::new(start, start + time::Duration::days(day_count), offset).unwrap()
+}
+
+fn same_range_query(range: UsageAnalyticsFiniteRange) -> UsageAnalyticsQuery {
+    UsageAnalyticsQuery {
+        selected_range: UsageAnalyticsRange::Finite(range),
+        activity_range: range,
+    }
+}
+
+fn all_time_query(activity_range: UsageAnalyticsFiniteRange) -> UsageAnalyticsQuery {
+    UsageAnalyticsQuery {
+        selected_range: UsageAnalyticsRange::AllTime,
+        activity_range,
+    }
 }
 
 fn fresh_store() -> (tempfile::TempDir, FreshStore) {
@@ -188,13 +213,6 @@ fn usage_analytics_finite_range_requires_ordered_local_midnights() {
 #[test]
 fn usage_analytics_uses_half_open_utc_bounds_and_ignores_date_key() {
     let (_dir, store) = fresh_store();
-    insert_provider_catalog(
-        &store,
-        "provider-a",
-        "Provider A",
-        Some("model-a"),
-        Some("Model A"),
-    );
     let start = datetime(2026, 8, 2, 0, 0, UtcOffset::UTC);
     let end = datetime(2026, 8, 3, 0, 0, UtcOffset::UTC);
     for (id, at) in [
@@ -219,16 +237,28 @@ fn usage_analytics_uses_half_open_utc_bounds_and_ignores_date_key() {
 
     let snapshot = store
         .repository()
-        .usage_analytics(finite_range(2026, 8, 2, 3, UtcOffset::UTC))
+        .usage_analytics(same_range_query(finite_range(
+            2026,
+            8,
+            2,
+            3,
+            UtcOffset::UTC,
+        )))
         .unwrap();
-    assert_eq!(snapshot.summary.request_count, 2);
-    assert_eq!(snapshot.summary.total_tokens, 2);
-    assert_eq!(snapshot.daily.len(), 1);
-    assert_eq!(snapshot.daily[0].local_date, start.date());
+    assert_eq!(snapshot.selected_summary.request_count, 2);
+    assert_eq!(snapshot.selected_summary.total_tokens, 2);
+    assert_eq!(snapshot.provider_models.len(), 1);
+    assert_eq!(
+        snapshot.provider_models[0].aggregate,
+        snapshot.selected_summary
+    );
+    assert_eq!(snapshot.activity.summary, snapshot.selected_summary);
+    assert_eq!(snapshot.activity.daily.len(), 1);
+    assert_eq!(snapshot.activity.daily[0].local_date, start.date());
 }
 
 #[test]
-fn usage_analytics_groups_daily_by_positive_negative_and_sub_hour_offsets() {
+fn usage_analytics_groups_cross_year_leap_activity_by_fixed_offsets() {
     for (index, offset) in [
         UtcOffset::from_hms(8, 0, 0).unwrap(),
         UtcOffset::from_hms(-7, 0, 0).unwrap(),
@@ -244,21 +274,33 @@ fn usage_analytics_groups_daily_by_positive_negative_and_sub_hour_offsets() {
             "missing-provider",
             "model",
             "wrong-date",
-            datetime(2026, 8, 2, 0, 15, offset),
+            datetime(2024, 2, 29, 0, 15, offset),
             TokenCounts {
                 total: 9,
                 ..TokenCounts::ZERO
             },
         );
+        let selected_range = finite_range_for_days(2024, 2, 28, 3, offset);
+        let activity_range = finite_range_for_days(2023, 3, 2, 365, offset);
         let snapshot = store
             .repository()
-            .usage_analytics(finite_range(2026, 8, 1, 4, offset))
+            .usage_analytics(UsageAnalyticsQuery {
+                selected_range: UsageAnalyticsRange::Finite(selected_range),
+                activity_range,
+            })
             .unwrap();
-        assert_eq!(snapshot.daily.len(), 3);
-        assert_eq!(snapshot.daily[0].aggregate.request_count, 0);
-        assert_eq!(snapshot.daily[1].aggregate.request_count, 1);
-        assert_eq!(snapshot.daily[2].aggregate.request_count, 0);
-        assert_eq!(snapshot.daily[1].local_date.day(), 2);
+        assert_eq!(snapshot.provider_models.len(), 1);
+        assert_eq!(snapshot.provider_models[0].aggregate.request_count, 1);
+        assert_eq!(snapshot.activity.daily.len(), 365);
+        assert_eq!(
+            snapshot.activity.daily.first().unwrap().local_date,
+            Date::from_calendar_date(2023, Month::March, 2).unwrap()
+        );
+        assert_eq!(
+            snapshot.activity.daily.last().unwrap().local_date,
+            Date::from_calendar_date(2024, Month::February, 29).unwrap()
+        );
+        assert_eq!(snapshot.activity.summary, snapshot.selected_summary);
     }
 }
 
@@ -302,17 +344,23 @@ fn usage_analytics_counts_each_event_and_applies_coverage_predicates() {
 
     let snapshot = store
         .repository()
-        .usage_analytics(UsageAnalyticsRange::AllTime)
+        .usage_analytics(all_time_query(finite_range(2026, 8, 1, 4, UtcOffset::UTC)))
         .unwrap();
-    assert_eq!(snapshot.summary.request_count, 4);
-    assert_eq!(snapshot.summary.reported_request_count, 3);
-    assert_eq!(snapshot.summary.unreported_request_count, 1);
-    assert_eq!(snapshot.summary.total_covered_request_count, 1);
-    assert_eq!(snapshot.summary.partial_request_count(), Some(2));
-    assert_eq!(snapshot.summary.input_tokens, 7);
-    assert_eq!(snapshot.summary.cache_write_input_tokens, 11);
-    assert_eq!(snapshot.summary.total_tokens, 13);
-    assert!(snapshot.daily.is_empty());
+    assert_eq!(snapshot.selected_summary.request_count, 4);
+    assert_eq!(snapshot.selected_summary.reported_request_count, 3);
+    assert_eq!(snapshot.selected_summary.unreported_request_count, 1);
+    assert_eq!(snapshot.selected_summary.total_covered_request_count, 1);
+    assert_eq!(snapshot.selected_summary.partial_request_count(), Some(2));
+    assert_eq!(snapshot.selected_summary.input_tokens, 7);
+    assert_eq!(snapshot.selected_summary.cache_write_input_tokens, 11);
+    assert_eq!(snapshot.selected_summary.total_tokens, 13);
+    assert_eq!(snapshot.provider_models.len(), 1);
+    assert_eq!(
+        snapshot.provider_models[0].aggregate,
+        snapshot.selected_summary
+    );
+    assert_eq!(snapshot.activity.summary, snapshot.selected_summary);
+    assert_eq!(snapshot.activity.daily.len(), 3);
 }
 
 #[test]
@@ -392,12 +440,14 @@ fn usage_analytics_counts_completed_steps_independently_after_their_run_fails() 
         repo.get_agent_run(&run.id).unwrap().unwrap().status,
         AgentRunStatus::Failed
     );
-    let snapshot = repo.usage_analytics(UsageAnalyticsRange::AllTime).unwrap();
-    assert_eq!(snapshot.summary.request_count, 2);
-    assert_eq!(snapshot.summary.reported_request_count, 2);
-    assert_eq!(snapshot.summary.total_covered_request_count, 2);
-    assert_eq!(snapshot.summary.input_tokens, 20);
-    assert_eq!(snapshot.summary.total_tokens, 78);
+    let snapshot = repo
+        .usage_analytics(all_time_query(finite_range(2026, 8, 1, 4, UtcOffset::UTC)))
+        .unwrap();
+    assert_eq!(snapshot.selected_summary.request_count, 2);
+    assert_eq!(snapshot.selected_summary.reported_request_count, 2);
+    assert_eq!(snapshot.selected_summary.total_covered_request_count, 2);
+    assert_eq!(snapshot.selected_summary.input_tokens, 20);
+    assert_eq!(snapshot.selected_summary.total_tokens, 78);
     assert_eq!(snapshot.provider_models.len(), 1);
     assert_eq!(snapshot.provider_models[0].aggregate.request_count, 2);
 }
@@ -425,14 +475,14 @@ fn usage_analytics_sums_six_dimensions_exactly_without_cache_double_counting() {
 
     let snapshot = store
         .repository()
-        .usage_analytics(UsageAnalyticsRange::AllTime)
+        .usage_analytics(all_time_query(finite_range(2026, 8, 1, 4, UtcOffset::UTC)))
         .unwrap();
-    assert_eq!(snapshot.summary.input_tokens, large as u64);
-    assert_eq!(snapshot.summary.output_tokens, 2);
-    assert_eq!(snapshot.summary.cached_input_tokens, 3);
-    assert_eq!(snapshot.summary.cache_write_input_tokens, 5);
-    assert_eq!(snapshot.summary.reasoning_tokens, 7);
-    assert_eq!(snapshot.summary.total_tokens, (large + 17) as u64);
+    assert_eq!(snapshot.selected_summary.input_tokens, large as u64);
+    assert_eq!(snapshot.selected_summary.output_tokens, 2);
+    assert_eq!(snapshot.selected_summary.cached_input_tokens, 3);
+    assert_eq!(snapshot.selected_summary.cache_write_input_tokens, 5);
+    assert_eq!(snapshot.selected_summary.reasoning_tokens, 7);
+    assert_eq!(snapshot.selected_summary.total_tokens, (large + 17) as u64);
 }
 
 #[test]
@@ -453,7 +503,16 @@ fn usage_analytics_rejects_negative_values_and_sqlite_sum_overflow() {
     assert!(matches!(
         negative_store
             .repository()
-            .usage_analytics(UsageAnalyticsRange::AllTime),
+            .usage_analytics(UsageAnalyticsQuery {
+                selected_range: UsageAnalyticsRange::Finite(finite_range(
+                    2026,
+                    7,
+                    1,
+                    2,
+                    UtcOffset::UTC,
+                )),
+                activity_range: finite_range(2026, 8, 1, 4, UtcOffset::UTC),
+            }),
         Err(crate::DbError::Invariant(message)) if message.contains("negative token")
     ));
 
@@ -475,13 +534,22 @@ fn usage_analytics_rejects_negative_values_and_sqlite_sum_overflow() {
     assert!(matches!(
         overflow_store
             .repository()
-            .usage_analytics(UsageAnalyticsRange::AllTime),
+            .usage_analytics(UsageAnalyticsQuery {
+                selected_range: UsageAnalyticsRange::Finite(finite_range(
+                    2026,
+                    7,
+                    1,
+                    2,
+                    UtcOffset::UTC,
+                )),
+                activity_range: finite_range(2026, 8, 1, 4, UtcOffset::UTC),
+            }),
         Err(crate::DbError::Diesel(_))
     ));
 }
 
 #[test]
-fn usage_analytics_returns_dense_days_and_all_time_omits_daily() {
+fn usage_analytics_returns_selected_provider_models_and_dense_365_day_activity() {
     let (_dir, store) = fresh_store();
     insert_usage(
         &store,
@@ -495,27 +563,94 @@ fn usage_analytics_returns_dense_days_and_all_time_omits_daily() {
             ..TokenCounts::ZERO
         },
     );
+    let selected_range = finite_range(2026, 8, 1, 5, UtcOffset::UTC);
+    let activity_range = finite_range_for_days(2025, 8, 3, 365, UtcOffset::UTC);
     let finite = store
         .repository()
-        .usage_analytics(finite_range(2026, 8, 1, 5, UtcOffset::UTC))
+        .usage_analytics(UsageAnalyticsQuery {
+            selected_range: UsageAnalyticsRange::Finite(selected_range),
+            activity_range,
+        })
         .unwrap();
-    assert_eq!(finite.daily.len(), 4);
     assert_eq!(
-        finite
-            .daily
-            .iter()
-            .map(|bucket| bucket.local_date.day())
-            .collect::<Vec<_>>(),
-        vec![1, 2, 3, 4]
+        finite.selected_range,
+        UsageAnalyticsRange::Finite(selected_range)
     );
-    assert_eq!(finite.daily[1].aggregate.total_tokens, 4);
+    assert_eq!(finite.provider_models.len(), 1);
+    assert_eq!(finite.provider_models[0].aggregate.total_tokens, 4);
+    assert_eq!(finite.activity.range, activity_range);
+    assert_eq!(finite.activity.daily.len(), 365);
+    assert_eq!(
+        finite.activity.daily.first().unwrap().local_date,
+        Date::from_calendar_date(2025, Month::August, 3).unwrap()
+    );
+    assert_eq!(
+        finite.activity.daily.last().unwrap().local_date,
+        Date::from_calendar_date(2026, Month::August, 2).unwrap()
+    );
+    assert_eq!(finite.activity.summary, finite.selected_summary);
 
     let all_time = store
         .repository()
-        .usage_analytics(UsageAnalyticsRange::AllTime)
+        .usage_analytics(all_time_query(activity_range))
         .unwrap();
-    assert!(all_time.daily.is_empty());
-    assert_eq!(all_time.summary, finite.summary);
+    assert_eq!(all_time.selected_summary, finite.selected_summary);
+    assert_eq!(all_time.provider_models, finite.provider_models);
+    assert_eq!(all_time.activity.daily.len(), 365);
+    assert_eq!(all_time.activity, finite.activity);
+}
+
+#[test]
+fn usage_analytics_keeps_selected_and_activity_totals_independent() {
+    let (_dir, store) = fresh_store();
+    for (id, created_at, total) in [
+        (
+            "activity-only",
+            datetime(2026, 7, 2, 12, 0, UtcOffset::UTC),
+            7,
+        ),
+        (
+            "selected-and-activity",
+            datetime(2026, 8, 2, 12, 0, UtcOffset::UTC),
+            20,
+        ),
+        (
+            "outside-activity",
+            datetime(2026, 8, 5, 12, 0, UtcOffset::UTC),
+            30,
+        ),
+    ] {
+        insert_usage(
+            &store,
+            id,
+            "provider",
+            "model",
+            "ignored",
+            created_at,
+            TokenCounts {
+                total,
+                ..TokenCounts::ZERO
+            },
+        );
+    }
+
+    let selected_range = finite_range(2026, 8, 1, 4, UtcOffset::UTC);
+    let activity_range = finite_range_for_days(2026, 7, 1, 34, UtcOffset::UTC);
+    let snapshot = store
+        .repository()
+        .usage_analytics(UsageAnalyticsQuery {
+            selected_range: UsageAnalyticsRange::Finite(selected_range),
+            activity_range,
+        })
+        .unwrap();
+    assert_eq!(snapshot.selected_summary.request_count, 1);
+    assert_eq!(snapshot.selected_summary.total_tokens, 20);
+    assert_eq!(snapshot.activity.summary.request_count, 2);
+    assert_eq!(snapshot.activity.summary.total_tokens, 27);
+    assert_eq!(snapshot.provider_models.len(), 1);
+    assert_eq!(snapshot.provider_models[0].aggregate.request_count, 1);
+    assert_eq!(snapshot.provider_models[0].aggregate.total_tokens, 20);
+    assert_eq!(snapshot.activity.daily.len(), 34);
 }
 
 #[test]
@@ -557,7 +692,7 @@ fn usage_analytics_groups_by_stable_ids_with_current_optional_labels_and_sorting
 
     let snapshot = store
         .repository()
-        .usage_analytics(UsageAnalyticsRange::AllTime)
+        .usage_analytics(all_time_query(finite_range(2026, 8, 1, 4, UtcOffset::UTC)))
         .unwrap();
     assert_eq!(
         snapshot
@@ -585,24 +720,38 @@ fn usage_analytics_groups_by_stable_ids_with_current_optional_labels_and_sorting
         Some("New Model")
     );
     assert_eq!(snapshot.provider_models[2].provider_label, None);
+    assert_eq!(snapshot.provider_models[2].model_label, None);
 }
 
 #[test]
 fn usage_analytics_empty_snapshot_preserves_requested_shape() {
     let (_dir, store) = fresh_store();
-    let range = finite_range(2026, 8, 1, 4, UtcOffset::UTC);
-    let snapshot = store.repository().usage_analytics(range).unwrap();
-    assert_eq!(snapshot.range, range);
-    assert!(snapshot.summary.is_empty());
-    assert_eq!(snapshot.summary.partial_request_count(), Some(0));
-    assert_eq!(snapshot.daily.len(), 3);
+    let selected_range = finite_range(2026, 8, 1, 4, UtcOffset::UTC);
+    let activity_range = finite_range_for_days(2025, 8, 3, 365, UtcOffset::UTC);
+    let snapshot = store
+        .repository()
+        .usage_analytics(UsageAnalyticsQuery {
+            selected_range: UsageAnalyticsRange::Finite(selected_range),
+            activity_range,
+        })
+        .unwrap();
+    assert_eq!(
+        snapshot.selected_range,
+        UsageAnalyticsRange::Finite(selected_range)
+    );
+    assert!(snapshot.selected_summary.is_empty());
+    assert_eq!(snapshot.selected_summary.partial_request_count(), Some(0));
+    assert!(snapshot.provider_models.is_empty());
+    assert_eq!(snapshot.activity.range, activity_range);
+    assert!(snapshot.activity.summary.is_empty());
+    assert_eq!(snapshot.activity.daily.len(), 365);
     assert!(
         snapshot
+            .activity
             .daily
             .iter()
             .all(|bucket| bucket.aggregate == UsageAnalyticsAggregate::default())
     );
-    assert!(snapshot.provider_models.is_empty());
 }
 
 #[derive(diesel::QueryableByName)]
@@ -663,6 +812,13 @@ fn usage_analytics_fresh_schema_and_production_query_shapes_use_created_at_index
     .load::<QueryPlanRow>(&mut conn)
     .unwrap();
     assert_plan_uses_created_at_index(&provider_model_plan, "provider/model");
+    assert!(
+        crate::repository::PROVIDER_MODELS_FINITE_SQL
+            .contains("LEFT JOIN providers ON providers.id = aggregates.provider_id")
+    );
+    assert!(crate::repository::PROVIDER_MODELS_FINITE_SQL.contains(
+        "LEFT JOIN provider_models ON\n    provider_models.provider_id = aggregates.provider_id"
+    ));
 }
 
 fn assert_plan_uses_created_at_index(plan: &[QueryPlanRow], query_name: &str) {

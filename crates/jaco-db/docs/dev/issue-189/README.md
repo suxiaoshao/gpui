@@ -4,12 +4,12 @@
 
 - Plan ID：`issue-189`
 - Root hub：[Issue #189](../../../../../docs/dev/issue-189/README.md)
-- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)、[Settings usage analytics](../../../../../docs/dev/issue-189/settings-usage-analytics-plan.md)
+- 执行文档：[Agent 消息单次请求用量](../../../../../docs/dev/issue-189/agent-message-request-usage-plan.md)、[Composer context occupancy](../../../../../docs/dev/issue-189/composer-context-occupancy-plan.md)、[Settings usage analytics](../../../../../docs/dev/issue-189/settings-usage-analytics-plan.md)、[Settings activity heatmap](../../../../../docs/dev/issue-189/settings-usage-activity-heatmap-plan.md)
 - Owner directory：`crates/jaco-db`
-- Owner status：`In progress`（`WP-201`、`WP-202`、`WP-203` 已 `Implemented`；root-level workspace/known-provider/CI gates待做）
-- 消费 root IDs：`C-02`、`C-03`、`C-12`、`C-21`、`D-01`、`D-02`、`D-06`、`D-14`–`D-18`、`D-31`–`D-38`、`DB-01`、`DB-02`、`DB-11`、`DB-12`、`DB-21`–`DB-23`、`R-01`–`R-08`、`R-24`–`R-27`、`R-42`–`R-51`
-- Assigned WP：`WP-201`、`WP-202`、`WP-203`
-- Owns：conversation usage query、message projection assembler、composer latest-step selector/assembler、reload/finalization results、Settings analytics projection、range aggregation、fresh-schema index与repository tests
+- Owner status：`Implemented`（`WP-201`–`WP-204`均已实施；root最终门禁与远端CI待执行）
+- 消费 root IDs：`C-02`、`C-03`、`C-12`、`C-21`、`C-22`、`D-01`、`D-02`、`D-06`、`D-14`–`D-18`、`D-31`–`D-38`、`D-61`–`D-68`、`DB-01`、`DB-02`、`DB-11`、`DB-12`、`DB-21`–`DB-23`、`DB-31`–`DB-33`、`R-01`–`R-08`、`R-24`–`R-27`、`R-42`–`R-51`、`R-61`–`R-66`、`R-77`–`R-78`
+- Assigned WP：`WP-201`、`WP-202`、`WP-203`、`WP-204`
+- Owns：conversation usage query、message projection assembler、composer latest-step selector/assembler、reload/finalization results、Settings selected/activity analytics projection、range aggregation、fresh-schema index与repository tests
 - Does not own：usage写入基数/serialized JSON、core语义、agent event、provider discovery、local calendar preset计算、Settings Operation或UI
 
 ## Owner-local 证据与决定
@@ -341,3 +341,102 @@ git diff --check
 - `cargo test -p jaco-db usage_analytics`：11 passed；覆盖真实同run多completed steps后run失败仍逐event计数、六字段coverage/sum、边界/offset/dense dates、错误/invariant、stable IDs/labels，以及直接复用三条生产SQL的query-plan断言。
 - `cargo test -p jaco-db bootstrap`：5 passed；strict jaco-db clippy、`cargo fmt`与`git diff --check`通过。
 - Manual Settings matrix、workspace-wide gates、three-platform CI与implementation commit/PR：`Pending`。
+
+## Activity heatmap extension — `WP-204`（Implemented）
+
+本节只登记[Settings activity heatmap执行文档](../../../../../docs/dev/issue-189/settings-usage-activity-heatmap-plan.md)的DB owner contract。它以rolling activity daily替换`WP-203`中供LineChart消费的selected daily projection；`WP-203`已实施的aggregate、provider/model projection、created-at index、transaction和历史证据继续有效。
+
+### Owner-local 文件与边界
+
+```text
+crates/jaco-db/src/
+├── records/analytics.rs                  # F-231 [Modify] query/activity/snapshot
+├── repository/analytics.rs               # F-232 [Modify] selected + activity transaction
+├── repository.rs                         # F-233 [Modify] production SQL test exports
+└── tests/analytics.rs                    # F-234 [Modify] WP-204 focused tests
+```
+
+- 不修改`UsageEventRecord`、usage write transaction、serialized `usage_json`、fresh schema、`SCHEMA_VERSION`、migration或Cargo manifests。
+- repository不接受period、today或系统时区；app传入两个已经确定的range。
+- `UsageAnalyticsAggregate`、`UsageAnalyticsDailyBucket`、`UsageAnalyticsRange`和`UsageAnalyticsFiniteRange`保持现有语义。
+
+### `DB-231`：Breaking public query boundary
+
+严格实现root `C-22`：
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsageAnalyticsQuery {
+    pub selected_range: UsageAnalyticsRange,
+    pub activity_range: UsageAnalyticsFiniteRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageAnalyticsActivity {
+    pub range: UsageAnalyticsFiniteRange,
+    pub summary: UsageAnalyticsAggregate,
+    pub daily: Vec<UsageAnalyticsDailyBucket>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageAnalyticsSnapshot {
+    pub selected_range: UsageAnalyticsRange,
+    pub selected_summary: UsageAnalyticsAggregate,
+    pub provider_models: Vec<UsageAnalyticsProviderModelBucket>,
+    pub activity: UsageAnalyticsActivity,
+}
+
+impl FreshRepository {
+    pub fn usage_analytics(
+        &self,
+        query: UsageAnalyticsQuery,
+    ) -> Result<UsageAnalyticsSnapshot>;
+}
+```
+
+保留`UsageAnalyticsProviderModelBucket`、`ProviderModelAggregateSqlRow`、provider-model SQL、loader、snapshot field与exports。删除`selected_daily` snapshot field且不保留deprecated alias、旧signature wrapper或compatibility constructor；daily loader继续服务activity projection。
+
+### `DB-232`：Single transaction与invariants
+
+一个pooled connection、一个deferred read transaction内固定执行：selected summary → selected provider/models → activity summary → activity daily。两个range相同也独立执行，不增加cache/fallback。
+
+- selected provider/model buckets逐字段checked sum等于selected summary，稳定ID、当前label与确定性排序语义保持不变。
+- activity daily逐字段checked sum等于activity summary，日期strict ascending、dense且恰好覆盖activity range。
+- `load_daily`继续支持任意合法finite range；DB不硬编码365，Jaco consumer负责该产品约束。
+- 任一SQL/decode/negative/overflow/date/invariant失败返回单一`Err`，不返回partial snapshot。
+- eligible universe仍是每条persisted usage event，不按run最终status过滤，也不把cache/reasoning二次加入total。
+
+### `DB-233`：SQL与query plan
+
+- summary/daily继续复用production finite SQL和`idx_usage_events_created_at`。
+- provider/model继续按稳定IDs聚合并left join当前`providers`/`provider_models`显示label。
+- EXPLAIN测试直接复用production `SUMMARY_FINITE_SQL`、`DAILY_FINITE_SQL`与provider-model SQL。
+- AllTime summary table scan保持预期；无新宽索引、schema或migration。
+
+### Tests 与验证
+
+| T-ID | Owner test |
+| --- | --- |
+| `T-241` | finite selected provider-model与365-day activity各自cross-total一致 |
+| `T-242` | AllTime仍返回provider-model聚合，activity有365个bucket，snapshot无selected daily |
+| `T-243` | positive/negative/half-hour fixed offset跨年与leap day |
+| `T-244` | selected/activity empty、all-zero与independent totals |
+| `T-245` | multiple provider steps仍逐event累计且不依赖parent run final status |
+| `T-246` | negative/SUM overflow/date/invariant使整个snapshot失败 |
+| `T-247` | production summary/daily SQL使用created-at index |
+| `T-248` | public API无selected daily；provider-model SQL/type/label join继续存在且被consumer覆盖 |
+
+```sh
+cargo fmt
+cargo test -p jaco-db usage_analytics
+cargo clippy -p jaco-db --all-targets --all-features -- -D warnings
+git diff --check -- crates/jaco-db
+```
+
+完成条件：root `C-22`、`DB-31`–`DB-33`、`R-63`–`R-66`、`R-77`–`R-78`与`T-241`–`T-248`通过；schema/version/migration/usage authority无diff；`WP-203`的非provider projection回归保持通过。
+
+### Activity实施证据
+
+- 最终snapshot保留`selected_range`、`selected_summary`、`provider_models`与`activity`；selected daily snapshot/query已删除。selected provider/model与activity daily分别在同一read transaction中完成checked cross-total。
+- `cargo test -p jaco-db usage_analytics --no-fail-fast`通过12项；`cargo test -p jaco-db --no-fail-fast`通过67项；strict clippy、`cargo fmt --package jaco-db`与scoped diff check通过。
+- 无schema、migration、version或兼容API变化；`WP-601`组件实现不受影响。

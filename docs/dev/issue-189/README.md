@@ -2,29 +2,30 @@
 
 ## 状态与范围
 
-- 状态：`In progress`（`agent-message-request-usage-plan.md` 保留最终验证项；composer 与 Settings 的工作包均已 `Implemented`；workspace-wide gates、现场provider refresh/新请求、完整人工矩阵与三平台 CI 待做）
+- 状态：`In progress`（`agent-message-request-usage-plan.md` 保留最终验证项；composer、Settings analytics与activity heatmap工作包已 `Implemented`；workspace-wide gates、完整人工矩阵与三平台 CI 待做）
 - 关联 issue：[#189](https://github.com/suxiaoshao/gpui/issues/189)
 - 父 issue：[#159](https://github.com/suxiaoshao/gpui/issues/159)
 - Plan ID：`issue-189`
 - 根计划：`docs/dev/issue-189/README.md`
 - 根索引：[Workspace development plans](../README.md)
 - 分支：`codex/189-jaco-show-context-usage`
-- 最近更新：2026-08-20
-- 实施引用：composer 与 Settings 工作包已实现；Settings implementation commit / PR `Pending`
+- 最近更新：2026-08-21
+- 实施引用：composer、既有 Settings与activity heatmap工作包已实现；activity heatmap implementation commit / PR `Pending`
 
-## 三个独立执行文档
+## 四个独立执行文档
 
 | 顺序 | 执行文档 | 状态 | 独立职责 |
 | --- | --- | --- | --- |
 | 1 | [Agent 消息单次请求用量](agent-message-request-usage-plan.md) | `In progress` | 最终 agent 消息与 provider step 的单次 usage 关联、Copy/时间工具栏入口、始终可hover的图标与group-hover total摘要、原生HoverCard、实时与重载一致性 |
 | 2 | [输入框上下文占用](composer-context-occupancy-plan.md) | `Implemented` | 当前模型 context window、最新成功请求占用、模型切换与未知状态、footer Gauge + 百分比 HoverCard |
-| 3 | [设置页时间范围使用统计](settings-usage-analytics-plan.md) | `Implemented` | 本地日历范围、数据库聚合、趋势、provider/model 分组与设置页状态 |
+| 3 | [设置页时间范围使用统计](settings-usage-analytics-plan.md) | `Implemented` | 本地日历范围、数据库聚合、selected summary、provider/model Table与设置页状态；finite LineChart由第4份计划定向替代 |
+| 4 | [设置页 Token 用量活动热力图](settings-usage-activity-heatmap-plan.md) | `Implemented` | 固定最近365个本地日历日、独立gpui-heatmap组件、selected + activity一致快照、LineChart替换与页面接入 |
 
-三个文档共享 persisted `usage_events`，但不共享展示语义：消息显示单次 request usage，输入框显示 context occupancy，设置页显示范围聚合。任何执行文档都不得用另一个文档的投影替代自己的数据契约。
+四个文档共享 persisted `usage_events`，但不共享展示语义：消息显示单次 request usage，输入框显示 context occupancy，Settings summary/Table显示用户所选范围聚合，activity heatmap固定显示最近365个本地日历日。任何执行文档都不得用另一个文档的投影替代自己的数据契约。
 
 ## 已确认的用户决定
 
-- 一个 issue 内完成三个产品面，并使用三个独立执行文档。
+- 一个 issue 内完成三个产品面；Settings的既有统计与后续activity heatmap使用两个独立执行文档，共四份执行文档。
 - 先完成 `agent-message-request-usage-plan.md`。
 - Agent 消息用量入口放在复制按钮与完成时间所在的 action row。
 - Agent消息HoverCard参考Alma：输入、输出、缓存读取、缓存命中率、缓存写入、推理与总Token。
@@ -42,6 +43,11 @@
 - 首次进入或重新选择Usage、切换周期、错误Retry时查询；不增加常驻Refresh按钮、轮询或focus refresh。
 - Settings的一次request等于一条persisted usage event；同一turn的多个completed provider steps分别计数。
 - Settings索引直接写入schema version 1的fresh schema，不新增migration或旧库兼容层；已有本地数据库由使用者自行重建或手工加索引。
+- Settings activity heatmap固定显示包含今天在内的最近365个本地日历日，并替换finite daily LineChart；period selector继续控制summary和provider/model Table。
+- 热力图以Monday开周，使用零值 + 四个按当前365天最大值线性归一化的非零色阶；固定cell尺寸，窄页面横向滚动。
+- 只有真实日期cell提供pointer tooltip，内容为本地化日期和精确总Token；整图提供一个accessibility summary，不建立365个Tab stop或键盘打开路径。
+- 热力图通过独立`gpui-heatmap` crate实现，复用gpui-component Plot tooltip、theme与Scrollbar，并以caller component id隔离多实例scroll state；Jaco负责fixed offset、本地日期、Fluent与业务caption。
+- 精简provider/model Table继续保留；activity heatmap替换“每日总 Token”LineChart，失去consumer的selected daily snapshot/query随新计划删除。
 
 ## 共享非目标
 
@@ -62,27 +68,29 @@
 
 ## 计划映射
 
-三个执行文档复用同一组 owner 计划入口；各 owner README 分开登记已实施的 `WP-?01`/`WP-?02` 与 Settings 的 `WP-203`/`WP-503`：
+四个执行文档复用同一组 owner 计划入口；各 owner README 分开登记已实施的 `WP-?01`/`WP-?02`、既有 Settings `WP-203`/`WP-503`，以及activity heatmap的`WP-204`/`WP-601`/`WP-504`：
 
 | Owner | 文档 | 职责 |
 | --- | --- | --- |
 | `crates/jaco-core` | [owner plan](../../../crates/jaco-core/docs/dev/issue-189/README.md) | usage contract；context capability、latest request fact、Conversation change/effect；无Settings WP |
-| `crates/jaco-db` | [owner plan](../../../crates/jaco-db/docs/dev/issue-189/README.md) | message projection；composer selector/assembler；Settings analytics projection、fresh-schema index与聚合查询 |
+| `crates/jaco-db` | [owner plan](../../../crates/jaco-db/docs/dev/issue-189/README.md) | message projection；composer selector/assembler；Settings selected + activity analytics projection、fresh-schema index与聚合查询 |
 | `crates/jaco-conversation` | [owner plan](../../../crates/jaco-conversation/docs/dev/issue-189/README.md) | message collection与composer singular fact hydration；无Settings WP |
 | `crates/jaco-agent` | [owner plan](../../../crates/jaco-agent/docs/dev/issue-189/README.md) | message live publication；capability discovery与composer live publication；无Settings WP |
-| `app/jaco` | [owner plan](../../../app/jaco/docs/dev/issue-189/README.md) | message action row；composer footer；Settings Usage页面、Operation、图表/表格、Fluent与UI验证 |
+| `crates/gpui-heatmap` | [owner plan](../../../crates/gpui-heatmap/docs/dev/issue-189/README.md) | `WP-601`独立、可复用的GPUI活动热力图组件、Plot tooltip、主题、AX与测试；已`Implemented` |
+| `app/jaco` | [owner plan](../../../app/jaco/docs/dev/issue-189/README.md) | message action row；composer footer；Settings Usage页面、Operation、selected/activity范围、heatmap消费、Fluent与UI验证 |
 
-Settings只增加 `jaco-db/WP-203` 与 `app/jaco/WP-503`；typed snapshot留在DB query boundary，不直接复用composer singular fact，也不为单一consumer增加core/conversation/agent contract。
+已实施的Settings基础工作包仍是 `jaco-db/WP-203` 与 `app/jaco/WP-503`；activity替换使用`jaco-db/WP-204`、`gpui-heatmap/WP-601`与`app/jaco/WP-504`。typed snapshot留在DB query boundary，不复用composer singular fact，也不为单一consumer增加core/conversation/agent contract。
 
 ## 跨文档顺序
 
 1. 实施并验收 Agent 消息单次请求用量。
 2. 在不改变历史消息语义的前提下完成 composer context occupancy。
 3. 以全部 eligible usage events 为 universe 完成 Settings 聚合。
+4. `WP-601`组件与`WP-204`数据库投影并行实施，随后由`WP-504`以固定365日activity替换LineChart并保留精简Table。
 
 ## 聚合完成条件
 
-- 三个执行文档均达到 `Done`，且各自的指标、unknown 语义和测试互不替代。
+- 四个执行文档均达到 `Done`，且各自的指标、unknown/empty语义和测试互不替代。
 - 记录实际 commits、PR、变更文件、自动化、人工场景、跨平台 CI 和未验证边界。
 - 同步 root/owner 索引与最终稳定 owner README；若产生长期跨 issue 约束，再单独评估 ADR。
 
@@ -94,4 +102,5 @@ Settings只增加 `jaco-db/WP-203` 与 `app/jaco/WP-503`；typed snapshot留在D
 | Agent 消息执行文档 | `In progress`，代码、本地自动化已完成，最终HoverCard交互已由用户检查确认；真实provider请求和三平台CI待执行 |
 | Composer 执行文档 | `Implemented`；`WP-102`、`WP-202`、`WP-302`、`WP-402`、`WP-502` 的聚焦验证已通过；旧模型缓存保持unknown直至用户refresh；workspace-wide gates、现场provider refresh/新请求、最终bundle、完整人工矩阵与三平台 CI 待执行 |
 | Settings 执行文档 | `Implemented`；`WP-203`、`WP-503` 聚焦测试、Entity/Window lifecycle tests、check、strict clippy与格式检查通过；隔离bundle已完成核心UI smoke，剩余人工边界和远端 CI 待执行 |
-| 自动化、人工与 CI | Composer 与 Settings focused tests、`cargo fmt`、selected-package strict clippy 与 `cargo check -p jaco` 通过；隔离构建已验证消息/composer既有场景及Settings的empty、五周期、趋势/AllTime、精确统计、AX与search lifecycle；Settings横向scroll/error/degraded/现场语言切换、workspace-wide build/test/clippy、现场provider refresh/新请求与CI未执行 |
+| Settings activity heatmap执行文档 | `Implemented`；热力图替换LineChart并保留精简Table；`WP-601`、`WP-204`、`WP-504`聚焦测试、selected-package strict clippy与格式检查通过，修正后人工矩阵与远端CI待执行 |
+| 自动化、人工与 CI | Composer、Settings与activity focused tests、`cargo fmt`、selected-package strict clippy与`cargo check -p jaco`通过；澄清前的中间activity bundle曾以隔离目录启动，最终修正实现尚未重建bundle。当前macOS图形会话锁定，横向滚动两端tooltip、light/dark/system、两locale、degraded refresh与AX Inspector未执行；workspace-wide build/test/clippy、现场provider refresh/新请求与CI未执行 |

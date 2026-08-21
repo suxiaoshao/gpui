@@ -244,43 +244,44 @@ struct ProviderModelAggregateSqlRow {
 }
 
 impl FreshRepository {
-    pub fn usage_analytics(&self, range: UsageAnalyticsRange) -> Result<UsageAnalyticsSnapshot> {
+    pub fn usage_analytics(&self, query: UsageAnalyticsQuery) -> Result<UsageAnalyticsSnapshot> {
         let mut conn = self.conn()?;
-        conn.transaction(|conn| usage_analytics_with_conn(conn, range))
+        conn.transaction(|conn| usage_analytics_with_conn(conn, query))
     }
 }
 
 fn usage_analytics_with_conn(
     conn: &mut SqliteConnection,
-    range: UsageAnalyticsRange,
+    query: UsageAnalyticsQuery,
 ) -> Result<UsageAnalyticsSnapshot> {
-    let summary = load_summary(conn, range)?;
-    validate_aggregate(&summary, "summary")?;
-
-    let daily = match range {
-        UsageAnalyticsRange::Finite(range) => load_daily(conn, range)?,
-        UsageAnalyticsRange::AllTime => Vec::new(),
-    };
-    let provider_models = load_provider_models(conn, range)?;
-
-    if matches!(range, UsageAnalyticsRange::Finite(_)) {
-        validate_bucket_totals(
-            daily.iter().map(|bucket| &bucket.aggregate),
-            &summary,
-            "daily",
-        )?;
-    }
+    let selected_summary = load_summary(conn, query.selected_range)?;
+    validate_aggregate(&selected_summary, "selected summary")?;
+    let provider_models = load_provider_models(conn, query.selected_range)?;
     validate_bucket_totals(
         provider_models.iter().map(|bucket| &bucket.aggregate),
-        &summary,
+        &selected_summary,
         "provider/model",
     )?;
 
+    let activity_summary = load_summary(conn, UsageAnalyticsRange::Finite(query.activity_range))?;
+    validate_aggregate(&activity_summary, "activity summary")?;
+    let activity_daily = load_daily(conn, query.activity_range)?;
+    validate_daily_shape(&activity_daily, query.activity_range, "activity daily")?;
+    validate_bucket_totals(
+        activity_daily.iter().map(|bucket| &bucket.aggregate),
+        &activity_summary,
+        "activity daily",
+    )?;
+
     Ok(UsageAnalyticsSnapshot {
-        range,
-        summary,
-        daily,
+        selected_range: query.selected_range,
+        selected_summary,
         provider_models,
+        activity: UsageAnalyticsActivity {
+            range: query.activity_range,
+            summary: activity_summary,
+            daily: activity_daily,
+        },
     })
 }
 
@@ -469,6 +470,50 @@ fn validate_bucket_totals<'a>(
     if &total != summary {
         return Err(DbError::Invariant(format!(
             "{context} usage analytics totals do not match summary"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_daily_shape(
+    daily: &[UsageAnalyticsDailyBucket],
+    range: UsageAnalyticsFiniteRange,
+    context: &str,
+) -> Result<()> {
+    let start_date = range
+        .start_utc()
+        .checked_to_offset(range.local_offset())
+        .ok_or_else(|| {
+            DbError::Invariant(format!(
+                "{context} range start is outside the supported local date range"
+            ))
+        })?
+        .date();
+    let end_date = range
+        .end_utc()
+        .checked_to_offset(range.local_offset())
+        .ok_or_else(|| {
+            DbError::Invariant(format!(
+                "{context} range end is outside the supported local date range"
+            ))
+        })?
+        .date();
+
+    let mut expected_date = start_date;
+    for bucket in daily {
+        if bucket.local_date != expected_date {
+            return Err(DbError::Invariant(format!(
+                "{context} expected {expected_date}, found {}",
+                bucket.local_date
+            )));
+        }
+        expected_date = expected_date.next_day().ok_or_else(|| {
+            DbError::Invariant(format!("{context} exceeds supported local dates"))
+        })?;
+    }
+    if expected_date != end_date {
+        return Err(DbError::Invariant(format!(
+            "{context} does not densely cover the requested range"
         )));
     }
     Ok(())
