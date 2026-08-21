@@ -25,6 +25,7 @@ pub(super) enum SettingsPageKey {
     General,
     Appearance,
     Provider,
+    Usage,
     Projects,
     Prompts,
     Skills,

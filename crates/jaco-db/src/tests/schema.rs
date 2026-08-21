@@ -18,6 +18,7 @@ fn fresh_schema_declares_structured_sqlite_types_and_checks() {
     let provider_models_sql = table_sql(&mut conn, "provider_models");
     assert!(provider_models_sql.contains("enabled BOOLEAN NOT NULL DEFAULT 1"));
     assert!(provider_models_sql.contains("CHECK (enabled IN (0, 1))"));
+    assert!(provider_models_sql.contains("pricing_json JSON"));
 
     let agent_runs_sql = table_sql(&mut conn, "agent_runs");
     assert!(agent_runs_sql.contains(
@@ -25,6 +26,16 @@ fn fresh_schema_declares_structured_sqlite_types_and_checks() {
     ));
     assert!(agent_runs_sql.contains("started_at DateTime"));
     assert!(agent_runs_sql.contains("completed_at DateTime"));
+
+    let provider_steps_sql = table_sql(&mut conn, "provider_steps");
+    assert!(provider_steps_sql.contains("pricing_snapshot_json JSON"));
+
+    let usage_events_sql = table_sql(&mut conn, "usage_events");
+    assert!(usage_events_sql.contains("cost_amount_nano_usd INTEGER"));
+    assert!(
+        usage_events_sql
+            .contains("CHECK (cost_amount_nano_usd IS NULL OR cost_amount_nano_usd >= 0)")
+    );
 
     let conversation_entries_sql = table_sql(&mut conn, "conversation_entries");
     assert!(conversation_entries_sql.contains(

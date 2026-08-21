@@ -84,6 +84,19 @@ impl FreshRepository {
             let now = now_string()?;
             let provider_id = input.request_snapshot.provider_id.clone();
             let model_id = input.request_snapshot.model_id.clone();
+            let pricing_snapshot = provider_model_row(conn, &provider_id, &model_id)?
+                .and_then(|row| from_json_opt(row.pricing_json).transpose())
+                .transpose()?
+                .filter(|pricing: &ProviderModelPricingSnapshot| {
+                    pricing.models_dev_model_id() == model_id
+                        && official_provider_pricing_route(
+                            &input.settings_snapshot.provider_settings,
+                        )
+                        .as_ref()
+                            == Some(pricing.route())
+                        && models_dev_provider_id_for_kind(pricing.route().provider_kind())
+                            == Some(pricing.models_dev_provider_id())
+                });
             let row = SqlNewProviderStepRow {
                 id: new_id(),
                 agent_run_id: input.agent_run_id,
@@ -106,6 +119,7 @@ impl FreshRepository {
                 started_at: next_started_at(None, input.status, now),
                 completed_at: next_provider_step_completed_at(None, input.status, now),
                 updated_at: now,
+                pricing_snapshot_json: to_json_opt(&pricing_snapshot)?,
             };
             diesel::insert_into(provider_steps::table)
                 .values(&row)
@@ -305,6 +319,7 @@ impl FreshRepository {
                 conn,
                 &existing,
                 completion.usage,
+                completion.cost_amount,
                 now.date().to_string(),
                 now,
             )?;
@@ -629,7 +644,14 @@ impl FreshRepository {
                 )));
             }
             let now = now_string()?;
-            insert_usage_event_with_conn(conn, &provider_step, input.usage, input.date_key, now)
+            insert_usage_event_with_conn(
+                conn,
+                &provider_step,
+                input.usage,
+                None,
+                input.date_key,
+                now,
+            )
         })
     }
 
@@ -646,6 +668,14 @@ impl FreshRepository {
             .into_iter()
             .map(TryInto::try_into)
             .collect()
+    }
+
+    pub fn usage_events_for_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<UsageEventRecord>> {
+        let mut conn = self.conn()?;
+        usage_events_for_conversation_with_conn(&mut conn, conversation_id)
     }
 }
 
@@ -681,6 +711,7 @@ fn insert_usage_event_with_conn(
     conn: &mut SqliteConnection,
     provider_step: &SqlProviderStepRow,
     usage: ProviderUsageSnapshot,
+    cost_amount: Option<UsdNanoAmount>,
     date_key: String,
     now: OffsetDateTime,
 ) -> Result<UsageEventRecord> {
@@ -700,10 +731,25 @@ fn insert_usage_event_with_conn(
         total_tokens: u64_to_i64(usage.total_tokens)?,
         usage_json: to_json(&usage)?,
         created_at: now,
+        cost_amount_nano_usd: cost_amount
+            .map(|amount| u64_to_i64(amount.as_u64()))
+            .transpose()?,
     };
     diesel::insert_into(usage_events::table)
         .values(&row)
         .returning(SqlUsageEventRow::as_returning())
         .get_result::<SqlUsageEventRow>(conn)?
         .try_into()
+}
+
+fn models_dev_provider_id_for_kind(provider_kind: &str) -> Option<&'static str> {
+    match provider_kind {
+        "openai" => Some("openai"),
+        "anthropic" => Some("anthropic"),
+        "gemini" => Some("google"),
+        "openrouter" => Some("openrouter"),
+        "deepseek" => Some("deepseek"),
+        "mistral" => Some("mistral"),
+        _ => None,
+    }
 }

@@ -426,6 +426,8 @@ mod tests {
             runs: Vec::new(),
             provider_steps: Vec::new(),
             tool_invocations: Vec::new(),
+            agent_message_request_usages: Vec::new(),
+            latest_context_request_usage: None,
         }
     }
 

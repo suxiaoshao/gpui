@@ -82,6 +82,7 @@ CREATE TABLE provider_models (
     fetched_at DateTime NOT NULL,
     created_at DateTime NOT NULL,
     updated_at DateTime NOT NULL,
+    pricing_json JSON,
     UNIQUE(provider_id, model_id)
 );
 
@@ -171,6 +172,7 @@ CREATE TABLE provider_steps (
     started_at DateTime,
     completed_at DateTime,
     updated_at DateTime NOT NULL,
+    pricing_snapshot_json JSON,
     UNIQUE(agent_run_id, seq),
     CHECK (
         (status = 'queued'
@@ -275,7 +277,9 @@ CREATE TABLE usage_events (
     reasoning_tokens INTEGER NOT NULL DEFAULT 0,
     total_tokens INTEGER NOT NULL DEFAULT 0,
     usage_json JSON NOT NULL,
-    created_at DateTime NOT NULL
+    created_at DateTime NOT NULL,
+    cost_amount_nano_usd INTEGER
+        CHECK (cost_amount_nano_usd IS NULL OR cost_amount_nano_usd >= 0)
 );
 
 CREATE TABLE shortcuts (
@@ -303,6 +307,7 @@ ON provider_steps(provider_id, provider_response_id)
 WHERE provider_response_id IS NOT NULL;
 CREATE INDEX idx_tool_invocations_agent_run_id ON tool_invocations(agent_run_id);
 CREATE INDEX idx_usage_events_conversation_date ON usage_events(conversation_id, date_key);
+CREATE INDEX idx_usage_events_created_at ON usage_events(created_at);
 CREATE UNIQUE INDEX idx_usage_events_provider_step ON usage_events(provider_step_id);
 "#;
 

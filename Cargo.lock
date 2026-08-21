@@ -5792,6 +5792,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-heatmap"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "gpui-component",
+ "time",
+]
+
+[[package]]
 name = "gpui-operation"
 version = "0.1.0"
 dependencies = [
@@ -7229,6 +7238,7 @@ dependencies = [
  "gpui-component-assets",
  "gpui-form",
  "gpui-form-gpui-component",
+ "gpui-heatmap",
  "gpui-operation",
  "gpui-store",
  "gpui-tokio",

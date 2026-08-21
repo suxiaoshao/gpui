@@ -36,6 +36,7 @@ settings-title = 设置
 settings-page-general = 通用
 settings-page-appearance = 外观
 settings-page-provider = 提供商
+settings-page-usage = 用量
 settings-page-projects = 项目
 settings-page-prompts = 提示词
 settings-page-skills = 技能
@@ -47,6 +48,87 @@ settings-custom-theme-color-description = 选择一个颜色生成 Material You 
 settings-light-themes = 亮色主题
 settings-dark-themes = 暗色主题
 settings-search-no-results = 未找到匹配的设置。
+settings-usage-description = 每条已保存的用量记录计为一次已完成的提供商请求。
+settings-usage-period-label = 时间范围
+settings-usage-period-today = 今天
+settings-usage-period-this-week = 本周
+settings-usage-period-this-month = 本月
+settings-usage-period-this-year = 今年
+settings-usage-period-all-time = 全部时间
+settings-usage-loading = 正在加载用量统计……
+settings-usage-refreshing = 正在刷新用量统计……
+settings-usage-load-error-title = 无法获取用量统计
+settings-usage-load-error-description = Jaco 无法加载用量统计，请重试。
+settings-usage-refresh-error-description = 最近一次刷新失败，当前显示的统计数据可能已过期。
+settings-usage-retry = 重试
+settings-usage-empty-title = 该时间范围内暂无用量
+settings-usage-empty-description = 完成提供商请求并保存用量后，统计会显示在这里。
+settings-usage-summary-title = 汇总
+settings-usage-summary-accessible = 用量汇总：{ $metrics }
+settings-usage-metric-accessible = { $label }：{ $value }
+settings-usage-estimated-cost-subtotal = 估算费用小计
+settings-usage-priced-requests-coverage = 已计价请求 { $priced } / { $total }（{ $percent }%）
+settings-usage-cost-metric-accessible = { $label }：{ $value }；{ $coverage }
+settings-usage-unpriced = —
+settings-usage-explicit-free = $0
+settings-usage-cost-disclaimer = 金额按请求时 models.dev 目录价与已记录 Token 估算，不代表提供商最终账单。
+settings-usage-requests = 请求数
+settings-usage-reported-requests = 有用量报告
+settings-usage-unreported-requests = 无用量报告
+settings-usage-total-covered-requests = 已报告总 Token 的请求
+settings-usage-input-tokens = 输入 Token
+settings-usage-output-tokens = 输出 Token
+settings-usage-cached-input-tokens = 缓存读取
+settings-usage-cache-write-input-tokens = 缓存写入
+settings-usage-reasoning-tokens = 推理 Token
+settings-usage-total-tokens = 总 Token
+settings-usage-date-value = { $year }年{ $month }月{ $day }日
+settings-usage-selected-period-empty = { $range }内暂无用量。
+settings-usage-activity-title = 活动热力图
+settings-usage-activity-description = 按本地日历日展示过去 365 天记录的总 Token。
+settings-usage-activity-caption = 过去 { $days } 天共 { $total } Token
+settings-usage-activity-less = 较少
+settings-usage-activity-more = 较多
+settings-usage-activity-month-label =
+    { $month ->
+        [January] 1月
+        [February] 2月
+        [March] 3月
+        [April] 4月
+        [May] 5月
+        [June] 6月
+        [July] 7月
+        [August] 8月
+        [September] 9月
+        [October] 10月
+        [November] 11月
+       *[December] 12月
+    }
+settings-usage-activity-accessible = { $start } 至 { $end } 的活动：共 { $total } Token，{ $activeDays } 个活跃日；峰值为 { $peakDate } 的 { $peakTokens } Token。
+settings-usage-activity-accessible-no-peak = { $start } 至 { $end } 的活动：共 { $total } Token，{ $activeDays } 个活跃日；暂无记录的活动。
+settings-usage-cost-trend-title = 费用趋势
+settings-usage-cost-trend-description = 展示所选时段内每个至少包含一个已计价请求的本地日历日估算费用。
+settings-usage-cost-trend-accessible = 费用趋势：{ $items }
+settings-usage-cost-trend-item-accessible = { $date }：{ $amount }；{ $priced } 个已计价请求
+settings-usage-cost-trend-free-item = { $date }：{ $amount } · { $priced } 个已计价请求
+settings-usage-provider-cost-title = 提供商费用
+settings-usage-provider-cost-description = 按提供商汇总估算费用。饼图包含所有存在已计价请求的提供商，进度条展示前五名。
+settings-usage-provider-all = 全部提供商
+settings-usage-provider-top-five = 前五名提供商
+settings-usage-provider-cost-accessible = 提供商费用：{ $items }
+settings-usage-model-cost-title = 模型费用
+settings-usage-model-cost-description = 展示所选时段内估算费用最高的十个模型。
+settings-usage-model-cost-accessible = 模型费用：{ $items }
+settings-usage-model-provider-label = { $model } · { $provider }
+settings-usage-cost-chart-item-accessible = { $label }：{ $amount }；已计价请求 { $priced } / { $total }
+settings-usage-cost-legend-value = { $amount } · { $coverage }
+settings-usage-known-free-description = 此处显示的已计价请求均明确为免费。
+settings-usage-breakdown-title = 提供商与模型明细
+settings-usage-provider = 提供商
+settings-usage-model = 模型
+settings-usage-estimated-cost = 估算费用
+settings-usage-cost-cell = { $amount }（{ $priced } / { $total }）
+settings-usage-cost-cell-accessible = 估算费用：{ $amount }；已计价请求：{ $priced } / { $total }
 theme-selected = 已选择
 theme-selected-prefix = 已选择：
 appearance-mode-system = 跟随系统
@@ -342,6 +424,42 @@ conversation-copy-tooltip = 复制
 conversation-copy-success = 已复制
 conversation-copy-failed = 复制失败
 conversation-copy-failed-message = 无法写入剪贴板。
+conversation-request-usage-tooltip = 请求用量
+conversation-request-usage-title = 用量
+conversation-request-usage-compact-total = { $tokens } Token
+conversation-request-usage-input-tokens = 输入 Token
+conversation-request-usage-output-tokens = 输出 Token
+conversation-request-usage-cache-read = 缓存读取
+conversation-request-usage-cache-hit-rate = 缓存命中率
+conversation-request-usage-cache-write = 缓存写入
+conversation-request-usage-reasoning-tokens = 推理 Token
+conversation-request-usage-total-tokens = 总 Token
+conversation-request-usage-unreported = 提供商未报告 Token 用量
+conversation-request-usage-unavailable = 请求用量不可用
+conversation-request-usage-unknown-value = 未知
+conversation-context-occupancy-tooltip = 上下文占用
+conversation-context-occupancy-title = 上下文占用
+conversation-context-occupancy-summary-known = { $percentage }%
+conversation-context-occupancy-summary-unknown = —
+conversation-context-occupancy-accessible-known = 上下文占用：{ $percentage }%
+conversation-context-occupancy-accessible-unknown = 上下文占用未知：{ $reason }
+conversation-context-occupancy-used-tokens = 已用上下文
+conversation-context-occupancy-context-window = 上下文窗口
+conversation-context-occupancy-percentage = 占用率
+conversation-context-occupancy-provider = 提供商
+conversation-context-occupancy-model = 模型
+conversation-context-occupancy-request-completed = 请求完成时间
+conversation-context-occupancy-token-value = { $tokens } Token
+conversation-context-occupancy-token-summary = { $used } / { $context_window } Token
+conversation-context-occupancy-percentage-value = { $percentage }%
+conversation-context-occupancy-unknown-value = —
+conversation-context-occupancy-reason-no-model = 尚未选择模型
+conversation-context-occupancy-reason-window-unknown = 所选模型的上下文窗口未知
+conversation-context-occupancy-reason-no-request = 暂无已完成请求
+conversation-context-occupancy-reason-model-mismatch = 最新请求使用了其他提供商或模型
+conversation-context-occupancy-reason-usage-unavailable = 最新请求的用量不可用
+conversation-context-occupancy-reason-usage-unreported = 提供商未报告最新请求的 Token 用量
+conversation-context-occupancy-reason-usage-partial = 提供商仅报告了最新请求的部分用量
 conversation-timestamp-time = { $time }
 conversation-timestamp-weekday-time =
     { $weekday ->

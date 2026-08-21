@@ -1250,7 +1250,7 @@ async fn run_agent_with_saved_provider(
         Err(err) => {
             return gpui_tokio::Tokio::spawn(cx, async move {
                 runtime
-                    .record_setup_failed_run(err.request, err.message, Some(&observer))
+                    .record_setup_failed_run(*err.request, err.message, Some(&observer))
                     .await
             })
             .await

@@ -32,6 +32,7 @@ mod prompts;
 mod provider;
 mod shortcuts;
 mod skills;
+mod usage;
 
 use self::{
     appearance::AppearanceSettingsPage,
@@ -45,6 +46,7 @@ use self::{
     provider::ProviderSettingsPage,
     shortcuts::ShortcutsSettingsPage,
     skills::SkillsSettingsPage,
+    usage::UsageSettingsPage,
 };
 
 actions!(jaco_settings, [ToggleSettings]);
@@ -65,6 +67,8 @@ pub(crate) struct SettingsView {
     database_pages: Option<DatabaseSettingsPages>,
     app_menu_bar: Entity<TitleBarAppMenuBar>,
     selected_page: SettingsPageKey,
+    active_page: Option<SettingsPageKey>,
+    database_ready: bool,
     sidebar_width: Pixels,
     _theme_binding: state::theme::WindowThemeBinding,
     _subscriptions: Vec<Subscription>,
@@ -88,6 +92,7 @@ impl ConfigSettingsPages {
 
 struct DatabaseSettingsPages {
     provider: Entity<ProviderSettingsPage>,
+    usage: Entity<UsageSettingsPage>,
     projects: Entity<ProjectsSettingsPage>,
     prompts: Entity<PromptsSettingsPage>,
     shortcuts: Entity<ShortcutsSettingsPage>,
@@ -97,6 +102,7 @@ impl DatabaseSettingsPages {
     fn new(window: &mut Window, cx: &mut Context<SettingsView>) -> Self {
         Self {
             provider: cx.new(|cx| ProviderSettingsPage::new(window, cx)),
+            usage: cx.new(|cx| UsageSettingsPage::new(window, cx)),
             projects: cx.new(ProjectsSettingsPage::new),
             prompts: cx.new(|cx| PromptsSettingsPage::new(window, cx)),
             shortcuts: cx.new(|cx| ShortcutsSettingsPage::new(window, cx)),
@@ -122,8 +128,8 @@ impl SettingsView {
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
         let database_store = crate::database::store(cx);
         let config_store = state::config::store(cx);
-        let database_pages =
-            crate::database::is_ready(cx).then(|| DatabaseSettingsPages::new(window, cx));
+        let database_ready = crate::database::is_ready(cx);
+        let database_pages = database_ready.then(|| DatabaseSettingsPages::new(window, cx));
         let _subscriptions = vec![
             cx.subscribe_in(
                 &settings_search_input,
@@ -150,6 +156,12 @@ impl SettingsView {
                         cx,
                     );
                 });
+                if let Some(pages) = &settings.database_pages {
+                    pages
+                        .usage
+                        .update(cx, |usage, cx| usage.sync_i18n(window, cx));
+                }
+                settings.sync_actual_active_page(false, window, cx);
                 cx.notify();
             }),
             config_store.observe_select_in(
@@ -164,34 +176,48 @@ impl SettingsView {
                 settings.sync_database_pages(window, cx);
             }),
         ];
-        Self {
+        let mut settings = Self {
             focus_handle,
             settings_search_input,
             config_pages,
             database_pages,
             app_menu_bar,
             selected_page,
+            active_page: None,
+            database_ready,
             sidebar_width: SETTINGS_SIDEBAR_DEFAULT_WIDTH,
             _theme_binding: state::theme::WindowThemeBinding::new(window, cx),
             _subscriptions,
-        }
+        };
+        settings.sync_actual_active_page(false, window, cx);
+        settings
     }
 
     fn sync_config_pages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let has_data = state::config::store(cx).read(cx, |operation| operation.data().is_some());
         if has_data && self.config_pages.is_none() {
             self.config_pages = Some(ConfigSettingsPages::new(window, cx));
+            if self.database_pages.is_none() && crate::database::is_ready(cx) {
+                self.database_pages = Some(DatabaseSettingsPages::new(window, cx));
+            }
         } else if !has_data {
+            self.deactivate_usage(cx);
+            self.active_page = None;
             self.config_pages = None;
             self.database_pages = None;
         }
+        self.sync_actual_active_page(false, window, cx);
         cx.notify();
     }
 
     fn sync_database_pages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.database_pages.is_none() && crate::database::is_ready(cx) {
+        let ready = crate::database::is_ready(cx);
+        let became_ready = ready && !self.database_ready;
+        self.database_ready = ready;
+        if self.database_pages.is_none() && ready {
             self.database_pages = Some(DatabaseSettingsPages::new(window, cx));
         }
+        self.sync_actual_active_page(became_ready, window, cx);
         cx.notify();
     }
 
@@ -199,6 +225,7 @@ impl SettingsView {
         if let Some(pages) = &self.database_pages {
             let page = match key {
                 SettingsPageKey::Provider => pages.provider.clone().into_any_element(),
+                SettingsPageKey::Usage => pages.usage.clone().into_any_element(),
                 SettingsPageKey::Projects => pages.projects.clone().into_any_element(),
                 SettingsPageKey::Prompts => pages.prompts.clone().into_any_element(),
                 SettingsPageKey::Shortcuts => pages.shortcuts.clone().into_any_element(),
@@ -225,11 +252,63 @@ impl SettingsView {
         &mut self,
         _: &Entity<InputState>,
         event: &InputEvent,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if matches!(event, InputEvent::Change) {
+            self.sync_actual_active_page(false, window, cx);
             cx.notify();
+        }
+    }
+
+    fn select_page(&mut self, key: SettingsPageKey, window: &mut Window, cx: &mut Context<Self>) {
+        self.selected_page = key;
+        self.sync_actual_active_page(key == SettingsPageKey::Usage, window, cx);
+        cx.notify();
+    }
+
+    fn deactivate_usage(&mut self, cx: &mut Context<Self>) {
+        if let Some(pages) = &self.database_pages {
+            pages.usage.update(cx, |usage, cx| usage.deactivate(cx));
+        }
+    }
+
+    fn sync_actual_active_page(
+        &mut self,
+        force_usage_activation: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let next = self.config_pages.as_ref().and_then(|_| {
+            let query = self
+                .settings_search_input
+                .read(cx)
+                .value()
+                .trim()
+                .to_lowercase();
+            let specs = settings_page_specs(cx);
+            let visible = specs
+                .iter()
+                .filter(|spec| settings_page_matches(spec, &query))
+                .collect::<Vec<_>>();
+            resolve_actual_page(self.selected_page, &visible)
+        });
+        let transition = usage_lifecycle_transition(
+            self.active_page,
+            next,
+            force_usage_activation,
+            self.database_ready,
+        );
+        if transition.deactivate {
+            self.deactivate_usage(cx);
+        }
+        self.active_page = next;
+        if transition.activate
+            && let Some(pages) = &self.database_pages
+        {
+            pages
+                .usage
+                .update(cx, |usage, cx| usage.activate(window, cx));
         }
     }
 
@@ -285,9 +364,6 @@ impl Render for SettingsView {
         if !has_data {
             return self.render_config_gate(window, cx);
         }
-        if self.config_pages.is_none() {
-            self.config_pages = Some(ConfigSettingsPages::new(window, cx));
-        }
         let config_pages = self
             .config_pages
             .as_ref()
@@ -308,24 +384,20 @@ impl Render for SettingsView {
             .filter(|spec| settings_page_matches(spec, &query))
             .cloned()
             .collect::<Vec<_>>();
-        let active_page_key = visible_pages
-            .iter()
-            .find(|spec| spec.key == self.selected_page)
-            .or_else(|| visible_pages.first())
-            .map(|spec| spec.key)
-            .unwrap_or(self.selected_page);
-        let active_page_title = page_specs
-            .iter()
-            .find(|spec| spec.key == active_page_key)
+        let shell_active_page = self.active_page.unwrap_or(self.selected_page);
+        let active_page_title = self
+            .active_page
+            .and_then(|active_page| page_specs.iter().find(|spec| spec.key == active_page))
             .map(|spec| spec.title.clone())
             .unwrap_or_else(|| settings_title.clone().into());
-        let page_body = if visible_pages.is_empty() {
+        let page_body = if visible_pages.is_empty() || self.active_page.is_none() {
             SettingsPageFrame::new(
                 settings_title.clone(),
                 settings_empty_message(search_no_results),
             )
             .into_any_element()
         } else {
+            let active_page_key = self.active_page.unwrap_or(self.selected_page);
             let frame = SettingsPageFrame::new(
                 active_page_title,
                 match active_page_key {
@@ -334,6 +406,7 @@ impl Render for SettingsView {
                         config_pages.appearance.clone().into_any_element()
                     }
                     SettingsPageKey::Provider
+                    | SettingsPageKey::Usage
                     | SettingsPageKey::Projects
                     | SettingsPageKey::Prompts
                     | SettingsPageKey::Shortcuts => self.database_page(active_page_key, cx),
@@ -382,7 +455,7 @@ impl Render for SettingsView {
                         self.sidebar_width,
                         self.settings_search_input.clone(),
                         visible_pages,
-                        active_page_key,
+                        shell_active_page,
                         page_body,
                     )
                     .on_resize(move |width, _window, cx| {
@@ -391,10 +464,9 @@ impl Render for SettingsView {
                             cx.notify();
                         });
                     })
-                    .on_select(move |key, _window, cx| {
+                    .on_select(move |key, window, cx| {
                         let _ = select_view.update(cx, |view, cx| {
-                            view.selected_page = key;
-                            cx.notify();
+                            view.select_page(key, window, cx);
                         });
                     }),
                 ),
@@ -540,7 +612,9 @@ fn open_settings_window_to(
                             search_input.set_value("", window, cx);
                         });
                         if let Some(selected_page) = selected_page {
-                            settings.selected_page = selected_page;
+                            settings.select_page(selected_page, window, cx);
+                        } else {
+                            settings.sync_actual_active_page(false, window, cx);
                         }
                         settings.focus(window, cx);
                         cx.notify();
@@ -624,15 +698,16 @@ fn schedule_settings_window_reveal(native_window: NativeWindowHandle, cx: &mut A
     });
 }
 
-fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 8] {
+fn settings_page_specs(cx: &App) -> [SettingsPageSpec; 9] {
     let i18n = cx.global::<I18n>();
     settings_page_specs_for_i18n(i18n)
 }
 
-fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 8] {
+fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 9] {
     let page_general = i18n.t("settings-page-general");
     let page_appearance = i18n.t("settings-page-appearance");
     let page_provider = i18n.t("settings-page-provider");
+    let page_usage = i18n.t("settings-page-usage");
     let page_projects = i18n.t("settings-page-projects");
     let page_prompts = i18n.t("settings-page-prompts");
     let page_skills = i18n.t("settings-page-skills");
@@ -677,6 +752,15 @@ fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 8] {
             settings_search_text(
                 [page_provider.as_str()],
                 "provider model api key base url openai anthropic gemini ollama openrouter deepseek kimi azure mistral groq perplexity together 模型 提供商",
+            ),
+        ),
+        SettingsPageSpec::new(
+            SettingsPageKey::Usage,
+            IconName::ChartNoAxesColumn,
+            page_usage.clone(),
+            settings_search_text(
+                [page_usage.as_str()],
+                "usage token tokens statistics analytics request requests provider model cache activity heatmap calendar daily year cost costs price pricing estimated subtotal priced coverage 使用 用量 统计 令牌 请求 提供商 模型 缓存 活动 热力图 日历 每日 年度 费用 花费 成本 价格 计价 覆盖率 估算 shiyong yongliang tongji lingpai qingqiu tigongshang moxing huancun huodong relitu rili meiri niandu feiyong huafei chengben jiage jijiag fugaishu gusuan sy yl tj lp qq tgs mx hc hd rlt rl mr nd fy hf cb jg jj fgs gs",
             ),
         ),
         SettingsPageSpec::new(
@@ -725,6 +809,38 @@ fn settings_page_specs_for_i18n(i18n: &I18n) -> [SettingsPageSpec; 8] {
             ),
         ),
     ]
+}
+
+fn resolve_actual_page(
+    selected_page: SettingsPageKey,
+    visible_pages: &[&SettingsPageSpec],
+) -> Option<SettingsPageKey> {
+    visible_pages
+        .iter()
+        .find(|spec| spec.key == selected_page)
+        .or_else(|| visible_pages.first())
+        .map(|spec| spec.key)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct UsageLifecycleTransition {
+    deactivate: bool,
+    activate: bool,
+}
+
+fn usage_lifecycle_transition(
+    previous: Option<SettingsPageKey>,
+    next: Option<SettingsPageKey>,
+    force_activation: bool,
+    database_ready: bool,
+) -> UsageLifecycleTransition {
+    UsageLifecycleTransition {
+        deactivate: previous == Some(SettingsPageKey::Usage)
+            && (next != Some(SettingsPageKey::Usage) || !database_ready),
+        activate: next == Some(SettingsPageKey::Usage)
+            && database_ready
+            && (previous != Some(SettingsPageKey::Usage) || force_activation),
+    }
 }
 
 fn settings_title_bar_content(
@@ -779,8 +895,9 @@ pub(super) fn push_settings_error(
 mod tests {
     use super::{
         SettingsPageKey, SettingsPageSpec, TOGGLE_SETTINGS_KEY, config_operation_phase_has_data,
-        database_operation_phase_has_data, settings_page_matches, settings_page_specs_for_i18n,
-        settings_search_text, settings_titlebar_options,
+        database_operation_phase_has_data, resolve_actual_page, settings_page_matches,
+        settings_page_specs_for_i18n, settings_search_text, settings_titlebar_options,
+        usage_lifecycle_transition,
     };
     use crate::{
         database::DatabasePhase,
@@ -865,6 +982,127 @@ mod tests {
         assert!(settings_page_matches(provider, "Ollama"));
         assert!(settings_page_matches(provider, "提供商"));
         assert!(settings_page_matches(provider, "模型"));
+    }
+
+    #[test]
+    fn settings_usage_page_is_after_provider_with_typed_icon_and_search_terms() {
+        let zh = I18n::for_locale_tag("zh-CN");
+        let specs = settings_page_specs_for_i18n(&zh);
+        assert_eq!(specs.len(), 9);
+        let usage_index = specs
+            .iter()
+            .position(|spec| spec.key == SettingsPageKey::Usage)
+            .expect("usage settings page exists");
+        let provider_index = specs
+            .iter()
+            .position(|spec| spec.key == SettingsPageKey::Provider)
+            .expect("provider settings page exists");
+        let usage = &specs[usage_index];
+
+        assert_eq!(usage_index, provider_index + 1);
+        assert_eq!(usage.icon, IconName::ChartNoAxesColumn);
+        assert_eq!(usage.title.as_ref(), "用量");
+        for query in [
+            "usage",
+            "token",
+            "statistics",
+            "analytics",
+            "request",
+            "provider",
+            "model",
+            "cache",
+            "activity",
+            "heatmap",
+            "calendar",
+            "daily",
+            "year",
+            "cost",
+            "price",
+            "费用",
+            "花费",
+            "价格",
+            "feiyong",
+            "huafei",
+            "jiage",
+            "用量",
+            "统计",
+            "提供商",
+            "模型",
+            "活动",
+            "热力图",
+            "日历",
+            "每日",
+            "年度",
+            "yongliang",
+            "tigongshang",
+            "moxing",
+            "huodong",
+            "relitu",
+            "rili",
+            "meiri",
+            "niandu",
+            "yl",
+        ] {
+            assert!(
+                settings_page_matches(usage, query),
+                "usage page should match {query}"
+            );
+        }
+    }
+
+    #[test]
+    fn actual_page_resolver_prefers_selection_then_first_match_and_none() {
+        let zh = I18n::for_locale_tag("zh-CN");
+        let specs = settings_page_specs_for_i18n(&zh);
+        let all = specs.iter().collect::<Vec<_>>();
+        assert_eq!(
+            resolve_actual_page(SettingsPageKey::Usage, &all),
+            Some(SettingsPageKey::Usage)
+        );
+
+        let usage_only = specs
+            .iter()
+            .filter(|spec| spec.key == SettingsPageKey::Usage)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            resolve_actual_page(SettingsPageKey::General, &usage_only),
+            Some(SettingsPageKey::Usage)
+        );
+        assert_eq!(resolve_actual_page(SettingsPageKey::Usage, &[]), None);
+    }
+
+    #[test]
+    fn usage_lifecycle_covers_direct_open_reselect_leave_and_database_loss() {
+        let direct = usage_lifecycle_transition(None, Some(SettingsPageKey::Usage), false, true);
+        assert!(direct.activate);
+        assert!(!direct.deactivate);
+
+        let reselect = usage_lifecycle_transition(
+            Some(SettingsPageKey::Usage),
+            Some(SettingsPageKey::Usage),
+            true,
+            true,
+        );
+        assert!(reselect.activate);
+        assert!(!reselect.deactivate);
+
+        let leave = usage_lifecycle_transition(
+            Some(SettingsPageKey::Usage),
+            Some(SettingsPageKey::General),
+            false,
+            true,
+        );
+        assert!(!leave.activate);
+        assert!(leave.deactivate);
+
+        let database_loss = usage_lifecycle_transition(
+            Some(SettingsPageKey::Usage),
+            Some(SettingsPageKey::Usage),
+            false,
+            false,
+        );
+        assert!(!database_loss.activate);
+        assert!(database_loss.deactivate);
     }
 
     #[test]

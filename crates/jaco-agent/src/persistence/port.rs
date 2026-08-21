@@ -59,6 +59,11 @@ pub trait AgentPersistence: Send + Sync {
         input: NewProviderStep,
     ) -> jaco_db::Result<ProviderStepRecord>;
 
+    async fn provider_step(
+        &self,
+        id: ProviderStepId,
+    ) -> jaco_db::Result<Option<ProviderStepRecord>>;
+
     async fn provider_steps_for_run(
         &self,
         agent_run_id: AgentRunId,
@@ -245,6 +250,12 @@ impl AgentPersistence for DirectAgentPersistence {
         input: NewProviderStep,
     ) -> jaco_db::Result<ProviderStepRecord> {
         direct!(self, insert_provider_step(input))
+    }
+    async fn provider_step(
+        &self,
+        id: ProviderStepId,
+    ) -> jaco_db::Result<Option<ProviderStepRecord>> {
+        direct!(self, get_provider_step(&id))
     }
     async fn provider_steps_for_run(
         &self,

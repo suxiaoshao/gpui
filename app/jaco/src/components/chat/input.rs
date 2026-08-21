@@ -14,6 +14,7 @@ use crate::components::chat::run_settings::reasoning_selection_is_valid;
 use crate::{
     app::file_watch::{self, FileWatchBinding},
     components::{
+        chat::context_occupancy::composer_context_projection,
         chat::form::{
             AgentRunControlStatus, AgentRunStatusSource, AttachmentControlState, ChatForm,
             ChatFormControls, ChatFormState, ChatFormUiEvent, ControlSlot,
@@ -39,7 +40,7 @@ use gpui_component::{
 };
 use gpui_form::{Form, FormEvent};
 use gpui_operation::{Complete, Load, Refresh, Retry, Transition};
-use jaco_core::{ReasoningSelectionSnapshot, ToolApprovalMode};
+use jaco_core::{ConversationContextRequestUsage, ReasoningSelectionSnapshot, ToolApprovalMode};
 use std::{path::Path, rc::Rc};
 use tracing::{Level, event};
 
@@ -149,6 +150,7 @@ pub(crate) struct ChatInputController {
     form: Entity<Form<ChatInputInput>>,
     run_settings: Entity<RunSettingsController<ChatInputInput>>,
     primary_action_state: Entity<PrimaryActionControlState>,
+    latest_context_request_usage: Option<ConversationContextRequestUsage>,
     next_attachment_id: u64,
     submission_problem: Option<SharedString>,
     skill_catalog_scope: skills::SkillCatalogScope,
@@ -406,8 +408,8 @@ impl ChatInputController {
             subscriptions.push(state::providers::catalog(cx).observe_select_in(
                 cx,
                 window,
-                state::providers::SelectProviderStatus,
-                |_form, _status, _window, cx| cx.notify(),
+                state::providers::SelectProviderModelCatalog,
+                |_form, _catalog, _window, cx| cx.notify(),
             ));
         }
 
@@ -418,6 +420,7 @@ impl ChatInputController {
             form,
             run_settings,
             primary_action_state,
+            latest_context_request_usage: None,
             next_attachment_id: 1,
             submission_problem: None,
             skill_catalog_scope,
@@ -432,6 +435,18 @@ impl ChatInputController {
     pub(crate) fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.composer
             .update(cx, |composer, cx| composer.focus(window, cx));
+    }
+
+    pub(crate) fn set_latest_context_request_usage(
+        &mut self,
+        latest_context_request_usage: Option<ConversationContextRequestUsage>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.latest_context_request_usage == latest_context_request_usage {
+            return;
+        }
+        self.latest_context_request_usage = latest_context_request_usage;
+        cx.notify();
     }
 
     pub(crate) fn refresh_skill_catalog(
@@ -725,9 +740,20 @@ impl View for ChatInput {
         let disabled_reason = controller.submission_problem.clone().or_else(|| {
             send_resource_problem(cx).map(|key| cx.global::<foundation::I18n>().t(key).into())
         });
+        let selected_model = ChatInputInput::ROOT
+            .then(ChatInputInput::RUN_SETTINGS)
+            .then(RunSettingsInput::MODEL)
+            .get(&controller.form, cx);
+        let model_choices = load_model_choices(cx);
+        let context_occupancy_projection = composer_context_projection(
+            selected_model.as_ref(),
+            &model_choices,
+            controller.latest_context_request_usage.as_ref(),
+        );
         let chat_form = ChatForm::new(&controller.chat_form, controller.chat_form_controls.clone())
             .skill_completion_placement(self.skill_completion_placement)
-            .primary_action_projection(can_submit, disabled_reason);
+            .primary_action_projection(can_submit, disabled_reason)
+            .context_occupancy_projection(context_occupancy_projection);
         let refresh_target = self.controller.downgrade();
         let status = (!matches!(
             controller.skill_catalog,
@@ -847,17 +873,23 @@ mod tests {
     };
     use gpui_operation::Transition as _;
     use jaco_core::{
-        CapabilitySourceSnapshot, ContentPart, ModelCapabilitiesSnapshot, ProviderModelMetadata,
-        ProviderSecretRefs, ProviderSettingFieldValue, ProviderSettingValue,
-        ProviderSettingsPayload, ReasoningCapabilitySnapshot, ReasoningControlSnapshot,
+        CapabilitySourceSnapshot, ContentPart, ConversationContextRequestUsage,
+        ModelCapabilitiesSnapshot, ProviderModelMetadata, ProviderSecretRefs,
+        ProviderSettingFieldValue, ProviderSettingValue, ProviderSettingsPayload,
+        ProviderUsageSnapshot, ReasoningCapabilitySnapshot, ReasoningControlSnapshot,
         ReasoningSelectionSnapshot, SkillSourceKind, TokenBudgetSelectionMode, ToolApprovalMode,
         conservative_model_capabilities,
     };
     use jaco_db::{NewProvider, NewProviderModel};
     use std::{cell::Cell, path::PathBuf, rc::Rc};
     use tempfile::{TempDir, tempdir};
+    use time::OffsetDateTime;
 
     struct ConfigObservationProbe {
+        _subscription: Subscription,
+    }
+
+    struct ContextUsageObservationProbe {
         _subscription: Subscription,
     }
 
@@ -1649,6 +1681,90 @@ mod tests {
     }
 
     #[gpui::test]
+    fn composer_context_occupancy_precedes_the_model_selector(cx: &mut TestAppContext) {
+        let _dir = init_chat_form_test(cx);
+        configure_chat_form_model(cx, "gpt-5");
+        let window = open_chat_form_layout_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        cx.run_until_parked();
+
+        let occupancy = cx
+            .debug_bounds("conversation-context-occupancy-trigger")
+            .expect("composer context occupancy trigger");
+        let model = cx
+            .debug_bounds("picker-trigger-label:chat-form-model-trigger")
+            .expect("model selector label");
+        assert!(
+            occupancy.right() <= model.left(),
+            "occupancy={occupancy:?}, model={model:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn context_request_usage_setter_notifies_only_for_value_changes(cx: &mut TestAppContext) {
+        let _dir = init_chat_form_test(cx);
+        let window = open_chat_form_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let controller = chat_input_controller(window, &mut cx);
+        let deliveries = Rc::new(Cell::new(0));
+        let _probe = cx.update(|_window, cx| {
+            cx.new(|cx| {
+                let observed_deliveries = deliveries.clone();
+                let subscription = cx.observe(&controller, move |_probe, _controller, _cx| {
+                    observed_deliveries.set(observed_deliveries.get() + 1);
+                });
+                ContextUsageObservationProbe {
+                    _subscription: subscription,
+                }
+            })
+        });
+        cx.run_until_parked();
+        let initial_deliveries = deliveries.get();
+        let request_usage = ConversationContextRequestUsage {
+            agent_run_id: "run-1".to_string(),
+            provider_step_id: "step-1".to_string(),
+            provider_step_seq: 1,
+            provider_id: "provider-1".to_string(),
+            model_id: "gpt-5".to_string(),
+            provider_step_completed_at: OffsetDateTime::UNIX_EPOCH,
+            agent_run_completed_at: OffsetDateTime::UNIX_EPOCH,
+            usage: Some(ProviderUsageSnapshot {
+                input_tokens: 1_200,
+                output_tokens: 80,
+                cached_input_tokens: 0,
+                cache_write_input_tokens: 0,
+                reasoning_tokens: 0,
+                total_tokens: 1_280,
+                metadata: None,
+            }),
+        };
+
+        cx.update(|_window, cx| {
+            controller.update(cx, |controller, cx| {
+                controller.set_latest_context_request_usage(Some(request_usage.clone()), cx);
+            });
+        });
+        cx.run_until_parked();
+        assert_eq!(deliveries.get(), initial_deliveries + 1);
+
+        cx.update(|_window, cx| {
+            controller.update(cx, |controller, cx| {
+                controller.set_latest_context_request_usage(Some(request_usage), cx);
+            });
+        });
+        cx.run_until_parked();
+        assert_eq!(deliveries.get(), initial_deliveries + 1);
+
+        cx.update(|_window, cx| {
+            controller.update(cx, |controller, cx| {
+                controller.set_latest_context_request_usage(None, cx);
+            });
+        });
+        cx.run_until_parked();
+        assert_eq!(deliveries.get(), initial_deliveries + 2);
+    }
+
+    #[gpui::test]
     fn constructor_can_leave_composer_unfocused_for_embedded_inputs(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         let window = cx
@@ -1764,6 +1880,7 @@ mod tests {
             display_name: None,
             enabled: true,
             capabilities,
+            pricing: None,
             metadata: ProviderModelMetadata {
                 display_name: None,
                 family: None,

@@ -29,6 +29,8 @@ pub struct FinishedAgentRun {
     pub run: AgentRunRecord,
     pub final_entry: ConversationEntryRecord,
     pub appended_final_entry: bool,
+    pub request_usage: Option<AgentMessageRequestUsage>,
+    pub context_request_usage: Option<ConversationContextRequestUsage>,
 }
 
 pub type ProviderStepRecord = ProviderStep;
@@ -59,6 +61,7 @@ pub struct CompleteProviderStep {
     pub state_snapshot: ProviderRunStateSnapshot,
     pub continuation: Option<ProviderContinuationSnapshot>,
     pub usage: ProviderUsageSnapshot,
+    pub cost_amount: Option<UsdNanoAmount>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -122,6 +125,7 @@ pub struct UsageEventRecord {
     pub total_tokens: i64,
     pub usage: ProviderUsageSnapshot,
     pub created_at: OffsetDateTime,
+    pub cost_amount: Option<UsdNanoAmount>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -206,6 +206,7 @@ async fn streaming_text_delta_updates_single_assistant_item() {
         .unwrap();
     assert_eq!(usage_events.len(), 1);
     assert_eq!(usage_events[0].usage.total_tokens, 7);
+    assert!(usage_events[0].cost_amount.is_none());
     assert!(handle.events.iter().any(|event| matches!(
         event,
         AgentRunEvent::ProviderStepEvent {
@@ -213,6 +214,330 @@ async fn streaming_text_delta_updates_single_assistant_item() {
             ..
         } if text == "world"
     )));
+}
+
+#[tokio::test]
+async fn successful_non_streaming_and_streaming_usage_use_frozen_pricing() {
+    let usage = priced_usage();
+
+    let non_streaming = Fixture::new_priced("priced-non-streaming");
+    let runtime = AgentRuntime::from_repository(non_streaming.repo.clone());
+    let handle = runtime
+        .run_with_model(
+            non_streaming.request(),
+            MockCompletionModel::new([MockTurn::text("priced").with_usage(usage)]),
+        )
+        .await
+        .unwrap();
+    let non_streaming_cost = completed_usage_cost(&non_streaming, &handle.agent_run.id);
+
+    let streaming = Fixture::new_priced("priced-streaming");
+    let runtime = AgentRuntime::from_repository(streaming.repo.clone());
+    let handle = runtime
+        .run_with_model(
+            streaming.streaming_request(),
+            MockCompletionModel::from_stream_turns([[
+                MockStreamEvent::text("priced"),
+                MockStreamEvent::final_response(usage),
+            ]]),
+        )
+        .await
+        .unwrap();
+    let streaming_cost = completed_usage_cost(&streaming, &handle.agent_run.id);
+
+    assert_eq!(non_streaming_cost.as_u64(), 195_000);
+    assert_eq!(streaming_cost, non_streaming_cost);
+}
+
+#[tokio::test]
+async fn catalog_refresh_only_changes_pricing_for_new_provider_steps() {
+    let fixture = Fixture::new_priced("priced-refresh");
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
+    let request = fixture.streaming_request();
+    let task = tokio::spawn(async move {
+        runtime
+            .run_with_model(
+                request,
+                DelayedUsageStreamModel {
+                    delay: Duration::from_millis(100),
+                    usage: priced_usage(),
+                },
+            )
+            .await
+    });
+
+    let mut observed_running_step = false;
+    for _ in 0..50 {
+        if fixture
+            .repo
+            .agent_runs_by_status(AgentRunStatus::Running)
+            .unwrap()
+            .iter()
+            .any(|run| {
+                !fixture
+                    .repo
+                    .provider_steps_for_run(&run.id)
+                    .unwrap()
+                    .is_empty()
+            })
+        {
+            observed_running_step = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        observed_running_step,
+        "priced step starts before catalog refresh"
+    );
+    fixture
+        .repo
+        .upsert_provider_model(NewProviderModel {
+            provider_id: fixture.model.provider_id.clone(),
+            model_id: fixture.model.model_id.clone(),
+            display_name: fixture.model.display_name.clone(),
+            enabled: fixture.model.enabled,
+            capabilities: fixture.model.capabilities.clone(),
+            metadata: fixture.model.metadata.clone(),
+            pricing: Some(test_model_pricing(2)),
+        })
+        .unwrap();
+
+    let old_step = task.await.unwrap().unwrap();
+    assert_eq!(
+        completed_usage_cost(&fixture, &old_step.agent_run.id).as_u64(),
+        195_000
+    );
+
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
+    let new_step = runtime
+        .run_with_model(
+            fixture.request(),
+            MockCompletionModel::new([MockTurn::text("new price").with_usage(priced_usage())]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        completed_usage_cost(&fixture, &new_step.agent_run.id).as_u64(),
+        390_000
+    );
+}
+
+#[tokio::test]
+async fn composer_context_run_finalization_publishes_after_message_usage() {
+    let fixture = Fixture::new("request-usage-publication");
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone());
+    let model = MockCompletionModel::from_stream_turns([[
+        MockStreamEvent::text("hello"),
+        MockStreamEvent::final_response_with_total_tokens(7),
+    ]]);
+    let published = Arc::new(Mutex::new(Vec::new()));
+    let observer = AgentRuntimeObserver::new({
+        let published = published.clone();
+        move |event| published.lock().unwrap().push(event)
+    });
+
+    let handle = runtime
+        .run_with_model_observed(fixture.streaming_request(), model, Some(observer))
+        .await
+        .unwrap();
+    let final_entry_id = handle
+        .agent_run
+        .output
+        .as_ref()
+        .expect("completed output")
+        .final_entry_id
+        .clone();
+    let provider_step = fixture
+        .repo
+        .provider_steps_for_run(&handle.agent_run.id)
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("completed provider step");
+
+    let events = published.lock().unwrap();
+    let (finalization_index, changes) = events
+        .iter()
+        .enumerate()
+        .find_map(|(index, event)| match event {
+            AgentRuntimeEvent::ConversationCommitted { changes, .. }
+                if matches!(
+                    changes.first(),
+                    Some(ConversationChange::RunStatusChanged { run })
+                        if run.id == handle.agent_run.id
+                ) =>
+            {
+                Some((index, changes))
+            }
+            _ => None,
+        })
+        .expect("run finalization publication");
+    assert!(matches!(
+        changes.as_slice(),
+        [
+            ConversationChange::RunStatusChanged { run },
+            ConversationChange::AgentMessageRequestUsageChanged { request_usage },
+            ConversationChange::ConversationContextRequestUsageChanged {
+                request_usage: context_request_usage,
+            },
+        ] if run.id == handle.agent_run.id
+            && request_usage.agent_run_id == handle.agent_run.id
+            && request_usage.conversation_entry_id == final_entry_id
+            && request_usage.provider_step_id == provider_step.id
+            && request_usage.usage.as_ref().map(|usage| usage.total_tokens) == Some(7)
+            && context_request_usage.agent_run_id == handle.agent_run.id
+            && context_request_usage.provider_step_id == provider_step.id
+            && context_request_usage.usage.as_ref().map(|usage| usage.total_tokens) == Some(7)
+    ));
+
+    let provider_step_index = events
+        .iter()
+        .enumerate()
+        .find_map(|(index, event)| match event {
+            AgentRuntimeEvent::ConversationTimelineChanged { changes, .. }
+                if matches!(
+                    changes.as_slice(),
+                    [ConversationChange::ProviderStepChanged { step }]
+                        if step.id == provider_step.id
+                            && step.status == ProviderStepStatus::Completed
+                ) =>
+            {
+                Some(index)
+            }
+            _ => None,
+        })
+        .expect("provider step completion publication");
+    assert!(provider_step_index < finalization_index);
+
+    let message_request_usage = changes
+        .iter()
+        .find_map(|change| match change {
+            ConversationChange::AgentMessageRequestUsageChanged { request_usage } => {
+                Some(request_usage.as_ref().clone())
+            }
+            _ => None,
+        })
+        .unwrap();
+    let context_request_usage = changes
+        .iter()
+        .find_map(|change| match change {
+            ConversationChange::ConversationContextRequestUsageChanged { request_usage } => {
+                Some(request_usage.as_ref().clone())
+            }
+            _ => None,
+        })
+        .unwrap();
+    let final_entry = fixture
+        .repo
+        .conversation_entries(&fixture.conversation.id)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.id == final_entry_id)
+        .unwrap();
+
+    let mut partial_usage = context_request_usage.usage.clone().unwrap();
+    partial_usage.total_tokens = 0;
+    partial_usage.input_tokens = 1;
+    let mut unreported_usage = partial_usage.clone();
+    unreported_usage.input_tokens = 0;
+    for usage in [Some(partial_usage), Some(unreported_usage), None] {
+        let mut context_request_usage = context_request_usage.clone();
+        context_request_usage.usage = usage.clone();
+        let synthetic = jaco_db::FinishedAgentRun {
+            run: handle.agent_run.clone(),
+            final_entry: final_entry.clone(),
+            appended_final_entry: false,
+            request_usage: Some(message_request_usage.clone()),
+            context_request_usage: Some(context_request_usage),
+        };
+        let published = finished_agent_run_changes(&synthetic);
+        assert!(matches!(
+            published.as_slice(),
+            [
+                ConversationChange::RunStatusChanged { .. },
+                ConversationChange::AgentMessageRequestUsageChanged { .. },
+                ConversationChange::ConversationContextRequestUsageChanged { request_usage },
+            ] if request_usage.usage == usage
+        ));
+    }
+
+    let without_context = jaco_db::FinishedAgentRun {
+        run: handle.agent_run.clone(),
+        final_entry,
+        appended_final_entry: false,
+        request_usage: Some(message_request_usage),
+        context_request_usage: None,
+    };
+    assert!(
+        !finished_agent_run_changes(&without_context)
+            .iter()
+            .any(|change| {
+                matches!(
+                    change,
+                    ConversationChange::ConversationContextRequestUsageChanged { .. }
+                )
+            })
+    );
+}
+
+#[tokio::test]
+async fn composer_context_failed_and_canceled_runs_do_not_publish() {
+    fn publishes_context(event: &AgentRuntimeEvent) -> bool {
+        let changes = match event {
+            AgentRuntimeEvent::ConversationCommitted { changes, .. }
+            | AgentRuntimeEvent::ConversationTimelineChanged { changes, .. } => changes,
+            _ => return false,
+        };
+        changes.iter().any(|change| {
+            matches!(
+                change,
+                ConversationChange::ConversationContextRequestUsageChanged { .. }
+            )
+        })
+    }
+
+    let failed_fixture = Fixture::new("composer-context-failed-publication");
+    let failed_events = Arc::new(Mutex::new(Vec::new()));
+    let failed_observer = AgentRuntimeObserver::new({
+        let failed_events = failed_events.clone();
+        move |event| failed_events.lock().unwrap().push(event)
+    });
+    let failed = AgentRuntime::from_repository(failed_fixture.repo.clone())
+        .run_with_model_observed(
+            failed_fixture.streaming_request(),
+            FailBeforeFirstTokenModel,
+            Some(failed_observer),
+        )
+        .await
+        .unwrap();
+    assert_eq!(failed.agent_run.status, AgentRunStatus::Failed);
+    assert!(!failed_events.lock().unwrap().iter().any(publishes_context));
+
+    let canceled_fixture = Fixture::new("composer-context-canceled-publication");
+    let canceled_events = Arc::new(Mutex::new(Vec::new()));
+    let canceled_observer = AgentRuntimeObserver::new({
+        let canceled_events = canceled_events.clone();
+        move |event| canceled_events.lock().unwrap().push(event)
+    });
+    let canceled_request = canceled_fixture.streaming_request();
+    let cancellation_token = canceled_request.cancellation_token.clone();
+    let canceled = AgentRuntime::from_repository(canceled_fixture.repo.clone())
+        .run_with_model_observed(
+            canceled_request,
+            CancelAfterTextStreamModel { cancellation_token },
+            Some(canceled_observer),
+        )
+        .await
+        .unwrap();
+    assert_eq!(canceled.agent_run.status, AgentRunStatus::Canceled);
+    assert!(
+        !canceled_events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(publishes_context)
+    );
 }
 
 #[tokio::test]
@@ -2851,6 +3176,14 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Self {
+        Self::new_with_pricing(name, false)
+    }
+
+    fn new_priced(name: &str) -> Self {
+        Self::new_with_pricing(name, true)
+    }
+
+    fn new_with_pricing(name: &str, priced: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let store =
             FreshStore::open_or_create_initial(dir.path().join(jaco_db::DATABASE_FILE)).unwrap();
@@ -2891,6 +3224,7 @@ impl Fixture {
                     family: Some("gpt".to_string()),
                     raw: None,
                 },
+                pricing: priced.then(|| test_model_pricing(1)),
             })
             .unwrap();
         let conversation = repo
@@ -2973,6 +3307,53 @@ impl Fixture {
             },
         )
     }
+}
+
+fn test_model_pricing(multiplier: u64) -> ProviderModelPricingSnapshot {
+    ProviderModelPricingSnapshot::new(
+        "openai",
+        "gpt-5.2",
+        official_provider_pricing_route(&provider_settings()).unwrap(),
+        time::OffsetDateTime::UNIX_EPOCH,
+        ProviderTokenPriceSnapshot::new(
+            UsdNanoPerMillionTokens::new(1_000_000_000 * multiplier),
+            UsdNanoPerMillionTokens::new(2_000_000_000 * multiplier),
+            Some(UsdNanoPerMillionTokens::new(500_000_000 * multiplier)),
+            Some(UsdNanoPerMillionTokens::new(1_500_000_000 * multiplier)),
+        ),
+        Vec::new(),
+    )
+    .unwrap()
+}
+
+fn priced_usage() -> Usage {
+    Usage {
+        input_tokens: 100,
+        output_tokens: 50,
+        total_tokens: 150,
+        cached_input_tokens: 20,
+        cache_creation_input_tokens: 10,
+        tool_use_prompt_tokens: 0,
+        reasoning_tokens: 25,
+    }
+}
+
+fn completed_usage_cost(fixture: &Fixture, agent_run_id: &str) -> UsdNanoAmount {
+    let step = fixture
+        .repo
+        .provider_steps_for_run(agent_run_id)
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("completed provider step");
+    fixture
+        .repo
+        .usage_events_for_provider_step(&step.id)
+        .unwrap()
+        .into_iter()
+        .next()
+        .and_then(|usage| usage.cost_amount)
+        .expect("priced usage amount")
 }
 
 #[derive(Clone)]
@@ -3136,6 +3517,51 @@ impl CompletionModel for DelayedFinalStreamModel {
                     true,
                 ))
             }
+        });
+        let stream: StreamingResult<Self::StreamingResponse> = Box::pin(stream);
+        Ok(StreamingCompletionResponse::stream(stream))
+    }
+}
+
+#[derive(Clone)]
+struct DelayedUsageStreamModel {
+    delay: Duration,
+    usage: Usage,
+}
+
+impl CompletionModel for DelayedUsageStreamModel {
+    type Response = MockResponse;
+    type StreamingResponse = MockResponse;
+    type Client = ();
+
+    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
+        Self {
+            delay: Duration::ZERO,
+            usage: Usage::new(),
+        }
+    }
+
+    async fn completion(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+        Err(CompletionError::ProviderError(
+            "delayed usage model only supports streaming".to_string(),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
+    {
+        let delay = self.delay;
+        let usage = self.usage;
+        let stream = futures::stream::once(async move {
+            tokio::time::sleep(delay).await;
+            Ok(RawStreamingChoice::FinalResponse(MockResponse::with_usage(
+                usage,
+            )))
         });
         let stream: StreamingResult<Self::StreamingResponse> = Box::pin(stream);
         Ok(StreamingCompletionResponse::stream(stream))
@@ -3521,6 +3947,7 @@ fn model_capabilities() -> ModelCapabilitiesSnapshot {
         text_input: true,
         text_output: true,
         streaming: true,
+        context_window: None,
         image_input: None,
         file_input: None,
         audio_input: false,

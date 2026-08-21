@@ -122,15 +122,9 @@ impl PersistenceContext {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let provider_outputs = self.take_provider_outputs(provider_step_id);
-        let response_snapshot = ProviderStepResponseSnapshot {
-            provider_run_id: response.message_id.clone(),
-            output_item_ids: output_item_ids.clone(),
-            response_body: Some(ProviderRawPayload {
-                provider_kind: "rig".to_string(),
-                value: serde_json::to_value(&response.raw_response)?,
-            }),
-            provider_outputs: provider_outputs.clone(),
+        let response_body = ProviderRawPayload {
+            provider_kind: "rig".to_string(),
+            value: serde_json::to_value(&response.raw_response)?,
         };
         let state_snapshot = ProviderRunStateSnapshot {
             provider_id: self.provider_id.clone(),
@@ -138,6 +132,16 @@ impl PersistenceContext {
             output_item_ids,
         };
         let usage = provider_usage(response.usage);
+        let cost_amount = self
+            .estimate_provider_step_cost(provider_step_id, &usage)
+            .await?;
+        let provider_outputs = self.take_provider_outputs(provider_step_id);
+        let response_snapshot = ProviderStepResponseSnapshot {
+            provider_run_id: response.message_id.clone(),
+            output_item_ids: state_snapshot.output_item_ids.clone(),
+            response_body: Some(response_body),
+            provider_outputs: provider_outputs.clone(),
+        };
         let completed = match self
             .persistence
             .complete_provider_step_with_usage(
@@ -147,6 +151,7 @@ impl PersistenceContext {
                     state_snapshot: state_snapshot.clone(),
                     continuation,
                     usage: usage.clone(),
+                    cost_amount,
                 },
             )
             .await
@@ -227,6 +232,15 @@ impl PersistenceContext {
         let provider_run_id = openai_continuation
             .as_ref()
             .map(|continuation| continuation.response_id.clone());
+        let state_snapshot = ProviderRunStateSnapshot {
+            provider_id: self.provider_id.clone(),
+            provider_run_id: provider_run_id.clone(),
+            output_item_ids: Vec::new(),
+        };
+        let usage = provider_usage(usage);
+        let cost_amount = self
+            .estimate_provider_step_cost(provider_step_id, &usage)
+            .await?;
         let provider_outputs = self.take_provider_outputs(provider_step_id);
         let response_snapshot = ProviderStepResponseSnapshot {
             provider_run_id: provider_run_id.clone(),
@@ -237,12 +251,6 @@ impl PersistenceContext {
             }),
             provider_outputs: provider_outputs.clone(),
         };
-        let state_snapshot = ProviderRunStateSnapshot {
-            provider_id: self.provider_id.clone(),
-            provider_run_id,
-            output_item_ids: Vec::new(),
-        };
-        let usage = provider_usage(usage);
         let completed = match self
             .persistence
             .complete_provider_step_with_usage(
@@ -252,6 +260,7 @@ impl PersistenceContext {
                     state_snapshot: state_snapshot.clone(),
                     continuation: openai_continuation,
                     usage: usage.clone(),
+                    cost_amount,
                 },
             )
             .await
@@ -281,6 +290,29 @@ impl PersistenceContext {
             },
         });
         Ok(())
+    }
+
+    async fn estimate_provider_step_cost(
+        &self,
+        provider_step_id: &str,
+        usage: &ProviderUsageSnapshot,
+    ) -> Result<Option<UsdNanoAmount>> {
+        let step = self
+            .persistence
+            .provider_step(provider_step_id.to_string())
+            .await?
+            .ok_or_else(|| {
+                AgentRuntimeError::Invariant(format!(
+                    "provider step `{provider_step_id}` disappeared before completion"
+                ))
+            })?;
+        Ok(step.pricing_snapshot.as_ref().and_then(|pricing| {
+            estimate_request_cost(
+                &step.settings_snapshot.provider_settings.provider_kind,
+                usage,
+                pricing,
+            )
+        }))
     }
 
     pub(crate) async fn fail_provider_step(

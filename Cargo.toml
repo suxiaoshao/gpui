@@ -14,6 +14,7 @@ members = [
   "crates/gpui-form",
   "crates/gpui-form-gpui-component",
   "crates/gpui-form-macros",
+  "crates/gpui-heatmap",
   "crates/gpui-operation",
   "crates/gpui-store",
   "crates/gpui-tokio",
@@ -31,6 +32,7 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["fo
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 # Optional, for default bundled assets
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", package = "gpui-component-assets" }
+gpui-heatmap = { path = "./crates/gpui-heatmap" }
 jaco-core = { path = "./crates/jaco-core" }
 jaco-db = { path = "./crates/jaco-db" }
 jaco-agent = { path = "./crates/jaco-agent" }

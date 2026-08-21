@@ -265,14 +265,7 @@ impl PersistenceContext {
                     .into_error());
             }
         };
-        let mut changes = vec![jaco_core::ConversationChange::RunStatusChanged {
-            run: Box::new(commit.value.run.clone()),
-        }];
-        if commit.value.appended_final_entry {
-            changes.push(jaco_core::ConversationChange::EntryAppended {
-                entry: Box::new(commit.value.final_entry.clone()),
-            });
-        }
+        let changes = finished_agent_run_changes(&commit.value);
         self.emit_conversation_commit_with_changes(&commit, changes);
         let finished = finalizing
             .transition(FinishCommitted(commit.value))
@@ -307,6 +300,28 @@ impl PersistenceContext {
         });
         Ok(finished)
     }
+}
+
+pub(crate) fn finished_agent_run_changes(finished: &FinishedAgentRun) -> Vec<ConversationChange> {
+    let mut changes = vec![ConversationChange::RunStatusChanged {
+        run: Box::new(finished.run.clone()),
+    }];
+    if finished.appended_final_entry {
+        changes.push(ConversationChange::EntryAppended {
+            entry: Box::new(finished.final_entry.clone()),
+        });
+    }
+    if let Some(request_usage) = finished.request_usage.clone() {
+        changes.push(ConversationChange::AgentMessageRequestUsageChanged {
+            request_usage: Box::new(request_usage),
+        });
+    }
+    if let Some(request_usage) = finished.context_request_usage.clone() {
+        changes.push(ConversationChange::ConversationContextRequestUsageChanged {
+            request_usage: Box::new(request_usage),
+        });
+    }
+    changes
 }
 
 pub(crate) fn new_agent_run_input(request: &crate::AgentRunRequest) -> NewAgentRun {

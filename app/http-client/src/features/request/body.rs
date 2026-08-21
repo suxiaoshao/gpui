@@ -260,7 +260,7 @@ fn build_active_body<Owner: 'static>(
 mod tests {
     use std::ops::Deref as _;
 
-    use gpui::{AppContext as _, TestAppContext, VisualTestContext};
+    use gpui::{TestAppContext, VisualTestContext};
     use gpui_component::select::SelectEvent;
     use gpui_form::ResolveError;
 

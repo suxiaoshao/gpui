@@ -454,6 +454,70 @@ impl FreshRepository {
             provider_steps.extend(self.provider_steps_for_run(&run.id)?);
             tool_invocations.extend(self.tool_invocations_for_run(&run.id)?);
         }
+        let usage_events = self.usage_events_for_conversation(conversation_id)?;
+        let latest_context_request_usage = latest_conversation_context_request_usage_from_parts(
+            conversation_id,
+            &runs,
+            &provider_steps,
+            &usage_events,
+        )?;
+
+        let entries_by_id = items
+            .iter()
+            .map(|entry| (entry.id.as_str(), entry))
+            .collect::<HashMap<_, _>>();
+        let provider_steps_by_id = provider_steps
+            .iter()
+            .map(|step| (step.id.as_str(), step))
+            .collect::<HashMap<_, _>>();
+        let usage_events_by_step_id = usage_events
+            .iter()
+            .map(|usage| (usage.provider_step_id.as_str(), usage))
+            .collect::<HashMap<_, _>>();
+        let mut agent_message_request_usages = Vec::new();
+        for run in &runs {
+            let Some(output) = run.output.as_ref() else {
+                continue;
+            };
+            let final_entry = entries_by_id
+                .get(output.final_entry_id.as_str())
+                .ok_or_else(|| {
+                    DbError::Invariant(format!(
+                        "final entry {} for run {} is missing",
+                        output.final_entry_id, run.id
+                    ))
+                })?;
+            if !is_completed_assistant_message(final_entry) {
+                continue;
+            }
+            let Some(provider_step_id) = final_entry.provider_step_id.as_deref() else {
+                continue;
+            };
+            let provider_step = provider_steps_by_id.get(provider_step_id).ok_or_else(|| {
+                DbError::Invariant(format!(
+                    "provider step {provider_step_id} for final entry {} is missing",
+                    final_entry.id
+                ))
+            })?;
+            if let Some(request_usage) = agent_message_request_usage_from_parts(
+                run,
+                final_entry,
+                provider_step,
+                usage_events_by_step_id.get(provider_step_id).copied(),
+            )? {
+                agent_message_request_usages.push((
+                    final_entry.seq,
+                    final_entry.id.clone(),
+                    request_usage,
+                ));
+            }
+        }
+        agent_message_request_usages
+            .sort_by(|left, right| (left.0, left.1.as_str()).cmp(&(right.0, right.1.as_str())));
+        let agent_message_request_usages = agent_message_request_usages
+            .into_iter()
+            .map(|(_, _, usage)| usage)
+            .collect();
 
         Ok(Some(ConversationTimelineRecords {
             conversation,
@@ -463,6 +527,8 @@ impl FreshRepository {
             runs,
             provider_steps,
             tool_invocations,
+            agent_message_request_usages,
+            latest_context_request_usage,
         }))
     }
 

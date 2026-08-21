@@ -41,6 +41,7 @@ pub struct ProviderModelRecord {
     pub fetched_at: OffsetDateTime,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
+    pub pricing: Option<ProviderModelPricingSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,4 +52,5 @@ pub struct NewProviderModel {
     pub enabled: bool,
     pub capabilities: ModelCapabilitiesSnapshot,
     pub metadata: ProviderModelMetadata,
+    pub pricing: Option<ProviderModelPricingSnapshot>,
 }

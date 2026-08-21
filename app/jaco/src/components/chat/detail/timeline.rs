@@ -6,8 +6,8 @@ use std::{
 use gpui::{App, Entity, Window};
 use gpui_component::text::TextViewState;
 use jaco_core::{
-    AgentRun, AgentRunId, Conversation, ConversationAttachment, ConversationEntry,
-    ConversationEntryId, ToolInvocation, ToolInvocationId,
+    AgentMessageRequestUsage, AgentRun, AgentRunId, Conversation, ConversationAttachment,
+    ConversationEntry, ConversationEntryId, ToolInvocation, ToolInvocationId,
 };
 
 use crate::foundation::conversation_format as format;
@@ -123,6 +123,27 @@ impl ConversationTimelineRows {
         Some(row.key())
     }
 
+    pub(super) fn update_agent_request_usage(
+        &mut self,
+        agent_run_id: &AgentRunId,
+        request_usage: AgentMessageRequestUsage,
+    ) -> Option<TimelineRowKey> {
+        if &request_usage.agent_run_id != agent_run_id {
+            return None;
+        }
+        let row = self.rows.iter_mut().find(|row| {
+            matches!(
+                row,
+                TimelineRow::Agent(agent) if agent.run_id.as_ref() == Some(agent_run_id)
+            )
+        })?;
+        let TimelineRow::Agent(agent) = row else {
+            unreachable!("run rows are always agent rows")
+        };
+        agent.request_usage = Some(request_usage);
+        Some(row.key())
+    }
+
     pub(super) fn update_tool_invocation(
         &mut self,
         detail: ToolInvocationDetail,
@@ -193,6 +214,12 @@ pub(super) fn build_rows(
         .cloned()
         .map(|run| (run.id.clone(), run))
         .collect::<HashMap<_, _>>();
+    let request_usage_by_run = snapshot
+        .agent_message_request_usages
+        .iter()
+        .cloned()
+        .map(|request_usage| (request_usage.agent_run_id.clone(), request_usage))
+        .collect::<HashMap<_, _>>();
     let mut invocations_by_run = group_invocations_by_run(&snapshot.tool_invocations);
 
     pending_rows
@@ -208,9 +235,11 @@ pub(super) fn build_rows(
                 let items = run_items.remove(&run_id).unwrap_or_default();
                 let invocations = invocations_by_run.remove(&run_id).unwrap_or_default();
                 let run = run_by_id.get(&run_id).cloned();
+                let request_usage = request_usage_by_run.get(&run_id).cloned();
                 TimelineRow::Agent(Box::new(agent_turn_row(
                     Some(run_id),
                     run,
+                    request_usage,
                     items,
                     invocations,
                     expanded_agent_runs,
@@ -222,6 +251,7 @@ pub(super) fn build_rows(
                 )))
             }
             PendingTimelineRow::LooseAgent(item) => TimelineRow::Agent(Box::new(agent_turn_row(
+                None,
                 None,
                 None,
                 vec![item],
@@ -350,6 +380,7 @@ fn collect_pending_rows<'a>(
 fn agent_turn_row(
     run_id: Option<AgentRunId>,
     run: Option<AgentRun>,
+    request_usage: Option<AgentMessageRequestUsage>,
     items: Vec<&ConversationEntry>,
     invocations: Vec<&ToolInvocation>,
     expanded_agent_runs: &HashMap<AgentRunId, bool>,
@@ -376,6 +407,7 @@ fn agent_turn_row(
     AgentTurnRow {
         run_id,
         run,
+        request_usage,
         items,
         text_states: text_states.clone(),
         expanded,
@@ -687,6 +719,7 @@ mod tests {
         let row = agent_turn_row(
             Some(run_a.clone()),
             None,
+            None,
             Vec::new(),
             Vec::new(),
             &HashMap::new(),
@@ -874,6 +907,7 @@ mod tests {
         let row = agent_turn_row(
             Some(run_id.clone()),
             Some(active_run(run_id.clone())),
+            None,
             vec![&final_entry],
             Vec::new(),
             &HashMap::new(),
@@ -899,6 +933,105 @@ mod tests {
             panic!("run row must remain an agent row");
         };
         assert_eq!(row.final_item(), Some(&final_entry));
+    }
+
+    #[test]
+    fn request_usage_update_changes_only_its_owning_agent_row() {
+        let run_a = AgentRunId::from("run-usage-a");
+        let run_b = AgentRunId::from("run-usage-b");
+        let usage_a = request_usage(&run_a, "step-a");
+        let usage_b = request_usage(&run_b, "step-b");
+        let row_a = agent_turn_row(
+            Some(run_a.clone()),
+            None,
+            Some(usage_a),
+            Vec::new(),
+            Vec::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            callbacks(|_, _, _| {}, |_, _, _| {}, |_, _, _| true, |_, _, _, _| {}),
+        );
+        let row_b = agent_turn_row(
+            Some(run_b.clone()),
+            None,
+            Some(usage_b.clone()),
+            Vec::new(),
+            Vec::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            callbacks(|_, _, _| {}, |_, _, _| {}, |_, _, _| true, |_, _, _, _| {}),
+        );
+        let mut rows = ConversationTimelineRows::new(vec![
+            TimelineRow::Agent(Box::new(row_a)),
+            TimelineRow::Agent(Box::new(row_b)),
+        ]);
+        let updated_a = request_usage(&run_a, "step-a-final");
+
+        assert_eq!(
+            rows.update_agent_request_usage(&run_a, updated_a.clone()),
+            Some(TimelineRowKey::Agent(run_a.to_string()))
+        );
+        let TimelineRow::Agent(row_a) = rows.row(0).unwrap() else {
+            panic!("first row must remain an agent row");
+        };
+        let TimelineRow::Agent(row_b) = rows.row(1).unwrap() else {
+            panic!("second row must remain an agent row");
+        };
+        assert_eq!(row_a.request_usage, Some(updated_a));
+        assert_eq!(row_b.request_usage, Some(usage_b));
+    }
+
+    #[test]
+    fn request_usage_update_rejects_mismatched_run_identity() {
+        let run_a = AgentRunId::from("run-usage-a");
+        let row = agent_turn_row(
+            Some(run_a.clone()),
+            None,
+            None,
+            Vec::new(),
+            Vec::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            callbacks(|_, _, _| {}, |_, _, _| {}, |_, _, _| true, |_, _, _, _| {}),
+        );
+        let mut rows = ConversationTimelineRows::new(vec![TimelineRow::Agent(Box::new(row))]);
+
+        assert_eq!(
+            rows.update_agent_request_usage(
+                &run_a,
+                request_usage(&AgentRunId::from("run-usage-b"), "step-b"),
+            ),
+            None
+        );
+        let TimelineRow::Agent(row) = rows.row(0).unwrap() else {
+            panic!("row must remain an agent row");
+        };
+        assert!(row.request_usage.is_none());
+    }
+
+    fn request_usage(
+        agent_run_id: &AgentRunId,
+        provider_step_id: &str,
+    ) -> AgentMessageRequestUsage {
+        AgentMessageRequestUsage {
+            conversation_entry_id: format!("entry-{agent_run_id}"),
+            agent_run_id: agent_run_id.clone(),
+            provider_step_id: provider_step_id.to_string(),
+            provider_id: "provider".to_string(),
+            model_id: "model".to_string(),
+            provider_kind: "openai".to_string(),
+            completed_at: OffsetDateTime::UNIX_EPOCH,
+            usage: None,
+        }
     }
 
     fn active_run(id: AgentRunId) -> AgentRun {

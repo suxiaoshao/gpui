@@ -1,5 +1,174 @@
 use super::*;
 
+struct RequestUsageContext {
+    conversation_id: ConversationId,
+    provider_id: ProviderId,
+    model_id: ProviderModelId,
+    trigger_entry_id: ConversationEntryId,
+    agent_run_id: AgentRunId,
+}
+
+fn request_usage_context(repo: &crate::FreshRepository, suffix: &str) -> RequestUsageContext {
+    let project = repo.insert_project(project(suffix)).unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.6", "GPT-5.6"))
+        .unwrap();
+    let trigger = repo
+        .append_conversation_entry(message_item(&conversation.id, "request usage"))
+        .unwrap();
+    let run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id.clone(),
+            trigger_entry_id: trigger.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            input: agent_run_input(&trigger.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    RequestUsageContext {
+        conversation_id: conversation.id,
+        provider_id: provider.id,
+        model_id: model.model_id,
+        trigger_entry_id: trigger.id.clone(),
+        agent_run_id: run.id,
+    }
+}
+
+fn request_usage_step(
+    repo: &crate::FreshRepository,
+    context: &RequestUsageContext,
+    seq: i32,
+    usage: Option<ProviderUsageSnapshot>,
+) -> crate::ProviderStepRecord {
+    let step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: context.agent_run_id.clone(),
+            seq,
+            status: ProviderStepStatus::Running,
+            request_snapshot: provider_step_request(
+                &context.provider_id,
+                &context.model_id,
+                &context.trigger_entry_id,
+            ),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&context.provider_id, &context.model_id),
+            error: None,
+        })
+        .unwrap();
+
+    match usage {
+        Some(usage) => {
+            repo.complete_provider_step_with_usage(
+                &step.id,
+                crate::CompleteProviderStep {
+                    response_snapshot: provider_step_response(),
+                    state_snapshot: provider_run_state(&context.provider_id),
+                    continuation: None,
+                    usage,
+                    cost_amount: None,
+                },
+            )
+            .unwrap()
+            .step
+        }
+        None => repo
+            .update_provider_step_status(
+                &step.id,
+                UpdateProviderStepStatus {
+                    status: ProviderStepStatus::Completed,
+                    response_snapshot: Some(provider_step_response()),
+                    state_snapshot: Some(provider_run_state(&context.provider_id)),
+                    error: None,
+                },
+            )
+            .unwrap(),
+    }
+}
+
+fn finish_request_usage_run(
+    repo: &crate::FreshRepository,
+    context: &RequestUsageContext,
+    provider_step_id: &ProviderStepId,
+) -> crate::ConversationCommit<crate::FinishedAgentRun> {
+    repo.finish_agent_run(
+        &context.agent_run_id,
+        FinishAgentRun {
+            status: AgentRunStatus::Completed,
+            stopped_reason: AgentStoppedReason::Completed,
+            error: None,
+            final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                conversation_id: context.conversation_id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(context.agent_run_id.clone()),
+                provider_step_id: Some(provider_step_id.clone()),
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationEntryPayload::Message {
+                    role: TranscriptRole::Assistant,
+                    content: vec![ContentPart::Text {
+                        text: "final answer".to_string(),
+                    }],
+                },
+            })),
+        },
+    )
+    .unwrap()
+}
+
+fn next_request_usage_run(
+    repo: &crate::FreshRepository,
+    context: &RequestUsageContext,
+    message: &str,
+) -> RequestUsageContext {
+    let trigger = repo
+        .append_conversation_entry(message_item(&context.conversation_id, message))
+        .unwrap();
+    let run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: context.conversation_id.clone(),
+            trigger_entry_id: trigger.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            input: agent_run_input(&trigger.id, &context.provider_id, &context.model_id),
+        })
+        .unwrap();
+    RequestUsageContext {
+        conversation_id: context.conversation_id.clone(),
+        provider_id: context.provider_id.clone(),
+        model_id: context.model_id.clone(),
+        trigger_entry_id: trigger.id.clone(),
+        agent_run_id: run.id,
+    }
+}
+
+fn finish_context_run_without_output(
+    repo: &crate::FreshRepository,
+    context: &RequestUsageContext,
+) -> crate::ConversationCommit<crate::FinishedAgentRun> {
+    repo.finish_agent_run(
+        &context.agent_run_id,
+        FinishAgentRun {
+            status: AgentRunStatus::Completed,
+            stopped_reason: AgentStoppedReason::Completed,
+            error: None,
+            final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                conversation_id: context.conversation_id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(context.agent_run_id.clone()),
+                provider_step_id: None,
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationEntryPayload::Status(ConversationStatusEntry {
+                    code: ConversationStatusCode::CompletedWithoutOutput,
+                    message: None,
+                }),
+            })),
+        },
+    )
+    .unwrap()
+}
+
 #[test]
 fn soft_delete_conversation_rejects_active_run_and_succeeds_after_terminal_status() {
     let dir = tempdir().unwrap();
@@ -73,9 +242,16 @@ fn complete_provider_step_commits_usage_and_continuation_atomically() {
         .unwrap();
     let conversation = repo.insert_conversation(conversation(&project)).unwrap();
     let provider = repo.insert_provider(provider()).unwrap();
-    let model = repo
-        .upsert_provider_model(provider_model(&provider.id, "gpt-5.6", "GPT-5.6"))
-        .unwrap();
+    let pricing = model_pricing(
+        "gpt-5.6",
+        2_500_000_000,
+        15_000_000_000,
+        Some(250_000_000),
+        Some(3_125_000_000),
+    );
+    let mut model_input = provider_model(&provider.id, "gpt-5.6", "GPT-5.6");
+    model_input.pricing = Some(pricing.clone());
+    let model = repo.upsert_provider_model(model_input).unwrap();
     let trigger = repo
         .append_conversation_entry(message_item(&conversation.id, "run"))
         .unwrap();
@@ -99,6 +275,7 @@ fn complete_provider_step_commits_usage_and_continuation_atomically() {
             error: None,
         })
         .unwrap();
+    assert_eq!(step.pricing_snapshot, Some(pricing));
     let continuation = ProviderContinuationSnapshot::openai_responses(
         "resp_1".to_string(),
         "all_turns".to_string(),
@@ -110,6 +287,7 @@ fn complete_provider_step_commits_usage_and_continuation_atomically() {
         state_snapshot: provider_run_state(&provider.id),
         continuation: Some(continuation.clone()),
         usage: usage_snapshot(),
+        cost_amount: Some(UsdNanoAmount::new(322_375).unwrap()),
     };
 
     let completed = repo
@@ -118,6 +296,10 @@ fn complete_provider_step_commits_usage_and_continuation_atomically() {
     assert_eq!(completed.step.status, ProviderStepStatus::Completed);
     assert_eq!(completed.step.continuation, Some(continuation));
     assert_eq!(completed.usage.usage, usage_snapshot());
+    assert_eq!(
+        completed.usage.cost_amount,
+        Some(UsdNanoAmount::new(322_375).unwrap())
+    );
     assert_eq!(
         repo.usage_events_for_provider_step(&step.id).unwrap().len(),
         1
@@ -134,6 +316,91 @@ fn complete_provider_step_commits_usage_and_continuation_atomically() {
         repo.complete_provider_step_with_usage(&step.id, completion)
             .is_err()
     );
+}
+
+#[test]
+fn provider_step_freezes_exact_catalog_price_at_insert_time() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let project = repo
+        .insert_project(project("step-pricing-snapshot"))
+        .unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let first_pricing = model_pricing("gpt-5.6", 1_000_000_000, 2_000_000_000, None, None);
+    let mut first_model = provider_model(&provider.id, "gpt-5.6", "GPT-5.6");
+    first_model.pricing = Some(first_pricing.clone());
+    let model = repo.upsert_provider_model(first_model).unwrap();
+    let trigger = repo
+        .append_conversation_entry(message_item(&conversation.id, "run"))
+        .unwrap();
+    let run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: conversation.id,
+            trigger_entry_id: trigger.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            input: agent_run_input(&trigger.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+
+    let first_step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: run.id.clone(),
+            seq: 1,
+            status: ProviderStepStatus::Running,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &trigger.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+    assert_eq!(first_step.pricing_snapshot, Some(first_pricing.clone()));
+
+    let second_pricing = model_pricing("gpt-5.6", 3_000_000_000, 4_000_000_000, None, None);
+    let mut refreshed_model = provider_model(&provider.id, "gpt-5.6", "GPT-5.6 refreshed");
+    refreshed_model.pricing = Some(second_pricing.clone());
+    repo.upsert_provider_model(refreshed_model).unwrap();
+    assert_eq!(
+        repo.get_provider_step(&first_step.id)
+            .unwrap()
+            .unwrap()
+            .pricing_snapshot,
+        Some(first_pricing)
+    );
+
+    let second_step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: run.id.clone(),
+            seq: 2,
+            status: ProviderStepStatus::Running,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &trigger.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: run_settings(&provider.id, &model.model_id),
+            error: None,
+        })
+        .unwrap();
+    assert_eq!(second_step.pricing_snapshot, Some(second_pricing));
+
+    let mut custom_settings = run_settings(&provider.id, &model.model_id);
+    custom_settings.provider_settings.fields[0].value = ProviderSettingValue::String {
+        value: "https://proxy.example.com/v1".to_string(),
+    };
+    let custom_step = repo
+        .insert_provider_step(NewProviderStep {
+            agent_run_id: run.id,
+            seq: 3,
+            status: ProviderStepStatus::Running,
+            request_snapshot: provider_step_request(&provider.id, &model.model_id, &trigger.id),
+            response_snapshot: None,
+            state_snapshot: None,
+            settings_snapshot: custom_settings,
+            error: None,
+        })
+        .unwrap();
+    assert_eq!(custom_step.pricing_snapshot, None);
 }
 
 #[test]
@@ -195,6 +462,7 @@ fn complete_provider_step_rolls_back_when_usage_insert_fails() {
             state_snapshot: provider_run_state(&provider.id),
             continuation: Some(continuation),
             usage: usage_snapshot(),
+            cost_amount: None,
         },
     );
 
@@ -209,6 +477,529 @@ fn complete_provider_step_rolls_back_when_usage_insert_fails() {
         repo.usage_events_for_provider_step(&step.id)
             .unwrap()
             .is_empty()
+    );
+}
+
+#[test]
+fn agent_message_request_usage_uses_exact_final_step_for_finalization_and_reload() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let context = request_usage_context(&repo, "request-usage-exact-step");
+
+    let mut intermediate_usage = usage_snapshot();
+    intermediate_usage.total_tokens = 101;
+    let intermediate_step = request_usage_step(&repo, &context, 1, Some(intermediate_usage));
+    repo.append_conversation_entry(NewConversationEntry {
+        conversation_id: context.conversation_id.clone(),
+        status: ConversationEntryStatus::Completed,
+        agent_run_id: Some(context.agent_run_id.clone()),
+        provider_step_id: Some(intermediate_step.id),
+        tool_invocation_id: None,
+        provider_item_id: None,
+        payload: ConversationEntryPayload::Message {
+            role: TranscriptRole::Assistant,
+            content: vec![ContentPart::Text {
+                text: "tool loop request".to_string(),
+            }],
+        },
+    })
+    .unwrap();
+
+    let mut final_usage = usage_snapshot();
+    final_usage.total_tokens = 202;
+    let final_step = request_usage_step(&repo, &context, 2, Some(final_usage.clone()));
+    let finished = finish_request_usage_run(&repo, &context, &final_step.id);
+    let request_usage = finished.request_usage.clone().unwrap();
+
+    assert_eq!(request_usage.conversation_entry_id, finished.final_entry.id);
+    assert_eq!(request_usage.agent_run_id, context.agent_run_id);
+    assert_eq!(request_usage.provider_step_id, final_step.id);
+    assert_eq!(request_usage.provider_kind, "openai");
+    assert_eq!(request_usage.usage, Some(final_usage));
+
+    let timeline = repo
+        .conversation_timeline_records(&context.conversation_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        timeline.agent_message_request_usages,
+        vec![request_usage.clone()]
+    );
+
+    let events = repo
+        .usage_events_for_conversation(&context.conversation_id)
+        .unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(events.windows(2).all(|pair| {
+        (pair[0].created_at, pair[0].id.as_str()) <= (pair[1].created_at, pair[1].id.as_str())
+    }));
+
+    let repeated = finish_request_usage_run(&repo, &context, &final_step.id);
+    assert!(!repeated.appended_final_entry);
+    assert_eq!(repeated.request_usage, Some(request_usage));
+}
+
+#[test]
+fn agent_message_request_usage_preserves_missing_usage_event() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let context = request_usage_context(&repo, "request-usage-missing-event");
+    let step = request_usage_step(&repo, &context, 1, None);
+
+    let finished = finish_request_usage_run(&repo, &context, &step.id);
+    let request_usage = finished.request_usage.clone().unwrap();
+    assert_eq!(request_usage.provider_step_id, step.id);
+    assert_eq!(request_usage.usage, None);
+
+    let timeline = repo
+        .conversation_timeline_records(&context.conversation_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(timeline.agent_message_request_usages, vec![request_usage]);
+}
+
+#[test]
+fn agent_message_request_usage_excludes_non_completed_steps() {
+    for status in [
+        ProviderStepStatus::Running,
+        ProviderStepStatus::Failed,
+        ProviderStepStatus::Canceled,
+    ] {
+        let dir = tempdir().unwrap();
+        let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+        let repo = store.repository();
+        let context = request_usage_context(&repo, "request-usage-non-completed-step");
+        let step = repo
+            .insert_provider_step(NewProviderStep {
+                agent_run_id: context.agent_run_id.clone(),
+                seq: 1,
+                status: ProviderStepStatus::Running,
+                request_snapshot: provider_step_request(
+                    &context.provider_id,
+                    &context.model_id,
+                    &context.trigger_entry_id,
+                ),
+                response_snapshot: None,
+                state_snapshot: None,
+                settings_snapshot: run_settings(&context.provider_id, &context.model_id),
+                error: None,
+            })
+            .unwrap();
+        let step = if status == ProviderStepStatus::Running {
+            step
+        } else {
+            repo.update_provider_step_status(
+                &step.id,
+                UpdateProviderStepStatus {
+                    status,
+                    response_snapshot: None,
+                    state_snapshot: None,
+                    error: Some(run_error()),
+                },
+            )
+            .unwrap()
+        };
+
+        let finished = finish_request_usage_run(&repo, &context, &step.id);
+        assert_eq!(finished.request_usage, None);
+        assert!(
+            repo.conversation_timeline_records(&context.conversation_id)
+                .unwrap()
+                .unwrap()
+                .agent_message_request_usages
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn agent_message_request_usage_identity_failure_rolls_back_finalization() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let context = request_usage_context(&repo, "request-usage-identity-rollback");
+    let step = request_usage_step(&repo, &context, 1, Some(usage_snapshot()));
+    let different_provider = repo.insert_provider(provider()).unwrap();
+    let entries_before = repo
+        .conversation_entries(&context.conversation_id)
+        .unwrap()
+        .len();
+
+    let mut conn = store.pool().get().unwrap();
+    sql_query("UPDATE usage_events SET provider_id = ? WHERE provider_step_id = ?")
+        .bind::<Text, _>(&different_provider.id)
+        .bind::<Text, _>(&step.id)
+        .execute(&mut conn)
+        .unwrap();
+    drop(conn);
+
+    let result = repo.finish_agent_run(
+        &context.agent_run_id,
+        FinishAgentRun {
+            status: AgentRunStatus::Completed,
+            stopped_reason: AgentStoppedReason::Completed,
+            error: None,
+            final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                conversation_id: context.conversation_id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(context.agent_run_id.clone()),
+                provider_step_id: Some(step.id.clone()),
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationEntryPayload::Message {
+                    role: TranscriptRole::Assistant,
+                    content: vec![ContentPart::Text {
+                        text: "must roll back".to_string(),
+                    }],
+                },
+            })),
+        },
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("usage event provider")
+    );
+    assert_eq!(
+        repo.get_agent_run(&context.agent_run_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentRunStatus::Running
+    );
+    assert_eq!(
+        repo.conversation_entries(&context.conversation_id)
+            .unwrap()
+            .len(),
+        entries_before
+    );
+}
+
+#[test]
+fn agent_message_request_usage_reload_rejects_cross_conversation_usage_identity() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let context = request_usage_context(&repo, "request-usage-reload-conversation-mismatch");
+    let step = request_usage_step(&repo, &context, 1, Some(usage_snapshot()));
+    finish_request_usage_run(&repo, &context, &step.id);
+    let other_project = repo
+        .insert_project(project("request-usage-reload-other-conversation"))
+        .unwrap();
+    let other_conversation = repo
+        .insert_conversation(conversation(&other_project))
+        .unwrap();
+
+    let mut conn = store.pool().get().unwrap();
+    sql_query("UPDATE usage_events SET conversation_id = ? WHERE provider_step_id = ?")
+        .bind::<Text, _>(&other_conversation.id)
+        .bind::<Text, _>(&step.id)
+        .execute(&mut conn)
+        .unwrap();
+    drop(conn);
+
+    let error = repo
+        .conversation_timeline_records(&context.conversation_id)
+        .unwrap_err();
+    assert!(error.to_string().contains("usage event conversation"));
+}
+
+#[test]
+fn composer_context_selects_latest_completed_step_deterministically_without_sum() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let context = request_usage_context(&repo, "composer-context-latest-step");
+
+    let mut first_usage = usage_snapshot();
+    first_usage.total_tokens = 101;
+    request_usage_step(&repo, &context, 1, Some(first_usage));
+    let mut latest_usage = usage_snapshot();
+    latest_usage.total_tokens = 202;
+    let latest_step = request_usage_step(&repo, &context, 2, Some(latest_usage.clone()));
+
+    let finished = finish_context_run_without_output(&repo, &context);
+    let request_usage = finished.context_request_usage.clone().unwrap();
+    assert_eq!(request_usage.agent_run_id, context.agent_run_id);
+    assert_eq!(request_usage.provider_step_id, latest_step.id);
+    assert_eq!(request_usage.provider_step_seq, 2);
+    assert_eq!(request_usage.usage, Some(latest_usage));
+    assert_eq!(finished.request_usage, None);
+
+    let reloaded = repo
+        .conversation_timeline_records(&context.conversation_id)
+        .unwrap()
+        .unwrap()
+        .latest_context_request_usage;
+    assert_eq!(reloaded, Some(request_usage));
+}
+
+#[test]
+fn composer_context_preserves_missing_usage_for_latest_candidate() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let context = request_usage_context(&repo, "composer-context-missing-usage");
+    let step = request_usage_step(&repo, &context, 1, None);
+
+    let finished = finish_context_run_without_output(&repo, &context);
+    let request_usage = finished.context_request_usage.clone().unwrap();
+    assert_eq!(request_usage.provider_step_id, step.id);
+    assert_eq!(request_usage.usage, None);
+    assert_eq!(
+        repo.conversation_timeline_records(&context.conversation_id)
+            .unwrap()
+            .unwrap()
+            .latest_context_request_usage,
+        Some(request_usage)
+    );
+}
+
+#[test]
+fn composer_context_rejects_corrupt_latest_completed_candidate_without_backscan() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let first = request_usage_context(&repo, "composer-context-corrupt-latest");
+    request_usage_step(&repo, &first, 1, Some(usage_snapshot()));
+    finish_context_run_without_output(&repo, &first);
+
+    let latest = next_request_usage_run(&repo, &first, "latest request");
+    let latest_step = request_usage_step(&repo, &latest, 1, Some(usage_snapshot()));
+    finish_context_run_without_output(&repo, &latest);
+
+    let mut conn = store.pool().get().unwrap();
+    sql_query("PRAGMA ignore_check_constraints = ON")
+        .execute(&mut conn)
+        .unwrap();
+    sql_query("UPDATE provider_steps SET completed_at = NULL WHERE id = ?")
+        .bind::<Text, _>(&latest_step.id)
+        .execute(&mut conn)
+        .unwrap();
+    sql_query("PRAGMA ignore_check_constraints = OFF")
+        .execute(&mut conn)
+        .unwrap();
+    drop(conn);
+
+    let error = repo
+        .conversation_timeline_records(&first.conversation_id)
+        .unwrap_err();
+    assert!(error.to_string().contains("completed provider step"));
+    assert!(error.to_string().contains("has no completion timestamp"));
+
+    let mut conn = store.pool().get().unwrap();
+    sql_query("UPDATE provider_steps SET completed_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind::<Text, _>(&latest_step.id)
+        .execute(&mut conn)
+        .unwrap();
+    sql_query("UPDATE agent_runs SET completed_at = NULL WHERE id = ?")
+        .bind::<Text, _>(&latest.agent_run_id)
+        .execute(&mut conn)
+        .unwrap();
+    drop(conn);
+
+    let error = repo
+        .conversation_timeline_records(&first.conversation_id)
+        .unwrap_err();
+    assert!(error.to_string().contains("completed agent run"));
+    assert!(error.to_string().contains("has no completion timestamp"));
+}
+
+#[test]
+fn composer_context_excludes_running_failed_and_canceled_runs() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let completed = request_usage_context(&repo, "composer-context-terminal-filter");
+    let completed_step = request_usage_step(&repo, &completed, 1, Some(usage_snapshot()));
+    let completed_fact = finish_request_usage_run(&repo, &completed, &completed_step.id)
+        .context_request_usage
+        .clone()
+        .unwrap();
+
+    let running = next_request_usage_run(&repo, &completed, "running request");
+    request_usage_step(&repo, &running, 1, Some(usage_snapshot()));
+    assert_eq!(
+        repo.conversation_timeline_records(&completed.conversation_id)
+            .unwrap()
+            .unwrap()
+            .latest_context_request_usage,
+        Some(completed_fact.clone())
+    );
+    let canceled = repo
+        .finish_agent_run(
+            &running.agent_run_id,
+            FinishAgentRun {
+                status: AgentRunStatus::Canceled,
+                stopped_reason: AgentStoppedReason::Canceled,
+                error: None,
+                final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                    conversation_id: running.conversation_id.clone(),
+                    status: ConversationEntryStatus::Completed,
+                    agent_run_id: Some(running.agent_run_id.clone()),
+                    provider_step_id: None,
+                    tool_invocation_id: None,
+                    provider_item_id: None,
+                    payload: ConversationEntryPayload::Status(ConversationStatusEntry {
+                        code: ConversationStatusCode::Canceled,
+                        message: None,
+                    }),
+                })),
+            },
+        )
+        .unwrap();
+    assert_eq!(canceled.context_request_usage, None);
+
+    let failed = next_request_usage_run(&repo, &completed, "failed request");
+    request_usage_step(&repo, &failed, 1, Some(usage_snapshot()));
+    let error = run_error();
+    let failed = repo
+        .finish_agent_run(
+            &failed.agent_run_id,
+            FinishAgentRun {
+                status: AgentRunStatus::Failed,
+                stopped_reason: AgentStoppedReason::Failed,
+                error: Some(error.clone()),
+                final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                    conversation_id: failed.conversation_id.clone(),
+                    status: ConversationEntryStatus::Failed,
+                    agent_run_id: Some(failed.agent_run_id.clone()),
+                    provider_step_id: None,
+                    tool_invocation_id: None,
+                    provider_item_id: None,
+                    payload: ConversationEntryPayload::Error(error),
+                })),
+            },
+        )
+        .unwrap();
+    assert_eq!(failed.context_request_usage, None);
+    assert_eq!(
+        repo.conversation_timeline_records(&completed.conversation_id)
+            .unwrap()
+            .unwrap()
+            .latest_context_request_usage,
+        Some(completed_fact)
+    );
+}
+
+#[test]
+fn composer_context_identity_mismatch_rolls_back_finalization() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let context = request_usage_context(&repo, "composer-context-identity-rollback");
+    let step = request_usage_step(&repo, &context, 1, Some(usage_snapshot()));
+    let different_provider = repo.insert_provider(provider()).unwrap();
+    let entries_before = repo
+        .conversation_entries(&context.conversation_id)
+        .unwrap()
+        .len();
+
+    let mut conn = store.pool().get().unwrap();
+    sql_query("UPDATE usage_events SET provider_id = ? WHERE provider_step_id = ?")
+        .bind::<Text, _>(&different_provider.id)
+        .bind::<Text, _>(&step.id)
+        .execute(&mut conn)
+        .unwrap();
+    drop(conn);
+
+    let result = repo.finish_agent_run(
+        &context.agent_run_id,
+        FinishAgentRun {
+            status: AgentRunStatus::Completed,
+            stopped_reason: AgentStoppedReason::Completed,
+            error: None,
+            final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                conversation_id: context.conversation_id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(context.agent_run_id.clone()),
+                provider_step_id: None,
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationEntryPayload::Status(ConversationStatusEntry {
+                    code: ConversationStatusCode::CompletedWithoutOutput,
+                    message: None,
+                }),
+            })),
+        },
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("usage event provider")
+    );
+    assert_eq!(
+        repo.get_agent_run(&context.agent_run_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentRunStatus::Running
+    );
+    assert_eq!(
+        repo.conversation_entries(&context.conversation_id)
+            .unwrap()
+            .len(),
+        entries_before
+    );
+}
+
+#[test]
+fn composer_context_finalization_projection_matches_reload() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let context = request_usage_context(&repo, "composer-context-finalization-parity");
+    request_usage_step(&repo, &context, 1, Some(usage_snapshot()));
+
+    let live = finish_context_run_without_output(&repo, &context)
+        .context_request_usage
+        .clone();
+    let reload = repo
+        .conversation_timeline_records(&context.conversation_id)
+        .unwrap()
+        .unwrap()
+        .latest_context_request_usage;
+    assert_eq!(live, reload);
+}
+
+#[test]
+fn composer_context_terminal_idempotent_finalize_rebuilds_only_current_latest_completed_delta() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let first = request_usage_context(&repo, "composer-context-idempotent");
+    request_usage_step(&repo, &first, 1, Some(usage_snapshot()));
+    let first_finish = finish_context_run_without_output(&repo, &first);
+    let first_fact = first_finish.context_request_usage.clone().unwrap();
+    let repeated_first = finish_context_run_without_output(&repo, &first);
+    assert!(!repeated_first.appended_final_entry);
+    assert_eq!(repeated_first.context_request_usage, Some(first_fact));
+
+    let latest = next_request_usage_run(&repo, &first, "newer completed request");
+    let mut latest_usage = usage_snapshot();
+    latest_usage.total_tokens = 404;
+    request_usage_step(&repo, &latest, 1, Some(latest_usage));
+    let latest_finish = finish_context_run_without_output(&repo, &latest);
+    let latest_fact = latest_finish.context_request_usage.clone().unwrap();
+
+    assert_eq!(
+        finish_context_run_without_output(&repo, &first).context_request_usage,
+        None
+    );
+    assert_eq!(
+        finish_context_run_without_output(&repo, &latest).context_request_usage,
+        Some(latest_fact.clone())
+    );
+    assert_eq!(
+        repo.conversation_timeline_records(&first.conversation_id)
+            .unwrap()
+            .unwrap()
+            .latest_context_request_usage,
+        Some(latest_fact)
     );
 }
 
@@ -292,6 +1083,7 @@ fn previous_id_fallback_persists_failed_and_completed_attempts() {
             state_snapshot: provider_run_state(&provider.id),
             continuation: Some(continuation),
             usage: usage_snapshot(),
+            cost_amount: None,
         },
     )
     .unwrap();

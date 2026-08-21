@@ -7,6 +7,56 @@ use time::{Month, OffsetDateTime, UtcOffset, Weekday};
 
 use crate::foundation::I18n;
 
+pub(crate) fn format_token_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len().saturating_sub(1) / 3);
+    let first_group = digits.len() % 3;
+    for (index, byte) in digits.bytes().enumerate() {
+        if index > 0 && index % 3 == first_group {
+            formatted.push(',');
+        }
+        formatted.push(char::from(byte));
+    }
+    formatted
+}
+
+pub(crate) fn format_compact_token_count(value: u64) -> String {
+    const UNITS: [(u64, &str); 6] = [
+        (1_000, "k"),
+        (1_000_000, "M"),
+        (1_000_000_000, "B"),
+        (1_000_000_000_000, "T"),
+        (1_000_000_000_000_000, "P"),
+        (1_000_000_000_000_000_000, "E"),
+    ];
+
+    let Some(mut unit_index) = UNITS.iter().rposition(|(unit, _)| value >= *unit) else {
+        return value.to_string();
+    };
+    let value = u128::from(value);
+
+    loop {
+        let (unit, suffix) = UNITS[unit_index];
+        let unit = u128::from(unit);
+        let whole = value / unit;
+
+        if whole < 100 {
+            let tenths = (value * 10 + unit / 2) / unit;
+            if tenths.is_multiple_of(10) {
+                return format!("{}{suffix}", tenths / 10);
+            }
+            return format!("{}.{}{suffix}", tenths / 10, tenths % 10);
+        }
+
+        let rounded = (value + unit / 2) / unit;
+        if rounded >= 1_000 && unit_index + 1 < UNITS.len() {
+            unit_index += 1;
+            continue;
+        }
+        return format!("{rounded}{suffix}");
+    }
+}
+
 pub(crate) fn content_parts_text(content: &[ContentPart]) -> String {
     content
         .iter()
@@ -185,6 +235,26 @@ mod tests {
             .unwrap()
             .with_time(Time::from_hms(hour, minute, 0).unwrap())
             .assume_utc()
+    }
+
+    #[test]
+    fn token_count_formatters_preserve_exact_and_compact_contracts() {
+        assert_eq!(format_token_count(0), "0");
+        assert_eq!(format_token_count(999), "999");
+        assert_eq!(format_token_count(1_000), "1,000");
+        assert_eq!(format_token_count(24_716), "24,716");
+        assert_eq!(format_token_count(u64::MAX), "18,446,744,073,709,551,615");
+
+        assert_eq!(format_compact_token_count(0), "0");
+        assert_eq!(format_compact_token_count(999), "999");
+        assert_eq!(format_compact_token_count(1_000), "1k");
+        assert_eq!(format_compact_token_count(1_050), "1.1k");
+        assert_eq!(format_compact_token_count(25_132), "25.1k");
+        assert_eq!(format_compact_token_count(128_000), "128k");
+        assert_eq!(format_compact_token_count(999_499), "999k");
+        assert_eq!(format_compact_token_count(999_500), "1M");
+        assert_eq!(format_compact_token_count(1_250_000), "1.3M");
+        assert_eq!(format_compact_token_count(u64::MAX), "18.4E");
     }
 
     fn entry(payload: ConversationEntryPayload) -> ConversationEntry {

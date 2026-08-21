@@ -712,6 +712,7 @@ mod tests {
             display_name: None,
             enabled,
             capabilities: conservative_model_capabilities("openai"),
+            pricing: None,
             metadata: ProviderModelMetadata {
                 display_name: None,
                 family: None,

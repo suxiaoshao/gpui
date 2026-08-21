@@ -9,6 +9,7 @@ pub(crate) const APP_ICON_ASSET_PATH: &str = "build-assets/icon/app-icon.png";
 define_lucide_icons!(
     pub(crate) enum IconName {
         Check => "check",
+        ChartNoAxesColumn => "chart-no-axes-column",
         ChevronDown => "chevron-down",
         ChevronRight => "chevron-right",
         ChevronUp => "chevron-up",
@@ -31,6 +32,7 @@ define_lucide_icons!(
         FolderOpen => "folder-open",
         FolderPlus => "folder-plus",
         FolderX => "folder-x",
+        Gauge => "gauge",
         Keyboard => "keyboard",
         KeyRound => "key-round",
         Languages => "languages",
@@ -359,6 +361,10 @@ mod tests {
     #[test]
     fn declared_icons_have_lucide_paths() {
         assert_eq!(
+            IconName::ChartNoAxesColumn.path(),
+            SharedString::from("icons/chart-no-axes-column.svg")
+        );
+        assert_eq!(
             IconName::Database.path(),
             SharedString::from("icons/database.svg")
         );
@@ -373,6 +379,10 @@ mod tests {
         assert_eq!(
             IconName::FolderOpen.path(),
             SharedString::from("icons/folder-open.svg")
+        );
+        assert_eq!(
+            IconName::Gauge.path(),
+            SharedString::from("icons/gauge.svg")
         );
         assert_eq!(
             IconName::FolderPlus.path(),
@@ -591,10 +601,12 @@ mod tests {
         let icons = assets.list("icons/").expect("list icons");
 
         assert!(icons.contains(&SharedString::from("icons/database.svg")));
+        assert!(icons.contains(&SharedString::from("icons/chart-no-axes-column.svg")));
         assert!(icons.contains(&SharedString::from("icons/folder.svg")));
         assert!(icons.contains(&SharedString::from("icons/folder-open.svg")));
         assert!(icons.contains(&SharedString::from("icons/folder-plus.svg")));
         assert!(icons.contains(&SharedString::from("icons/folder-x.svg")));
+        assert!(icons.contains(&SharedString::from("icons/gauge.svg")));
         assert!(icons.contains(&SharedString::from("icons/keyboard.svg")));
         assert!(icons.contains(&SharedString::from("icons/lightbulb.svg")));
         assert!(icons.contains(&SharedString::from("icons/send.svg")));

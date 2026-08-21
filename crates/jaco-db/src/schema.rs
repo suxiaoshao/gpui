@@ -131,6 +131,7 @@ diesel::table! {
         started_at -> Nullable<TimestamptzSqlite>,
         completed_at -> Nullable<TimestamptzSqlite>,
         updated_at -> TimestamptzSqlite,
+        pricing_snapshot_json -> Nullable<Json>,
     }
 }
 
@@ -173,6 +174,7 @@ diesel::table! {
         total_tokens -> BigInt,
         usage_json -> Json,
         created_at -> TimestamptzSqlite,
+        cost_amount_nano_usd -> Nullable<BigInt>,
     }
 }
 
@@ -229,6 +231,7 @@ diesel::table! {
         fetched_at -> TimestamptzSqlite,
         created_at -> TimestamptzSqlite,
         updated_at -> TimestamptzSqlite,
+        pricing_json -> Nullable<Json>,
     }
 }
 

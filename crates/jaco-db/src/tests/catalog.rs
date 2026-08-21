@@ -223,6 +223,53 @@ fn provider_model_manual_refresh_updates_cached_row() {
 }
 
 #[test]
+fn provider_model_pricing_roundtrips_and_route_change_clears_cached_price() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let pricing = model_pricing(
+        "gpt-5.6",
+        2_500_000_000,
+        15_000_000_000,
+        Some(250_000_000),
+        None,
+    );
+    let mut input = provider_model(&provider.id, "gpt-5.6", "GPT-5.6");
+    input.pricing = Some(pricing.clone());
+
+    let stored = repo.upsert_provider_model(input).unwrap();
+    assert_eq!(stored.pricing, Some(pricing.clone()));
+    assert_eq!(
+        repo.list_provider_models(&provider.id).unwrap()[0].pricing,
+        Some(pricing)
+    );
+
+    let mut custom_settings = provider_settings();
+    custom_settings.fields[0].value = ProviderSettingValue::String {
+        value: "https://proxy.example.com/v1".to_string(),
+    };
+    repo.update_provider(
+        &provider.id,
+        UpdateProvider {
+            display_name: provider.display_name,
+            enabled: provider.enabled,
+            settings: custom_settings,
+            secret_refs: provider.secret_refs,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        repo.get_provider_model(&provider.id, "gpt-5.6")
+            .unwrap()
+            .unwrap()
+            .pricing,
+        None
+    );
+}
+
+#[test]
 fn provider_repository_lists_updates_and_deletes_provider_rows() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();

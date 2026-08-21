@@ -17,6 +17,7 @@ use std::{collections::HashSet, fs};
 use tempfile::tempdir;
 
 mod agent;
+mod analytics;
 mod attachments;
 mod bootstrap;
 mod catalog;
@@ -199,7 +200,31 @@ fn provider_model(provider_id: &str, model_id: &str, display_name: &str) -> NewP
         enabled: true,
         capabilities: model_capabilities(),
         metadata: provider_model_metadata(display_name),
+        pricing: None,
     }
+}
+
+fn model_pricing(
+    model_id: &str,
+    input: u64,
+    output: u64,
+    cache_read: Option<u64>,
+    cache_write: Option<u64>,
+) -> ProviderModelPricingSnapshot {
+    ProviderModelPricingSnapshot::new(
+        "openai",
+        model_id,
+        official_provider_pricing_route(&provider_settings()).unwrap(),
+        time::OffsetDateTime::UNIX_EPOCH,
+        ProviderTokenPriceSnapshot::new(
+            UsdNanoPerMillionTokens::new(input),
+            UsdNanoPerMillionTokens::new(output),
+            cache_read.map(UsdNanoPerMillionTokens::new),
+            cache_write.map(UsdNanoPerMillionTokens::new),
+        ),
+        Vec::new(),
+    )
+    .unwrap()
 }
 
 fn provider_model_metadata(display_name: &str) -> ProviderModelMetadata {
@@ -390,6 +415,7 @@ fn tool_policy() -> ToolPolicySnapshot {
 
 fn model_capabilities() -> ModelCapabilitiesSnapshot {
     ModelCapabilitiesSnapshot {
+        context_window: None,
         text_input: true,
         text_output: true,
         streaming: true,

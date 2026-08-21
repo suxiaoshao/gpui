@@ -57,8 +57,17 @@ pub(crate) struct McpPreparedRun {
 }
 
 pub(crate) struct McpPrepareRunError {
-    pub(crate) request: AgentRunRequest,
+    pub(crate) request: Box<AgentRunRequest>,
     pub(crate) message: String,
+}
+
+impl McpPrepareRunError {
+    fn new(request: AgentRunRequest, message: impl Into<String>) -> Self {
+        Self {
+            request: Box::new(request),
+            message: message.into(),
+        }
+    }
 }
 
 pub(crate) struct McpRuntimeStore {
@@ -969,10 +978,7 @@ pub(crate) async fn prepare_run_request(
     let setup = match cx.update(|cx| build_mcp_runtime_setup(cx, inherited_approval_mode)) {
         Ok(setup) => setup,
         Err(error) => {
-            return Err(McpPrepareRunError {
-                request,
-                message: error.to_string(),
-            });
+            return Err(McpPrepareRunError::new(request, error.to_string()));
         }
     };
     let mut setup = setup;
@@ -992,14 +998,14 @@ pub(crate) async fn prepare_run_request(
             })
         });
         if !accepted {
-            return Err(McpPrepareRunError {
+            return Err(McpPrepareRunError::new(
                 request,
-                message: "MCP server config changed while preparing the run".to_string(),
-            });
+                "MCP server config changed while preparing the run",
+            ));
         }
         let preflight_statuses = setup.preflight_statuses.clone();
         if let Err(message) = close_all_sessions(cx, setup, attempt_generations.clone()).await {
-            return Err(McpPrepareRunError { request, message });
+            return Err(McpPrepareRunError::new(request, message));
         }
         reconcile_runtime_with_ready_config(cx);
         let attempt_is_current = cx.update(|cx| {
@@ -1008,10 +1014,10 @@ pub(crate) async fn prepare_run_request(
             })
         });
         if !attempt_is_current {
-            return Err(McpPrepareRunError {
+            return Err(McpPrepareRunError::new(
                 request,
-                message: "MCP server config changed while preparing the run".to_string(),
-            });
+                "MCP server config changed while preparing the run",
+            ));
         }
         apply_preflight_statuses(cx, preflight_statuses, attempt_generations).await;
         return Ok(McpPreparedRun { request });
@@ -1020,7 +1026,7 @@ pub(crate) async fn prepare_run_request(
     let setup = match attach_oauth_credentials(setup, cx).await {
         Ok(setup) => setup,
         Err(message) => {
-            return Err(McpPrepareRunError { request, message });
+            return Err(McpPrepareRunError::new(request, message));
         }
     };
 
@@ -1034,10 +1040,10 @@ pub(crate) async fn prepare_run_request(
         })
     });
     if !accepted {
-        return Err(McpPrepareRunError {
+        return Err(McpPrepareRunError::new(
             request,
-            message: "MCP server config changed while preparing the run".to_string(),
-        });
+            "MCP server config changed while preparing the run",
+        ));
     }
 
     let manager = cx.update(|cx| runtime(cx).read(cx).manager.clone());
@@ -1062,10 +1068,7 @@ pub(crate) async fn prepare_run_request(
     let (tool_registry, prepared) = match prepared_result {
         Ok(result) => result,
         Err(err) => {
-            return Err(McpPrepareRunError {
-                request,
-                message: err.to_string(),
-            });
+            return Err(McpPrepareRunError::new(request, err.to_string()));
         }
     };
     reconcile_runtime_with_ready_config(cx);
@@ -1076,10 +1079,10 @@ pub(crate) async fn prepare_run_request(
         })
     });
     if !attempt_is_current {
-        return Err(McpPrepareRunError {
+        return Err(McpPrepareRunError::new(
             request,
-            message: "MCP server config changed while preparing the run".to_string(),
-        });
+            "MCP server config changed while preparing the run",
+        ));
     }
     request.tool_registry = tool_registry;
     match prepared {
@@ -1121,7 +1124,7 @@ pub(crate) async fn prepare_run_request(
                     });
                 }
             });
-            Err(McpPrepareRunError { request, message })
+            Err(McpPrepareRunError::new(request, message))
         }
     }
 }

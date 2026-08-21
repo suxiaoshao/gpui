@@ -36,6 +36,7 @@ settings-title = Settings
 settings-page-general = General
 settings-page-appearance = Appearance
 settings-page-provider = Provider
+settings-page-usage = Usage
 settings-page-projects = Projects
 settings-page-prompts = Prompts
 settings-page-skills = Skills
@@ -47,6 +48,87 @@ settings-custom-theme-color-description = Pick a color to generate a Material Yo
 settings-light-themes = Light Themes
 settings-dark-themes = Dark Themes
 settings-search-no-results = No matching settings.
+settings-usage-description = Each saved usage record is counted as one completed provider request.
+settings-usage-period-label = Period
+settings-usage-period-today = Today
+settings-usage-period-this-week = This week
+settings-usage-period-this-month = This month
+settings-usage-period-this-year = This year
+settings-usage-period-all-time = All time
+settings-usage-loading = Loading usage statistics…
+settings-usage-refreshing = Refreshing usage statistics…
+settings-usage-load-error-title = Usage statistics are unavailable
+settings-usage-load-error-description = Jaco could not load usage statistics. Try again.
+settings-usage-refresh-error-description = The displayed statistics may be stale because the latest refresh failed.
+settings-usage-retry = Retry
+settings-usage-empty-title = No usage in this period
+settings-usage-empty-description = Completed provider requests will appear here after usage is recorded.
+settings-usage-summary-title = Summary
+settings-usage-summary-accessible = Usage summary: { $metrics }
+settings-usage-metric-accessible = { $label }: { $value }
+settings-usage-estimated-cost-subtotal = Estimated cost subtotal
+settings-usage-priced-requests-coverage = Priced requests { $priced } / { $total } ({ $percent }%)
+settings-usage-cost-metric-accessible = { $label }: { $value }; { $coverage }
+settings-usage-unpriced = —
+settings-usage-explicit-free = $0
+settings-usage-cost-disclaimer = Estimates use the models.dev catalog price at request time and recorded tokens; they do not represent the provider's final bill.
+settings-usage-requests = Requests
+settings-usage-reported-requests = Reported
+settings-usage-unreported-requests = Unreported
+settings-usage-total-covered-requests = Requests with total
+settings-usage-input-tokens = Input tokens
+settings-usage-output-tokens = Output tokens
+settings-usage-cached-input-tokens = Cache read
+settings-usage-cache-write-input-tokens = Cache write
+settings-usage-reasoning-tokens = Reasoning tokens
+settings-usage-total-tokens = Total tokens
+settings-usage-date-value = { $year }-{ $month }-{ $day }
+settings-usage-selected-period-empty = No usage for { $range }.
+settings-usage-activity-title = Activity
+settings-usage-activity-description = Total tokens recorded for each local calendar day during the past 365 days.
+settings-usage-activity-caption = { $total } tokens over the past { $days } days
+settings-usage-activity-less = Less
+settings-usage-activity-more = More
+settings-usage-activity-month-label =
+    { $month ->
+        [January] Jan
+        [February] Feb
+        [March] Mar
+        [April] Apr
+        [May] May
+        [June] Jun
+        [July] Jul
+        [August] Aug
+        [September] Sep
+        [October] Oct
+        [November] Nov
+       *[December] Dec
+    }
+settings-usage-activity-accessible = Activity from { $start } through { $end }: { $total } total tokens across { $activeDays } active days; peak { $peakTokens } tokens on { $peakDate }.
+settings-usage-activity-accessible-no-peak = Activity from { $start } through { $end }: { $total } total tokens across { $activeDays } active days; no recorded activity.
+settings-usage-cost-trend-title = Cost trend
+settings-usage-cost-trend-description = Estimated cost for each local calendar day with at least one priced request in the selected period.
+settings-usage-cost-trend-accessible = Cost trend: { $items }
+settings-usage-cost-trend-item-accessible = { $date }: { $amount }; { $priced } priced requests
+settings-usage-cost-trend-free-item = { $date }: { $amount } · { $priced } priced requests
+settings-usage-provider-cost-title = Provider cost
+settings-usage-provider-cost-description = Estimated cost grouped by provider. The pie includes every provider with priced requests; progress bars show the top five.
+settings-usage-provider-all = All providers
+settings-usage-provider-top-five = Top five providers
+settings-usage-provider-cost-accessible = Provider cost: { $items }
+settings-usage-model-cost-title = Model cost
+settings-usage-model-cost-description = Top ten models by estimated cost in the selected period.
+settings-usage-model-cost-accessible = Model cost: { $items }
+settings-usage-model-provider-label = { $model } · { $provider }
+settings-usage-cost-chart-item-accessible = { $label }: { $amount }; priced requests { $priced } / { $total }
+settings-usage-cost-legend-value = { $amount } · { $coverage }
+settings-usage-known-free-description = Every priced request shown here was explicitly free.
+settings-usage-breakdown-title = Provider and model breakdown
+settings-usage-provider = Provider
+settings-usage-model = Model
+settings-usage-estimated-cost = Estimated cost
+settings-usage-cost-cell = { $amount } ({ $priced } / { $total })
+settings-usage-cost-cell-accessible = Estimated cost: { $amount }; priced requests: { $priced } / { $total }
 theme-selected = Selected
 theme-selected-prefix = Selected:
 appearance-mode-system = System
@@ -342,6 +424,42 @@ conversation-copy-tooltip = Copy
 conversation-copy-success = Copied
 conversation-copy-failed = Copy failed
 conversation-copy-failed-message = Could not write to the clipboard.
+conversation-request-usage-tooltip = Request usage
+conversation-request-usage-title = Usage
+conversation-request-usage-compact-total = { $tokens } Token
+conversation-request-usage-input-tokens = Input tokens
+conversation-request-usage-output-tokens = Output tokens
+conversation-request-usage-cache-read = Cache read
+conversation-request-usage-cache-hit-rate = Cache hit rate
+conversation-request-usage-cache-write = Cache write
+conversation-request-usage-reasoning-tokens = Reasoning tokens
+conversation-request-usage-total-tokens = Total tokens
+conversation-request-usage-unreported = Provider did not report token usage
+conversation-request-usage-unavailable = Request usage is unavailable
+conversation-request-usage-unknown-value = Unknown
+conversation-context-occupancy-tooltip = Context occupancy
+conversation-context-occupancy-title = Context occupancy
+conversation-context-occupancy-summary-known = { $percentage }%
+conversation-context-occupancy-summary-unknown = —
+conversation-context-occupancy-accessible-known = Context occupancy: { $percentage }%
+conversation-context-occupancy-accessible-unknown = Context occupancy is unknown: { $reason }
+conversation-context-occupancy-used-tokens = Used context
+conversation-context-occupancy-context-window = Context window
+conversation-context-occupancy-percentage = Occupancy
+conversation-context-occupancy-provider = Provider
+conversation-context-occupancy-model = Model
+conversation-context-occupancy-request-completed = Request completed
+conversation-context-occupancy-token-value = { $tokens } Token
+conversation-context-occupancy-token-summary = { $used } / { $context_window } Token
+conversation-context-occupancy-percentage-value = { $percentage }%
+conversation-context-occupancy-unknown-value = —
+conversation-context-occupancy-reason-no-model = No model is selected
+conversation-context-occupancy-reason-window-unknown = The selected model's context window is unknown
+conversation-context-occupancy-reason-no-request = No completed request is available
+conversation-context-occupancy-reason-model-mismatch = The latest request used a different provider or model
+conversation-context-occupancy-reason-usage-unavailable = Usage for the latest request is unavailable
+conversation-context-occupancy-reason-usage-unreported = The provider did not report token usage for the latest request
+conversation-context-occupancy-reason-usage-partial = The provider reported only partial usage for the latest request
 conversation-timestamp-time = { $time }
 conversation-timestamp-weekday-time =
     { $weekday ->

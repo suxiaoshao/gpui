@@ -3,7 +3,6 @@ use std::{sync::Arc, time::Duration};
 use bytes::Bytes;
 use gpui::TestAppContext;
 use gpui_component::select::SelectEvent;
-use gpui_operation::Transition as _;
 use http::{HeaderMap, StatusCode, Version};
 use url::Url;
 

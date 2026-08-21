@@ -762,23 +762,44 @@ fn generated_material_theme_leaves_component_geometry_unset() {
 
 #[test]
 fn generated_material_chart_colors_are_distinct() {
-    let config = generated_theme_config(TEST_THEME_COLOR, ComponentThemeMode::Light)
-        .expect("light material theme");
-    let colors = &config.colors;
-    let chart_colors = [
-        &colors.chart_1,
-        &colors.chart_2,
-        &colors.chart_3,
-        &colors.chart_4,
-        &colors.chart_5,
-    ]
-    .into_iter()
-    .map(|color| color.as_ref().expect("chart color").to_string())
-    .collect::<HashSet<_>>();
+    for mode in [ComponentThemeMode::Light, ComponentThemeMode::Dark] {
+        let scheme = material_scheme(mode);
+        let config = generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme");
+        let colors = &config.colors;
+        let chart_colors = [
+            &colors.chart_1,
+            &colors.chart_2,
+            &colors.chart_3,
+            &colors.chart_4,
+            &colors.chart_5,
+        ]
+        .into_iter()
+        .map(|color| color.as_ref().expect("chart color").to_string())
+        .collect::<Vec<_>>();
+        let expected = [
+            CHART_1_SEED_COLOR,
+            CHART_2_SEED_COLOR,
+            CHART_3_SEED_COLOR,
+            CHART_4_SEED_COLOR,
+            CHART_5_SEED_COLOR,
+        ]
+        .map(|seed| {
+            let harmonized = Blend::harmonize(seed, scheme.source_color);
+            let hct = Hct::from_argb(harmonized);
+            hex(material_semantic_roles_for_palette(
+                &scheme,
+                TonalPalette::from_hue_and_chroma(hct.hue(), SEMANTIC_CHROMA),
+            )
+            .color)
+            .to_string()
+        });
 
-    assert_eq!(chart_colors.len(), 5);
-    assert_eq!(colors.chart_bullish, colors.success);
-    assert_eq!(colors.chart_bearish, colors.danger);
+        assert_eq!(chart_colors, expected);
+        assert_eq!(chart_colors.iter().collect::<HashSet<_>>().len(), 5);
+        assert_ne!(colors.chart_1, colors.button_primary);
+        assert_eq!(colors.chart_bullish, colors.success);
+        assert_eq!(colors.chart_bearish, colors.danger);
+    }
 }
 
 #[test]
@@ -809,8 +830,8 @@ fn generated_material_theme_uses_translucent_selection_tokens() {
 #[test]
 fn generated_material_non_button_colors_match_baseline() {
     for (mode, expected_hash) in [
-        (ComponentThemeMode::Light, 0x73ce8e31c6e175e5_u64),
-        (ComponentThemeMode::Dark, 0x5c9b6443a77793e7_u64),
+        (ComponentThemeMode::Light, 0x553e7ff0d04ebdda_u64),
+        (ComponentThemeMode::Dark, 0x59fbc2224dc9c9ca_u64),
     ] {
         let config = generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme");
         let mut value = serde_json::to_value(&config.colors).expect("serialize colors");

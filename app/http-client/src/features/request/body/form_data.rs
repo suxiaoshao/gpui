@@ -611,7 +611,7 @@ fn child_id(scope: &'static str, key: &PathKey, role: &'static str) -> ElementId
 
 #[cfg(test)]
 mod tests {
-    use gpui::{AppContext as _, TestAppContext, VisualTestContext, WindowHandle};
+    use gpui::{TestAppContext, VisualTestContext, WindowHandle};
     use gpui_component::input::InputEvent;
 
     use crate::{

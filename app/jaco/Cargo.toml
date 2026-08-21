@@ -59,6 +59,7 @@ app-theme = { workspace = true, default-features = false, features = [
 gpui.workspace = true
 gpui-form.workspace = true
 gpui-form-gpui-component.workspace = true
+gpui-heatmap.workspace = true
 gpui-operation = { workspace = true, features = ["tracing"] }
 gpui-store.workspace = true
 gpui_platform.workspace = true

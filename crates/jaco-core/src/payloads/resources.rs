@@ -38,6 +38,8 @@ pub struct ModelCapabilitiesSnapshot {
     pub text_input: bool,
     pub text_output: bool,
     pub streaming: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<ContextWindowCapabilitySnapshot>,
     pub image_input: Option<ImageInputCapabilitySnapshot>,
     pub file_input: Option<FileInputCapabilitySnapshot>,
     pub audio_input: bool,
