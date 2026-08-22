@@ -6,6 +6,7 @@
 
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
+| [#205](https://github.com/suxiaoshao/gpui/issues/205) 全 workspace 依赖升级 | `In progress`；component adapter 与 target API 本地迁移通过 | [owner plan](issue-205/dependency-upgrade-plan.md) |
 | [#199](https://github.com/suxiaoshao/gpui/issues/199) Form adapter 演进 | 显式binding v2已实施；vNext adapter计划为Draft | [v2历史owner文档](issue-199/README.md)、[vNext跨crate执行计划](../../../gpui-form/docs/dev/issue-199/form-vnext-refactor-plan.md) |
 | [#175](https://github.com/suxiaoshao/gpui/issues/175) 旧版类型化绑定控件 | Superseded；PR #176 历史归档 | [issue-175/README.md](issue-175/README.md) |
 
@@ -13,4 +14,4 @@
 
 | 迁移批次 | 状态 | 入口 |
 | --- | --- | --- |
-| `gpui-1a246efd-component-5b45bcb` | **当前迁移**；计划待审阅 | [View 与 Combobox value API 迁移](migrations/gpui-1a246efd-component-5b45bcb.md) |
+| `gpui-1a246efd-component-5b45bcb` | 历史批次；当前升级由 Issue #205 持有 | [View 与 Combobox value API 迁移](migrations/gpui-1a246efd-component-5b45bcb.md) |

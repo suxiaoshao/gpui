@@ -4,7 +4,8 @@
 
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
-| [#172](https://github.com/suxiaoshao/gpui/issues/172) GPT-5.6 与 workspace 依赖更新 | Rig 0.41 正式版 gate 已满足；实施级计划已更新，尚未实施 | [issue-172/README.md](issue-172/README.md) |
+| [#205](https://github.com/suxiaoshao/gpui/issues/205) 全 workspace 依赖升级 | `In progress`；本地自动化与 Windows bundle 通过，E2E/人工 smoke 待执行 | [owner plan](issue-205/dependency-upgrade-plan.md) |
+| [#172](https://github.com/suxiaoshao/gpui/issues/172) GPT-5.6 与 workspace 依赖更新 | 历史计划；其中 Rig 0.41 依赖目标已由 #205 的 Rig 0.42 计划取代 | [issue-172/README.md](issue-172/README.md) |
 | [#173](https://github.com/suxiaoshao/gpui/issues/173) ConversationEntry 与 AgentRun 分层重建 | 实现完成，自动化、bundle、隔离数据启动与窗口交互 smoke 均已验证 | [issue-173/README.md](issue-173/README.md) |
 | [#175](https://github.com/suxiaoshao/gpui/issues/175) 纯 UI ChatForm、快捷键运行设置与临时窗口 | 设计、实现、自动化测试、残留 API 和文档一致性审计已完成；已完成 home、provider、shortcut 定向 UI smoke，临时窗口全局快捷键与有数据列表流程待人工验证 | [设计（中文）](issue-175/design.zh-CN.md)、[Design (English)](issue-175/design.md)、[文档索引](issue-175/README.zh-CN.md) |
 | [#177](https://github.com/suxiaoshao/gpui/issues/177) Jaco 启动状态初始化、同步与刷新 | Store + Operation 接入已实施并通过自动化验证；UI 场景待人工测试，跨范围问题保留在草稿 | [issue-177/README.md](issue-177/README.md) |
@@ -15,7 +16,7 @@
 ## 跨功能迁移
 
 - [内置主题来源与同步规则](theme-sources.md)
-- **当前迁移（2026-07-21）**：[Jaco GPUI `1d217ee39d381ac101b7cf49d3d22451ac1093fe` ->
+- **历史迁移（2026-07-21）**：[Jaco GPUI `1d217ee39d381ac101b7cf49d3d22451ac1093fe` ->
   `1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba`、gpui-component
   `c36b0c6ae6d14c33473f6610a27c3abc584afdf9` ->
   `5b45bcb26b9343d91a123a4d5ed8a654360512e5` 迁移](migrations/gpui-1a246efd-component-5b45bcb.md)：
@@ -25,5 +26,6 @@
   parse-time highlight theme，因此主题切换验收受上游
   [`UPSTREAM-TEXT-15`](../../../../docs/dev/migrations/gpui-1a246efd-component-5b45bcb/upstream-text-theme.md)
   阻断；Jaco 不添加主题监听或重解析 workaround。
+- 当前依赖升级 authority 是 [Issue #205 owner plan](issue-205/dependency-upgrade-plan.md)；旧 target 不得继续用于更新 lockfile。
 - [Jaco gpui-form 类型化双向绑定迁移（Issue #175 历史归档）](issue-175/gpui-form-migration.md)：
   由 PR #176 交付，旧 API 计划已被 [Issue #199](issue-199/README.md) 取代。

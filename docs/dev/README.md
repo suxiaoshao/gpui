@@ -4,6 +4,7 @@
 
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
+| [#205](https://github.com/suxiaoshao/gpui/issues/205) Lestty 终端应用 | `Draft`；先完成全 workspace 依赖升级，再进入终端内核、PTY 与 GPUI 实施 | [issue hub](issue-205/README.md) · [dependency upgrade](issue-205/dependency-upgrade-plan.md) |
 | [#200](https://github.com/suxiaoshao/gpui/issues/200) HTTP Client Response 音频迁移与 GStreamer 删除 | `In progress`；Rodio/CPAL/Symphonia 替换 GStreamer，保留 PDF、删除视频与全部 GStreamer 产品/打包链路 | [issue-200/README.md](issue-200/README.md) |
 | [#199](https://github.com/suxiaoshao/gpui/issues/199) form owner、app store/form/operation 与 Transition 重构 | `Done`；显式 owner v2、Form vNext、Feiwen、Jaco（含 Conversation 私有 Transition）与 HTTP Client 基础单请求已交付；历史媒体计划已由 #200 的 Rodio 迁移取代，MCP runtime 已移交 #201 | [issue-199/README.md](issue-199/README.md) |
 | [#190](https://github.com/suxiaoshao/gpui/issues/190) Jaco 持久化工具调用详情 | `Implemented`；生产实现与本地自动化已验证，完整 Local/MCP 人工场景和远端三平台 CI 待验证 | [issue-190/README.md](issue-190/README.md) |
@@ -17,7 +18,7 @@
 
 | 日期 | 迁移批次 | Source | Target | 状态 | 总计划 |
 | --- | --- | --- | --- | --- | --- |
-| 2026-07-21 | `gpui-1a246efd-component-5b45bcb` | GPUI `0.2.2@1d217ee`；gpui-component `0.5.2@c36b0c6` | GPUI `0.2.2@1a246efd`；gpui-component `0.5.2@5b45bcb` | **当前迁移**；计划待审阅；TextView 主题生命周期存在上游阻断，修复后必须新建后继 target 文档 | [README.md](migrations/gpui-1a246efd-component-5b45bcb/README.md) |
+| 2026-07-21 | `gpui-1a246efd-component-5b45bcb` | GPUI `0.2.2@1d217ee`；gpui-component `0.5.2@c36b0c6` | GPUI `0.2.2@1a246efd`；gpui-component `0.5.2@5b45bcb` | 历史批次；不再是当前升级 authority，后继 target/owner/完成门由 [Issue #205 依赖计划](issue-205/dependency-upgrade-plan.md) 持有 | [README.md](migrations/gpui-1a246efd-component-5b45bcb/README.md) |
 
 ## 目录约定
 

@@ -4,13 +4,14 @@
 
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
+| [#205](https://github.com/suxiaoshao/gpui/issues/205) 全 workspace 依赖升级 | `In progress`；本地自动化与 Windows bundle 通过，人工 smoke 待执行 | [owner plan](issue-205/dependency-upgrade-plan.md) |
 | [#199](https://github.com/suxiaoshao/gpui/issues/199) Form、Operation、Store与数据库资源迁移 | `Draft`；完整owner计划已建立，DB/Catalog与Form通道分开排期 | [issue-199/README.md](issue-199/README.md) |
 
 ## 依赖迁移
 
 | 日期 | 迁移批次 | 状态 | 入口 |
 | --- | --- | --- | --- |
-| 2026-07-21 | `gpui-1a246efd-component-5b45bcb` | **当前迁移**；待执行 | [GPUI `1d217ee` → `1a246efd`；gpui-component `c36b0c6` → `5b45bcb`](migrations/gpui-1a246efd-component-5b45bcb.md) |
+| 2026-07-21 | `gpui-1a246efd-component-5b45bcb` | 历史批次；当前升级由 Issue #205 持有 | [GPUI `1d217ee` → `1a246efd`；gpui-component `c36b0c6` → `5b45bcb`](migrations/gpui-1a246efd-component-5b45bcb.md) |
 
 迁移文档使用目标依赖的短 SHA 命名，正文同时记录完整 source SHA。后续依赖迁移新增文件和索引项，
 不覆盖既有迁移记录。
