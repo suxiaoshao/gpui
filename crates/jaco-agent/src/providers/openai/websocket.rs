@@ -5,11 +5,11 @@ use jaco_core::{
     ConversationId, ProviderId, ProviderModelId, ProviderRequestContextSnapshot, ProviderStepId,
 };
 use rig::{
-    OneOrMany,
     completion::{
-        CompletionError, CompletionModel, CompletionRequest, CompletionResponse, GetTokenUsage,
+        CompletionError, CompletionModel, CompletionRequest, CompletionResponse,
+        NormalizeCompletionResponse, ProviderCapabilities,
     },
-    message::ReasoningContent,
+    message::{Reasoning, ReasoningContent},
     providers::openai::{
         self,
         responses_api::{
@@ -23,7 +23,8 @@ use rig::{
         },
     },
     streaming::{
-        RawStreamingChoice, RawStreamingToolCall, StreamingCompletionResponse, ToolCallDeltaContent,
+        RawStreamingChoice, StreamFinal, StreamPartId, StreamingCompletionResponse,
+        ToolCallDeltaContent, ToolInputEnd, UnparseableToolInput, WireId, normalize_stream,
     },
 };
 use sha2::{Digest, Sha256};
@@ -271,7 +272,7 @@ impl OpenAiAttemptCoordinator {
     async fn complete_blocking(
         &self,
         provider_step_id: &str,
-        response: &CompletionResponse<OpenAiCompletionResponse>,
+        response: &CompletionResponse,
     ) -> std::result::Result<(), CompletionError> {
         self.context()
             .await?
@@ -286,7 +287,10 @@ impl OpenAiAttemptCoordinator {
     ) -> std::result::Result<(), CompletionError> {
         self.context()
             .await?
-            .finish_current_streaming_provider_step(Some(response), response.token_usage())
+            .finish_current_streaming_provider_step(
+                Some(response),
+                rig::completion::Usage::from(response),
+            )
             .await
             .map_err(completion_request_error)
     }
@@ -329,29 +333,14 @@ pub(crate) struct OpenAiWebSocketCompletionModel {
 }
 
 impl CompletionModel for OpenAiWebSocketCompletionModel {
-    type Response = OpenAiCompletionResponse;
-    type StreamingResponse = OpenAiStreamingResponse;
-    type Client = OpenAiWebSocketModelClient;
-
-    fn make(client: &Self::Client, model: impl Into<String>) -> Self {
-        Self {
-            binding: client.clone(),
-            model: model.into(),
-            state: Arc::new(Mutex::new(OpenAiRunContinuationState::new(
-                client.previous_source_step_id.clone(),
-                client.previous_response_id.clone(),
-            ))),
-        }
-    }
-
-    fn composes_native_output_with_tools(&self) -> bool {
-        true
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::default().with_native_output_tool_composition(true)
     }
 
     async fn completion(
         &self,
         request: CompletionRequest,
-    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+    ) -> std::result::Result<CompletionResponse, CompletionError> {
         let mut guard = self
             .binding
             .pool
@@ -383,8 +372,11 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
                     prepared.previous_response_id.clone(),
                 )
                 .await?;
-            match session.completion(prepared.request).await {
-                Ok(response) => {
+            match session.raw_completion(prepared.request).await {
+                Ok(raw_response) => {
+                    let raw = serde_json::to_value(&raw_response)?;
+                    let response_id = raw_response.id.clone();
+                    let response = raw_response.normalize("openai")?.with_raw(raw);
                     if let Err(error) = self
                         .binding
                         .attempts
@@ -396,20 +388,13 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
                             .attempts
                             .fail(
                                 &provider_step_id,
-                                local_commit_error(
-                                    &error,
-                                    serde_json::to_value(&response.raw_response).ok(),
-                                ),
+                                local_commit_error(&error, Some(response.raw.clone())),
                             )
                             .await;
                         return Err(error);
                     }
-                    self.mark_completed(
-                        provider_step_id,
-                        response.raw_response.id.clone(),
-                        prepared.included_documents,
-                    )
-                    .await;
+                    self.mark_completed(provider_step_id, response_id, prepared.included_documents)
+                        .await;
                     return Ok(response);
                 }
                 Err(error)
@@ -451,8 +436,7 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
     async fn stream(
         &self,
         request: CompletionRequest,
-    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
-    {
+    ) -> std::result::Result<StreamingCompletionResponse, CompletionError> {
         let binding = self.binding.clone();
         let model = self.model.clone();
         let this = self.clone();
@@ -645,6 +629,10 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
                             }
                             Some(response)
                         }
+                        ResponsesWebSocketEvent::Unknown(value) => {
+                            yield RawStreamingChoice::Unknown(value);
+                            None
+                        }
                     };
                     if let Some(response) = completed_response {
                         let usage = match terminal_usage(&response) {
@@ -678,6 +666,12 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
                             usage,
                             reasoning_metadata: Some(reasoning_metadata),
                             reasoning_context: response.reasoning_context.clone(),
+                            status: Some(response.status.clone()),
+                            incomplete_details: response.incomplete_details.clone(),
+                            message_id: response_message_id(&response),
+                            response_id: Some(response.id.clone()),
+                            model: Some(response.model.clone()),
+                            provider_request_id: response.provider_request_id.clone(),
                         };
                         if let Err(error) =
                             binding.attempts.complete_streaming(&final_response).await
@@ -711,7 +705,10 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
                 }
             }
         };
-        Ok(StreamingCompletionResponse::stream(Box::pin(stream)))
+        let stream = normalize_stream(Box::pin(stream), |response| {
+            Ok(StreamFinal::from(("openai", response)))
+        });
+        Ok(StreamingCompletionResponse::stream("openai", stream))
     }
 }
 
@@ -727,6 +724,17 @@ struct PreparedOpenAiRequest {
 }
 
 impl OpenAiWebSocketCompletionModel {
+    pub(crate) fn make(client: &OpenAiWebSocketModelClient, model: impl Into<String>) -> Self {
+        Self {
+            binding: client.clone(),
+            model: model.into(),
+            state: Arc::new(Mutex::new(OpenAiRunContinuationState::new(
+                client.previous_source_step_id.clone(),
+                client.previous_response_id.clone(),
+            ))),
+        }
+    }
+
     async fn prepare_request(
         &self,
         request: CompletionRequest,
@@ -829,9 +837,9 @@ fn prepare_openai_request(
 }
 
 fn incremental_history(
-    history: OneOrMany<rig::completion::Message>,
-) -> std::result::Result<OneOrMany<rig::completion::Message>, CompletionError> {
-    let messages = history.into_iter().collect::<Vec<_>>();
+    history: Vec<rig::completion::Message>,
+) -> std::result::Result<Vec<rig::completion::Message>, CompletionError> {
+    let messages = history;
     let mut selected = messages
         .iter()
         .take_while(|message| matches!(message, rig::completion::Message::System { .. }))
@@ -844,13 +852,16 @@ fn incremental_history(
     {
         selected.push(last.clone());
     }
-    OneOrMany::many(selected).map_err(|error| CompletionError::RequestError(Box::new(error)))
+    if selected.is_empty() {
+        return Err(CompletionError::RequestError(Box::new(
+            std::io::Error::other("OpenAI websocket request has no message history"),
+        )));
+    }
+    Ok(selected)
 }
 
 #[derive(Default)]
-struct OpenAiWebSocketItemDecoder {
-    tool_call_internal_ids: HashMap<String, String>,
-}
+struct OpenAiWebSocketItemDecoder;
 
 impl OpenAiWebSocketItemDecoder {
     fn decode(&mut self, item: ItemChunk) -> Vec<RawStreamingChoice<OpenAiStreamingResponse>> {
@@ -858,10 +869,8 @@ impl OpenAiWebSocketItemDecoder {
         match item.data {
             ItemChunkKind::OutputItemAdded(added) => match added.item {
                 Output::FunctionCall(call) => {
-                    let internal_call_id = self.tool_call_internal_id(&call.id);
                     vec![RawStreamingChoice::ToolCallDelta {
-                        id: call.id,
-                        internal_call_id,
+                        id: StreamPartId::wire(call.id),
                         content: ToolCallDeltaContent::Name(call.name),
                     }]
                 }
@@ -875,24 +884,34 @@ impl OpenAiWebSocketItemDecoder {
             }
             ItemChunkKind::ReasoningSummaryTextDelta(delta) => {
                 vec![RawStreamingChoice::ReasoningDelta {
-                    id: item_id,
+                    id: item_id
+                        .as_deref()
+                        .map(StreamPartId::wire)
+                        .unwrap_or_else(|| {
+                            rig::streaming::MintKind::Output.for_wire_index(item.output_index)
+                        }),
+                    provider_id: item_id.and_then(WireId::new),
                     reasoning: delta.delta,
                 }]
             }
             ItemChunkKind::ReasoningTextDelta(delta) => {
                 vec![RawStreamingChoice::ReasoningDelta {
-                    id: item_id,
+                    id: item_id
+                        .as_deref()
+                        .map(StreamPartId::wire)
+                        .unwrap_or_else(|| {
+                            rig::streaming::MintKind::Output.for_wire_index(item.output_index)
+                        }),
+                    provider_id: item_id.and_then(WireId::new),
                     reasoning: delta.delta,
                 }]
             }
             ItemChunkKind::FunctionCallArgsDelta(delta) => {
-                let Some(item_id) = item_id else {
-                    return Vec::new();
-                };
-                let internal_call_id = self.tool_call_internal_id(&item_id);
+                let id = item_id.map(StreamPartId::wire).unwrap_or_else(|| {
+                    rig::streaming::MintKind::Output.for_wire_index(item.output_index)
+                });
                 vec![RawStreamingChoice::ToolCallDelta {
-                    id: item_id,
-                    internal_call_id,
+                    id,
                     content: ToolCallDeltaContent::Delta(delta.delta),
                 }]
             }
@@ -907,15 +926,16 @@ impl OpenAiWebSocketItemDecoder {
     ) -> Vec<RawStreamingChoice<OpenAiStreamingResponse>> {
         match output {
             Output::FunctionCall(call) => {
-                let internal_call_id = self.tool_call_internal_id(&call.id);
-                vec![RawStreamingChoice::ToolCall(
-                    RawStreamingToolCall::new(call.id, call.name, call.arguments)
-                        .with_internal_call_id(internal_call_id)
-                        .with_call_id(call.call_id),
-                )]
+                let id = StreamPartId::wire(call.id.clone());
+                let mut end = ToolInputEnd::new(id, UnparseableToolInput::Drop);
+                end.tool_id = WireId::new(call.id);
+                end.name = Some(call.name);
+                end.arguments = call.arguments.parse().ok();
+                end.call_id = Some(call.call_id);
+                vec![RawStreamingChoice::ToolInputEnd(end)]
             }
             Output::Message(message) => vec![RawStreamingChoice::MessageId(message.id)],
-            Output::Unknown(value) => vec![RawStreamingChoice::Unknown(value)],
+            Output::Unknown(value) => vec![RawStreamingChoice::Unknown(value.into())],
             Output::Reasoning {
                 id,
                 summary,
@@ -930,13 +950,6 @@ impl OpenAiWebSocketItemDecoder {
             ),
         }
     }
-
-    fn tool_call_internal_id(&mut self, item_id: &str) -> String {
-        self.tool_call_internal_ids
-            .entry(item_id.to_string())
-            .or_insert_with(rig::id::generate)
-            .clone()
-    }
 }
 
 fn reasoning_choices_from_done_item(
@@ -945,27 +958,29 @@ fn reasoning_choices_from_done_item(
     content: &[String],
     encrypted_content: Option<&str>,
 ) -> Vec<RawStreamingChoice<OpenAiStreamingResponse>> {
-    let mut choices = summary
+    let mut content_blocks = summary
         .iter()
-        .map(|summary| RawStreamingChoice::Reasoning {
-            id: Some(id.to_string()),
-            content: ReasoningContent::Summary(summary.text()),
-        })
+        .map(|summary| ReasoningContent::Summary(summary.text()))
         .collect::<Vec<_>>();
-    choices.extend(content.iter().map(|text| RawStreamingChoice::Reasoning {
-        id: Some(id.to_string()),
-        content: ReasoningContent::Text {
-            text: text.clone(),
-            signature: None,
-        },
+    content_blocks.extend(content.iter().map(|text| ReasoningContent::Text {
+        text: text.clone(),
+        signature: None,
     }));
     if let Some(encrypted_content) = encrypted_content.filter(|content| !content.is_empty()) {
-        choices.push(RawStreamingChoice::Reasoning {
-            id: Some(id.to_string()),
-            content: ReasoningContent::Encrypted(encrypted_content.to_string()),
-        });
+        content_blocks.push(ReasoningContent::Encrypted(encrypted_content.to_string()));
     }
-    choices
+    if content_blocks.is_empty() {
+        return Vec::new();
+    }
+    vec![RawStreamingChoice::ReasoningEnd {
+        id: StreamPartId::wire(id),
+        reasoning: Some(Reasoning {
+            id: Some(id.to_string()),
+            content: content_blocks,
+        }),
+        signature: None,
+        wire_sent: true,
+    }]
 }
 
 fn completion_response_from_done(
@@ -991,6 +1006,13 @@ fn terminal_usage(
             "OpenAI websocket response {} omitted terminal usage",
             response.id
         ))
+    })
+}
+
+fn response_message_id(response: &OpenAiCompletionResponse) -> Option<String> {
+    response.output.iter().find_map(|output| match output {
+        Output::Message(message) => Some(message.id.clone()),
+        _ => None,
     })
 }
 
@@ -1098,7 +1120,9 @@ mod tests {
     use rig::{
         completion::{Document, Message, ToolDefinition},
         providers::openai::responses_api::{
-            ReasoningEffort, streaming::ItemChunk, websocket::ResponsesWebSocketDoneEvent,
+            ReasoningEffort,
+            streaming::{ItemChunk, StreamingCompletionChunk},
+            websocket::ResponsesWebSocketDoneEvent,
         },
     };
     use serde_json::json;
@@ -1123,14 +1147,13 @@ mod tests {
 
     #[test]
     fn incremental_history_keeps_leading_system_messages_and_latest_turn() {
-        let history = OneOrMany::many(vec![
+        let history = vec![
             Message::system("system"),
             Message::system("developer"),
             Message::user("old user"),
             Message::assistant("old assistant"),
             Message::user("latest user"),
-        ])
-        .unwrap();
+        ];
 
         let selected = incremental_history(history)
             .unwrap()
@@ -1276,6 +1299,28 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_summary_text_done_accepts_openai_text_field() {
+        let chunk = serde_json::from_value::<StreamingCompletionChunk>(json!({
+            "type": "response.reasoning_summary_text.done",
+            "item_id": "rs_summary",
+            "output_index": 0,
+            "summary_index": 0,
+            "sequence_number": 1,
+            "text": "Checked the available evidence."
+        }))
+        .unwrap();
+
+        assert!(matches!(
+            chunk,
+            StreamingCompletionChunk::Delta(ItemChunk {
+                data: ItemChunkKind::ReasoningSummaryTextDone(summary),
+                ..
+            })
+                if summary.delta == "Checked the available evidence."
+        ));
+    }
+
+    #[test]
     fn refusal_delta_is_streamed_as_message_text() {
         let item = serde_json::from_value::<ItemChunk>(json!({
             "type": "response.refusal.delta",
@@ -1296,7 +1341,7 @@ mod tests {
     }
 
     #[test]
-    fn function_call_sequence_uses_one_internal_id_and_emits_name_first() {
+    fn function_call_sequence_uses_one_part_id_and_emits_name_first() {
         let added = serde_json::from_value::<ItemChunk>(json!({
             "type": "response.output_item.added",
             "item_id": "fc_weather",
@@ -1342,45 +1387,46 @@ mod tests {
         let arguments = decoder.decode(arguments);
         let completed = decoder.decode(done);
 
-        let name_internal_id = match name.as_slice() {
+        let name_part_id = match name.as_slice() {
             [
                 RawStreamingChoice::ToolCallDelta {
                     id,
-                    internal_call_id,
                     content: ToolCallDeltaContent::Name(name),
                 },
             ] => {
-                assert_eq!(id, "fc_weather");
+                assert_eq!(id, &StreamPartId::wire("fc_weather"));
                 assert_eq!(name, "get_weather");
-                internal_call_id.clone()
+                id.clone()
             }
             choices => panic!("expected tool name delta, got {choices:?}"),
         };
-        let arguments_internal_id = match arguments.as_slice() {
+        let arguments_part_id = match arguments.as_slice() {
             [
                 RawStreamingChoice::ToolCallDelta {
                     id,
-                    internal_call_id,
                     content: ToolCallDeltaContent::Delta(arguments),
                 },
             ] => {
-                assert_eq!(id, "fc_weather");
+                assert_eq!(id, &StreamPartId::wire("fc_weather"));
                 assert_eq!(arguments, "{\"city\":\"Paris\"}");
-                internal_call_id.clone()
+                id.clone()
             }
             choices => panic!("expected tool arguments delta, got {choices:?}"),
         };
         let completed_call = match completed.as_slice() {
-            [RawStreamingChoice::ToolCall(call)] => call,
-            choices => panic!("expected completed tool call, got {choices:?}"),
+            [RawStreamingChoice::ToolInputEnd(call)] => call,
+            choices => panic!("expected completed tool input, got {choices:?}"),
         };
 
-        assert_eq!(name_internal_id, arguments_internal_id);
-        assert_eq!(completed_call.internal_call_id, name_internal_id);
-        assert_eq!(completed_call.id, "fc_weather");
+        assert_eq!(name_part_id, arguments_part_id);
+        assert_eq!(completed_call.id, name_part_id);
+        assert_eq!(
+            completed_call.tool_id.as_ref().map(WireId::as_str),
+            Some("fc_weather")
+        );
         assert_eq!(completed_call.call_id.as_deref(), Some("call_weather"));
-        assert_eq!(completed_call.name, "get_weather");
-        assert_eq!(completed_call.arguments, json!({"city": "Paris"}));
+        assert_eq!(completed_call.name.as_deref(), Some("get_weather"));
+        assert_eq!(completed_call.arguments, Some(json!({"city": "Paris"})));
     }
 
     #[test]
@@ -1413,31 +1459,36 @@ mod tests {
 
         let choices = OpenAiWebSocketItemDecoder::default().decode(item);
 
-        assert!(matches!(
-            choices.first(),
-            Some(RawStreamingChoice::Reasoning {
-                id: Some(id),
-                content: ReasoningContent::Summary(summary),
-            }) if id == "rs_canonical" && summary == "Checked the available evidence."
-        ));
-        assert!(matches!(
-            choices.get(1),
-            Some(RawStreamingChoice::Reasoning {
-                id: Some(id),
-                content: ReasoningContent::Text {
-                    text,
+        let reasoning = match choices.as_slice() {
+            [
+                RawStreamingChoice::ReasoningEnd {
+                    id,
+                    reasoning: Some(reasoning),
                     signature: None,
+                    wire_sent: true,
                 },
-            }) if id == "rs_canonical" && text == "Canonical final reasoning."
+            ] => {
+                assert_eq!(id, &StreamPartId::wire("rs_canonical"));
+                reasoning
+            }
+            choices => panic!("expected one completed reasoning item, got {choices:?}"),
+        };
+        assert_eq!(reasoning.id.as_deref(), Some("rs_canonical"));
+        assert!(matches!(
+            reasoning.content.first(),
+            Some(ReasoningContent::Summary(summary))
+                if summary == "Checked the available evidence."
         ));
         assert!(matches!(
-            choices.get(2),
-            Some(RawStreamingChoice::Reasoning {
-                id: Some(id),
-                content: ReasoningContent::Encrypted(content),
-            }) if id == "rs_canonical" && content == "encrypted-reasoning"
+            reasoning.content.get(1),
+            Some(ReasoningContent::Text { text, signature: None })
+                if text == "Canonical final reasoning."
         ));
-        assert_eq!(choices.len(), 3);
+        assert!(matches!(
+            reasoning.content.get(2),
+            Some(ReasoningContent::Encrypted(content)) if content == "encrypted-reasoning"
+        ));
+        assert_eq!(reasoning.content.len(), 3);
     }
 
     #[tokio::test]
@@ -1493,13 +1544,12 @@ mod tests {
         let request = CompletionRequest {
             model: None,
             preamble: None,
-            chat_history: OneOrMany::many(vec![
+            chat_history: vec![
                 Message::system("system"),
                 Message::user("old user"),
                 Message::assistant("old assistant"),
                 Message::user("latest user"),
-            ])
-            .unwrap(),
+            ],
             documents: vec![Document {
                 id: "document".to_string(),
                 text: "content".to_string(),

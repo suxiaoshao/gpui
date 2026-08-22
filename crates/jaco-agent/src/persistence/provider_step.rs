@@ -72,14 +72,11 @@ impl PersistenceContext {
         Ok(step)
     }
 
-    pub(super) async fn finish_provider_step<M>(
+    pub(super) async fn finish_provider_step(
         &self,
         provider_step_id: &str,
-        response: &CompletionResponse<M>,
-    ) -> Result<()>
-    where
-        M: Serialize,
-    {
+        response: &CompletionResponse,
+    ) -> Result<()> {
         self.finish_provider_step_with_continuation(provider_step_id, response, None)
             .await
     }
@@ -87,9 +84,14 @@ impl PersistenceContext {
     pub(crate) async fn finish_openai_provider_step(
         &self,
         provider_step_id: &str,
-        response: &CompletionResponse<rig::providers::openai::responses_api::CompletionResponse>,
+        response: &CompletionResponse,
     ) -> Result<()> {
-        let raw = &response.raw_response;
+        let raw: rig::providers::openai::responses_api::CompletionResponse =
+            serde_json::from_value(response.raw.clone()).map_err(|error| {
+                crate::AgentRuntimeError::Invariant(format!(
+                    "OpenAI GPT-5.6 websocket response raw payload was invalid: {error}"
+                ))
+            })?;
         let reasoning_context = raw.reasoning_context.clone().ok_or_else(|| {
             crate::AgentRuntimeError::Invariant(
                 "OpenAI GPT-5.6 websocket response omitted reasoning context".to_string(),
@@ -105,15 +107,12 @@ impl PersistenceContext {
             .await
     }
 
-    async fn finish_provider_step_with_continuation<M>(
+    async fn finish_provider_step_with_continuation(
         &self,
         provider_step_id: &str,
-        response: &CompletionResponse<M>,
+        response: &CompletionResponse,
         continuation: Option<ProviderContinuationSnapshot>,
-    ) -> Result<()>
-    where
-        M: Serialize,
-    {
+    ) -> Result<()> {
         let output_item_ids = response
             .choice
             .iter()
@@ -124,7 +123,7 @@ impl PersistenceContext {
             .collect::<Vec<_>>();
         let response_body = ProviderRawPayload {
             provider_kind: "rig".to_string(),
-            value: serde_json::to_value(&response.raw_response)?,
+            value: response.raw.clone(),
         };
         let state_snapshot = ProviderRunStateSnapshot {
             provider_id: self.provider_id.clone(),

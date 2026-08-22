@@ -5,9 +5,7 @@ use crate::{AgentRuntimeError, Result};
 use async_trait::async_trait;
 use jaco_core::*;
 use rig::{
-    OneOrMany,
     agent::{AgentBuilder, WithBuilderTools},
-    completion::CompletionModel,
     message::ToolResultContent,
     tool::{DynamicTool, ToolExecutionError, ToolOutput},
 };
@@ -98,10 +96,7 @@ impl RigToolBundle {
         &self.definitions
     }
 
-    pub(crate) fn install<M>(self, builder: AgentBuilder<M>) -> AgentBuilder<M, WithBuilderTools>
-    where
-        M: CompletionModel,
-    {
+    pub(crate) fn install(self, builder: AgentBuilder) -> AgentBuilder<WithBuilderTools> {
         let mut builder = builder.dynamic_tools(self.dynamic_tools);
         for registration in self.rmcp_tools {
             builder = builder.rmcp_tools_with_timeout(
@@ -365,9 +360,7 @@ pub(crate) fn jaco_output_to_rig_tool_output(
     if content.is_empty() {
         return Ok(ToolOutput::text(""));
     }
-    let content = OneOrMany::many(content)
-        .map_err(|error| ToolExecutionError::other(error.to_string()).with_source(error))?;
-    Ok(ToolOutput::content(content))
+    ToolOutput::content(content)
 }
 
 #[cfg(test)]

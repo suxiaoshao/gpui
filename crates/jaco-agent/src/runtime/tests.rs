@@ -12,14 +12,15 @@ use jaco_db::{
     UpdateProviderStepStatus, UpdateToolInvocationStatus,
 };
 use rig::{
-    OneOrMany,
     completion::{
         AssistantContent, CompletionError, CompletionRequest, CompletionResponse,
         Message as RigMessage,
     },
     message::UserContent,
-    streaming::{RawStreamingChoice, StreamingCompletionResponse, StreamingResult},
-    test_utils::{MockCompletionModel, MockResponse, MockStreamEvent, MockTurn},
+    streaming::{
+        RawStreamingChoice, StreamFinal, StreamPartId, StreamingCompletionResponse, StreamingResult,
+    },
+    test_utils::{MockCompletionModel, MockStreamEvent, MockTurn},
 };
 use rmcp::{
     RoleServer, ServerHandler, ServiceExt,
@@ -1036,11 +1037,10 @@ async fn streaming_tool_call_is_persisted_only_by_hook() {
         .register_local_tool(EchoTool::new(ToolApprovalPolicy::Never))
         .unwrap();
     let model = MockCompletionModel::from_stream_turns([
-        vec![MockStreamEvent::tool_call(
-            "call_1",
-            "echo",
-            json!({"text": "hi"}),
-        )],
+        vec![
+            MockStreamEvent::tool_call("call_1", "echo", json!({"text": "hi"})),
+            MockStreamEvent::final_response_with_default_usage(),
+        ],
         vec![
             MockStreamEvent::text("done"),
             MockStreamEvent::final_response_with_total_tokens(5),
@@ -1099,6 +1099,7 @@ async fn streaming_approval_required_preserves_partial_text() {
     let model = MockCompletionModel::from_stream_turns([[
         MockStreamEvent::text("partial answer"),
         MockStreamEvent::tool_call("call_1", "echo", json!({"text": "hi"})),
+        MockStreamEvent::final_response_with_default_usage(),
     ]]);
 
     let repo = fixture.repo.clone();
@@ -1139,7 +1140,7 @@ async fn streaming_approval_required_preserves_partial_text() {
         .provider_steps_for_run(&approval_request.agent_run_id)
         .unwrap();
     assert_eq!(provider_steps.len(), 1);
-    assert_eq!(provider_steps[0].status, ProviderStepStatus::Running);
+    assert_eq!(provider_steps[0].status, ProviderStepStatus::Completed);
 
     cancellation_token.cancel();
     broker.resolve_next(ToolApprovalDecision::Canceled);
@@ -2975,7 +2976,13 @@ async fn tool_history_replay_preserves_provider_call_ids() {
         })
         .unwrap();
     assert_eq!(tool_call.id, "call_previous");
-    assert_eq!(tool_call.call_id.as_deref(), Some("call_previous"));
+    assert_eq!(
+        tool_call
+            .provider
+            .as_ref()
+            .map(|provider| provider.call_id.as_str()),
+        Some("call_previous")
+    );
 
     let tool_result = messages
         .iter()
@@ -2987,8 +2994,15 @@ async fn tool_history_replay_preserves_provider_call_ids() {
             _ => None,
         })
         .unwrap();
-    assert_eq!(tool_result.id, "call_previous");
-    assert_eq!(tool_result.call_id.as_deref(), Some("call_previous"));
+    assert_eq!(tool_result.call, "call_previous");
+    assert_eq!(
+        tool_result
+            .provider
+            .as_ref()
+            .map(|provider| provider.call_id.as_str()),
+        Some("call_previous")
+    );
+    assert_eq!(tool_result.name, "echo");
 }
 
 fn insert_waiting_approval(fixture: &Fixture) -> (AgentRunRecord, ToolInvocationRecord) {
@@ -3360,18 +3374,10 @@ fn completed_usage_cost(fixture: &Fixture, agent_run_id: &str) -> UsdNanoAmount 
 struct FailBeforeFirstTokenModel;
 
 impl CompletionModel for FailBeforeFirstTokenModel {
-    type Response = MockResponse;
-    type StreamingResponse = MockResponse;
-    type Client = ();
-
-    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
-        Self
-    }
-
     async fn completion(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+    ) -> std::result::Result<CompletionResponse, CompletionError> {
         Err(CompletionError::ProviderError(
             "forced provider-open failure".to_string(),
         ))
@@ -3380,8 +3386,7 @@ impl CompletionModel for FailBeforeFirstTokenModel {
     async fn stream(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
-    {
+    ) -> std::result::Result<StreamingCompletionResponse, CompletionError> {
         Err(CompletionError::ProviderError(
             "forced provider-open failure".to_string(),
         ))
@@ -3392,18 +3397,10 @@ impl CompletionModel for FailBeforeFirstTokenModel {
 struct FailAfterTextModel;
 
 impl CompletionModel for FailAfterTextModel {
-    type Response = MockResponse;
-    type StreamingResponse = MockResponse;
-    type Client = ();
-
-    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
-        Self
-    }
-
     async fn completion(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+    ) -> std::result::Result<CompletionResponse, CompletionError> {
         Err(CompletionError::ProviderError(
             "forced mid-stream failure".to_string(),
         ))
@@ -3412,18 +3409,17 @@ impl CompletionModel for FailAfterTextModel {
     async fn stream(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
-    {
-        let stream: StreamingResult<Self::StreamingResponse> = Box::pin(futures::stream::iter([
+    ) -> std::result::Result<StreamingCompletionResponse, CompletionError> {
+        let stream: StreamingResult = Box::pin(futures::stream::iter([
             Ok(RawStreamingChoice::Unknown(
-                json!({"type": "hosted_tool_call", "id": "hosted_failure"}),
+                json!({"type": "hosted_tool_call", "id": "hosted_failure"}).into(),
             )),
             Ok(RawStreamingChoice::Message("partial".to_string())),
             Err(CompletionError::ProviderError(
                 "forced mid-stream failure".to_string(),
             )),
         ]));
-        Ok(StreamingCompletionResponse::stream(stream))
+        Ok(StreamingCompletionResponse::stream("test", stream))
     }
 }
 
@@ -3431,18 +3427,10 @@ impl CompletionModel for FailAfterTextModel {
 struct ReasoningStreamModel;
 
 impl CompletionModel for ReasoningStreamModel {
-    type Response = MockResponse;
-    type StreamingResponse = MockResponse;
-    type Client = ();
-
-    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
-        Self
-    }
-
     async fn completion(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+    ) -> std::result::Result<CompletionResponse, CompletionError> {
         Err(CompletionError::ProviderError(
             "reasoning stream model only supports streaming".to_string(),
         ))
@@ -3451,24 +3439,25 @@ impl CompletionModel for ReasoningStreamModel {
     async fn stream(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
-    {
+    ) -> std::result::Result<StreamingCompletionResponse, CompletionError> {
         let mut usage = Usage::new();
         usage.total_tokens = 3;
-        let stream: StreamingResult<Self::StreamingResponse> = Box::pin(futures::stream::iter([
+        let stream: StreamingResult = Box::pin(futures::stream::iter([
             Ok(RawStreamingChoice::ReasoningDelta {
-                id: Some("reasoning_1".to_string()),
+                id: StreamPartId::wire("reasoning_1"),
+                provider_id: None,
                 reasoning: "thinking ".to_string(),
             }),
             Ok(RawStreamingChoice::ReasoningDelta {
-                id: Some("reasoning_1".to_string()),
+                id: StreamPartId::wire("reasoning_1"),
+                provider_id: None,
                 reasoning: "now".to_string(),
             }),
-            Ok(RawStreamingChoice::FinalResponse(MockResponse::with_usage(
-                usage,
+            Ok(RawStreamingChoice::FinalResponse(StreamFinal::new(
+                "test", usage,
             ))),
         ]));
-        Ok(StreamingCompletionResponse::stream(stream))
+        Ok(StreamingCompletionResponse::stream("test", stream))
     }
 }
 
@@ -3478,20 +3467,10 @@ struct DelayedFinalStreamModel {
 }
 
 impl CompletionModel for DelayedFinalStreamModel {
-    type Response = MockResponse;
-    type StreamingResponse = MockResponse;
-    type Client = ();
-
-    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
-        Self {
-            delay: Duration::from_millis(0),
-        }
-    }
-
     async fn completion(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+    ) -> std::result::Result<CompletionResponse, CompletionError> {
         Err(CompletionError::ProviderError(
             "delayed-final stream model only supports streaming".to_string(),
         ))
@@ -3500,8 +3479,7 @@ impl CompletionModel for DelayedFinalStreamModel {
     async fn stream(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
-    {
+    ) -> std::result::Result<StreamingCompletionResponse, CompletionError> {
         let delay = self.delay;
         let stream = futures::stream::unfold(false, move |finished| async move {
             if finished {
@@ -3511,15 +3489,15 @@ impl CompletionModel for DelayedFinalStreamModel {
                 let mut usage = Usage::new();
                 usage.total_tokens = 11;
                 Some((
-                    Ok(RawStreamingChoice::FinalResponse(MockResponse::with_usage(
-                        usage,
+                    Ok(RawStreamingChoice::FinalResponse(StreamFinal::new(
+                        "test", usage,
                     ))),
                     true,
                 ))
             }
         });
-        let stream: StreamingResult<Self::StreamingResponse> = Box::pin(stream);
-        Ok(StreamingCompletionResponse::stream(stream))
+        let stream: StreamingResult = Box::pin(stream);
+        Ok(StreamingCompletionResponse::stream("test", stream))
     }
 }
 
@@ -3530,21 +3508,10 @@ struct DelayedUsageStreamModel {
 }
 
 impl CompletionModel for DelayedUsageStreamModel {
-    type Response = MockResponse;
-    type StreamingResponse = MockResponse;
-    type Client = ();
-
-    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
-        Self {
-            delay: Duration::ZERO,
-            usage: Usage::new(),
-        }
-    }
-
     async fn completion(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+    ) -> std::result::Result<CompletionResponse, CompletionError> {
         Err(CompletionError::ProviderError(
             "delayed usage model only supports streaming".to_string(),
         ))
@@ -3553,18 +3520,17 @@ impl CompletionModel for DelayedUsageStreamModel {
     async fn stream(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
-    {
+    ) -> std::result::Result<StreamingCompletionResponse, CompletionError> {
         let delay = self.delay;
         let usage = self.usage;
         let stream = futures::stream::once(async move {
             tokio::time::sleep(delay).await;
-            Ok(RawStreamingChoice::FinalResponse(MockResponse::with_usage(
-                usage,
+            Ok(RawStreamingChoice::FinalResponse(StreamFinal::new(
+                "test", usage,
             )))
         });
-        let stream: StreamingResult<Self::StreamingResponse> = Box::pin(stream);
-        Ok(StreamingCompletionResponse::stream(stream))
+        let stream: StreamingResult = Box::pin(stream);
+        Ok(StreamingCompletionResponse::stream("test", stream))
     }
 }
 
@@ -3594,34 +3560,22 @@ struct CancelAndPendNextStreamModel {
 }
 
 impl CompletionModel for CancelDuringCompletionModel {
-    type Response = MockResponse;
-    type StreamingResponse = MockResponse;
-    type Client = ();
-
-    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
-        Self {
-            cancellation_token: tokio_util::sync::CancellationToken::new(),
-        }
-    }
-
     async fn completion(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+    ) -> std::result::Result<CompletionResponse, CompletionError> {
         self.cancellation_token.cancel();
-        Ok(CompletionResponse {
-            choice: OneOrMany::one(AssistantContent::text("late response")),
-            usage: Usage::new(),
-            raw_response: MockResponse::new(),
-            message_id: None,
-        })
+        Ok(CompletionResponse::new(
+            vec![AssistantContent::text("late response")],
+            Usage::new(),
+            "test",
+        ))
     }
 
     async fn stream(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
-    {
+    ) -> std::result::Result<StreamingCompletionResponse, CompletionError> {
         Err(CompletionError::ProviderError(
             "cancel-during-completion model only supports completion".to_string(),
         ))
@@ -3629,20 +3583,10 @@ impl CompletionModel for CancelDuringCompletionModel {
 }
 
 impl CompletionModel for CancelAndPendCompletionModel {
-    type Response = MockResponse;
-    type StreamingResponse = MockResponse;
-    type Client = ();
-
-    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
-        Self {
-            cancellation_token: tokio_util::sync::CancellationToken::new(),
-        }
-    }
-
     async fn completion(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+    ) -> std::result::Result<CompletionResponse, CompletionError> {
         self.cancellation_token.cancel();
         pending().await
     }
@@ -3650,8 +3594,7 @@ impl CompletionModel for CancelAndPendCompletionModel {
     async fn stream(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
-    {
+    ) -> std::result::Result<StreamingCompletionResponse, CompletionError> {
         Err(CompletionError::ProviderError(
             "cancel-and-pend-completion model only supports completion".to_string(),
         ))
@@ -3659,20 +3602,10 @@ impl CompletionModel for CancelAndPendCompletionModel {
 }
 
 impl CompletionModel for CancelAndPendStreamOpenModel {
-    type Response = MockResponse;
-    type StreamingResponse = MockResponse;
-    type Client = ();
-
-    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
-        Self {
-            cancellation_token: tokio_util::sync::CancellationToken::new(),
-        }
-    }
-
     async fn completion(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+    ) -> std::result::Result<CompletionResponse, CompletionError> {
         Err(CompletionError::ProviderError(
             "cancel-and-pend-stream-open model only supports streaming".to_string(),
         ))
@@ -3681,28 +3614,17 @@ impl CompletionModel for CancelAndPendStreamOpenModel {
     async fn stream(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
-    {
+    ) -> std::result::Result<StreamingCompletionResponse, CompletionError> {
         self.cancellation_token.cancel();
         pending().await
     }
 }
 
 impl CompletionModel for CancelAndPendNextStreamModel {
-    type Response = MockResponse;
-    type StreamingResponse = MockResponse;
-    type Client = ();
-
-    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
-        Self {
-            cancellation_token: tokio_util::sync::CancellationToken::new(),
-        }
-    }
-
     async fn completion(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+    ) -> std::result::Result<CompletionResponse, CompletionError> {
         Err(CompletionError::ProviderError(
             "cancel-and-pend-next stream model only supports streaming".to_string(),
         ))
@@ -3711,8 +3633,7 @@ impl CompletionModel for CancelAndPendNextStreamModel {
     async fn stream(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
-    {
+    ) -> std::result::Result<StreamingCompletionResponse, CompletionError> {
         let cancellation_token = self.cancellation_token.clone();
         let stream = futures::stream::unfold(0, move |state| {
             let cancellation_token = cancellation_token.clone();
@@ -3727,26 +3648,16 @@ impl CompletionModel for CancelAndPendNextStreamModel {
                 }
             }
         });
-        let stream: StreamingResult<Self::StreamingResponse> = Box::pin(stream);
-        Ok(StreamingCompletionResponse::stream(stream))
+        let stream: StreamingResult = Box::pin(stream);
+        Ok(StreamingCompletionResponse::stream("test", stream))
     }
 }
 
 impl CompletionModel for CancelAfterTextStreamModel {
-    type Response = MockResponse;
-    type StreamingResponse = MockResponse;
-    type Client = ();
-
-    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
-        Self {
-            cancellation_token: tokio_util::sync::CancellationToken::new(),
-        }
-    }
-
     async fn completion(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<CompletionResponse<Self::Response>, CompletionError> {
+    ) -> std::result::Result<CompletionResponse, CompletionError> {
         Err(CompletionError::ProviderError(
             "cancel-after-text stream model only supports streaming".to_string(),
         ))
@@ -3755,8 +3666,7 @@ impl CompletionModel for CancelAfterTextStreamModel {
     async fn stream(
         &self,
         _request: CompletionRequest,
-    ) -> std::result::Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError>
-    {
+    ) -> std::result::Result<StreamingCompletionResponse, CompletionError> {
         let cancellation_token = self.cancellation_token.clone();
         let stream = futures::stream::unfold(0, move |state| {
             let cancellation_token = cancellation_token.clone();
@@ -3764,7 +3674,7 @@ impl CompletionModel for CancelAfterTextStreamModel {
                 match state {
                     0 => Some((
                         Ok(RawStreamingChoice::Unknown(
-                            json!({"type": "hosted_tool_call", "id": "hosted_canceled"}),
+                            json!({"type": "hosted_tool_call", "id": "hosted_canceled"}).into(),
                         )),
                         1,
                     )),
@@ -3782,8 +3692,8 @@ impl CompletionModel for CancelAfterTextStreamModel {
                 }
             }
         });
-        let stream: StreamingResult<Self::StreamingResponse> = Box::pin(stream);
-        Ok(StreamingCompletionResponse::stream(stream))
+        let stream: StreamingResult = Box::pin(stream);
+        Ok(StreamingCompletionResponse::stream("test", stream))
     }
 }
 

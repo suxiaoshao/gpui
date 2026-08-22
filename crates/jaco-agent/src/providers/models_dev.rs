@@ -532,6 +532,7 @@ mod tests {
                 created_at: None,
                 owned_by: None,
                 context_length: None,
+                max_output_tokens: None,
             },
         )
     }
