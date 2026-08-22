@@ -474,7 +474,7 @@ impl CompletionModel for OpenAiWebSocketCompletionModel {
                         prepared.previous_response_id.clone(),
                     )
                     .await?;
-                let mut item_decoder = OpenAiWebSocketItemDecoder::default();
+                let mut item_decoder = OpenAiWebSocketItemDecoder;
                 if let Err(error) = guard
                     .session
                     .as_mut()
@@ -1332,7 +1332,7 @@ mod tests {
         }))
         .unwrap();
 
-        let choices = OpenAiWebSocketItemDecoder::default().decode(item);
+        let choices = OpenAiWebSocketItemDecoder.decode(item);
 
         assert!(matches!(
             choices.as_slice(),
@@ -1382,7 +1382,7 @@ mod tests {
         }))
         .unwrap();
 
-        let mut decoder = OpenAiWebSocketItemDecoder::default();
+        let mut decoder = OpenAiWebSocketItemDecoder;
         let name = decoder.decode(added);
         let arguments = decoder.decode(arguments);
         let completed = decoder.decode(done);
@@ -1457,7 +1457,7 @@ mod tests {
         }))
         .unwrap();
 
-        let choices = OpenAiWebSocketItemDecoder::default().decode(item);
+        let choices = OpenAiWebSocketItemDecoder.decode(item);
 
         let reasoning = match choices.as_slice() {
             [
