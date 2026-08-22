@@ -9,7 +9,6 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use jaco_core::*;
 use jaco_db::{AttachmentRecord, ConversationEntryRecord};
 use rig::{
-    OneOrMany,
     completion::{AssistantContent, Message as RigMessage},
     message::{
         self, DocumentMediaType, ImageDetail, ImageMediaType, MimeType, ToolCall, ToolFunction,
@@ -54,6 +53,15 @@ pub(crate) fn build_prompt_history_with_options(
         .ok_or_else(|| {
             AgentRuntimeError::Invariant(format!("user item {trigger_entry_id} is missing"))
         })?;
+    let tool_names = items[..user_index]
+        .iter()
+        .filter_map(|item| match &item.payload {
+            ConversationEntryPayload::ToolCall(call) => {
+                Some((call.call_id.as_str(), call.runtime_tool_name.as_str()))
+            }
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
     let current_run_skill_items = items[user_index + 1..]
         .iter()
         .filter(|item| {
@@ -66,6 +74,7 @@ pub(crate) fn build_prompt_history_with_options(
             &items[user_index],
             &attachment_map,
             options,
+            &tool_names,
         )?
         .ok_or_else(|| {
             AgentRuntimeError::Invariant(format!(
@@ -82,8 +91,13 @@ pub(crate) fn build_prompt_history_with_options(
     let history = items[..user_index]
         .iter()
         .filter_map(|item| {
-            conversation_entry_to_rig_message_with_options(item, &attachment_map, options)
-                .transpose()
+            conversation_entry_to_rig_message_with_options(
+                item,
+                &attachment_map,
+                options,
+                &tool_names,
+            )
+            .transpose()
         })
         .collect::<Result<Vec<_>>>()?;
     let mut input_item_ids = items[..=user_index]
@@ -103,10 +117,12 @@ pub(crate) fn conversation_entry_to_rig_message(
     item: &ConversationEntryRecord,
     attachments: &AttachmentMap<'_>,
 ) -> Result<Option<RigMessage>> {
+    let tool_names = HashMap::new();
     conversation_entry_to_rig_message_with_options(
         item,
         attachments,
         PromptHistoryOptions::default(),
+        &tool_names,
     )
 }
 
@@ -114,6 +130,7 @@ fn conversation_entry_to_rig_message_with_options(
     item: &ConversationEntryRecord,
     attachments: &AttachmentMap<'_>,
     options: PromptHistoryOptions,
+    tool_names: &HashMap<&str, &str>,
 ) -> Result<Option<RigMessage>> {
     Ok(match &item.payload {
         ConversationEntryPayload::Message { role, content } => match role {
@@ -145,31 +162,37 @@ fn conversation_entry_to_rig_message_with_options(
             );
             Some(RigMessage::Assistant {
                 id: item.provider_item_id.clone(),
-                content: OneOrMany::one(AssistantContent::Reasoning(reasoning)),
+                content: vec![AssistantContent::Reasoning(reasoning)],
             })
         }
         ConversationEntryPayload::Reasoning { .. } => None,
         ConversationEntryPayload::ToolCall(_) if !options.preserve_tool_protocol => None,
         ConversationEntryPayload::ToolCall(call) => Some(RigMessage::Assistant {
             id: item.provider_item_id.clone(),
-            content: OneOrMany::one(AssistantContent::ToolCall(
-                ToolCall::new(
-                    call.call_id.clone(),
-                    ToolFunction::new(call.runtime_tool_name.clone(), call.arguments.value.clone()),
-                )
-                .with_call_id(call.call_id.clone()),
-            )),
+            content: vec![AssistantContent::ToolCall(ToolCall::from_wire(
+                call.call_id.clone(),
+                ToolFunction::new(call.runtime_tool_name.clone(), call.arguments.value.clone()),
+            ))],
         }),
         ConversationEntryPayload::ToolResult(result) if !options.preserve_tool_protocol => {
             Some(RigMessage::user(textualized_tool_result(result)))
         }
-        ConversationEntryPayload::ToolResult(result) => Some(RigMessage::User {
-            content: OneOrMany::one(UserContent::ToolResult(ToolResult {
-                id: result.call_id.clone(),
-                call_id: Some(result.call_id.clone()),
-                content: OneOrMany::one(ToolResultContent::text(tool_result_model_text(result))),
-            })),
-        }),
+        ConversationEntryPayload::ToolResult(result) => {
+            let name = tool_names.get(result.call_id.as_str()).ok_or_else(|| {
+                AgentRuntimeError::Invariant(format!(
+                    "tool result {} has no matching tool call",
+                    result.call_id
+                ))
+            })?;
+            Some(RigMessage::User {
+                content: vec![UserContent::ToolResult(ToolResult {
+                    call: rig::message::ToolCallId::new_or_mint(result.call_id.clone()),
+                    provider: rig::message::ProviderCallId::new(result.call_id.clone()),
+                    name: (*name).to_string(),
+                    content: vec![ToolResultContent::text(tool_result_model_text(result))],
+                })],
+            })
+        }
         ConversationEntryPayload::Error(error) => Some(RigMessage::system(format!(
             "Previous run error [{}]: {}",
             error.code, error.message
@@ -215,13 +238,13 @@ fn user_content_parts(
     Ok(result)
 }
 
-fn one_or_many_user_content(
-    content: Vec<UserContent>,
-    item_id: &str,
-) -> Result<OneOrMany<UserContent>> {
-    OneOrMany::many(content).map_err(|_| {
-        AgentRuntimeError::Invariant(format!("message item {item_id} has no model content"))
-    })
+fn one_or_many_user_content(content: Vec<UserContent>, item_id: &str) -> Result<Vec<UserContent>> {
+    if content.is_empty() {
+        return Err(AgentRuntimeError::Invariant(format!(
+            "message item {item_id} has no model content"
+        )));
+    }
+    Ok(content)
 }
 
 fn image_attachment_content(

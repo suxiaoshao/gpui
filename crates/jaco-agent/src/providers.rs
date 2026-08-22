@@ -15,7 +15,6 @@ use jaco_core::{
 use jaco_db::{NewProviderModel, ProviderRecord};
 use rig::{
     client::{CompletionClient, ModelListingClient},
-    completion::CompletionModel,
     model::{Model, ModelList, ModelListingError},
     providers::{anthropic, deepseek, gemini, mistral, ollama, openai as rig_openai, openrouter},
 };
@@ -928,6 +927,7 @@ mod tests {
             created_at: Some(1),
             owned_by: Some("openai".to_string()),
             context_length: Some(272_000),
+            max_output_tokens: None,
         };
 
         let mapped = provider_model_from_rig_model(&provider, model);
@@ -962,6 +962,7 @@ mod tests {
             created_at: Some(1),
             owned_by: Some("openai".to_string()),
             context_length: None,
+            max_output_tokens: None,
         };
 
         let official = provider_model_from_rig_model(&provider_record("openai", None), model());
