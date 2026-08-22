@@ -1222,6 +1222,37 @@ mod tests {
     }
 
     #[test]
+    fn response_created_with_decimal_top_p_decodes_from_wire_json() {
+        let chunk = serde_json::from_str::<StreamingCompletionChunk>(
+            r#"{
+                "type": "response.created",
+                "sequence_number": 0,
+                "response": {
+                    "id": "resp_created",
+                    "object": "response",
+                    "created_at": 0,
+                    "status": "in_progress",
+                    "error": null,
+                    "incomplete_details": null,
+                    "instructions": null,
+                    "max_output_tokens": null,
+                    "model": "gpt-5.6",
+                    "output": [],
+                    "tools": [],
+                    "top_p": 0.95
+                }
+            }"#,
+        )
+        .expect("response.created should decode from the wire JSON");
+
+        let StreamingCompletionChunk::Response(chunk) = chunk else {
+            panic!("expected a response lifecycle chunk");
+        };
+        assert_eq!(chunk.response.id, "resp_created");
+        assert_eq!(chunk.response.additional_parameters.top_p, Some(0.95));
+    }
+
+    #[test]
     fn incomplete_done_payload_returns_terminal_error() {
         let done = serde_json::from_value::<ResponsesWebSocketDoneEvent>(json!({
             "type": "response.done",

@@ -5,7 +5,7 @@ use jaco_core::{
     ProviderTokenPriceTierSnapshot, UsdNanoPerMillionTokens, official_provider_pricing_route,
 };
 use jaco_db::{NewProviderModel, ProviderRecord};
-use serde_json::{Map, Number, Value};
+use serde_json::value::RawValue;
 use time::OffsetDateTime;
 
 use super::ProviderModelFetchError;
@@ -13,6 +13,10 @@ use super::ProviderModelFetchError;
 const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+
+// Keep exact pricing decimals local to this catalog parser. Enabling
+// serde_json/arbitrary_precision crate-wide also changes Rig's wire decoding.
+type RawObject<'a> = BTreeMap<String, &'a RawValue>;
 
 pub(super) async fn attach_pricing(
     provider: &ProviderRecord,
@@ -46,7 +50,7 @@ fn eligible_pricing_route(
     ))
 }
 
-async fn fetch_catalog(provider_kind: &str) -> Result<Value, ProviderModelFetchError> {
+async fn fetch_catalog(provider_kind: &str) -> Result<Box<RawValue>, ProviderModelFetchError> {
     fetch_catalog_from(provider_kind, MODELS_DEV_URL, REQUEST_TIMEOUT).await
 }
 
@@ -54,7 +58,7 @@ async fn fetch_catalog_from(
     provider_kind: &str,
     url: &str,
     timeout: Duration,
-) -> Result<Value, ProviderModelFetchError> {
+) -> Result<Box<RawValue>, ProviderModelFetchError> {
     let client = reqwest::Client::builder()
         .timeout(timeout)
         .build()
@@ -103,54 +107,62 @@ async fn fetch_catalog_from(
 
 fn merge_pricing(
     models: &mut [NewProviderModel],
-    catalog: &Value,
+    catalog: &RawValue,
     models_dev_provider_id: &str,
     route: ProviderPricingRouteKey,
     fetched_at: OffsetDateTime,
 ) -> Result<(), String> {
-    let catalog = catalog
-        .as_object()
-        .ok_or_else(|| "catalog root must be an object".to_string())?;
-    let Some(provider) = catalog
-        .get(models_dev_provider_id)
-        .and_then(Value::as_object)
-    else {
+    let catalog = raw_object(catalog).map_err(|_| "catalog root must be an object".to_string())?;
+    let Some(provider) = catalog.get(models_dev_provider_id) else {
         return Ok(());
     };
-    if provider.get("id").and_then(Value::as_str) != Some(models_dev_provider_id) {
+    let Ok(provider) = raw_object(provider) else {
+        return Ok(());
+    };
+    if provider
+        .get("id")
+        .and_then(|value| raw_string(value))
+        .as_deref()
+        != Some(models_dev_provider_id)
+    {
         return Ok(());
     }
     let provider_models = provider
         .get("models")
-        .and_then(Value::as_object)
         .ok_or_else(|| "matched catalog provider has invalid models".to_string())?;
+    let provider_models = raw_object(provider_models)
+        .map_err(|_| "matched catalog provider has invalid models".to_string())?;
 
     let mut parsed = BTreeMap::new();
     for model in models.iter() {
-        let Some(catalog_model) = provider_models
-            .get(&model.model_id)
-            .and_then(Value::as_object)
-        else {
+        let Some(catalog_model) = provider_models.get(&model.model_id) else {
             continue;
         };
-        if catalog_model.get("id").and_then(Value::as_str) != Some(model.model_id.as_str()) {
+        let Ok(catalog_model) = raw_object(catalog_model) else {
+            continue;
+        };
+        if catalog_model
+            .get("id")
+            .and_then(|value| raw_string(value))
+            .as_deref()
+            != Some(model.model_id.as_str())
+        {
             continue;
         }
         let Some(cost) = catalog_model.get("cost") else {
             continue;
         };
-        if cost.is_null() {
+        if raw_is_null(cost) {
             continue;
         }
-        let cost = cost
-            .as_object()
-            .ok_or_else(|| "matched catalog model has invalid cost".to_string())?;
+        let cost =
+            raw_object(cost).map_err(|_| "matched catalog model has invalid cost".to_string())?;
         let pricing = parse_pricing(
             models_dev_provider_id,
             &model.model_id,
             route.clone(),
             fetched_at,
-            cost,
+            &cost,
         )?;
         parsed.insert(model.model_id.clone(), pricing);
     }
@@ -166,17 +178,17 @@ fn parse_pricing(
     models_dev_model_id: &str,
     route: ProviderPricingRouteKey,
     fetched_at: OffsetDateTime,
-    cost: &Map<String, Value>,
+    cost: &RawObject<'_>,
 ) -> Result<ProviderModelPricingSnapshot, String> {
     let base = parse_rates(cost)?;
     let mut tiers = match cost.get("tiers") {
         None => Vec::new(),
-        Some(Value::Array(tiers)) => tiers
-            .iter()
+        Some(tiers) => raw_array(tiers)
+            .map_err(|_| "matched catalog model has invalid cost tiers".to_string())?
+            .into_iter()
             .map(parse_tier)
             .filter_map(Result::transpose)
             .collect::<Result<Vec<_>, _>>()?,
-        Some(_) => return Err("matched catalog model has invalid cost tiers".to_string()),
     };
     tiers.sort_by_key(ProviderTokenPriceTierSnapshot::input_token_threshold);
 
@@ -191,27 +203,32 @@ fn parse_pricing(
     .map_err(|error| format!("matched catalog pricing is invalid: {error}"))
 }
 
-fn parse_tier(tier: &Value) -> Result<Option<ProviderTokenPriceTierSnapshot>, String> {
-    let tier = tier
-        .as_object()
-        .ok_or_else(|| "matched catalog price tier must be an object".to_string())?;
+fn parse_tier(tier: &RawValue) -> Result<Option<ProviderTokenPriceTierSnapshot>, String> {
+    let tier =
+        raw_object(tier).map_err(|_| "matched catalog price tier must be an object".to_string())?;
     let condition = tier
         .get("tier")
-        .and_then(Value::as_object)
         .ok_or_else(|| "matched catalog price tier has invalid condition".to_string())?;
-    if condition.get("type").and_then(Value::as_str) != Some("context") {
+    let condition = raw_object(condition)
+        .map_err(|_| "matched catalog price tier has invalid condition".to_string())?;
+    if condition
+        .get("type")
+        .and_then(|value| raw_string(value))
+        .as_deref()
+        != Some("context")
+    {
         return Ok(None);
     }
     let threshold = condition
         .get("size")
-        .and_then(Value::as_u64)
+        .and_then(|value| raw_u64(value))
         .ok_or_else(|| "matched catalog price tier has invalid threshold".to_string())?;
-    ProviderTokenPriceTierSnapshot::new(threshold, parse_rates(tier)?)
+    ProviderTokenPriceTierSnapshot::new(threshold, parse_rates(&tier)?)
         .map(Some)
         .map_err(|error| format!("matched catalog price tier is invalid: {error}"))
 }
 
-fn parse_rates(cost: &Map<String, Value>) -> Result<ProviderTokenPriceSnapshot, String> {
+fn parse_rates(cost: &RawObject<'_>) -> Result<ProviderTokenPriceSnapshot, String> {
     Ok(ProviderTokenPriceSnapshot::new(
         parse_required_rate(cost, "input")?,
         parse_required_rate(cost, "output")?,
@@ -221,33 +238,57 @@ fn parse_rates(cost: &Map<String, Value>) -> Result<ProviderTokenPriceSnapshot, 
 }
 
 fn parse_required_rate(
-    cost: &Map<String, Value>,
+    cost: &RawObject<'_>,
     field: &str,
 ) -> Result<UsdNanoPerMillionTokens, String> {
-    let number = cost
+    let value = cost
         .get(field)
-        .and_then(Value::as_number)
         .ok_or_else(|| format!("matched catalog price has invalid {field}"))?;
-    parse_rate(number, field)
+    parse_rate(value, field)
 }
 
 fn parse_optional_rate(
-    cost: &Map<String, Value>,
+    cost: &RawObject<'_>,
     field: &str,
 ) -> Result<Option<UsdNanoPerMillionTokens>, String> {
     cost.get(field)
-        .map(|value| {
-            value
-                .as_number()
-                .ok_or_else(|| format!("matched catalog price has invalid {field}"))
-                .and_then(|number| parse_rate(number, field))
-        })
+        .map(|value| parse_rate(value, field))
         .transpose()
 }
 
-fn parse_rate(number: &Number, field: &str) -> Result<UsdNanoPerMillionTokens, String> {
-    UsdNanoPerMillionTokens::from_usd_per_million_decimal(&number.to_string())
+fn parse_rate(value: &RawValue, field: &str) -> Result<UsdNanoPerMillionTokens, String> {
+    let decimal =
+        raw_number(value).ok_or_else(|| format!("matched catalog price has invalid {field}"))?;
+    UsdNanoPerMillionTokens::from_usd_per_million_decimal(decimal)
         .map_err(|error| format!("matched catalog price has invalid {field}: {error}"))
+}
+
+fn raw_object(value: &RawValue) -> Result<RawObject<'_>, serde_json::Error> {
+    serde_json::from_str(value.get())
+}
+
+fn raw_array(value: &RawValue) -> Result<Vec<&RawValue>, serde_json::Error> {
+    serde_json::from_str(value.get())
+}
+
+fn raw_string(value: &RawValue) -> Option<String> {
+    serde_json::from_str(value.get()).ok()
+}
+
+fn raw_u64(value: &RawValue) -> Option<u64> {
+    serde_json::from_str(value.get()).ok()
+}
+
+fn raw_is_null(value: &RawValue) -> bool {
+    value.get().trim() == "null"
+}
+
+fn raw_number(value: &RawValue) -> Option<&str> {
+    let raw = value.get();
+    raw.as_bytes()
+        .first()
+        .is_some_and(|byte| byte.is_ascii_digit() || *byte == b'-')
+        .then_some(raw)
 }
 
 fn models_dev_provider_id(provider_kind: &str) -> Option<&'static str> {
@@ -310,6 +351,15 @@ mod tests {
     }
 
     #[test]
+    fn raw_price_parser_preserves_decimal_text_and_rejects_strings() {
+        let maximum: Box<RawValue> = serde_json::from_str("18446744073.709551615").unwrap();
+        assert_eq!(parse_rate(&maximum, "input").unwrap().as_u64(), u64::MAX);
+
+        let string: Box<RawValue> = serde_json::from_str(r#""1.25""#).unwrap();
+        assert!(parse_rate(&string, "input").is_err());
+    }
+
+    #[test]
     fn pricing_merge_requires_exact_provider_and_model_identity() {
         let provider = provider("openai", None);
         let route = eligible_pricing_route(&provider).unwrap().1;
@@ -318,7 +368,7 @@ mod tests {
             model(&provider, "gpt-family"),
             model(&provider, "gpt-missing-cost"),
         ];
-        let catalog = serde_json::from_str(
+        let catalog: Box<RawValue> = serde_json::from_str(
             r#"{
                 "openai": {
                     "id": "openai",
@@ -399,7 +449,7 @@ mod tests {
         let provider = provider("openai", None);
         let route = eligible_pricing_route(&provider).unwrap().1;
         let mut models = vec![model(&provider, "gpt-exact")];
-        let wrong_provider: Value = serde_json::from_str(
+        let wrong_provider: Box<RawValue> = serde_json::from_str(
             r#"{"openai":{"id":"not-openai","models":{"gpt-exact":{"id":"gpt-exact","cost":{"input":1,"output":2}}}}}"#,
         )
         .unwrap();
@@ -413,7 +463,7 @@ mod tests {
         .unwrap();
         assert!(models[0].pricing.is_none());
 
-        let invalid_price: Value = serde_json::from_str(
+        let invalid_price: Box<RawValue> = serde_json::from_str(
             r#"{"openai":{"id":"openai","models":{"gpt-exact":{"id":"gpt-exact","cost":{"input":1.0000000001,"output":2}}}}}"#,
         )
         .unwrap();
