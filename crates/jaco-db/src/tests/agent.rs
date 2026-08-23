@@ -233,6 +233,113 @@ fn soft_delete_conversation_rejects_active_run_and_succeeds_after_terminal_statu
 }
 
 #[test]
+fn soft_delete_active_project_conversations_rolls_back_when_any_run_is_active() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let project = repo
+        .insert_project(project("batch-delete-active-run"))
+        .unwrap();
+    let first = repo.insert_conversation(conversation(&project)).unwrap();
+    let blocked = repo.insert_conversation(conversation(&project)).unwrap();
+    let other_blocked = repo.insert_conversation(conversation(&project)).unwrap();
+    let provider = repo.insert_provider(provider()).unwrap();
+    let model = repo
+        .upsert_provider_model(provider_model(&provider.id, "gpt-5.6", "GPT-5.6"))
+        .unwrap();
+    let trigger = repo
+        .append_conversation_entry(message_item(&blocked.id, "run"))
+        .unwrap();
+    let other_trigger = repo
+        .append_conversation_entry(message_item(&other_blocked.id, "run"))
+        .unwrap();
+    let run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: blocked.id.clone(),
+            trigger_entry_id: trigger.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            input: agent_run_input(&trigger.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+    let other_run = repo
+        .insert_agent_run(NewAgentRun {
+            conversation_id: other_blocked.id.clone(),
+            trigger_entry_id: other_trigger.id.clone(),
+            trigger_kind: AgentRunTriggerKind::User,
+            input: agent_run_input(&other_trigger.id, &provider.id, &model.model_id),
+        })
+        .unwrap();
+
+    let error = repo
+        .soft_delete_active_project_conversations(&project.id)
+        .unwrap_err();
+    let expected_blocked_id = blocked.id.clone().min(other_blocked.id.clone());
+    assert!(matches!(
+        error,
+        crate::DbError::ConversationHasActiveRun { conversation_id }
+            if conversation_id == expected_blocked_id
+    ));
+    for conversation in [&first, &blocked, &other_blocked] {
+        let persisted = repo.get_conversation(&conversation.id).unwrap().unwrap();
+        assert_eq!(persisted.status, ConversationStatus::Active);
+        assert_eq!(persisted.deleted_at, None);
+    }
+
+    repo.finish_agent_run(
+        &run.id,
+        FinishAgentRun {
+            status: AgentRunStatus::Canceled,
+            stopped_reason: AgentStoppedReason::Canceled,
+            error: None,
+            final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                conversation_id: blocked.id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(run.id.clone()),
+                provider_step_id: None,
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationEntryPayload::Status(ConversationStatusEntry {
+                    code: ConversationStatusCode::Canceled,
+                    message: None,
+                }),
+            })),
+        },
+    )
+    .unwrap();
+    repo.finish_agent_run(
+        &other_run.id,
+        FinishAgentRun {
+            status: AgentRunStatus::Canceled,
+            stopped_reason: AgentStoppedReason::Canceled,
+            error: None,
+            final_entry: AgentRunFinalEntry::Append(Box::new(NewConversationEntry {
+                conversation_id: other_blocked.id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: Some(other_run.id.clone()),
+                provider_step_id: None,
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationEntryPayload::Status(ConversationStatusEntry {
+                    code: ConversationStatusCode::Canceled,
+                    message: None,
+                }),
+            })),
+        },
+    )
+    .unwrap();
+
+    let archived = repo
+        .soft_delete_active_project_conversations(&project.id)
+        .unwrap();
+    assert_eq!(archived.len(), 3);
+    assert!(
+        archived
+            .iter()
+            .all(|conversation| conversation.status == ConversationStatus::Deleted)
+    );
+}
+
+#[test]
 fn complete_provider_step_commits_usage_and_continuation_atomically() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();

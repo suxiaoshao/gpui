@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use gpui::{App, Task};
 use jaco_agent::{AgentRunRequest, SkillActivationRequest};
+use jaco_conversation::ConversationService;
 use jaco_core::{
     AgentEngineKind, AgentRunTriggerKind, AgentRuntimeSnapshot, ContentPart,
     ConversationEntryPayload, ConversationEntryStatus, ConversationId, ConversationMetadata,
@@ -59,6 +60,7 @@ pub(crate) struct CreateConversationRequest {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SendConversationMessageRequest {
     pub(crate) conversation_id: ConversationId,
+    pub(crate) project_id: ProjectId,
     pub(crate) content_parts: Vec<ContentPart>,
     pub(crate) attachments: Vec<ComposerAttachment>,
     pub(crate) skill_requests: Vec<SkillActivationRequest>,
@@ -350,38 +352,172 @@ pub(crate) fn set_conversation_pinned(
 ) -> Task<jaco_db::Result<ConversationSummary>> {
     spawn_conversation_mutation(
         cx,
-        move |repository| repository.set_conversation_pinned(&conversation_id, pinned),
+        move |service| service.set_pinned(&conversation_id, pinned),
         |conversation, cx| {
             registry::publish_summary(conversation.clone(), cx);
         },
     )
 }
 
-pub(crate) fn delete_conversation(
+pub(crate) fn rename_conversation(
     conversation_id: ConversationId,
+    title: String,
     cx: &mut App,
 ) -> Task<jaco_db::Result<ConversationSummary>> {
-    let removed_id = conversation_id.clone();
-    let session_conversation_id = conversation_id.clone();
     spawn_conversation_mutation(
         cx,
-        move |repository| repository.soft_delete_conversation(&conversation_id),
-        move |_conversation, cx| {
-            registry::publish_removed(removed_id, cx);
-            if let Some(runtime) = resources::ready_runtime(cx) {
-                runtime
-                    .update(cx, |runtime, cx| {
-                        runtime.close_conversation_sessions(session_conversation_id, cx)
-                    })
-                    .detach();
-            }
-        },
+        move |service| service.rename(&conversation_id, title),
+        |conversation, cx| registry::publish_summary(conversation.clone(), cx),
     )
+}
+
+pub(crate) fn archive_conversation(
+    conversation_id: ConversationId,
+    project_id: ProjectId,
+    cx: &mut App,
+) -> Task<jaco_db::Result<ConversationSummary>> {
+    let runtime = match resources::ready_runtime(cx) {
+        Some(runtime) => runtime,
+        None => {
+            return Task::ready(Err(jaco_db::DbError::Invariant(
+                "conversation runtime is not ready".to_string(),
+            )));
+        }
+    };
+    let ticket = match runtime.update(cx, |runtime, _| {
+        runtime.reserve_conversation_archive(conversation_id.clone(), project_id)
+    }) {
+        Ok(ticket) => ticket,
+        Err(error) => return Task::ready(Err(error)),
+    };
+    spawn_archive_mutation(
+        runtime,
+        ticket,
+        move |service| service.archive(&conversation_id),
+        |conversation| vec![conversation.id.clone()],
+        cx,
+    )
+}
+
+pub(crate) fn archive_project_conversations(
+    project_id: ProjectId,
+    cx: &mut App,
+) -> Task<jaco_db::Result<Vec<ConversationSummary>>> {
+    let runtime = match resources::ready_runtime(cx) {
+        Some(runtime) => runtime,
+        None => {
+            return Task::ready(Err(jaco_db::DbError::Invariant(
+                "conversation runtime is not ready".to_string(),
+            )));
+        }
+    };
+    let ticket = match runtime.update(cx, |runtime, _| {
+        runtime.reserve_project_archive(project_id.clone())
+    }) {
+        Ok(ticket) => ticket,
+        Err(error) => return Task::ready(Err(error)),
+    };
+    spawn_archive_mutation(
+        runtime,
+        ticket,
+        move |service| service.archive_project_conversations(&project_id),
+        |conversations| {
+            conversations
+                .iter()
+                .map(|conversation| conversation.id.clone())
+                .collect()
+        },
+        cx,
+    )
+}
+
+fn spawn_archive_mutation<R>(
+    runtime: gpui::Entity<runtime::ConversationRuntimeStore>,
+    ticket: runtime::ArchiveFenceTicket,
+    command: impl FnOnce(&ConversationService<'_>) -> jaco_conversation::Result<R> + Send + 'static,
+    archived_ids: impl FnOnce(&R) -> Vec<ConversationId> + Send + 'static,
+    cx: &mut App,
+) -> Task<jaco_db::Result<R>>
+where
+    R: Send + 'static,
+{
+    if !registry::is_catalog_ready(cx) {
+        runtime.update(cx, |runtime, _| {
+            runtime.release_archive_fence(&ticket);
+        });
+        return Task::ready(Err(jaco_db::DbError::Invariant(
+            "conversation index is not ready".to_string(),
+        )));
+    }
+    let executor = match database::ready_executor(cx) {
+        Ok(executor) => executor,
+        Err(error) => {
+            runtime.update(cx, |runtime, _| {
+                runtime.release_archive_fence(&ticket);
+            });
+            return Task::ready(Err(error));
+        }
+    };
+    let (sender, receiver) = oneshot::channel();
+    let driver = cx.spawn(async move |cx| {
+        let result = executor
+            .execute(move |repository| {
+                command(&ConversationService::new(repository)).map_err(|error| match error {
+                    jaco_conversation::ConversationError::Database(error) => error,
+                })
+            })
+            .await;
+
+        match &result {
+            Ok(value) => {
+                let ids = archived_ids(value);
+                if ids.is_empty() {
+                    cx.update(|cx| {
+                        runtime.update(cx, |runtime, _| {
+                            runtime.release_archive_fence(&ticket);
+                        });
+                    });
+                } else {
+                    let cleanup = cx.update(|cx| {
+                        let cleanup = runtime.update(cx, |runtime, cx| {
+                            runtime.prepare_archive_commit(&ticket, &ids, cx)
+                        });
+                        if database::is_ready(cx) {
+                            registry::publish_removed_many(ids, cx);
+                        }
+                        cleanup
+                    });
+                    cleanup.await;
+                    cx.update(|cx| {
+                        runtime.update(cx, |runtime, _| {
+                            runtime.release_archive_fence(&ticket);
+                        });
+                    });
+                }
+            }
+            Err(_) => {
+                cx.update(|cx| {
+                    runtime.update(cx, |runtime, _| {
+                        runtime.release_archive_fence(&ticket);
+                    });
+                });
+            }
+        }
+        let _ = sender.send(result);
+    });
+    resources::retain_task(driver, cx);
+    cx.spawn(async move |_| {
+        receiver.await.unwrap_or_else(|_| {
+            Err(jaco_db::DbError::Invariant(
+                "conversation archive driver ended without a result".to_string(),
+            ))
+        })
+    })
 }
 
 fn spawn_conversation_mutation<R>(
     cx: &mut App,
-    command: impl FnOnce(&FreshRepository) -> jaco_db::Result<R> + Send + 'static,
+    command: impl FnOnce(&ConversationService<'_>) -> jaco_conversation::Result<R> + Send + 'static,
     publish: impl FnOnce(&R, &mut App) + Send + 'static,
 ) -> Task<jaco_db::Result<R>>
 where
@@ -398,7 +534,13 @@ where
     };
     let (sender, receiver) = oneshot::channel();
     let driver = cx.spawn(async move |cx| {
-        let result = executor.execute(command).await;
+        let result = executor
+            .execute(move |repository| {
+                command(&ConversationService::new(repository)).map_err(|error| match error {
+                    jaco_conversation::ConversationError::Database(error) => error,
+                })
+            })
+            .await;
         if let Ok(value) = &result {
             cx.update(|cx| {
                 if database::is_ready(cx) {
@@ -572,12 +714,13 @@ mod tests {
     #[gpui::test]
     fn send_message_does_not_depend_on_catalog_refresh(cx: &mut TestAppContext) {
         let _dir = init_conversations_test(cx);
-        let (conversation_id, provider_model) = cx.update(|cx| {
+        let (conversation_id, project_id, provider_model) = cx.update(|cx| {
             let repository = test_repository(cx);
             let provider = repository.insert_provider(provider_for_test()).unwrap();
             let provider_model = provider_model_choice(&provider.id);
             let conversation_id = insert_conversation(&repository, &provider_model);
-            (conversation_id, provider_model)
+            let project_id = project_id_for_conversation(&repository, &conversation_id);
+            (conversation_id, project_id, provider_model)
         });
         init_conversation_resources(cx);
 
@@ -594,6 +737,7 @@ mod tests {
             send_conversation_message(
                 SendConversationMessageRequest {
                     conversation_id,
+                    project_id,
                     content_parts: vec![ContentPart::Text {
                         text: "send while the catalog refreshes".to_string(),
                     }],
@@ -615,7 +759,7 @@ mod tests {
     #[gpui::test]
     fn send_message_does_not_persist_user_item_when_attachment_copy_fails(cx: &mut TestAppContext) {
         let dir = init_conversations_test(cx);
-        let (conversation_id, provider_model, initial_item_count) = cx.update(|cx| {
+        let (conversation_id, project_id, provider_model, initial_item_count) = cx.update(|cx| {
             let repository = test_repository(cx);
             let provider = repository.insert_provider(provider_for_test()).unwrap();
             let provider_model = provider_model_choice(&provider.id);
@@ -624,7 +768,13 @@ mod tests {
                 .conversation_entries(&conversation_id)
                 .unwrap()
                 .len();
-            (conversation_id, provider_model, initial_item_count)
+            let project_id = project_id_for_conversation(&repository, &conversation_id);
+            (
+                conversation_id,
+                project_id,
+                provider_model,
+                initial_item_count,
+            )
         });
         init_conversation_resources(cx);
         let missing_path = dir.path().join("missing-attachment.txt");
@@ -633,6 +783,7 @@ mod tests {
             send_conversation_message(
                 SendConversationMessageRequest {
                     conversation_id: conversation_id.clone(),
+                    project_id,
                     content_parts: vec![ContentPart::Text {
                         text: "send with missing attachment".to_string(),
                     }],
@@ -779,7 +930,7 @@ mod tests {
     #[gpui::test]
     fn send_message_reuses_conversation_prompt_snapshot(cx: &mut TestAppContext) {
         let _dir = init_conversations_test(cx);
-        let (conversation_id, provider_model, expected_prompt) = cx.update(|cx| {
+        let (conversation_id, project_id, provider_model, expected_prompt) = cx.update(|cx| {
             let repository = test_repository(cx);
             let provider = repository.insert_provider(provider_for_test()).unwrap();
             let provider_model = provider_model_choice(&provider.id);
@@ -802,7 +953,8 @@ mod tests {
                 Some(prompt.id),
                 Some(expected_prompt.clone()),
             );
-            (conversation_id, provider_model, expected_prompt)
+            let project_id = project_id_for_conversation(&repository, &conversation_id);
+            (conversation_id, project_id, provider_model, expected_prompt)
         });
         init_conversation_resources(cx);
 
@@ -810,6 +962,7 @@ mod tests {
             send_conversation_message(
                 SendConversationMessageRequest {
                     conversation_id,
+                    project_id,
                     content_parts: vec![ContentPart::Text {
                         text: "follow up".to_string(),
                     }],
@@ -837,7 +990,7 @@ mod tests {
     #[gpui::test]
     fn send_message_falls_back_to_prompt_id_when_snapshot_is_missing(cx: &mut TestAppContext) {
         let _dir = init_conversations_test(cx);
-        let (conversation_id, provider_model, expected_prompt) = cx.update(|cx| {
+        let (conversation_id, project_id, provider_model, expected_prompt) = cx.update(|cx| {
             let repository = test_repository(cx);
             let provider = repository.insert_provider(provider_for_test()).unwrap();
             let provider_model = provider_model_choice(&provider.id);
@@ -858,7 +1011,8 @@ mod tests {
                 Some(prompt.id),
                 None,
             );
-            (conversation_id, provider_model, expected_prompt)
+            let project_id = project_id_for_conversation(&repository, &conversation_id);
+            (conversation_id, project_id, provider_model, expected_prompt)
         });
         init_conversation_resources(cx);
 
@@ -866,6 +1020,7 @@ mod tests {
             send_conversation_message(
                 SendConversationMessageRequest {
                     conversation_id,
+                    project_id,
                     content_parts: vec![ContentPart::Text {
                         text: "follow up".to_string(),
                     }],
@@ -922,6 +1077,17 @@ mod tests {
         provider_model: &ProviderModelChoice,
     ) -> ConversationId {
         insert_conversation_with_prompt(repository, provider_model, None, None)
+    }
+
+    fn project_id_for_conversation(
+        repository: &jaco_db::FreshRepository,
+        conversation_id: &ConversationId,
+    ) -> ProjectId {
+        repository
+            .get_conversation(conversation_id)
+            .unwrap()
+            .unwrap()
+            .project_id
     }
 
     fn insert_conversation_with_prompt(

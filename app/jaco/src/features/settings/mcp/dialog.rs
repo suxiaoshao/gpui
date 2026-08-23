@@ -1653,6 +1653,7 @@ pub(super) fn open_mcp_server_edit_dialog(
             .title(title.clone())
             .w(px(720.))
             .h(dialog_height)
+            .close_button(false)
             .on_cancel({
                 let form = form.clone();
                 move |_, _window, cx| {

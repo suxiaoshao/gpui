@@ -8,7 +8,7 @@ use jaco_agent::{
     AgentCancellationToken, AgentPersistence, AgentRunHandle, AgentRunRequest, AgentRuntime,
     AgentRuntimeObserver, OpenAiResponsesSessionPool, ToolApprovalDecision,
 };
-use jaco_core::{AgentRunId, ConversationId, ToolInvocationId};
+use jaco_core::{AgentRunId, ConversationId, ProjectId, ToolInvocationId};
 use jaco_db::ProviderRecord;
 use smol::channel::{Receiver, Sender};
 use tracing::{Level, event};
@@ -28,6 +28,7 @@ enum RuntimePublication {
 
 pub(crate) struct ConversationRuntimeStore {
     active_runs: ActiveRuns,
+    archive_fences: ArchiveFences,
     last_errors: HashMap<ConversationId, String>,
     next_run_key: u64,
     shutting_down: bool,
@@ -69,11 +70,13 @@ enum ConversationAttempt {
 
 struct SubmissionAttempt {
     key: ActiveRunKey,
+    project_id: Option<ProjectId>,
     task: Task<()>,
 }
 
 struct ActiveRun {
     key: ActiveRunKey,
+    project_id: Option<ProjectId>,
     agent_run_id: Option<AgentRunId>,
     cancellation_token: AgentCancellationToken,
     approval_broker: Arc<ConversationApprovalBroker>,
@@ -84,6 +87,7 @@ struct ActiveRun {
 struct SubmitAttempt {
     conversation_id: ConversationId,
     key: ActiveRunKey,
+    project_id: Option<ProjectId>,
     task: Task<()>,
 }
 
@@ -119,6 +123,36 @@ struct RunFinished {
 struct StopFinished {
     conversation_id: ConversationId,
     key: ActiveRunKey,
+}
+
+#[derive(Default)]
+struct ArchiveFences {
+    next_key: u64,
+    conversations: HashMap<ConversationId, ConversationArchiveFence>,
+    projects: HashMap<ProjectId, ArchiveFenceKey>,
+}
+
+struct ConversationArchiveFence {
+    project_id: ProjectId,
+    key: ArchiveFenceKey,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ArchiveFenceKey(u64);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ArchiveFenceTarget {
+    Conversation {
+        conversation_id: ConversationId,
+        project_id: ProjectId,
+    },
+    Project(ProjectId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ArchiveFenceTicket {
+    key: ArchiveFenceKey,
+    target: ArchiveFenceTarget,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,6 +201,113 @@ impl std::error::Error for ConversationSubmissionError {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ActiveRunKey(u64);
 
+impl ConversationAttempt {
+    fn project_id(&self) -> Option<&ProjectId> {
+        match self {
+            Self::Submitting(attempt) => attempt.project_id.as_ref(),
+            Self::Running(attempt) | Self::Stopping(attempt) => attempt.project_id.as_ref(),
+        }
+    }
+}
+
+impl ArchiveFences {
+    fn reserve_conversation(
+        &mut self,
+        conversation_id: ConversationId,
+        project_id: ProjectId,
+    ) -> jaco_db::Result<ArchiveFenceTicket> {
+        if self.conversations.contains_key(&conversation_id) {
+            return Err(jaco_db::DbError::Invariant(format!(
+                "conversation {conversation_id} already has an archive fence"
+            )));
+        }
+        if self.projects.contains_key(&project_id) {
+            return Err(jaco_db::DbError::Invariant(format!(
+                "project {project_id} already has an archive fence"
+            )));
+        }
+
+        let key = self.next_key();
+        self.conversations.insert(
+            conversation_id.clone(),
+            ConversationArchiveFence {
+                project_id: project_id.clone(),
+                key,
+            },
+        );
+        Ok(ArchiveFenceTicket {
+            key,
+            target: ArchiveFenceTarget::Conversation {
+                conversation_id,
+                project_id,
+            },
+        })
+    }
+
+    fn reserve_project(&mut self, project_id: ProjectId) -> jaco_db::Result<ArchiveFenceTicket> {
+        if self.projects.contains_key(&project_id)
+            || self
+                .conversations
+                .values()
+                .any(|fence| fence.project_id == project_id)
+        {
+            return Err(jaco_db::DbError::Invariant(format!(
+                "project {project_id} already overlaps an archive fence"
+            )));
+        }
+
+        let key = self.next_key();
+        self.projects.insert(project_id.clone(), key);
+        Ok(ArchiveFenceTicket {
+            key,
+            target: ArchiveFenceTarget::Project(project_id),
+        })
+    }
+
+    fn blocks(&self, conversation_id: &ConversationId, project_id: Option<&ProjectId>) -> bool {
+        self.conversations.contains_key(conversation_id)
+            || project_id.is_some_and(|project_id| self.projects.contains_key(project_id))
+    }
+
+    fn owns(&self, ticket: &ArchiveFenceTicket) -> bool {
+        match &ticket.target {
+            ArchiveFenceTarget::Conversation {
+                conversation_id,
+                project_id,
+            } => self
+                .conversations
+                .get(conversation_id)
+                .is_some_and(|fence| fence.key == ticket.key && &fence.project_id == project_id),
+            ArchiveFenceTarget::Project(project_id) => {
+                self.projects.get(project_id) == Some(&ticket.key)
+            }
+        }
+    }
+
+    fn release(&mut self, ticket: &ArchiveFenceTicket) -> bool {
+        if !self.owns(ticket) {
+            return false;
+        }
+        match &ticket.target {
+            ArchiveFenceTarget::Conversation {
+                conversation_id, ..
+            } => {
+                self.conversations.remove(conversation_id);
+            }
+            ArchiveFenceTarget::Project(project_id) => {
+                self.projects.remove(project_id);
+            }
+        }
+        true
+    }
+
+    fn next_key(&mut self) -> ArchiveFenceKey {
+        let key = ArchiveFenceKey(self.next_key);
+        self.next_key = self.next_key.wrapping_add(1);
+        key
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ConversationRuntimeEvent {
     SubmissionCommitted {
@@ -205,6 +346,7 @@ impl Transition<SubmitAttempt> for &mut ActiveRuns {
             Entry::Vacant(entry) => {
                 entry.insert(ConversationAttempt::Submitting(SubmissionAttempt {
                     key: message.key,
+                    project_id: message.project_id,
                     task: message.task,
                 }));
                 true
@@ -299,6 +441,7 @@ impl Transition<StopRun<'_, '_>> for &mut ActiveRuns {
 
         let ActiveRun {
             key,
+            project_id,
             agent_run_id,
             cancellation_token,
             approval_broker,
@@ -335,6 +478,7 @@ impl Transition<StopRun<'_, '_>> for &mut ActiveRuns {
             conversation_id,
             ConversationAttempt::Stopping(ActiveRun {
                 key,
+                project_id,
                 agent_run_id,
                 cancellation_token,
                 approval_broker,
@@ -384,6 +528,7 @@ impl ConversationRuntimeStore {
     fn new() -> Self {
         Self {
             active_runs: ActiveRuns::default(),
+            archive_fences: ArchiveFences::default(),
             last_errors: HashMap::new(),
             next_run_key: 0,
             shutting_down: false,
@@ -421,6 +566,7 @@ impl ConversationRuntimeStore {
             conversation_id.clone(),
             ActiveRun {
                 key,
+                project_id: None,
                 agent_run_id: Some(agent_run_id),
                 cancellation_token: AgentCancellationToken::new(),
                 approval_broker,
@@ -455,18 +601,104 @@ impl ConversationRuntimeStore {
         }
     }
 
+    pub(crate) fn reserve_conversation_archive(
+        &mut self,
+        conversation_id: ConversationId,
+        project_id: ProjectId,
+    ) -> jaco_db::Result<ArchiveFenceTicket> {
+        if self.active_runs.0.contains_key(&conversation_id) {
+            return Err(jaco_db::DbError::ConversationHasActiveRun { conversation_id });
+        }
+        self.archive_fences
+            .reserve_conversation(conversation_id, project_id)
+    }
+
+    pub(crate) fn reserve_project_archive(
+        &mut self,
+        project_id: ProjectId,
+    ) -> jaco_db::Result<ArchiveFenceTicket> {
+        let mut active_conversation_ids = self
+            .active_runs
+            .0
+            .iter()
+            .filter(|(_, attempt)| attempt.project_id() == Some(&project_id))
+            .map(|(conversation_id, _)| conversation_id.clone())
+            .collect::<Vec<_>>();
+        active_conversation_ids.sort();
+        if let Some(conversation_id) = active_conversation_ids.into_iter().next() {
+            return Err(jaco_db::DbError::ConversationHasActiveRun { conversation_id });
+        }
+        self.archive_fences.reserve_project(project_id)
+    }
+
+    pub(crate) fn prepare_archive_commit(
+        &mut self,
+        ticket: &ArchiveFenceTicket,
+        conversation_ids: &[ConversationId],
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        if !self.archive_fences.owns(ticket) {
+            event!(
+                Level::ERROR,
+                ?ticket,
+                "archive commit does not own its runtime fence"
+            );
+            return Task::ready(());
+        }
+
+        let mut tasks = Vec::new();
+        for conversation_id in conversation_ids {
+            let Some(attempt) = self.active_runs.0.remove(conversation_id) else {
+                self.last_errors.remove(conversation_id);
+                continue;
+            };
+            match attempt {
+                ConversationAttempt::Submitting(submitting) => {
+                    drop(submitting.task);
+                }
+                ConversationAttempt::Running(active) | ConversationAttempt::Stopping(active) => {
+                    active.cancellation_token.cancel();
+                    if let Some(agent_run_id) = active.agent_run_id.as_ref() {
+                        active
+                            .approval_broker
+                            .cancel_all_for_run(conversation_id, agent_run_id);
+                    } else {
+                        active.approval_broker.cancel_all();
+                    }
+                    super::registry::release_active(conversation_id, cx);
+                    cx.emit(ConversationRuntimeEvent::RunFinished {
+                        ticket: ConversationSubmissionTicket {
+                            conversation_id: conversation_id.clone(),
+                            attempt_key: active.key,
+                        },
+                    });
+                    tasks.push((active.task, active._event_task));
+                }
+            }
+            self.last_errors.remove(conversation_id);
+        }
+        cx.notify();
+
+        let sessions = self.openai_sessions.clone();
+        let conversation_ids = conversation_ids.to_vec();
+        cx.spawn(async move |_, _| {
+            for (task, event_task) in tasks {
+                task.await;
+                event_task.await;
+            }
+            for conversation_id in conversation_ids {
+                sessions.close_conversation(&conversation_id).await;
+            }
+        })
+    }
+
+    pub(crate) fn release_archive_fence(&mut self, ticket: &ArchiveFenceTicket) -> bool {
+        self.archive_fences.release(ticket)
+    }
+
     #[cfg(test)]
     fn is_running(&self, conversation_id: &ConversationId) -> bool {
         self.run_status(conversation_id) != ConversationRunStatus::Idle
-    }
-
-    pub(crate) fn close_conversation_sessions(
-        &mut self,
-        conversation_id: ConversationId,
-        cx: &mut Context<Self>,
-    ) -> Task<()> {
-        let sessions = self.openai_sessions.clone();
-        cx.spawn(async move |_, _| sessions.close_conversation(&conversation_id).await)
     }
 
     pub(crate) fn active_agent_run_id(
@@ -498,7 +730,8 @@ impl ConversationRuntimeStore {
         cx: &mut Context<Self>,
     ) -> Result<ConversationSubmissionTicket, ConversationSubmissionError> {
         let conversation_id = request.conversation_id.clone();
-        self.ensure_submission_available(&conversation_id)?;
+        let project_id = request.project_id.clone();
+        self.ensure_submission_available(&conversation_id, Some(&project_id))?;
         self.last_errors.remove(&conversation_id);
         let key = self.next_active_run_key();
         let ticket = ConversationSubmissionTicket {
@@ -523,6 +756,7 @@ impl ConversationRuntimeStore {
         let accepted = (&mut self.active_runs).transition(SubmitAttempt {
             conversation_id,
             key,
+            project_id: Some(project_id),
             task,
         });
         debug_assert!(
@@ -539,7 +773,8 @@ impl ConversationRuntimeStore {
         cx: &mut Context<Self>,
     ) -> Result<ConversationSubmissionTicket, ConversationSubmissionError> {
         let conversation_id = request.conversation_id.clone();
-        self.ensure_submission_available(&conversation_id)?;
+        let project_id = request.project_id.clone();
+        self.ensure_submission_available(&conversation_id, project_id.as_ref())?;
         self.last_errors.remove(&conversation_id);
         let key = self.next_active_run_key();
         let ticket = ConversationSubmissionTicket {
@@ -564,6 +799,7 @@ impl ConversationRuntimeStore {
         let accepted = (&mut self.active_runs).transition(SubmitAttempt {
             conversation_id,
             key,
+            project_id,
             task,
         });
         debug_assert!(
@@ -577,8 +813,11 @@ impl ConversationRuntimeStore {
     fn ensure_submission_available(
         &self,
         conversation_id: &ConversationId,
+        project_id: Option<&ProjectId>,
     ) -> Result<(), ConversationSubmissionError> {
-        if self.active_runs.0.contains_key(conversation_id) {
+        if self.active_runs.0.contains_key(conversation_id)
+            || self.archive_fences.blocks(conversation_id, project_id)
+        {
             return Err(ConversationSubmissionError::Busy);
         }
         if self.shutting_down || !matches!(self.recovery, refresh::Operation::Ready(_)) {
@@ -623,6 +862,7 @@ impl ConversationRuntimeStore {
     fn prepare_active_run(
         &mut self,
         request: AgentRunRequest,
+        project_id: Option<ProjectId>,
         run_key: ActiveRunKey,
         cx: &mut Context<Self>,
     ) -> Result<ActiveRun, String> {
@@ -666,6 +906,7 @@ impl ConversationRuntimeStore {
 
         Ok(ActiveRun {
             key: run_key,
+            project_id,
             agent_run_id: None,
             cancellation_token,
             approval_broker,
@@ -930,6 +1171,14 @@ impl ConversationRuntimeStore {
         conversation_id: &ConversationId,
         run_key: ActiveRunKey,
     ) -> bool {
+        let project_id = self
+            .active_runs
+            .0
+            .get(conversation_id)
+            .and_then(ConversationAttempt::project_id);
+        if self.archive_fences.blocks(conversation_id, project_id) {
+            return false;
+        }
         matches!(
             self.active_runs.0.get(conversation_id),
             Some(ConversationAttempt::Running(active) | ConversationAttempt::Stopping(active))
@@ -961,6 +1210,12 @@ impl ConversationRuntimeStore {
                 });
             }
             Ok(request) => {
+                let project_id = self
+                    .active_runs
+                    .0
+                    .get(&conversation_id)
+                    .and_then(ConversationAttempt::project_id)
+                    .cloned();
                 if !(&mut self.active_runs).transition(SubmissionCommitted {
                     conversation_id: conversation_id.clone(),
                     key,
@@ -981,7 +1236,7 @@ impl ConversationRuntimeStore {
                         .map(ToString::to_string)
                         .unwrap_or_else(|| "conversation runtime is recovering".to_string()))
                 } else {
-                    self.prepare_active_run(request, key, cx)
+                    self.prepare_active_run(request, project_id, key, cx)
                 };
                 match launch {
                     Ok(active_run) => {
@@ -1346,6 +1601,7 @@ mod tests {
         let (publications, _publication_receiver) = smol::channel::unbounded();
         ActiveRun {
             key,
+            project_id: Some("project-1".to_string()),
             agent_run_id: Some("run-1".to_string()),
             cancellation_token,
             approval_broker: Arc::new(ConversationApprovalBroker::new(publications)),
@@ -1386,6 +1642,7 @@ mod tests {
         assert!((&mut active_runs).transition(SubmitAttempt {
             conversation_id: conversation_id.clone(),
             key: ActiveRunKey(1),
+            project_id: Some("project-1".to_string()),
             task: Task::ready(()),
         }));
 
@@ -1400,6 +1657,7 @@ mod tests {
         assert!(!(&mut active_runs).transition(SubmitAttempt {
             conversation_id: conversation_id.clone(),
             key: ActiveRunKey(2),
+            project_id: Some("project-1".to_string()),
             task: duplicate_task,
         }));
         cx.run_until_parked();
@@ -1422,6 +1680,7 @@ mod tests {
             assert!((&mut active_runs).transition(SubmitAttempt {
                 conversation_id,
                 key,
+                project_id: Some("project-1".to_string()),
                 task: Task::ready(()),
             }));
         }
@@ -1440,12 +1699,121 @@ mod tests {
     }
 
     #[test]
+    fn submitting_attempt_blocks_conversation_archive_fence() {
+        let conversation_id = "conversation-1".to_string();
+        let project_id = "project-1".to_string();
+        let mut runtime = ConversationRuntimeStore::new_ready_for_test();
+        assert!((&mut runtime.active_runs).transition(SubmitAttempt {
+            conversation_id: conversation_id.clone(),
+            key: ActiveRunKey(1),
+            project_id: Some(project_id.clone()),
+            task: Task::ready(()),
+        }));
+
+        let error = runtime
+            .reserve_conversation_archive(conversation_id.clone(), project_id)
+            .expect_err("submitting attempt must block archive admission");
+
+        assert!(matches!(
+            error,
+            jaco_db::DbError::ConversationHasActiveRun {
+                conversation_id: blocked_id
+            } if blocked_id == conversation_id
+        ));
+    }
+
+    #[test]
+    fn every_active_attempt_state_blocks_project_archive_fence() {
+        let conversation_id = "conversation-1".to_string();
+        let project_id = "project-1".to_string();
+        let attempts = [
+            ConversationAttempt::Submitting(SubmissionAttempt {
+                key: ActiveRunKey(1),
+                project_id: Some(project_id.clone()),
+                task: Task::ready(()),
+            }),
+            ConversationAttempt::Running(active_run(ActiveRunKey(2))),
+            ConversationAttempt::Stopping(active_run(ActiveRunKey(3))),
+        ];
+
+        for attempt in attempts {
+            let mut runtime = ConversationRuntimeStore::new_ready_for_test();
+            runtime
+                .active_runs
+                .0
+                .insert(conversation_id.clone(), attempt);
+            let error = runtime
+                .reserve_project_archive(project_id.clone())
+                .expect_err("active attempt must block project archive admission");
+            assert!(matches!(
+                error,
+                jaco_db::DbError::ConversationHasActiveRun {
+                    conversation_id: blocked_id
+                } if blocked_id == conversation_id
+            ));
+        }
+    }
+
+    #[test]
+    fn project_archive_fence_blocks_same_project_submission() {
+        let project_id = "project-1".to_string();
+        let mut runtime = ConversationRuntimeStore::new_ready_for_test();
+        let ticket = runtime
+            .reserve_project_archive(project_id.clone())
+            .expect("reserve project archive fence");
+
+        assert_eq!(
+            runtime.ensure_submission_available(&"conversation-1".to_string(), Some(&project_id)),
+            Err(ConversationSubmissionError::Busy)
+        );
+        assert!(runtime.release_archive_fence(&ticket));
+    }
+
+    #[test]
+    fn project_archive_fence_allows_unrelated_project_submission() {
+        let mut runtime = ConversationRuntimeStore::new_ready_for_test();
+        let ticket = runtime
+            .reserve_project_archive("project-1".to_string())
+            .expect("reserve project archive fence");
+
+        assert_eq!(
+            runtime.ensure_submission_available(
+                &"conversation-2".to_string(),
+                Some(&"project-2".to_string())
+            ),
+            Ok(())
+        );
+        assert!(runtime.release_archive_fence(&ticket));
+    }
+
+    #[test]
+    fn stale_archive_ticket_cannot_release_replacement_fence() {
+        let project_id = "project-1".to_string();
+        let mut runtime = ConversationRuntimeStore::new_ready_for_test();
+        let stale = runtime
+            .reserve_project_archive(project_id.clone())
+            .expect("reserve initial project archive fence");
+        assert!(runtime.release_archive_fence(&stale));
+        let current = runtime
+            .reserve_project_archive(project_id.clone())
+            .expect("reserve replacement project archive fence");
+
+        assert!(!runtime.release_archive_fence(&stale));
+        assert_eq!(
+            runtime.ensure_submission_available(&"conversation-1".to_string(), Some(&project_id)),
+            Err(ConversationSubmissionError::Busy)
+        );
+        assert!(runtime.release_archive_fence(&current));
+    }
+
+    #[test]
     fn stale_submission_completion_cannot_replace_current_attempt() {
         let conversation_id = "conversation-1".to_string();
         let mut active_runs = ActiveRuns::default();
         assert!((&mut active_runs).transition(SubmitAttempt {
             conversation_id: conversation_id.clone(),
             key: ActiveRunKey(3),
+            project_id: Some("project-1".to_string()),
             task: Task::ready(()),
         }));
 
@@ -1486,6 +1854,7 @@ mod tests {
         assert!((&mut active_runs).transition(SubmitAttempt {
             conversation_id: conversation_id.clone(),
             key: ActiveRunKey(4),
+            project_id: Some("project-1".to_string()),
             task,
         }));
 

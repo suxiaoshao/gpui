@@ -32,7 +32,7 @@ impl std::error::Error for ConversationCatalogProblem {
 
 pub(crate) enum ConversationCatalogMessage {
     Upsert(Box<ConversationSummary>),
-    Remove(ConversationId),
+    RemoveMany(Vec<ConversationId>),
 }
 
 impl Transition<ConversationCatalogMessage> for &mut Vec<ConversationSummary> {
@@ -52,8 +52,9 @@ impl Transition<ConversationCatalogMessage> for &mut Vec<ConversationSummary> {
                     self.push(summary);
                 }
             }
-            ConversationCatalogMessage::Remove(id) => {
-                self.retain(|current| current.id != id);
+            ConversationCatalogMessage::RemoveMany(ids) => {
+                let ids = ids.into_iter().collect::<std::collections::HashSet<_>>();
+                self.retain(|current| !ids.contains(&current.id));
             }
         }
         sort_catalog(self);
@@ -204,14 +205,24 @@ impl ConversationRegistry {
         }
     }
 
-    pub(crate) fn publish_removed(&mut self, id: ConversationId, cx: &mut Context<Self>) {
+    pub(crate) fn publish_removed_many(
+        &mut self,
+        ids: Vec<ConversationId>,
+        cx: &mut Context<Self>,
+    ) {
+        if ids.is_empty() {
+            return;
+        }
         self.catalog.update(cx, |catalog, cx| {
-            catalog.transition(ConversationCatalogMessage::Remove(id.clone()), cx);
+            catalog.transition(ConversationCatalogMessage::RemoveMany(ids.clone()), cx);
         });
-        if let Some(model) = self.conversations.get(&id).and_then(WeakEntity::upgrade) {
-            model.update(cx, |model, cx| {
-                model.apply_changes(ConversationChanges(vec![ConversationChange::Deleted]), cx);
-            });
+        for id in ids {
+            if let Some(model) = self.conversations.get(&id).and_then(WeakEntity::upgrade) {
+                model.update(cx, |model, cx| {
+                    model.apply_changes(ConversationChanges(vec![ConversationChange::Deleted]), cx);
+                });
+            }
+            self.active_conversations.remove(&id);
         }
     }
 
@@ -267,11 +278,11 @@ pub(crate) fn publish_summary(summary: ConversationSummary, cx: &mut impl AppCon
     registry.update(cx, |registry, cx| registry.publish_summary(summary, cx));
 }
 
-pub(crate) fn publish_removed(id: ConversationId, cx: &mut impl AppContext) {
+pub(crate) fn publish_removed_many(ids: Vec<ConversationId>, cx: &mut impl AppContext) {
     let Some(registry) = super::resources::ready_conversations(cx) else {
         return;
     };
-    registry.update(cx, |registry, cx| registry.publish_removed(id, cx));
+    registry.update(cx, |registry, cx| registry.publish_removed_many(ids, cx));
 }
 
 pub(crate) fn publish_changes(
@@ -387,6 +398,26 @@ mod tests {
                 assert_eq!(ready.data()[0].title, "After");
             });
         });
+    }
+
+    #[test]
+    fn remove_many_removes_all_ids_and_preserves_other_catalog_entries() {
+        let mut catalog = vec![summary("one"), summary("two"), summary("three")];
+        catalog[1].id = "conversation-2".to_string();
+        catalog[2].id = "conversation-3".to_string();
+
+        (&mut catalog).transition(ConversationCatalogMessage::RemoveMany(vec![
+            "conversation-1".to_string(),
+            "conversation-2".to_string(),
+        ]));
+
+        assert_eq!(
+            catalog
+                .iter()
+                .map(|summary| summary.id.as_str())
+                .collect::<Vec<_>>(),
+            ["conversation-3"]
+        );
     }
 
     fn summary(title: &str) -> ConversationSummary {

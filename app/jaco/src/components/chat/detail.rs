@@ -227,14 +227,19 @@ impl ConversationDetailPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !matches!(
-            self.conversation.read(cx).operation(),
-            ConversationOperation::Ready(ready) if ready.data().is_some()
-        ) {
+        let Some(project_id) = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .map(|conversation| conversation.summary.project_id.clone())
+        else {
             return;
-        }
+        };
         let request = conversation::SendConversationMessageRequest {
             conversation_id: self.conversation_id.clone(),
+            project_id,
             content_parts: submit.composer.content_parts.clone(),
             attachments: submit.attachments.clone(),
             skill_requests: submit.composer.skill_requests.clone(),

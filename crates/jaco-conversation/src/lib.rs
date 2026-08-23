@@ -1,4 +1,4 @@
-use jaco_core::{Conversation, ConversationId, ConversationSummary};
+use jaco_core::{Conversation, ConversationId, ConversationSummary, ProjectId};
 use jaco_db::{ConversationTimelineRecords, FreshRepository};
 
 pub type Result<T> = std::result::Result<T, ConversationError>;
@@ -49,9 +49,24 @@ impl<'a> ConversationService<'a> {
             .map_err(Into::into)
     }
 
-    pub fn delete(&self, id: &ConversationId) -> Result<ConversationSummary> {
+    pub fn rename(&self, id: &ConversationId, title: String) -> Result<ConversationSummary> {
+        self.repository
+            .rename_conversation(id, title)
+            .map_err(Into::into)
+    }
+
+    pub fn archive(&self, id: &ConversationId) -> Result<ConversationSummary> {
         self.repository
             .soft_delete_conversation(id)
+            .map_err(Into::into)
+    }
+
+    pub fn archive_project_conversations(
+        &self,
+        project_id: &ProjectId,
+    ) -> Result<Vec<ConversationSummary>> {
+        self.repository
+            .soft_delete_active_project_conversations(project_id)
             .map_err(Into::into)
     }
 }
@@ -80,6 +95,34 @@ mod tests {
     };
     use jaco_db::{FreshStore, NewConversation, NewProject};
 
+    fn mutation_conversation(project_id: String, title: &str) -> NewConversation {
+        NewConversation {
+            project_id,
+            title: title.to_string(),
+            pinned: false,
+            prompt_id: None,
+            default_provider_id: None,
+            default_model_id: None,
+            metadata: ConversationMetadata {
+                summary: None,
+                tags: Vec::new(),
+            },
+            settings_snapshot: ConversationSettingsSnapshot {
+                prompt: None,
+                provider_id: None,
+                model_id: None,
+                model_capabilities: None,
+                tool_policy: ToolPolicySnapshot {
+                    approval_policy: ToolApprovalPolicy::OnRequest,
+                    enabled_sources: Vec::new(),
+                    max_steps: 8,
+                    approval_mode: ToolApprovalMode::RequestApproval,
+                    permission_scope: None,
+                },
+            },
+        }
+    }
+
     #[test]
     fn empty_store_has_ready_empty_catalog() {
         let directory = tempfile::tempdir().unwrap();
@@ -89,6 +132,125 @@ mod tests {
         let service = ConversationService::new(&repository);
 
         assert_eq!(service.load_catalog().unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn sidebar_mutation_service_renames_conversation() {
+        let directory = tempfile::tempdir().unwrap();
+        let store =
+            FreshStore::open_or_create_initial(directory.path().join("jaco.sqlite3")).unwrap();
+        let repository = store.repository();
+        let project = repository
+            .insert_project(NewProject {
+                path: "/tmp/jaco-conversation-rename".to_string(),
+                display_name: "Rename".to_string(),
+                kind: ProjectKind::Normal,
+                pinned: false,
+                removed: false,
+                metadata: ProjectMetadata {
+                    scratch_reason: None,
+                    git_root: None,
+                    last_active_conversation_id: None,
+                },
+            })
+            .unwrap();
+        let conversation = repository
+            .insert_conversation(mutation_conversation(project.id, "Before"))
+            .unwrap();
+        let service = ConversationService::new(&repository);
+
+        let renamed = service
+            .rename(&conversation.id, "After".to_string())
+            .unwrap();
+
+        assert_eq!(renamed.title, "After");
+        assert_eq!(
+            repository.get_conversation(&conversation.id).unwrap(),
+            Some(renamed)
+        );
+    }
+
+    #[test]
+    fn sidebar_mutation_service_archives_single_and_project_conversations() {
+        let directory = tempfile::tempdir().unwrap();
+        let store =
+            FreshStore::open_or_create_initial(directory.path().join("jaco.sqlite3")).unwrap();
+        let repository = store.repository();
+        let project = repository
+            .insert_project(NewProject {
+                path: "/tmp/jaco-conversation-archive".to_string(),
+                display_name: "Archive".to_string(),
+                kind: ProjectKind::Normal,
+                pinned: false,
+                removed: false,
+                metadata: ProjectMetadata {
+                    scratch_reason: None,
+                    git_root: None,
+                    last_active_conversation_id: None,
+                },
+            })
+            .unwrap();
+        let single = repository
+            .insert_conversation(mutation_conversation(project.id.clone(), "Single"))
+            .unwrap();
+        let batch = repository
+            .insert_conversation(mutation_conversation(project.id.clone(), "Batch"))
+            .unwrap();
+        let service = ConversationService::new(&repository);
+
+        assert_eq!(
+            service.archive(&single.id).unwrap().status,
+            jaco_core::ConversationStatus::Deleted
+        );
+        let archived = service.archive_project_conversations(&project.id).unwrap();
+
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].id, batch.id);
+        assert_eq!(archived[0].status, jaco_core::ConversationStatus::Deleted);
+    }
+
+    #[test]
+    fn sidebar_mutation_service_archives_empty_project() {
+        let directory = tempfile::tempdir().unwrap();
+        let store =
+            FreshStore::open_or_create_initial(directory.path().join("jaco.sqlite3")).unwrap();
+        let repository = store.repository();
+        let project = repository
+            .insert_project(NewProject {
+                path: "/tmp/jaco-conversation-empty-archive".to_string(),
+                display_name: "Empty Archive".to_string(),
+                kind: ProjectKind::Normal,
+                pinned: false,
+                removed: false,
+                metadata: ProjectMetadata {
+                    scratch_reason: None,
+                    git_root: None,
+                    last_active_conversation_id: None,
+                },
+            })
+            .unwrap();
+        let service = ConversationService::new(&repository);
+
+        assert!(
+            service
+                .archive_project_conversations(&project.id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn sidebar_mutation_service_preserves_active_run_error_identity() {
+        let error = ConversationError::from(jaco_db::DbError::ConversationHasActiveRun {
+            conversation_id: "conversation-running".to_string(),
+        });
+
+        assert!(matches!(
+            error,
+            ConversationError::Database(jaco_db::DbError::ConversationHasActiveRun {
+                conversation_id
+            }) if conversation_id == "conversation-running"
+        ));
     }
 
     #[test]

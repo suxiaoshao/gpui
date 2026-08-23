@@ -8,6 +8,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.ref_name == 'main' && github.sha || 'anysha' }}
   cancel-in-progress: true
@@ -16,7 +19,7 @@ jobs:
   test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runs_on }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
       matrix:
@@ -24,18 +27,22 @@ jobs:
           - name: macOS
             runs_on: macos-latest
             target: aarch64-apple-darwin
+            timeout_minutes: 60
           - name: Linux
             runs_on: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            timeout_minutes: 60
           - name: Windows
             runs_on: windows-latest
             target: x86_64-pc-windows-msvc
+            timeout_minutes: 90
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
+          persist-credentials: false
 
       - name: Install system dependencies
         if: ${{ matrix.runs_on != 'windows-latest' }}
@@ -45,13 +52,18 @@ jobs:
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy,rustfmt
           targets: ${{ matrix.target }}
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-bin: false
+          cache-targets: ${{ matrix.runs_on != 'windows-latest' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Cargo fmt
+        run: cargo fmt --all -- --check
 
       - name: Cargo build
         run: cargo build --workspace --locked

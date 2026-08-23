@@ -306,6 +306,18 @@ impl FreshRepository {
             .try_into()
     }
 
+    pub fn rename_conversation(&self, id: &str, title: String) -> Result<ConversationRecord> {
+        let mut conn = self.conn()?;
+        diesel::update(conversations::table.find(id))
+            .set((
+                conversations::title.eq(title),
+                conversations::updated_at.eq(now_string()?),
+            ))
+            .returning(SqlConversationRow::as_returning())
+            .get_result::<SqlConversationRow>(&mut conn)?
+            .try_into()
+    }
+
     pub fn set_conversation_pinned(&self, id: &str, pinned: bool) -> Result<ConversationRecord> {
         let mut conn = self.conn()?;
         diesel::update(conversations::table.find(id))
@@ -342,6 +354,53 @@ impl FreshRepository {
                 .returning(SqlConversationRow::as_returning())
                 .get_result::<SqlConversationRow>(conn)?
                 .try_into()
+        })
+    }
+
+    pub fn soft_delete_active_project_conversations(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ConversationRecord>> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            let active = db_label(&ConversationStatus::Active)?;
+            let blocked_id = agent_runs::table
+                .inner_join(
+                    conversations::table.on(conversations::id.eq(agent_runs::conversation_id)),
+                )
+                .filter(conversations::project_id.eq(project_id))
+                .filter(conversations::status.eq(&active))
+                .filter(agent_runs::status.eq("running"))
+                .select(agent_runs::conversation_id)
+                .order(agent_runs::conversation_id.asc())
+                .first::<String>(conn)
+                .optional()?;
+
+            if let Some(conversation_id) = blocked_id {
+                return Err(DbError::ConversationHasActiveRun { conversation_id });
+            }
+
+            let deleted = db_label(&ConversationStatus::Deleted)?;
+            let now = now_string()?;
+            let rows = diesel::update(
+                conversations::table
+                    .filter(conversations::project_id.eq(project_id))
+                    .filter(conversations::status.eq(&active)),
+            )
+            .set((
+                conversations::status.eq(deleted),
+                conversations::deleted_at.eq(Some(now)),
+                conversations::updated_at.eq(now),
+            ))
+            .returning(SqlConversationRow::as_returning())
+            .load::<SqlConversationRow>(conn)?;
+
+            let mut records = rows
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<Vec<ConversationRecord>>>()?;
+            records.sort_by(|left, right| left.id.cmp(&right.id));
+            Ok(records)
         })
     }
 

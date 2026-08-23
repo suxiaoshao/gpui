@@ -1,5 +1,6 @@
 pub(crate) mod search;
 
+mod actions;
 mod menu;
 mod row;
 

@@ -8,6 +8,7 @@
 | [#199](https://github.com/suxiaoshao/gpui/issues/199) form owner、app store/form/operation 与 Transition 重构 | `Done`；显式 owner v2、Form vNext、Feiwen、Jaco（含 Conversation 私有 Transition）与 HTTP Client 基础单请求已交付；历史媒体计划已由 #200 的 Rodio 迁移取代，MCP runtime 已移交 #201 | [issue-199/README.md](issue-199/README.md) |
 | [#190](https://github.com/suxiaoshao/gpui/issues/190) Jaco 持久化工具调用详情 | `Implemented`；生产实现与本地自动化已验证，完整 Local/MCP 人工场景和远端三平台 CI 待验证 | [issue-190/README.md](issue-190/README.md) |
 | [#189](https://github.com/suxiaoshao/gpui/issues/189) Jaco 消息请求用量、输入框上下文占用、时间范围统计、活动热力图与费用 | `In progress`；五份计划均已实施或待最终验证，request-time费用代码与本地DB手工迁移已完成 | [issue-189/README.md](issue-189/README.md) |
+| [#188](https://github.com/suxiaoshao/gpui/issues/188) Jaco 侧边栏项目与对话上下文菜单 | `In progress`；PR [#208](https://github.com/suxiaoshao/gpui/pull/208) 已提交，本地自动化完成，人工 UI 受启动期文件监听阻塞，远端 CI 等待结果 | [issue-188/README.md](issue-188/README.md) |
 | [#178](https://github.com/suxiaoshao/gpui/issues/178) Jaco 外部文件变更监控 | `Implemented on branch / 已在分支实施，等待原生/人工/CI验证`；固定 data-dir 数据库目标，并以共享 watcher 自动刷新 config 与 global/project Skill | [issue-178/README.md](issue-178/README.md) |
 | [#175](https://github.com/suxiaoshao/gpui/issues/175) previous typed form delivery | Issue/PR 已完成；form API 计划被 #199 取代 | [issue-175/README.md](issue-175/README.md) |
 
