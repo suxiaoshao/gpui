@@ -311,7 +311,7 @@ git diff --check
 
 | Evidence | Actual result |
 | --- | --- |
-| Implementation PR and commits | `None`；用户尚未要求提交、推送或创建 PR |
+| Implementation PR and commits | `88b8b3b`；PR [#209](https://github.com/suxiaoshao/gpui/pull/209) targets `main` |
 | Actual added, modified, moved, deleted, generated, synchronized, submodule, and vendored files | production、tests、locales 与四份 owner/root 计划已修改；无 moved/deleted/generated/vendored/submodule |
 | Delivered D/F/L/C/DB/ST/R/T/WP IDs | `WP-101/201/301/302` production implementation complete |
 | Automated commands and results | `cargo fmt --all -- --check`、`cargo build --workspace --locked`、`cargo test --workspace --locked`、workspace all-targets/all-features clippy 与 diff check 通过；core 43 passed；DB 82 passed |
