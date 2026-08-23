@@ -12,12 +12,14 @@ type OnConfirm = dyn Fn(&mut Window, &mut App);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DestructiveAction {
+    Archive,
     Delete,
 }
 
 impl DestructiveAction {
     fn confirm_label_key(self) -> &'static str {
         match self {
+            Self::Archive => "button-archive",
             Self::Delete => "button-delete",
         }
     }
@@ -50,7 +52,7 @@ pub(crate) fn open_destructive_confirm_dialog(
                     )
                     .child(
                         DialogAction::new().child(
-                            Button::new("confirm-delete")
+                            Button::new("confirm-destructive-action")
                                 .danger()
                                 .label(confirm_label.clone())
                                 .on_click({
@@ -75,6 +77,14 @@ mod tests {
         assert_eq!(
             DestructiveAction::Delete.confirm_label_key(),
             "button-delete"
+        );
+    }
+
+    #[test]
+    fn destructive_archive_uses_archive_button_label() {
+        assert_eq!(
+            DestructiveAction::Archive.confirm_label_key(),
+            "button-archive"
         );
     }
 }

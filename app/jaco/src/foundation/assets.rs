@@ -8,6 +8,7 @@ pub(crate) const APP_ICON_ASSET_PATH: &str = "build-assets/icon/app-icon.png";
 
 define_lucide_icons!(
     pub(crate) enum IconName {
+        Archive => "archive",
         Check => "check",
         ChartNoAxesColumn => "chart-no-axes-column",
         ChevronDown => "chevron-down",

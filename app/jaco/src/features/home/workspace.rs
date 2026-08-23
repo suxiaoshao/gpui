@@ -212,6 +212,59 @@ impl HomeWorkspace {
         self.conversation_status(cx).is_ready()
     }
 
+    pub(crate) fn contains_project(&self, project_id: &ProjectId) -> bool {
+        self.projects.read(|projects| {
+            projects
+                .projects
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .any(|project| &project.id == project_id)
+        })
+    }
+
+    pub(crate) fn contains_conversation(&self, conversation_id: &ConversationId, cx: &App) -> bool {
+        self.conversations
+            .read(cx)
+            .operation()
+            .data()
+            .is_some_and(|conversations| {
+                conversations.iter().any(|conversation| {
+                    &conversation.id == conversation_id
+                        && conversation.status == ConversationStatus::Active
+                })
+            })
+    }
+
+    pub(crate) fn project_path(&self, project_id: &ProjectId) -> Option<PathBuf> {
+        self.projects.read(|projects| {
+            projects
+                .projects
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .find(|project| &project.id == project_id)
+                .map(|project| project.path.clone())
+        })
+    }
+
+    pub(crate) fn active_conversation_count(&self, project_id: &ProjectId, cx: &App) -> usize {
+        self.conversations
+            .read(cx)
+            .operation()
+            .data()
+            .map(|conversations| {
+                conversations
+                    .iter()
+                    .filter(|conversation| {
+                        &conversation.project_id == project_id
+                            && conversation.status == ConversationStatus::Active
+                    })
+                    .count()
+            })
+            .unwrap_or_default()
+    }
+
     pub(crate) fn refresh_projects(&self, cx: &mut App) {
         projects::request_refresh(cx);
     }
@@ -317,24 +370,59 @@ impl HomeWorkspace {
         crate::features::conversation::set_conversation_pinned(conversation_id, pinned, cx)
     }
 
-    pub(crate) fn delete_conversation(
+    pub(crate) fn rename_conversation(
         &mut self,
         conversation_id: ConversationId,
+        title: String,
         cx: &mut Context<Self>,
     ) -> Task<jaco_db::Result<ConversationSummary>> {
-        let task = crate::features::conversation::delete_conversation(conversation_id.clone(), cx);
+        crate::features::conversation::rename_conversation(conversation_id, title, cx)
+    }
+
+    pub(crate) fn archive_conversation(
+        &mut self,
+        conversation_id: ConversationId,
+        project_id: ProjectId,
+        cx: &mut Context<Self>,
+    ) -> Task<jaco_db::Result<ConversationSummary>> {
+        let task = crate::features::conversation::archive_conversation(
+            conversation_id.clone(),
+            project_id,
+            cx,
+        );
         cx.spawn(async move |workspace, cx| {
             let result = task.await;
             if result.is_ok() {
                 let _ = workspace.update(cx, |workspace, cx| {
-                    if matches!(&workspace.route, HomeRoute::Conversation(id) if id == &conversation_id)
-                    {
-                        workspace.route = HomeRoute::NewConversation;
+                    if reset_route_after_archived(
+                        &mut workspace.route,
+                        std::iter::once(&conversation_id),
+                    ) {
                         cx.notify();
                     }
                 });
             }
             result
+        })
+    }
+
+    pub(crate) fn archive_project_conversations(
+        &mut self,
+        project_id: ProjectId,
+        cx: &mut Context<Self>,
+    ) -> Task<jaco_db::Result<Vec<ConversationSummary>>> {
+        let task = crate::features::conversation::archive_project_conversations(project_id, cx);
+        cx.spawn(async move |workspace, cx| {
+            task.await.inspect(|summaries| {
+                let _ = workspace.update(cx, |workspace, cx| {
+                    if reset_route_after_archived(
+                        &mut workspace.route,
+                        summaries.iter().map(|summary| &summary.id),
+                    ) {
+                        cx.notify();
+                    }
+                });
+            })
         })
     }
 
@@ -442,6 +530,22 @@ impl HomeWorkspace {
                 .collect()
         })
     }
+}
+
+fn reset_route_after_archived<'a>(
+    route: &mut HomeRoute,
+    archived_ids: impl IntoIterator<Item = &'a ConversationId>,
+) -> bool {
+    let HomeRoute::Conversation(current_id) = route else {
+        return false;
+    };
+    let should_reset = archived_ids
+        .into_iter()
+        .any(|archived_id| archived_id == current_id);
+    if should_reset {
+        *route = HomeRoute::NewConversation;
+    }
+    should_reset
 }
 
 pub(crate) fn create(cx: &mut App) -> Entity<HomeWorkspace> {
@@ -580,4 +684,83 @@ fn conversation_node(conversation: &WorkspaceConversationInput) -> SidebarConver
 
 fn sort_conversations_by_updated_at(conversations: &mut [SidebarConversationNode]) {
     conversations.sort_by_key(|conversation| Reverse(conversation.updated_at));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project(id: &str, kind: ProjectKind) -> WorkspaceProjectInput {
+        WorkspaceProjectInput {
+            id: id.to_string(),
+            kind,
+            path: PathBuf::from(format!("/tmp/{id}")),
+            display_name: id.to_string(),
+            pinned: false,
+            updated_at: 1,
+        }
+    }
+
+    fn conversation(
+        id: &str,
+        project_id: &str,
+        title: &str,
+        pinned: bool,
+    ) -> WorkspaceConversationInput {
+        WorkspaceConversationInput {
+            id: id.to_string(),
+            project_id: project_id.to_string(),
+            title: title.to_string(),
+            pinned,
+            status: ConversationStatus::Active,
+            updated_at: 1,
+            deleted_at: None,
+        }
+    }
+
+    #[test]
+    fn renamed_summary_rebuilds_project_pinned_and_scratch_projections() {
+        let projects = [
+            project("project-1", ProjectKind::Normal),
+            project("scratch-1", ProjectKind::Scratch),
+        ];
+        let mut conversations = vec![
+            conversation("conversation-1", "project-1", "Old", true),
+            conversation("conversation-2", "scratch-1", "Scratch Old", false),
+        ];
+        let expanded = HashSet::from(["project-1".to_string()]);
+
+        conversations[0].title = "Renamed".to_string();
+        conversations[1].title = "Scratch Renamed".to_string();
+        let snapshot = build_sidebar_snapshot(&expanded, &projects, &conversations);
+
+        assert_eq!(snapshot.projects[0].conversations[0].title, "Renamed");
+        assert_eq!(
+            snapshot.no_project_conversations[0].title,
+            "Scratch Renamed"
+        );
+        assert!(matches!(
+            &snapshot.pinned[0],
+            SidebarPinnedEntry::Conversation(conversation) if conversation.title == "Renamed"
+        ));
+    }
+
+    #[test]
+    fn empty_or_unrelated_archive_keeps_route_unchanged() {
+        let mut route = HomeRoute::Conversation("conversation-1".to_string());
+        assert!(!reset_route_after_archived(&mut route, std::iter::empty()));
+        assert_eq!(route, HomeRoute::Conversation("conversation-1".to_string()));
+
+        assert!(!reset_route_after_archived(
+            &mut route,
+            [&"conversation-2".to_string()].into_iter(),
+        ));
+        assert_eq!(route, HomeRoute::Conversation("conversation-1".to_string()));
+
+        assert!(reset_route_after_archived(
+            &mut route,
+            [&"conversation-1".to_string()].into_iter(),
+        ));
+        assert_eq!(route, HomeRoute::NewConversation);
+    }
 }

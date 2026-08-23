@@ -6,13 +6,17 @@ use gpui_component::{
     h_flex,
     kbd::Kbd,
     label::Label,
-    menu::DropdownMenu,
+    menu::{ContextMenuExt, DropdownMenu},
 };
 use jaco_core::ConversationId;
 use std::rc::Rc;
 
 use super::super::workspace::{
     HomeRoute, HomeWorkspace, SidebarConversationNode, SidebarProjectNode,
+};
+use super::actions::{
+    ConversationSidebarAction, ConversationSidebarActions, ProjectSidebarAction,
+    ProjectSidebarActions,
 };
 use super::menu;
 
@@ -21,6 +25,10 @@ type ShortcutActionHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 const ACTION_SUFFIX_WIDTH: Pixels = px(56.);
 const SHORTCUT_SUFFIX_WIDTH: Pixels = px(56.);
 const ACTION_HOVER_PADDING: Pixels = px(64.);
+const CONVERSATION_DIRECT_ACTIONS: [ConversationSidebarAction; 2] = [
+    ConversationSidebarAction::TogglePinned,
+    ConversationSidebarAction::Archive,
+];
 
 fn hover_action_overlay(group: impl Into<SharedString>, width: Pixels) -> Div {
     h_flex()
@@ -34,6 +42,25 @@ fn hover_action_overlay(group: impl Into<SharedString>, width: Pixels) -> Div {
         .justify_end()
         .gap_1()
         .group_hover(group, |this| this.opacity(1.))
+}
+
+fn action_overlay(width: Pixels) -> Div {
+    h_flex()
+        .absolute()
+        .top_0()
+        .right_2()
+        .bottom_0()
+        .w(width)
+        .items_center()
+        .justify_end()
+        .gap_1()
+}
+
+fn reveal_action_button(button: Button, group: impl Into<SharedString>) -> Button {
+    button
+        .opacity(0.)
+        .group_hover(group, |this| this.opacity(1.))
+        .focus_visible(|this| this.opacity(1.))
 }
 
 #[derive(Clone)]
@@ -150,12 +177,11 @@ impl RenderOnce for ProjectSidebarRow {
         let project_id = project.id.clone();
         let group = format!("sidebar-project-group-{project_id}");
         let workspace_for_toggle = self.workspace.clone();
-        let workspace_for_new = self.workspace.clone();
-        let workspace_for_menu = self.workspace.clone();
-        let project_mutations_ready = self.workspace.read(cx).project_mutations_ready();
-        let conversation_mutations_ready = self.workspace.read(cx).conversation_mutations_ready(cx);
-        let can_create_conversation = project_mutations_ready && conversation_mutations_ready;
-        let new_project_id = project_id.clone();
+        let project_id_for_toggle = project_id.clone();
+        let project_actions =
+            ProjectSidebarActions::new(project.clone(), self.workspace.clone(), cx);
+        let can_create_conversation =
+            project_actions.availability(ProjectSidebarAction::NewConversation);
         let more_tooltip = cx
             .global::<crate::foundation::I18n>()
             .t("sidebar-project-more-tooltip");
@@ -186,7 +212,7 @@ impl RenderOnce for ProjectSidebarRow {
             })
             .on_click(move |_, _window, cx| {
                 workspace_for_toggle.update(cx, |workspace, cx| {
-                    workspace.toggle_project(&project_id, cx);
+                    workspace.toggle_project(&project_id_for_toggle, cx);
                 });
             })
             .child(
@@ -208,44 +234,49 @@ impl RenderOnce for ProjectSidebarRow {
                 ),
             )
             .child(
-                hover_action_overlay(group.clone(), ACTION_SUFFIX_WIDTH)
+                action_overlay(ACTION_SUFFIX_WIDTH)
                     .child(
-                        Button::new(format!("sidebar-project-more-{new_project_id}"))
-                            .icon(IconName::Ellipsis)
-                            .ghost()
-                            .xsmall()
-                            .tooltip(more_tooltip)
-                            .on_click(|_, _window, cx| cx.stop_propagation())
-                            .dropdown_menu({
-                                let project = project.clone();
-                                let workspace = workspace_for_menu.clone();
-                                move |menu, window, cx| {
-                                    menu::project_popup_menu(
-                                        menu,
-                                        project.clone(),
-                                        workspace.clone(),
-                                        project_mutations_ready,
-                                        window,
-                                        cx,
-                                    )
-                                }
-                            }),
+                        reveal_action_button(
+                            Button::new(format!("sidebar-project-more-{project_id}"))
+                                .icon(IconName::Ellipsis)
+                                .ghost()
+                                .xsmall()
+                                .tooltip(more_tooltip)
+                                .on_click(|_, _window, cx| cx.stop_propagation()),
+                            group.clone(),
+                        )
+                        .dropdown_menu({
+                            let actions = project_actions.clone();
+                            move |menu, window, cx| {
+                                menu::project_popup_menu(menu, actions.clone(), window, cx)
+                            }
+                        }),
                     )
-                    .child(
-                        Button::new(format!("sidebar-project-new-{new_project_id}"))
+                    .child(reveal_action_button(
+                        Button::new(format!("sidebar-project-new-{project_id}"))
                             .icon(IconName::SquarePen)
                             .ghost()
                             .xsmall()
                             .disabled(!can_create_conversation)
                             .tooltip(new_tooltip)
-                            .on_click(move |_, _window, cx| {
-                                cx.stop_propagation();
-                                workspace_for_new.update(cx, |workspace, cx| {
-                                    workspace.new_conversation_in_project(&new_project_id, cx);
-                                });
+                            .on_click({
+                                let actions = project_actions.clone();
+                                move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    actions.invoke(
+                                        ProjectSidebarAction::NewConversation,
+                                        window,
+                                        cx,
+                                    );
+                                }
                             }),
-                    ),
+                        group.clone(),
+                    )),
             )
+            .context_menu({
+                let actions = project_actions.clone();
+                move |menu, window, cx| menu::project_popup_menu(menu, actions.clone(), window, cx)
+            })
     }
 }
 
@@ -275,24 +306,23 @@ impl RenderOnce for ConversationSidebarRow {
         let conversation_id = self.conversation.id.clone();
         let group = format!("sidebar-conversation-group-{conversation_id}");
         let workspace_for_open = self.workspace.clone();
-        let workspace_for_pin = self.workspace.clone();
-        let workspace_for_delete = self.workspace.clone();
+        let conversation_id_for_open = conversation_id.clone();
+        let conversation_actions =
+            ConversationSidebarActions::new(self.conversation.clone(), self.workspace.clone(), cx);
         let pin_tooltip = cx
             .global::<crate::foundation::I18n>()
             .t(if self.conversation.pinned {
-                "sidebar-conversation-unpin-tooltip"
+                "sidebar-conversation-unpin"
             } else {
-                "sidebar-conversation-pin-tooltip"
+                "sidebar-conversation-pin"
             });
-        let delete_tooltip = cx
+        let archive_tooltip = cx
             .global::<crate::foundation::I18n>()
-            .t("sidebar-conversation-delete-tooltip");
-        let pin_conversation_id = conversation_id.clone();
-        let delete_conversation_id = conversation_id.clone();
-        let delete_conversation = self.conversation.clone();
+            .t("sidebar-conversation-archive");
+        let [toggle_pinned_action, archive_action] = CONVERSATION_DIRECT_ACTIONS;
+        let can_toggle_pinned = conversation_actions.availability(toggle_pinned_action);
+        let can_archive = conversation_actions.availability(archive_action);
         let is_pinned = self.conversation.pinned;
-        let mutations_ready = self.workspace.read(cx).conversation_mutations_ready(cx);
-
         h_flex()
             .id(format!("sidebar-conversation-row-{conversation_id}"))
             .group(group.clone())
@@ -328,7 +358,7 @@ impl RenderOnce for ConversationSidebarRow {
             })
             .on_click(move |_, _window, cx| {
                 workspace_for_open.update(cx, |workspace, cx| {
-                    workspace.open_conversation(conversation_id.clone(), cx);
+                    workspace.open_conversation(conversation_id_for_open.clone(), cx);
                 });
             })
             .child(
@@ -341,59 +371,50 @@ impl RenderOnce for ConversationSidebarRow {
                 ),
             )
             .child(
-                hover_action_overlay(group.clone(), ACTION_SUFFIX_WIDTH)
-                    .child(
-                        Button::new(format!("sidebar-conversation-pin-{pin_conversation_id}"))
-                            .icon(if self.conversation.pinned {
+                action_overlay(ACTION_SUFFIX_WIDTH)
+                    .child(reveal_action_button(
+                        Button::new(format!("sidebar-conversation-pin-{conversation_id}"))
+                            .icon(if is_pinned {
                                 IconName::PinOff
                             } else {
                                 IconName::Pin
                             })
                             .ghost()
                             .xsmall()
-                            .disabled(!mutations_ready)
+                            .disabled(!can_toggle_pinned)
                             .tooltip(pin_tooltip)
-                            .on_click(move |_, window, cx| {
-                                cx.stop_propagation();
-                                let pinned = !is_pinned;
-                                let task = workspace_for_pin.update(cx, |workspace, cx| {
-                                    workspace.pin_conversation(
-                                        pin_conversation_id.clone(),
-                                        pinned,
-                                        cx,
-                                    )
-                                });
-                                let completion = window.spawn(cx, async move |_| {
-                                    if let Err(error) = task.await {
-                                        tracing::error!(
-                                            error = %error,
-                                            "failed to update conversation pin"
-                                        );
-                                    }
-                                });
-                                crate::app::tasks::retain_window(window, completion, cx);
+                            .on_click({
+                                let actions = conversation_actions.clone();
+                                move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    actions.invoke(toggle_pinned_action, window, cx);
+                                }
                             }),
-                    )
-                    .child(
-                        Button::new(format!(
-                            "sidebar-conversation-delete-{delete_conversation_id}"
-                        ))
-                        .icon(IconName::Trash)
-                        .ghost()
-                        .xsmall()
-                        .disabled(!mutations_ready)
-                        .tooltip(delete_tooltip)
-                        .on_click(move |_, window, cx| {
-                            cx.stop_propagation();
-                            menu::open_delete_conversation_confirm(
-                                delete_conversation.clone(),
-                                workspace_for_delete.clone(),
-                                window,
-                                cx,
-                            );
-                        }),
-                    ),
+                        group.clone(),
+                    ))
+                    .child(reveal_action_button(
+                        Button::new(format!("sidebar-conversation-archive-{conversation_id}"))
+                            .icon(IconName::Archive)
+                            .ghost()
+                            .xsmall()
+                            .disabled(!can_archive)
+                            .tooltip(archive_tooltip)
+                            .on_click({
+                                let actions = conversation_actions.clone();
+                                move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    actions.invoke(archive_action, window, cx);
+                                }
+                            }),
+                        group.clone(),
+                    )),
             )
+            .context_menu({
+                let actions = conversation_actions.clone();
+                move |menu, window, cx| {
+                    menu::conversation_popup_menu(menu, actions.clone(), window, cx)
+                }
+            })
     }
 }
 
@@ -419,4 +440,20 @@ pub(super) fn route_matches_conversation(
     conversation_id: &ConversationId,
 ) -> bool {
     matches!(route, HomeRoute::Conversation(active_id) if active_id == conversation_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CONVERSATION_DIRECT_ACTIONS, ConversationSidebarAction};
+
+    #[test]
+    fn conversation_row_exposes_pin_and_archive_as_direct_actions() {
+        assert_eq!(
+            CONVERSATION_DIRECT_ACTIONS,
+            [
+                ConversationSidebarAction::TogglePinned,
+                ConversationSidebarAction::Archive,
+            ]
+        );
+    }
 }

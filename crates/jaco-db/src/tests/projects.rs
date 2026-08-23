@@ -122,6 +122,91 @@ fn sidebar_project_and_conversation_metadata_can_be_updated() {
 }
 
 #[test]
+fn conversation_can_be_renamed() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("rename-conversation")).unwrap();
+    let conversation = repo.insert_conversation(conversation(&project)).unwrap();
+    let renamed = repo
+        .rename_conversation(&conversation.id, "Renamed Conversation".to_string())
+        .unwrap();
+
+    assert_eq!(renamed.title, "Renamed Conversation");
+    assert_eq!(
+        repo.get_conversation(&conversation.id).unwrap(),
+        Some(renamed)
+    );
+}
+
+#[test]
+fn soft_delete_active_project_conversations_returns_empty_for_empty_project() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("empty-archive")).unwrap();
+
+    assert_eq!(
+        repo.soft_delete_active_project_conversations(&project.id)
+            .unwrap(),
+        Vec::new()
+    );
+}
+
+#[test]
+fn soft_delete_active_project_conversations_only_changes_active_rows() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let project_record = repo.insert_project(project("batch-archive")).unwrap();
+    let active = repo
+        .insert_conversation(conversation(&project_record))
+        .unwrap();
+    let already_deleted = repo
+        .insert_conversation(conversation(&project_record))
+        .unwrap();
+    let already_deleted = repo.soft_delete_conversation(&already_deleted.id).unwrap();
+    let other_project = repo.insert_project(project("batch-archive-other")).unwrap();
+    let other = repo
+        .insert_conversation(conversation(&other_project))
+        .unwrap();
+
+    let archived = repo
+        .soft_delete_active_project_conversations(&project_record.id)
+        .unwrap();
+
+    assert_eq!(archived.len(), 1);
+    assert_eq!(archived[0].id, active.id);
+    assert_eq!(archived[0].status, ConversationStatus::Deleted);
+    assert_eq!(
+        repo.get_conversation(&already_deleted.id).unwrap(),
+        Some(already_deleted)
+    );
+    assert_eq!(repo.get_conversation(&other.id).unwrap(), Some(other));
+}
+
+#[test]
+fn soft_delete_active_project_conversations_returns_ids_in_stable_order() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("batch-order")).unwrap();
+    let first = repo.insert_conversation(conversation(&project)).unwrap();
+    let second = repo.insert_conversation(conversation(&project)).unwrap();
+
+    let mut expected = vec![first.id.clone(), second.id.clone()];
+    expected.sort();
+    let actual = repo
+        .soft_delete_active_project_conversations(&project.id)
+        .unwrap()
+        .into_iter()
+        .map(|conversation| conversation.id)
+        .collect::<Vec<_>>();
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn sidebar_conversations_exclude_deleted_and_removed_project_conversations() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
