@@ -12,7 +12,7 @@
 - 受影响 owner：`app/jaco`、`crates/jaco-conversation`、`crates/jaco-db`
 - 发布门：无外部 release gate；实现完成后执行本计划的 focused、workspace、人工 UI 与远端 CI 门
 - 最近证据刷新：2026-08-23
-- 实施引用：`codex/188-jaco-sidebar-context-menus` 未提交工作树（HEAD `281b4a1`）
+- 实施引用：commit `6cd0cb2`；PR [#208](https://github.com/suxiaoshao/gpui/pull/208)
 
 ### 高影响变更摘要
 
@@ -348,7 +348,7 @@ Workspace root。
 
 | Evidence | Actual result |
 | --- | --- |
-| Implementation PR and commits | 当前实现位于 `codex/188-jaco-sidebar-context-menus` 未提交工作树；HEAD 仍为 `281b4a1`，未创建 commit、PR 或远端 CI run |
+| Implementation PR and commits | implementation commit `6cd0cb2`；ready PR [#208](https://github.com/suxiaoshao/gpui/pull/208) targets `main`；本次 plan evidence synchronization 由后续 docs commit 记录 |
 | Actual added, modified, moved, deleted, generated, synchronized, submodule, and vendored files | 新增 `sidebar/actions.rs` 与 root/三个 owner 的 `issue-188/README.md`；修改 sidebar/menu/row、conversation feature/registry/runtime、workspace、chat detail、archive confirm、icons、双 locale、service、DB repository/tests 与四个 plan indexes；无移动、删除、生成、同步、submodule 或 vendored 文件 |
 | Delivered D/F/L/C/ERR/DB/G/ST/R/T/WP IDs | `D-01`–`D-10`、`C-01`–`C-03`、`ERR-01`–`ERR-05` 与 owner `L/DB/ST` production contracts 已实现；`WP-301/201/101/102` 完成，`WP-103/001` 的现有自动化与 diff audit 完成。Direct tests cover action order/availability/clipboard、rename projection、RemoveMany、DB/service atomicity/error identity and runtime fence admission；driver release/session-close、stale guard/error mapping 的独立 P2 tests、人工 `T-01`–`T-03` 与远端 CI 尚未闭合 |
 | Automated commands and results | 最新交互修订后 `cargo fmt --all` pass、`cargo test -p jaco` 528 pass/2 ignored、`cargo check -p jaco` pass、`cargo clippy -p jaco --all-targets --all-features -- -D warnings` pass；此前同一实现分支的 `cargo test -p jaco-db` 77 pass、`cargo test -p jaco-conversation` 8 pass、`cargo build` pass、提权允许 loopback 后 `cargo test` 全 workspace pass、full-workspace clippy pass；`git diff --check` pass |
@@ -356,7 +356,7 @@ Workspace root。
 | Schema/migration/dependency/generated/vendored diff | `git diff --exit-code -- Cargo.toml Cargo.lock crates/jaco-db/Cargo.toml crates/jaco-db/src/migrations.rs crates/jaco-db/src/schema.rs` pass；无 dependency、schema、migration、generated 或 vendored diff |
 | Owner README, index, and ADR updates | root/三个 owner plans 记录实际实现与验证；四个 indexes 同步为 `In progress`；本次无需 ADR |
 | Accepted deviations and approving decision | 无产品范围 deviation。用户最新确认 conversation 保留 pin/archive 直接按钮且完整菜单仅右键显示，已替换先前 Ellipsis 设计；实施期发现 submission `Submitting` 到 DB running row 之间存在竞态，按 `R-05/R-06` 增加 generation-keyed runtime archive fence；独立 runtime review 未发现 P0/P1 correctness 问题 |
-| Unverified boundaries and reason | `T-01`–`T-03` 人工交互/重启/clipboard/running-run 场景受上述启动期文件监听阻塞；未提交分支，因此 macOS/Linux/Windows 远端 CI 未运行；状态保持 `In progress` |
+| Unverified boundaries and reason | `T-01`–`T-03` 人工交互/重启/clipboard/running-run 场景受上述启动期文件监听阻塞；PR #208 的 macOS/Linux/Windows 远端 CI 等待结果；状态保持 `In progress` |
 
 ## Execution handoff audit
 
