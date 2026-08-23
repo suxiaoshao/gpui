@@ -260,6 +260,7 @@ fn append_conversation_entry_with_conn(
         .set((
             conversations::last_entry_seq.eq(seq),
             conversations::updated_at.eq(now),
+            conversations::recency_at.eq(now),
         ))
         .execute(conn)?;
     item.try_into()
@@ -281,6 +282,7 @@ fn conversation_commit_with_conn<T>(
         id: conversation.id.clone(),
         last_entry_seq: conversation.last_entry_seq,
         updated_at: conversation.updated_at,
+        recency_at: conversation.recency_at,
     };
     Ok(ConversationCommit {
         value,

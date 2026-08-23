@@ -17,6 +17,7 @@ pub(crate) struct SqlConversationRow {
     pub(crate) settings_snapshot_json: Value,
     pub(crate) created_at: OffsetDateTime,
     pub(crate) updated_at: OffsetDateTime,
+    pub(crate) recency_at: OffsetDateTime,
     pub(crate) archived_at: Option<OffsetDateTime>,
     pub(crate) deleted_at: Option<OffsetDateTime>,
 }
@@ -37,6 +38,7 @@ pub(crate) struct SqlNewConversationRow {
     pub(crate) settings_snapshot_json: Value,
     pub(crate) created_at: OffsetDateTime,
     pub(crate) updated_at: OffsetDateTime,
+    pub(crate) recency_at: OffsetDateTime,
     pub(crate) archived_at: Option<OffsetDateTime>,
     pub(crate) deleted_at: Option<OffsetDateTime>,
 }
@@ -147,6 +149,7 @@ impl TryFrom<SqlConversationRow> for ConversationRecord {
             settings_snapshot: from_json(row.settings_snapshot_json)?,
             created_at: row.created_at,
             updated_at: row.updated_at,
+            recency_at: row.recency_at,
             archived_at: row.archived_at,
             deleted_at: row.deleted_at,
         })

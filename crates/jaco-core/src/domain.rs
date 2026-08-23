@@ -32,6 +32,7 @@ pub struct ConversationSummary {
     pub settings_snapshot: ConversationSettingsSnapshot,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
+    pub recency_at: OffsetDateTime,
     pub archived_at: Option<OffsetDateTime>,
     pub deleted_at: Option<OffsetDateTime>,
 }
@@ -481,6 +482,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn conversation_summary_recency_is_independent_from_updated_at() {
+        let summary = conversation(Vec::new()).summary;
+        let mut changed = summary.clone();
+        changed.recency_at += time::Duration::minutes(1);
+
+        assert_eq!(changed.updated_at, summary.updated_at);
+        assert_ne!(changed, summary);
+    }
+
+    #[test]
+    fn summary_change_preserves_the_replacement_recency_exactly() {
+        let mut conversation = conversation(Vec::new());
+        let updated_at = conversation.summary.updated_at;
+        let recency_at = updated_at + time::Duration::hours(2);
+        let mut replacement = conversation.summary.clone();
+        replacement.recency_at = recency_at;
+
+        let effect = (&mut conversation).transition(ConversationChange::SummaryChanged {
+            summary: Box::new(replacement),
+        });
+
+        assert_eq!(effect, ConversationEffect::SummaryChanged);
+        assert_eq!(conversation.summary.updated_at, updated_at);
+        assert_eq!(conversation.summary.recency_at, recency_at);
+    }
+
+    #[test]
     fn conversation_changes_only_update_the_target_entry() {
         let mut conversation = conversation(vec![
             entry("entry-1", 1, "before"),
@@ -569,6 +597,7 @@ mod tests {
                 },
                 created_at: OffsetDateTime::UNIX_EPOCH,
                 updated_at: OffsetDateTime::UNIX_EPOCH,
+                recency_at: OffsetDateTime::UNIX_EPOCH,
                 archived_at: None,
                 deleted_at: None,
             },

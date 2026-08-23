@@ -100,6 +100,7 @@ CREATE TABLE conversations (
     settings_snapshot_json JSON NOT NULL DEFAULT '{}',
     created_at DateTime NOT NULL,
     updated_at DateTime NOT NULL,
+    recency_at DateTime NOT NULL,
     archived_at DateTime,
     deleted_at DateTime
 );
@@ -297,6 +298,8 @@ CREATE TABLE shortcuts (
 );
 
 CREATE INDEX idx_conversations_project_id ON conversations(project_id);
+CREATE INDEX idx_conversations_active_recency
+ON conversations(status, recency_at DESC, id ASC);
 CREATE INDEX idx_conversation_entries_conversation_seq ON conversation_entries(conversation_id, seq);
 CREATE INDEX idx_conversation_entries_agent_run_seq ON conversation_entries(agent_run_id, seq);
 CREATE INDEX idx_agent_runs_conversation_id ON agent_runs(conversation_id);

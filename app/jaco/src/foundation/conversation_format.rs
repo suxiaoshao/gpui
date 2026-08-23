@@ -147,6 +147,37 @@ pub(crate) fn elapsed_since_label(start: OffsetDateTime) -> String {
     duration_label((OffsetDateTime::now_utc() - start).whole_seconds().max(0))
 }
 
+pub(crate) fn sidebar_relative_recency_label(
+    recency_at: OffsetDateTime,
+    now: OffsetDateTime,
+    i18n: &I18n,
+) -> String {
+    let seconds = (now - recency_at).whole_seconds().max(0);
+    let minutes = seconds / 60;
+    let (key, value) = if minutes < 60 {
+        ("sidebar-conversation-recency-minutes", minutes)
+    } else {
+        let hours = minutes / 60;
+        if hours < 24 {
+            ("sidebar-conversation-recency-hours", hours)
+        } else {
+            let days = hours / 24;
+            if days < 7 {
+                ("sidebar-conversation-recency-days", days)
+            } else if days < 30 {
+                ("sidebar-conversation-recency-weeks", days / 7)
+            } else if days < 365 {
+                ("sidebar-conversation-recency-months", days / 30)
+            } else {
+                ("sidebar-conversation-recency-years", days / 365)
+            }
+        }
+    };
+    let mut args = FluentArgs::new();
+    args.set("value", value);
+    i18n.t_with_args(key, &args)
+}
+
 pub(crate) fn timestamp_label(time: OffsetDateTime, i18n: &I18n) -> String {
     let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
     timestamp_label_with_offset(time, OffsetDateTime::now_utc(), offset, i18n)
@@ -357,5 +388,54 @@ mod tests {
             timestamp_label_with_offset(time, now, UtcOffset::UTC, &i18n),
             "5月30日 0:33"
         );
+    }
+
+    #[test]
+    fn sidebar_relative_recency_uses_floor_thresholds_and_clamps_future_values() {
+        let i18n = I18n::for_locale_tag("en-US");
+        let now = OffsetDateTime::UNIX_EPOCH + time::Duration::days(800);
+
+        let cases = [
+            (time::Duration::minutes(-1), "0m"),
+            (time::Duration::seconds(59), "0m"),
+            (time::Duration::minutes(59), "59m"),
+            (time::Duration::minutes(60), "1h"),
+            (time::Duration::hours(23), "23h"),
+            (time::Duration::hours(24), "1d"),
+            (time::Duration::days(6), "6d"),
+            (time::Duration::days(7), "1w"),
+            (time::Duration::days(29), "4w"),
+            (time::Duration::days(30), "1mo"),
+            (time::Duration::days(364), "12mo"),
+            (time::Duration::days(365), "1y"),
+        ];
+
+        for (elapsed, expected) in cases {
+            assert_eq!(
+                sidebar_relative_recency_label(now - elapsed, now, &i18n),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn sidebar_relative_recency_uses_localized_units() {
+        let i18n = I18n::for_locale_tag("zh-CN");
+        let now = OffsetDateTime::UNIX_EPOCH + time::Duration::days(800);
+        let cases = [
+            (time::Duration::ZERO, "0 分钟"),
+            (time::Duration::hours(23), "23 小时"),
+            (time::Duration::days(6), "6 天"),
+            (time::Duration::days(28), "4 周"),
+            (time::Duration::days(330), "11 个月"),
+            (time::Duration::days(730), "2 年"),
+        ];
+
+        for (elapsed, expected) in cases {
+            assert_eq!(
+                sidebar_relative_recency_label(now - elapsed, now, &i18n),
+                expected
+            );
+        }
     }
 }

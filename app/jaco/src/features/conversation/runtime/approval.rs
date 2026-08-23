@@ -88,6 +88,16 @@ impl ConversationApprovalBroker {
             })
     }
 
+    pub(super) fn has_pending_for_run(
+        &self,
+        conversation_id: &ConversationId,
+        agent_run_id: &AgentRunId,
+    ) -> bool {
+        self.pending().values().any(|pending| {
+            &pending.conversation_id == conversation_id && &pending.agent_run_id == agent_run_id
+        })
+    }
+
     pub(super) fn cancel_all_for_run(
         &self,
         conversation_id: &ConversationId,
@@ -277,6 +287,8 @@ mod tests {
             &"run-1".to_string(),
             &"invocation-1".to_string()
         ));
+        assert!(broker.has_pending_for_run(&"conversation-1".to_string(), &"run-1".to_string()));
+        assert!(!broker.has_pending_for_run(&"conversation-1".to_string(), &"run-2".to_string()));
         assert!(!broker.is_pending_for(
             &"conversation-2".to_string(),
             &"run-1".to_string(),
@@ -313,6 +325,7 @@ mod tests {
             availability_key(publications.recv_blocking().unwrap()).2,
             "invocation-1"
         );
+        assert!(!broker.has_pending_for_run(&"conversation-1".to_string(), &"run-1".to_string()));
         assert_eq!(smol::block_on(decision), ToolApprovalDecision::Canceled);
     }
 

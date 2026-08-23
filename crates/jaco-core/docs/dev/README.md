@@ -5,3 +5,4 @@
 | Issue | 状态 | 入口 |
 | --- | --- | --- |
 | [#189](https://github.com/suxiaoshao/gpui/issues/189) Usage、context与pricing domain contract | `Implemented`；`WP-101`–`WP-103`已实施 | [issue-189/README.md](issue-189/README.md) |
+| [#193](https://github.com/suxiaoshao/gpui/issues/193) Conversation recency domain contract | `In progress`；production 与本地自动化完成，等待 root 验收 | [issue-193/README.md](issue-193/README.md) |

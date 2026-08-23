@@ -5,6 +5,7 @@ mod menu;
 mod row;
 
 use crate::{
+    features::conversation::runtime::ConversationRuntimeStore,
     features::settings::{TOGGLE_SETTINGS_KEY, ToggleSettings},
     foundation::{self, assets::IconName},
 };
@@ -17,6 +18,7 @@ use gpui_component::{
     sidebar::{Sidebar, SidebarGroup, SidebarItem},
     v_flex,
 };
+use std::time::Duration;
 
 use super::actions::{
     OPEN_CONVERSATION_SEARCH_KEY, OPEN_NEW_CONVERSATION_KEY, OpenConversationSearch,
@@ -29,11 +31,35 @@ use super::workspace::{
 
 pub(crate) struct HomeSidebar {
     workspace: Entity<HomeWorkspace>,
+    runtime: Entity<ConversationRuntimeStore>,
+    _subscriptions: Vec<Subscription>,
+    _relative_clock_task: Task<()>,
 }
 
 impl HomeSidebar {
-    pub(crate) fn new(workspace: Entity<HomeWorkspace>, _: &mut Context<Self>) -> Self {
-        Self { workspace }
+    pub(crate) fn new(
+        workspace: Entity<HomeWorkspace>,
+        runtime: Entity<ConversationRuntimeStore>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let runtime_subscription = cx.observe(&runtime, |_, _, cx| cx.notify());
+        let relative_clock_task = cx.spawn(async move |sidebar, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(60))
+                    .await;
+                let Some(sidebar) = sidebar.upgrade() else {
+                    break;
+                };
+                sidebar.update(cx, |_, cx| cx.notify());
+            }
+        });
+        Self {
+            workspace,
+            runtime,
+            _subscriptions: vec![runtime_subscription],
+            _relative_clock_task: relative_clock_task,
+        }
     }
 }
 
@@ -41,6 +67,7 @@ impl Render for HomeSidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings_label = sidebar_settings_label(cx.global::<foundation::I18n>());
         let workspace = self.workspace.clone();
+        let runtime = self.runtime.clone();
         let route = workspace.read(cx).route().clone();
         let snapshot = workspace.read(cx).snapshot().clone();
         let project_status = workspace.read(cx).project_status();
@@ -49,6 +76,7 @@ impl Render for HomeSidebar {
             snapshot,
             route,
             workspace,
+            runtime,
             project_status,
             conversation_status,
             cx,
@@ -274,11 +302,13 @@ enum SidebarRow {
         node: SidebarProjectNode,
         route: HomeRoute,
         workspace: Entity<HomeWorkspace>,
+        runtime: Entity<ConversationRuntimeStore>,
     },
     Conversation {
         conversation: SidebarConversationNode,
         active: bool,
         workspace: Entity<HomeWorkspace>,
+        runtime: Entity<ConversationRuntimeStore>,
     },
     Empty(SharedString),
 }
@@ -288,11 +318,13 @@ impl SidebarRow {
         node: SidebarProjectNode,
         route: HomeRoute,
         workspace: Entity<HomeWorkspace>,
+        runtime: Entity<ConversationRuntimeStore>,
     ) -> Self {
         Self::Project {
             node,
             route,
             workspace,
+            runtime,
         }
     }
 
@@ -300,11 +332,13 @@ impl SidebarRow {
         conversation: SidebarConversationNode,
         active: bool,
         workspace: Entity<HomeWorkspace>,
+        runtime: Entity<ConversationRuntimeStore>,
     ) -> Self {
         Self::Conversation {
             conversation,
             active,
             workspace,
+            runtime,
         }
     }
 
@@ -314,12 +348,14 @@ impl SidebarRow {
                 node,
                 route,
                 workspace,
-            } => project_tree_row(node, route, workspace, cx),
+                runtime,
+            } => project_tree_row(node, route, workspace, runtime, cx),
             Self::Conversation {
                 conversation,
                 active,
                 workspace,
-            } => row::conversation_row(conversation, active, workspace, cx),
+                runtime,
+            } => row::conversation_row(conversation, active, workspace, runtime, cx),
             Self::Empty(label) => empty_row(label, cx),
         }
     }
@@ -329,6 +365,7 @@ fn sidebar_sections(
     snapshot: SidebarSnapshot,
     route: HomeRoute,
     workspace: Entity<HomeWorkspace>,
+    runtime: Entity<ConversationRuntimeStore>,
     project_status: super::workspace::WorkspaceResourceStatus,
     conversation_status: super::workspace::WorkspaceResourceStatus,
     cx: &mut App,
@@ -358,12 +395,14 @@ fn sidebar_sections(
         snapshot.pinned,
         route.clone(),
         workspace.clone(),
+        runtime.clone(),
         cx,
     ));
     sections.extend(render_projects_section(
         snapshot.projects,
         route.clone(),
         workspace.clone(),
+        runtime.clone(),
         projects_are_ready,
         cx,
     ));
@@ -371,6 +410,7 @@ fn sidebar_sections(
         snapshot.no_project_conversations,
         route,
         workspace,
+        runtime,
         cx,
     ));
 
@@ -419,6 +459,7 @@ fn render_pinned_section(
     pinned: Vec<SidebarPinnedEntry>,
     route: HomeRoute,
     workspace: Entity<HomeWorkspace>,
+    runtime: Entity<ConversationRuntimeStore>,
     cx: &mut App,
 ) -> Vec<SidebarSection> {
     if pinned.is_empty() {
@@ -428,7 +469,7 @@ fn render_pinned_section(
     let rows = pinned.into_iter().map(|entry| match entry {
         SidebarPinnedEntry::Conversation(conversation) => {
             let active = row::route_matches_conversation(&route, &conversation.id);
-            SidebarRow::conversation(conversation, active, workspace.clone())
+            SidebarRow::conversation(conversation, active, workspace.clone(), runtime.clone())
         }
         SidebarPinnedEntry::Project(project) => SidebarRow::project(
             SidebarProjectNode {
@@ -438,6 +479,7 @@ fn render_pinned_section(
             },
             route.clone(),
             workspace.clone(),
+            runtime.clone(),
         ),
     });
 
@@ -451,6 +493,7 @@ fn render_projects_section(
     projects: Vec<SidebarProjectNode>,
     route: HomeRoute,
     workspace: Entity<HomeWorkspace>,
+    runtime: Entity<ConversationRuntimeStore>,
     ready: bool,
     cx: &mut App,
 ) -> Vec<SidebarSection> {
@@ -473,11 +516,9 @@ fn render_projects_section(
         )];
     }
 
-    rows.extend(
-        projects
-            .into_iter()
-            .map(|project| SidebarRow::project(project, route.clone(), workspace.clone())),
-    );
+    rows.extend(projects.into_iter().map(|project| {
+        SidebarRow::project(project, route.clone(), workspace.clone(), runtime.clone())
+    }));
 
     let label = cx
         .global::<foundation::I18n>()
@@ -491,6 +532,7 @@ fn render_no_project_section(
     conversations: Vec<SidebarConversationNode>,
     route: HomeRoute,
     workspace: Entity<HomeWorkspace>,
+    runtime: Entity<ConversationRuntimeStore>,
     cx: &mut App,
 ) -> Vec<SidebarSection> {
     if conversations.is_empty() {
@@ -499,7 +541,7 @@ fn render_no_project_section(
 
     let rows = conversations.into_iter().map(|conversation| {
         let active = row::route_matches_conversation(&route, &conversation.id);
-        SidebarRow::conversation(conversation, active, workspace.clone())
+        SidebarRow::conversation(conversation, active, workspace.clone(), runtime.clone())
     });
 
     let label = cx
@@ -514,6 +556,7 @@ fn project_tree_row(
     node: SidebarProjectNode,
     route: HomeRoute,
     workspace: Entity<HomeWorkspace>,
+    runtime: Entity<ConversationRuntimeStore>,
     cx: &mut App,
 ) -> AnyElement {
     let project_id = node.project.id.clone();
@@ -535,7 +578,13 @@ fn project_tree_row(
                     .into_iter()
                     .map(|conversation| {
                         let active = row::route_matches_conversation(&route, &conversation.id);
-                        row::conversation_row(conversation, active, workspace.clone(), cx)
+                        row::conversation_row(
+                            conversation,
+                            active,
+                            workspace.clone(),
+                            runtime.clone(),
+                            cx,
+                        )
                     })
                     .collect::<Vec<_>>()
             };

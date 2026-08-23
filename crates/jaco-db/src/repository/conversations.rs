@@ -19,6 +19,7 @@ impl FreshRepository {
                 settings_snapshot_json: to_json(&input.settings_snapshot)?,
                 created_at: now,
                 updated_at: now,
+                recency_at: now,
                 archived_at: None,
                 deleted_at: None,
             };
@@ -68,6 +69,7 @@ impl FreshRepository {
                 settings_snapshot_json: to_json(&input.conversation.settings_snapshot)?,
                 created_at: now,
                 updated_at: now,
+                recency_at: now,
                 archived_at: None,
                 deleted_at: None,
             };
@@ -134,6 +136,7 @@ impl FreshRepository {
                 )?,
                 created_at: now,
                 updated_at: now,
+                recency_at: now,
                 archived_at: None,
                 deleted_at: None,
             };
@@ -236,7 +239,7 @@ impl FreshRepository {
                         .select(projects::id),
                 ),
             )
-            .order(conversations::updated_at.desc())
+            .order((conversations::recency_at.desc(), conversations::id.asc()))
             .select(SqlConversationRow::as_select())
             .load::<SqlConversationRow>(&mut conn)?
             .into_iter()
@@ -258,7 +261,7 @@ impl FreshRepository {
                         .select(projects::id),
                 ),
             )
-            .order(conversations::updated_at.desc())
+            .order((conversations::recency_at.desc(), conversations::id.asc()))
             .select(SqlConversationRow::as_select())
             .load::<SqlConversationRow>(&mut conn)?
             .into_iter()

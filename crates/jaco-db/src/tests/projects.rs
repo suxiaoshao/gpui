@@ -140,6 +140,93 @@ fn conversation_can_be_renamed() {
 }
 
 #[test]
+fn presentation_metadata_and_deletion_changes_preserve_recency() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("preserve-recency")).unwrap();
+    let record = repo.insert_conversation(conversation(&project)).unwrap();
+    let recency_at = record.recency_at;
+
+    let metadata = repo
+        .update_conversation_metadata(
+            &record.id,
+            ConversationMetadata {
+                summary: Some("updated".to_string()),
+                tags: vec!["preserved".to_string()],
+            },
+        )
+        .unwrap();
+    assert_eq!(metadata.recency_at, recency_at);
+    let renamed = repo
+        .rename_conversation(&record.id, "Renamed".to_string())
+        .unwrap();
+    assert_eq!(renamed.recency_at, recency_at);
+    let pinned = repo.set_conversation_pinned(&record.id, true).unwrap();
+    assert_eq!(pinned.recency_at, recency_at);
+    let deleted = repo.soft_delete_conversation(&record.id).unwrap();
+    assert_eq!(deleted.recency_at, recency_at);
+
+    let batch = repo.insert_conversation(conversation(&project)).unwrap();
+    let batch_recency = batch.recency_at;
+    let deleted = repo
+        .soft_delete_active_project_conversations(&project.id)
+        .unwrap();
+    assert_eq!(deleted.len(), 1);
+    assert_eq!(deleted[0].id, batch.id);
+    assert_eq!(deleted[0].recency_at, batch_recency);
+}
+
+#[test]
+fn sidebar_lists_order_by_recency_then_conversation_id() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let project = repo
+        .insert_project(scratch_project("recency-order"))
+        .unwrap();
+    let newest = repo.insert_conversation(conversation(&project)).unwrap();
+    let tie_a = repo.insert_conversation(conversation(&project)).unwrap();
+    let tie_b = repo.insert_conversation(conversation(&project)).unwrap();
+    let mut conn = store.pool().get().unwrap();
+    sql_query(
+        "UPDATE conversations SET recency_at = '2026-03-01 00:00:00',
+         updated_at = '2026-01-01 00:00:00' WHERE id = ?",
+    )
+    .bind::<Text, _>(&newest.id)
+    .execute(&mut conn)
+    .unwrap();
+    for id in [&tie_a.id, &tie_b.id] {
+        sql_query(
+            "UPDATE conversations SET recency_at = '2026-02-01 00:00:00',
+             updated_at = '2026-04-01 00:00:00' WHERE id = ?",
+        )
+        .bind::<Text, _>(id)
+        .execute(&mut conn)
+        .unwrap();
+    }
+    drop(conn);
+
+    let mut tied = [tie_a.id, tie_b.id];
+    tied.sort();
+    let expected = vec![newest.id, tied[0].clone(), tied[1].clone()];
+    let sidebar = repo
+        .list_sidebar_conversations()
+        .unwrap()
+        .into_iter()
+        .map(|conversation| conversation.id)
+        .collect::<Vec<_>>();
+    let scratch = repo
+        .list_no_project_conversations("")
+        .unwrap()
+        .into_iter()
+        .map(|conversation| conversation.id)
+        .collect::<Vec<_>>();
+    assert_eq!(sidebar, expected);
+    assert_eq!(scratch, expected);
+}
+
+#[test]
 fn soft_delete_active_project_conversations_returns_empty_for_empty_project() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
