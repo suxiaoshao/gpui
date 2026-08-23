@@ -7,7 +7,7 @@ use crate::{
     components::chat::run_settings::{
         RunSettingsController, RunSettingsInput, RunSettingsSubmitError, resolve_run_settings,
     },
-    components::delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
+    components::delete_confirm::{DestructiveAction, open_async_destructive_confirm_dialog},
     components::hotkey_input::{
         HotkeyInput, HotkeyInputEvent, HotkeyInputState, string_to_keystroke,
     },
@@ -306,7 +306,12 @@ impl ShortcutEditDialogState {
                 }
             });
         }));
+        cx.notify();
         false
+    }
+
+    fn is_saving(&self) -> bool {
+        self.save_task.is_some()
     }
 
     fn focus_hotkey(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -449,8 +454,14 @@ pub(super) fn open_shortcut_edit_dialog(
 
     window.open_dialog(cx, move |dialog, _window, cx| {
         let editing_ready = shortcut_editing_ready(cx);
+        let saving = form.read(cx).is_saving();
         dialog
             .title(title.clone())
+            .close_button(false)
+            .on_cancel({
+                let form = form.clone();
+                move |_, _, cx| !form.read(cx).is_saving()
+            })
             .w(px(640.))
             .on_ok({
                 let form = form.clone();
@@ -463,7 +474,9 @@ pub(super) fn open_shortcut_edit_dialog(
                 DialogFooter::new()
                     .child(
                         DialogClose::new().child(
-                            Button::new("shortcut-dialog-cancel").label(cancel_label.clone()),
+                            Button::new("shortcut-dialog-cancel")
+                                .label(cancel_label.clone())
+                                .disabled(saving),
                         ),
                     )
                     .child(
@@ -472,7 +485,8 @@ pub(super) fn open_shortcut_edit_dialog(
                                 .primary()
                                 .icon(IconName::Keyboard)
                                 .label(save_label.clone())
-                                .disabled(!editing_ready),
+                                .loading(saving)
+                                .disabled(!editing_ready || saving),
                         ),
                     ),
             )
@@ -636,7 +650,7 @@ pub(super) fn open_shortcut_delete_confirm(
     let delete_failed_title = cx.global::<I18n>().t("notify-delete-shortcut-failed");
     let shortcut_id = shortcut.id.clone();
 
-    open_destructive_confirm_dialog(
+    open_async_destructive_confirm_dialog(
         title,
         message,
         DestructiveAction::Delete,
@@ -644,8 +658,9 @@ pub(super) fn open_shortcut_delete_confirm(
             let mutation = state::shortcuts::delete_shortcut(cx, shortcut_id.clone());
             let deleted_title = deleted_title.clone();
             let delete_failed_title = delete_failed_title.clone();
-            let completion = window.spawn(cx, async move |cx| {
+            window.spawn(cx, async move |cx| {
                 let result = mutation.await;
+                let succeeded = result.is_ok();
                 let _ = cx.update(|window, cx| match result {
                     Ok(_) => {
                         window.push_notification(
@@ -659,8 +674,8 @@ pub(super) fn open_shortcut_delete_confirm(
                         push_settings_error(window, cx, delete_failed_title, err);
                     }
                 });
-            });
-            crate::app::tasks::retain_window(window, completion, cx);
+                succeeded
+            })
         },
         window,
         cx,
@@ -808,6 +823,7 @@ mod tests {
     use crate::{database, foundation, state};
     use gpui::{AppContext as _, TestAppContext, VisualTestContext, WindowHandle};
     use tempfile::{TempDir, tempdir};
+    use tokio::sync::oneshot;
 
     #[gpui::test]
     fn missing_hotkey_confirm_keeps_shortcut_dialog_open(cx: &mut TestAppContext) {
@@ -857,6 +873,27 @@ mod tests {
             let run_settings = ShortcutEditFormInput::RUN_SETTINGS.get(&dialog.form, cx);
             run_settings.model.is_none()
         }));
+    }
+
+    #[gpui::test]
+    fn pending_save_rejects_repeated_shortcut_confirm(cx: &mut TestAppContext) {
+        let _dir = init_shortcut_dialog_test(cx);
+        let window = open_shortcut_state_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let form = window.root(&mut cx).expect("shortcut dialog root");
+        let (_sender, receiver) = oneshot::channel::<()>();
+
+        cx.update(|window, cx| {
+            let task = window.spawn(cx, async move |_| {
+                let _ = receiver.await;
+            });
+            form.update(cx, |dialog, _| dialog.save_task = Some(task));
+        });
+
+        assert!(form.read_with(&cx, |dialog, _| dialog.is_saving()));
+        let saved = cx.update(|window, cx| confirm_shortcut_edit_dialog(&form, window, cx));
+        assert!(!saved);
+        assert!(form.read_with(&cx, |dialog, _| dialog.is_saving()));
     }
 
     #[test]

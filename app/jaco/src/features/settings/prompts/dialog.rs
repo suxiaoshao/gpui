@@ -1,5 +1,5 @@
 use crate::{
-    components::delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
+    components::delete_confirm::{DestructiveAction, open_async_destructive_confirm_dialog},
     foundation::{I18n, assets::IconName},
     state,
 };
@@ -179,7 +179,12 @@ impl PromptEditDialogState {
                 }
             });
         }));
+        cx.notify();
         false
+    }
+
+    fn is_saving(&self) -> bool {
+        self.save_task.is_some()
     }
 
     fn finish_successful_save(
@@ -288,8 +293,14 @@ pub(super) fn open_prompt_edit_dialog(
 
     window.open_dialog(cx, move |dialog, _window, cx| {
         let mutable = prompt_resource_is_ready(cx);
+        let saving = form.read(cx).is_saving();
         dialog
             .title(title.clone())
+            .close_button(false)
+            .on_cancel({
+                let form = form.clone();
+                move |_, _window, cx| !form.read(cx).is_saving()
+            })
             .w(px(620.))
             .on_ok({
                 let form = form.clone();
@@ -301,8 +312,11 @@ pub(super) fn open_prompt_edit_dialog(
             .footer(
                 DialogFooter::new()
                     .child(
-                        DialogClose::new()
-                            .child(Button::new("prompt-dialog-cancel").label(cancel_label.clone())),
+                        DialogClose::new().child(
+                            Button::new("prompt-dialog-cancel")
+                                .label(cancel_label.clone())
+                                .disabled(saving),
+                        ),
                     )
                     .child(
                         DialogAction::new().child(
@@ -310,7 +324,8 @@ pub(super) fn open_prompt_edit_dialog(
                                 .primary()
                                 .icon(IconName::FilePen)
                                 .label(save_label.clone())
-                                .disabled(!mutable),
+                                .loading(saving)
+                                .disabled(!mutable || saving),
                         ),
                     ),
             )
@@ -420,7 +435,7 @@ pub(super) fn open_prompt_delete_confirm(prompt: PromptRecord, window: &mut Wind
     let delete_failed_title = cx.global::<I18n>().t("notify-delete-prompt-failed");
     let prompt_id = prompt.id.clone();
 
-    open_destructive_confirm_dialog(
+    open_async_destructive_confirm_dialog(
         title,
         message,
         DestructiveAction::Delete,
@@ -428,8 +443,9 @@ pub(super) fn open_prompt_delete_confirm(prompt: PromptRecord, window: &mut Wind
             let mutation = state::prompts::delete_prompt(cx, prompt_id.clone());
             let deleted_title = deleted_title.clone();
             let delete_failed_title = delete_failed_title.clone();
-            let completion = window.spawn(cx, async move |cx| {
+            window.spawn(cx, async move |cx| {
                 let result = mutation.await;
+                let succeeded = result.is_ok();
                 let _ = cx.update(|window, cx| match result {
                     Ok(_) => {
                         window.push_notification(
@@ -443,8 +459,8 @@ pub(super) fn open_prompt_delete_confirm(prompt: PromptRecord, window: &mut Wind
                         push_settings_error(window, cx, delete_failed_title, err);
                     }
                 });
-            });
-            crate::app::tasks::retain_window(window, completion, cx);
+                succeeded
+            })
         },
         window,
         cx,
@@ -549,6 +565,7 @@ mod tests {
     use gpui::{AppContext as _, Entity, Render, TestAppContext, VisualTestContext, WindowHandle};
     use gpui_component::input::{InputEvent, InputState};
     use tempfile::{TempDir, tempdir};
+    use tokio::sync::oneshot;
 
     #[gpui::test]
     fn invalid_create_confirm_keeps_prompt_dialog_open(cx: &mut TestAppContext) {
@@ -698,6 +715,29 @@ mod tests {
             }),
             1
         );
+    }
+
+    #[gpui::test]
+    fn pending_save_rejects_repeated_prompt_confirm(cx: &mut TestAppContext) {
+        let _dir = init_prompt_dialog_test(cx);
+        let window = open_test_window(cx);
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let form = cx.update(|window, cx| {
+            cx.new(|cx| PromptEditDialogState::new(PromptEditMode::Create, None, window, cx))
+        });
+        let (_sender, receiver) = oneshot::channel::<()>();
+
+        cx.update(|window, cx| {
+            let task = window.spawn(cx, async move |_| {
+                let _ = receiver.await;
+            });
+            form.update(cx, |dialog, _| dialog.save_task = Some(task));
+        });
+
+        assert!(form.read_with(&cx, |dialog, _| dialog.is_saving()));
+        let saved = cx.update(|window, cx| confirm_prompt_edit_dialog(&form, window, cx));
+        assert!(!saved);
+        assert!(form.read_with(&cx, |dialog, _| dialog.is_saving()));
     }
 
     fn init_prompt_dialog_test(cx: &mut TestAppContext) -> TempDir {

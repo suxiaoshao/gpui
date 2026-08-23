@@ -1,11 +1,11 @@
 use crate::{
-    components::delete_confirm::{DestructiveAction, open_destructive_confirm_dialog},
+    components::delete_confirm::{DestructiveAction, open_async_destructive_confirm_dialog},
     foundation::{I18n, assets::IconName},
 };
 use fluent_bundle::FluentArgs;
 use gpui::*;
 use gpui_component::{
-    WindowExt as NotificationWindowExt,
+    Disableable, WindowExt as NotificationWindowExt,
     button::{Button, ButtonVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
     input::{Input, InputState},
@@ -13,6 +13,7 @@ use gpui_component::{
     notification::{Notification, NotificationType},
     v_flex,
 };
+use std::rc::Rc;
 
 use super::{
     super::workspace::{HomeWorkspace, SidebarConversationNode, SidebarProjectHeader},
@@ -21,6 +22,48 @@ use super::{
         ProjectSidebarActions, SidebarActionGuardError,
     },
 };
+
+type AsyncRenameOnSubmit = dyn Fn(String, &mut Window, &mut App) -> Task<bool>;
+
+struct SidebarRenameDialogConfig {
+    title: SharedString,
+    initial_value: String,
+    placeholder: SharedString,
+    cancel_button_id: &'static str,
+    submit_button_id: &'static str,
+}
+
+struct SidebarRenameDialogState {
+    on_submit: Rc<AsyncRenameOnSubmit>,
+    task: Option<Task<()>>,
+}
+
+impl SidebarRenameDialogState {
+    fn submit(&mut self, value: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.task.is_some() || value.is_empty() {
+            return;
+        }
+
+        let action = (self.on_submit)(value, window, cx);
+        let state = cx.entity().downgrade();
+        self.task = Some(window.spawn(cx, async move |cx| {
+            let should_close = action.await;
+            let _ = state.update_in(cx, |state, window, cx| {
+                state.task = None;
+                if should_close {
+                    window.close_dialog(cx);
+                } else {
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    fn is_pending(&self) -> bool {
+        self.task.is_some()
+    }
+}
 
 pub(super) fn project_popup_menu(
     menu: PopupMenu,
@@ -155,86 +198,68 @@ pub(super) fn conversation_popup_menu(
     )
 }
 
-pub(super) fn open_rename_project_dialog(
-    project: SidebarProjectHeader,
-    workspace: Entity<HomeWorkspace>,
+fn open_sidebar_rename_dialog(
+    config: SidebarRenameDialogConfig,
+    on_submit: impl Fn(String, &mut Window, &mut App) -> Task<bool> + 'static,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let SidebarRenameDialogConfig {
+        title,
+        initial_value,
+        placeholder,
+        cancel_button_id,
+        submit_button_id,
+    } = config;
     let input = cx.new(|cx| {
         InputState::new(window, cx)
-            .default_value(project.display_name.to_string())
-            .placeholder(cx.global::<I18n>().t("sidebar-rename-project-placeholder"))
+            .default_value(initial_value)
+            .placeholder(placeholder)
     });
     let input_to_focus = input.clone();
-    let project_id = project.id;
-    let title = cx.global::<I18n>().t("sidebar-rename-project-title");
+    let state = cx.new(|_| SidebarRenameDialogState {
+        on_submit: Rc::new(on_submit),
+        task: None,
+    });
+    let cancel_label = cx.global::<I18n>().t("button-cancel");
+    let save_label = cx.global::<I18n>().t("provider-action-save");
 
-    window.open_dialog(cx, move |dialog, _window, _cx| {
-        let input = input.clone();
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let pending = state.read(cx).is_pending();
+        let cancel_state = state.clone();
+        let confirm_state = state.clone();
+        let confirm_input = input.clone();
         dialog
             .title(title.clone())
             .w(px(420.))
+            .close_button(false)
+            .on_cancel(move |_, _, cx| !cancel_state.read(cx).is_pending())
+            .on_ok(move |_, window, cx| {
+                let value = confirm_input.read(cx).value().trim().to_string();
+                confirm_state.update(cx, |state, cx| state.submit(value, window, cx));
+                false
+            })
             .child(
                 v_flex()
                     .w_full()
                     .min_w_0()
-                    .child(Input::new(&input).w_full()),
+                    .child(Input::new(&input).w_full().disabled(pending)),
             )
             .footer(
                 DialogFooter::new()
                     .child(
                         DialogClose::new().child(
-                            Button::new("rename-project-cancel")
-                                .label(_cx.global::<I18n>().t("button-cancel")),
+                            Button::new(cancel_button_id)
+                                .label(cancel_label.clone())
+                                .disabled(pending),
                         ),
                     )
                     .child(
                         DialogAction::new().child(
-                            Button::new("rename-project-submit")
+                            Button::new(submit_button_id)
                                 .primary()
-                                .label(_cx.global::<I18n>().t("provider-action-save"))
-                                .on_click({
-                                    let input = input.clone();
-                                    let project_id = project_id.clone();
-                                    let workspace = workspace.clone();
-                                    move |_, window, cx| {
-                                        let display_name =
-                                            input.read(cx).value().trim().to_string();
-                                        if display_name.is_empty() {
-                                            return;
-                                        }
-                                        let target_id = project_id.clone();
-                                        let task = workspace.update(cx, |workspace, cx| {
-                                            workspace.rename_project(
-                                                target_id.clone(),
-                                                display_name.clone(),
-                                                cx,
-                                            )
-                                        });
-                                        let completion = window.spawn(cx, async move |cx| {
-                                            let result = task.await;
-                                            let _ = cx.update(|window, cx| match result {
-                                                Ok(_) => window.close_dialog(cx),
-                                                Err(error) => {
-                                                    tracing::error!(
-                                                        action = "project-rename",
-                                                        target_kind = "project",
-                                                        target_id = %target_id,
-                                                        error = ?error,
-                                                        "sidebar action failed"
-                                                    );
-                                                    show_sidebar_safe_error(
-                                                        window,
-                                                        cx,
-                                                        "sidebar-rename-project-failed",
-                                                    )
-                                                }
-                                            });
-                                        });
-                                        crate::app::tasks::retain_window(window, completion, cx);
-                                    }
-                                }),
+                                .label(save_label.clone())
+                                .loading(pending),
                         ),
                     ),
             )
@@ -245,96 +270,96 @@ pub(super) fn open_rename_project_dialog(
     });
 }
 
+pub(super) fn open_rename_project_dialog(
+    project: SidebarProjectHeader,
+    workspace: Entity<HomeWorkspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let title = cx.global::<I18n>().t("sidebar-rename-project-title");
+    let placeholder = cx.global::<I18n>().t("sidebar-rename-project-placeholder");
+    let project_id = project.id;
+
+    open_sidebar_rename_dialog(
+        SidebarRenameDialogConfig {
+            title: title.into(),
+            initial_value: project.display_name.to_string(),
+            placeholder: placeholder.into(),
+            cancel_button_id: "rename-project-cancel",
+            submit_button_id: "rename-project-submit",
+        },
+        move |display_name, window, cx| {
+            let target_id = project_id.clone();
+            let task = workspace.update(cx, |workspace, cx| {
+                workspace.rename_project(target_id.clone(), display_name, cx)
+            });
+            window.spawn(cx, async move |cx| match task.await {
+                Ok(_) => true,
+                Err(error) => {
+                    tracing::error!(
+                        action = "project-rename",
+                        target_kind = "project",
+                        target_id = %target_id,
+                        error = ?error,
+                        "sidebar action failed"
+                    );
+                    let _ = cx.update(|window, cx| {
+                        show_sidebar_safe_error(window, cx, "sidebar-rename-project-failed");
+                    });
+                    false
+                }
+            })
+        },
+        window,
+        cx,
+    );
+}
+
 pub(super) fn open_rename_conversation_dialog(
     conversation: SidebarConversationNode,
     workspace: Entity<HomeWorkspace>,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let input = cx.new(|cx| {
-        InputState::new(window, cx)
-            .default_value(conversation.title.to_string())
-            .placeholder(
-                cx.global::<I18n>()
-                    .t("sidebar-rename-conversation-placeholder"),
-            )
-    });
-    let input_to_focus = input.clone();
-    let conversation_id = conversation.id;
     let title = cx.global::<I18n>().t("sidebar-rename-conversation-title");
+    let placeholder = cx
+        .global::<I18n>()
+        .t("sidebar-rename-conversation-placeholder");
+    let conversation_id = conversation.id;
 
-    window.open_dialog(cx, move |dialog, _window, _cx| {
-        let input = input.clone();
-        dialog
-            .title(title.clone())
-            .w(px(420.))
-            .child(
-                v_flex()
-                    .w_full()
-                    .min_w_0()
-                    .child(Input::new(&input).w_full()),
-            )
-            .footer(
-                DialogFooter::new()
-                    .child(
-                        DialogClose::new().child(
-                            Button::new("rename-conversation-cancel")
-                                .label(_cx.global::<I18n>().t("button-cancel")),
-                        ),
-                    )
-                    .child(
-                        DialogAction::new().child(
-                            Button::new("rename-conversation-submit")
-                                .primary()
-                                .label(_cx.global::<I18n>().t("provider-action-save"))
-                                .on_click({
-                                    let input = input.clone();
-                                    let conversation_id = conversation_id.clone();
-                                    let workspace = workspace.clone();
-                                    move |_, window, cx| {
-                                        let value = input.read(cx).value().trim().to_string();
-                                        if value.is_empty() {
-                                            return;
-                                        }
-                                        let target_id = conversation_id.clone();
-                                        let task = workspace.update(cx, |workspace, cx| {
-                                            workspace.rename_conversation(
-                                                target_id.clone(),
-                                                value,
-                                                cx,
-                                            )
-                                        });
-                                        let completion = window.spawn(cx, async move |cx| {
-                                            let result = task.await;
-                                            let _ = cx.update(|window, cx| match result {
-                                                Ok(_) => window.close_dialog(cx),
-                                                Err(error) => {
-                                                    tracing::error!(
-                                                        action = "conversation-rename",
-                                                        target_kind = "conversation",
-                                                        target_id = %target_id,
-                                                        error = ?error,
-                                                        "sidebar action failed"
-                                                    );
-                                                    show_sidebar_safe_error(
-                                                        window,
-                                                        cx,
-                                                        "sidebar-rename-conversation-failed",
-                                                    )
-                                                }
-                                            });
-                                        });
-                                        crate::app::tasks::retain_window(window, completion, cx);
-                                    }
-                                }),
-                        ),
-                    ),
-            )
-    });
-
-    window.defer(cx, move |window, cx| {
-        input_to_focus.update(cx, |input, cx| input.focus(window, cx));
-    });
+    open_sidebar_rename_dialog(
+        SidebarRenameDialogConfig {
+            title: title.into(),
+            initial_value: conversation.title.to_string(),
+            placeholder: placeholder.into(),
+            cancel_button_id: "rename-conversation-cancel",
+            submit_button_id: "rename-conversation-submit",
+        },
+        move |value, window, cx| {
+            let target_id = conversation_id.clone();
+            let task = workspace.update(cx, |workspace, cx| {
+                workspace.rename_conversation(target_id.clone(), value, cx)
+            });
+            window.spawn(cx, async move |cx| match task.await {
+                Ok(_) => true,
+                Err(error) => {
+                    tracing::error!(
+                        action = "conversation-rename",
+                        target_kind = "conversation",
+                        target_id = %target_id,
+                        error = ?error,
+                        "sidebar action failed"
+                    );
+                    let _ = cx.update(|window, cx| {
+                        show_sidebar_safe_error(window, cx, "sidebar-rename-conversation-failed");
+                    });
+                    false
+                }
+            })
+        },
+        window,
+        cx,
+    );
 }
 
 pub(super) fn open_archive_conversation_confirm(
@@ -352,7 +377,7 @@ pub(super) fn open_archive_conversation_confirm(
     let conversation_id = conversation.id;
     let project_id = conversation.project_id;
 
-    open_destructive_confirm_dialog(
+    open_async_destructive_confirm_dialog(
         title,
         message,
         DestructiveAction::Archive,
@@ -362,8 +387,9 @@ pub(super) fn open_archive_conversation_confirm(
             let task = workspace.update(cx, |workspace, cx| {
                 workspace.archive_conversation(conversation_id.clone(), project_id, cx)
             });
-            let completion = window.spawn(cx, async move |cx| {
-                if let Err(error) = task.await {
+            window.spawn(cx, async move |cx| match task.await {
+                Ok(_) => true,
+                Err(error) => {
                     tracing::warn!(
                         action = "conversation-archive",
                         target_kind = "conversation",
@@ -389,9 +415,9 @@ pub(super) fn open_archive_conversation_confirm(
                             "sidebar-archive-conversation-failed",
                         ),
                     });
+                    false
                 }
-            });
-            crate::app::tasks::retain_window(window, completion, cx);
+            })
         },
         window,
         cx,
@@ -414,7 +440,7 @@ pub(super) fn open_archive_project_conversations_confirm(
         .t_with_args("sidebar-project-archive-conversations-message", &args);
     let project_id = project.id;
 
-    open_destructive_confirm_dialog(
+    open_async_destructive_confirm_dialog(
         title,
         message,
         DestructiveAction::Archive,
@@ -423,8 +449,9 @@ pub(super) fn open_archive_project_conversations_confirm(
             let task = workspace.update(cx, |workspace, cx| {
                 workspace.archive_project_conversations(project_id.clone(), cx)
             });
-            let completion = window.spawn(cx, async move |cx| {
-                if let Err(error) = task.await {
+            window.spawn(cx, async move |cx| match task.await {
+                Ok(_) => true,
+                Err(error) => {
                     tracing::warn!(
                         action = "project-archive-conversations",
                         target_kind = "project",
@@ -450,9 +477,9 @@ pub(super) fn open_archive_project_conversations_confirm(
                             "sidebar-project-archive-conversations-failed",
                         ),
                     });
+                    false
                 }
-            });
-            crate::app::tasks::retain_window(window, completion, cx);
+            })
         },
         window,
         cx,
@@ -473,7 +500,7 @@ pub(super) fn open_remove_project_confirm(
         .t_with_args("sidebar-remove-project-message", &args);
     let project_id = project.id;
 
-    open_destructive_confirm_dialog(
+    open_async_destructive_confirm_dialog(
         title,
         message,
         DestructiveAction::Delete,
@@ -482,8 +509,9 @@ pub(super) fn open_remove_project_confirm(
             let task = workspace.update(cx, |workspace, cx| {
                 workspace.remove_project(project_id.clone(), cx)
             });
-            let completion = window.spawn(cx, async move |cx| {
-                if let Err(error) = task.await {
+            window.spawn(cx, async move |cx| match task.await {
+                Ok(_) => true,
+                Err(error) => {
                     tracing::error!(
                         action = "project-remove",
                         target_kind = "project",
@@ -494,9 +522,9 @@ pub(super) fn open_remove_project_confirm(
                     let _ = cx.update(|window, cx| {
                         show_sidebar_safe_error(window, cx, "sidebar-remove-project-failed");
                     });
+                    false
                 }
-            });
-            crate::app::tasks::retain_window(window, completion, cx);
+            })
         },
         window,
         cx,
@@ -593,8 +621,30 @@ fn show_project_label_key() -> &'static str {
 #[cfg(test)]
 mod tests {
     use crate::foundation::{I18n, assets::IconName};
-    use gpui::SharedString;
+    use gpui::{
+        AppContext as _, IntoElement, Render, SharedString, TestAppContext, Window, WindowHandle,
+        div,
+    };
     use gpui_component::IconNamed;
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+    use tokio::sync::oneshot;
+
+    use super::SidebarRenameDialogState;
+
+    struct TestView;
+
+    impl Render for TestView {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            div()
+        }
+    }
 
     #[test]
     fn project_reveal_label_follows_platform() {
@@ -630,5 +680,54 @@ mod tests {
             IconName::Archive.path(),
             SharedString::from("icons/archive.svg")
         );
+    }
+
+    #[gpui::test]
+    fn rename_dialog_owns_submission_and_blocks_repeated_submit(cx: &mut TestAppContext) {
+        let window = open_test_window(cx);
+        let invocations = Rc::new(Cell::new(0));
+        let (sender, receiver) = oneshot::channel();
+        let receiver = Rc::new(RefCell::new(Some(receiver)));
+        let state = window
+            .update(cx, |_view, _window, cx| {
+                let invocations = invocations.clone();
+                let receiver = receiver.clone();
+                cx.new(|_| SidebarRenameDialogState {
+                    on_submit: Rc::new(move |_value, window, cx| {
+                        invocations.set(invocations.get() + 1);
+                        let receiver = receiver
+                            .borrow_mut()
+                            .take()
+                            .expect("rename submission starts once");
+                        window.spawn(cx, async move |_| receiver.await.unwrap_or(false))
+                    }),
+                    task: None,
+                })
+            })
+            .expect("create rename dialog state");
+
+        window
+            .update(cx, |_view, window, cx| {
+                state.update(cx, |state, cx| state.submit("first".into(), window, cx));
+                state.update(cx, |state, cx| state.submit("second".into(), window, cx));
+                assert!(state.read(cx).is_pending());
+            })
+            .expect("start rename submission");
+        assert_eq!(invocations.get(), 1);
+
+        sender.send(false).expect("finish rename submission");
+        cx.run_until_parked();
+        window
+            .update(cx, |_view, _window, cx| {
+                assert!(!state.read(cx).is_pending());
+            })
+            .expect("inspect completed rename submission");
+    }
+
+    fn open_test_window(cx: &mut TestAppContext) -> WindowHandle<TestView> {
+        cx.update(|cx| {
+            cx.open_window(Default::default(), |_window, cx| cx.new(|_| TestView))
+                .expect("open rename dialog test window")
+        })
     }
 }
