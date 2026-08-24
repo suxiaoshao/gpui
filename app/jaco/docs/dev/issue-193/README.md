@@ -25,7 +25,7 @@
 | `E-305` | `HomeView`已持有 runtime，`HomeSidebar`当前只持 workspace | `home/shell.rs::HomeView::new`、`home/sidebar.rs::HomeSidebar` | 显式把同一 runtime Entity传给 sidebar并observe |
 | `E-306` | runtime拥有 active attempts、ActiveRunKey、approval broker、last_errors、recovery | `features/conversation/runtime.rs` | 扩展现有 authority，不建第二状态源 |
 | `E-307` | pending approval每次增减都会 publication + notify；broker目前只能查单 invocation | `runtime/approval.rs` | 增加 current conversation/run聚合查询 |
-| `E-308` | `finish_run`能读取完整 `AgentRunHandle.agent_run.status`；recovery返回 recovered records | `runtime.rs::finish_run`、`jaco_agent::AgentRuntime::recover_interrupted_runs` | terminal/recovery status不依赖忽略中的 event |
+| `E-308` | `finish_run`能读取完整 `AgentRunHandle.agent_run.status`；recovery返回 recovered records | `runtime.rs::finish_run`、`jaco_agent::AgentRuntime::recover_interrupted_runs` | live terminal status不依赖忽略中的 event；startup recovered records不恢复 sidebar marker |
 | `E-309` | `take_last_error`当前 remove map entry | `runtime.rs::take_last_error` | 通知消费与 Failed marker生命周期必须分开 |
 | `E-310` | locked HoverCard使用 stable keyed state并自持 600/300ms tasks | `gpui-component@57a9903` `hover_card.rs` | wrapper提供 trigger/content/id，并只测量 trigger bounds 来定位整个 popover root |
 | `E-311` | Folder、ShieldAlert、CircleAlert、Spinner与双 locale已存在 | `foundation/assets.rs`、`locales/*/main.ftl` | 不改 assets，只增 keys |
@@ -197,8 +197,8 @@ Failure lifecycle：
 - `take_last_error` takes only `pending_notification`; map entry remains as marker。
 - Last approval resolved while run remains active returns Running；deny itself does not set failure。
 - Archive cleanup removes marker and active authority for archived IDs。
-- Successful recovery maps every returned interrupted record to marker without restoring approval；recovery operation failure sets no per-conversation marker。
-- Entity retirement/restart naturally drops ordinary markers；only interrupted records returned by the new recovery become Failed in the new app session。
+- Successful recovery persists every interrupted record without restoring approval or a sidebar marker；recovery operation failure sets no per-conversation marker。
+- Entity retirement/restart naturally drops ordinary markers；without a live runtime, recovered interrupted records remain Idle in the sidebar。
 - Every mutation calls `cx.notify()` only after accepted ActiveRunKey/current-attempt checks。
 
 ### L-304 / ST-302：HomeSidebar observation and minute clock
@@ -350,7 +350,7 @@ T-301–T-306 pass；normal project/pinned use exact card，scratch/no-project n
 **Implementation sequence**
 
 1. Add L-303 status/failure record and approval aggregate；replace remove-on-read last_errors behavior with one-shot notification field。
-2. Apply ST-301 transitions to accepted submission、submission/launch/outer/stop failures、terminal handle、archive and recovery returned records。
+2. Apply ST-301 transitions to accepted submission、submission/launch/outer/stop failures、terminal handle and archive；startup recovery does not restore sidebar markers。
 3. Complete L-304 runtime observation and explicit pass-through；row queries authority by ID。
 4. Add L-306 status slot beneath the unchanged action overlay and status tooltip keys。
 5. Add T-307–T-314；retain existing stale publication、recovery、direct action/order tests。
@@ -371,7 +371,7 @@ T-301–T-306 pass；normal project/pinned use exact card，scratch/no-project n
 | `R-10` | `T-309` `runtime.rs` | deny then run continues/terminal fails | deny→Running；only terminal fail→Failed |
 | `R-10` | `T-310` `runtime.rs` | submission/launch/outer/stop failure | marker Failed；notification delivered at most once |
 | `R-10` | `T-311` `runtime.rs` | Failed then next accepted submission | marker cleared before Running |
-| `R-10` | `T-312` `runtime.rs` | startup recovers Running/waiting approval | Failed marker；no actionable/pending approval |
+| `R-10` | `T-312` `runtime.rs` | startup recovers Running/waiting approval | Idle sidebar；persisted Failed；no actionable/pending approval |
 | `R-10`–`R-11` | `T-313` existing runtime tests | stale run key/archive/shutdown | no stale status publication/regression |
 | `R-08`–`R-09` | `T-314` `row.rs` | four statuses + group hover/focus actions | Idle empty；icons/spinner exact；hover two actions only；stable IDs |
 
@@ -409,7 +409,7 @@ T-307–T-314 and existing runtime/action regressions pass；three sidebar locat
 3. Scratch/no-project conversation and pinned clone show no card。
 4. Idle suffix empty；submit shows Running；tool approval shows AwaitingApproval；resolve returns Running；complete/cancel returns empty。
 5. Failure shows Failed after any one-shot notification；next submission clears it；restart drops ordinary marker。
-6. Force restart during run/approval；recovery produces Failed and no approval remains actionable。
+6. Force restart during run/approval；recovery persists Failed while the sidebar returns to Idle and no approval remains actionable。
 7. Hover each Idle/special row in all sections；suffix always becomes only Pin/Unpin + Archive and each click does not open the row。
 8. Keyboard focus still exposes and activates both direct buttons；context menu and row open continue working。
 9. Keep card open across a minute threshold；label updates within one minute。

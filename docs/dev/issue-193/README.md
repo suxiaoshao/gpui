@@ -37,7 +37,7 @@
 - 最近消息、消息摘要、用户输入或 agent 输出预览。
 - 无项目会话的悬浮卡片。
 - 将 transient sidebar status 写入 `ConversationSummary`、SQLite、`HomeWorkspace` 或 `SidebarSnapshot`。
-- 持久化普通历史 Failed 状态；应用重启后仅本次 recovery 终结的遗留 run 显示 Failed。
+- 持久化普通历史 Failed 状态；应用重启后没有 live runtime，startup recovery 终结的遗留 run 仍显示 Idle。
 - 新增 provider、Rig、MCP、network、credential、telemetry、filter 或 redaction 能力。
 - 更改现有 conversation context menu、Pin/Archive mutation、确认框或 focus-visible 行为。
 - 为每一行创建 timer、Task 或独立 hover/status authority。
@@ -196,8 +196,8 @@ accepted submission ──> Running ── pending approval ──> AwaitingAppr
        └─ run Completed/Canceled ───────────> Idle
 
 Failed ── next accepted submission ──> Running
-startup recovered interrupted run ──> Failed (current app session)
-app restart without recovered run ──> Idle
+startup recovered interrupted run ──> Idle (persisted failure remains in history)
+app restart ──> Idle
 ```
 
 - ActiveRunKey continues rejecting stale completion/approval publications.

@@ -1542,14 +1542,7 @@ fn request_recovery(store: Entity<ConversationRuntimeStore>, cx: &mut App) -> Ja
         let _ = completion_store.update(cx, |runtime, cx| {
             if runtime.recovery.is_running() {
                 match result {
-                    Ok(recovered) => {
-                        for run in recovered {
-                            runtime
-                                .failures
-                                .insert(run.conversation_id, ConversationFailure::default());
-                        }
-                        runtime.recovery.transition(Complete(Ok(())));
-                    }
+                    Ok(_) => runtime.recovery.transition(Complete(Ok(()))),
                     Err(error) => runtime.recovery.transition(Complete(Err(error))),
                 }
                 cx.notify();
@@ -2166,7 +2159,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn init_recovers_persisted_running_runs(cx: &mut gpui::TestAppContext) {
+    fn init_recovers_persisted_running_runs_without_sidebar_failure(cx: &mut gpui::TestAppContext) {
         let _dir = init_runtime_test(cx);
         let (conversation_id, agent_run_id) = cx.update(|cx| {
             let repository = test_repository(cx);
@@ -2188,13 +2181,15 @@ mod tests {
             assert!(!runtime.read(cx).is_running(&conversation_id));
             assert_eq!(
                 runtime.read(cx).sidebar_status(&conversation_id),
-                ConversationSidebarStatus::Failed
+                ConversationSidebarStatus::Idle
             );
         });
     }
 
     #[gpui::test]
-    fn init_recovers_persisted_waiting_approval_runs(cx: &mut gpui::TestAppContext) {
+    fn init_recovers_persisted_waiting_approval_runs_without_sidebar_failure(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let _dir = init_runtime_test(cx);
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = test_repository(cx);
@@ -2217,7 +2212,7 @@ mod tests {
             assert!(!runtime.read(cx).is_running(&conversation_id));
             assert_eq!(
                 runtime.read(cx).sidebar_status(&conversation_id),
-                ConversationSidebarStatus::Failed
+                ConversationSidebarStatus::Idle
             );
             assert!(!runtime.read(cx).can_decide_tool_invocation(
                 &conversation_id,
