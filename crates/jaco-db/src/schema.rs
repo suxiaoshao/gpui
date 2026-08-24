@@ -47,6 +47,7 @@ diesel::table! {
         settings_snapshot_json -> Json,
         created_at -> TimestamptzSqlite,
         updated_at -> TimestamptzSqlite,
+        recency_at -> TimestamptzSqlite,
         archived_at -> Nullable<TimestamptzSqlite>,
         deleted_at -> Nullable<TimestamptzSqlite>,
     }

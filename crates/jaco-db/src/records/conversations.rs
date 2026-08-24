@@ -57,6 +57,7 @@ pub enum ConversationIndexDelta {
         id: ConversationId,
         last_entry_seq: i32,
         updated_at: OffsetDateTime,
+        recency_at: OffsetDateTime,
     },
     PresentationChanged {
         id: ConversationId,

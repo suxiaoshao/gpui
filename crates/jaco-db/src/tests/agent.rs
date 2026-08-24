@@ -1287,6 +1287,11 @@ fn update_item_payload_bumps_parent_conversation_timestamp() {
     let item = repo
         .append_conversation_entry(message_item(&conversation.id, "before"))
         .unwrap();
+    let recency_at = repo
+        .get_conversation(&conversation.id)
+        .unwrap()
+        .unwrap()
+        .recency_at;
 
     let updated = repo
         .update_conversation_entry_payload(
@@ -1304,6 +1309,7 @@ fn update_item_payload_bumps_parent_conversation_timestamp() {
 
     assert!(updated.updated_at >= item.updated_at);
     assert_eq!(parent.updated_at, updated.updated_at);
+    assert_eq!(parent.recency_at, recency_at);
 }
 
 #[test]
@@ -1357,6 +1363,11 @@ fn append_item_rejects_cross_conversation_execution_links() {
     same_conversation.provider_step_id = Some(provider_step.id.clone());
     same_conversation.tool_invocation_id = Some(tool.id.clone());
     repo.append_conversation_entry(same_conversation).unwrap();
+    let recency_before_rejected_appends = repo
+        .get_conversation(&conversation_a.id)
+        .unwrap()
+        .unwrap()
+        .recency_at;
 
     let mut cross_agent = message_item(&conversation_b.id, "cross agent");
     cross_agent.agent_run_id = Some(agent_run.id.clone());
@@ -1382,6 +1393,13 @@ fn append_item_rejects_cross_conversation_execution_links() {
     mismatched_chain.agent_run_id = Some(second_run.id);
     mismatched_chain.provider_step_id = Some(provider_step.id);
     assert!(repo.append_conversation_entry(mismatched_chain).is_err());
+    assert_eq!(
+        repo.get_conversation(&conversation_a.id)
+            .unwrap()
+            .unwrap()
+            .recency_at,
+        recency_before_rejected_appends
+    );
 }
 
 #[test]

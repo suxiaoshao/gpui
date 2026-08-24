@@ -8,7 +8,7 @@ use jaco_agent::{
     AgentCancellationToken, AgentPersistence, AgentRunHandle, AgentRunRequest, AgentRuntime,
     AgentRuntimeObserver, OpenAiResponsesSessionPool, ToolApprovalDecision,
 };
-use jaco_core::{AgentRunId, ConversationId, ProjectId, ToolInvocationId};
+use jaco_core::{AgentRunId, AgentRunStatus, ConversationId, ProjectId, ToolInvocationId};
 use jaco_db::ProviderRecord;
 use smol::channel::{Receiver, Sender};
 use tracing::{Level, event};
@@ -29,11 +29,16 @@ enum RuntimePublication {
 pub(crate) struct ConversationRuntimeStore {
     active_runs: ActiveRuns,
     archive_fences: ArchiveFences,
-    last_errors: HashMap<ConversationId, String>,
+    failures: HashMap<ConversationId, ConversationFailure>,
     next_run_key: u64,
     shutting_down: bool,
     openai_sessions: OpenAiResponsesSessionPool,
     recovery: refresh::Operation<(), ConversationRuntimeProblem, Task<()>>,
+}
+
+#[derive(Default)]
+struct ConversationFailure {
+    pending_notification: Option<String>,
 }
 
 #[derive(Debug)]
@@ -161,6 +166,14 @@ pub(crate) enum ConversationRunStatus {
     Submitting,
     Running,
     Stopping,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConversationSidebarStatus {
+    Idle,
+    Running,
+    AwaitingApproval,
+    Failed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -529,7 +542,7 @@ impl ConversationRuntimeStore {
         Self {
             active_runs: ActiveRuns::default(),
             archive_fences: ArchiveFences::default(),
-            last_errors: HashMap::new(),
+            failures: HashMap::new(),
             next_run_key: 0,
             shutting_down: false,
             openai_sessions: OpenAiResponsesSessionPool::new(),
@@ -601,6 +614,29 @@ impl ConversationRuntimeStore {
         }
     }
 
+    pub(crate) fn sidebar_status(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> ConversationSidebarStatus {
+        if let Some(attempt) = self.active_runs.0.get(conversation_id) {
+            if let ConversationAttempt::Running(active) | ConversationAttempt::Stopping(active) =
+                attempt
+                && let Some(agent_run_id) = active.agent_run_id.as_ref()
+                && active
+                    .approval_broker
+                    .has_pending_for_run(conversation_id, agent_run_id)
+            {
+                return ConversationSidebarStatus::AwaitingApproval;
+            }
+            return ConversationSidebarStatus::Running;
+        }
+        if self.failures.contains_key(conversation_id) {
+            ConversationSidebarStatus::Failed
+        } else {
+            ConversationSidebarStatus::Idle
+        }
+    }
+
     pub(crate) fn reserve_conversation_archive(
         &mut self,
         conversation_id: ConversationId,
@@ -649,7 +685,7 @@ impl ConversationRuntimeStore {
         let mut tasks = Vec::new();
         for conversation_id in conversation_ids {
             let Some(attempt) = self.active_runs.0.remove(conversation_id) else {
-                self.last_errors.remove(conversation_id);
+                self.failures.remove(conversation_id);
                 continue;
             };
             match attempt {
@@ -675,7 +711,7 @@ impl ConversationRuntimeStore {
                     tasks.push((active.task, active._event_task));
                 }
             }
-            self.last_errors.remove(conversation_id);
+            self.failures.remove(conversation_id);
         }
         cx.notify();
 
@@ -721,7 +757,15 @@ impl ConversationRuntimeStore {
     }
 
     pub(crate) fn take_last_error(&mut self, conversation_id: &ConversationId) -> Option<String> {
-        self.last_errors.remove(conversation_id)
+        self.failures
+            .get_mut(conversation_id)
+            .and_then(|failure| failure.pending_notification.take())
+    }
+
+    fn clear_pending_notification(&mut self, conversation_id: &ConversationId) {
+        if let Some(failure) = self.failures.get_mut(conversation_id) {
+            failure.pending_notification = None;
+        }
     }
 
     pub(crate) fn submit_message(
@@ -732,7 +776,6 @@ impl ConversationRuntimeStore {
         let conversation_id = request.conversation_id.clone();
         let project_id = request.project_id.clone();
         self.ensure_submission_available(&conversation_id, Some(&project_id))?;
-        self.last_errors.remove(&conversation_id);
         let key = self.next_active_run_key();
         let ticket = ConversationSubmissionTicket {
             conversation_id: conversation_id.clone(),
@@ -763,6 +806,9 @@ impl ConversationRuntimeStore {
             accepted,
             "submission availability was checked synchronously"
         );
+        if accepted {
+            self.failures.remove(ticket.conversation_id());
+        }
         cx.notify();
         Ok(ticket)
     }
@@ -775,7 +821,6 @@ impl ConversationRuntimeStore {
         let conversation_id = request.conversation_id.clone();
         let project_id = request.project_id.clone();
         self.ensure_submission_available(&conversation_id, project_id.as_ref())?;
-        self.last_errors.remove(&conversation_id);
         let key = self.next_active_run_key();
         let ticket = ConversationSubmissionTicket {
             conversation_id: conversation_id.clone(),
@@ -806,6 +851,9 @@ impl ConversationRuntimeStore {
             accepted,
             "submission availability was checked synchronously"
         );
+        if accepted {
+            self.failures.remove(ticket.conversation_id());
+        }
         cx.notify();
         Ok(ticket)
     }
@@ -854,7 +902,7 @@ impl ConversationRuntimeStore {
             return false;
         }
 
-        self.last_errors.remove(conversation_id);
+        self.clear_pending_notification(conversation_id);
         cx.notify();
         true
     }
@@ -940,7 +988,7 @@ impl ConversationRuntimeStore {
                     } else {
                         active.approval_broker.cancel_all();
                     }
-                    self.last_errors.remove(&conversation_id);
+                    self.failures.remove(&conversation_id);
                     cx.emit(ConversationRuntimeEvent::RunFinished {
                         ticket: ConversationSubmissionTicket {
                             conversation_id,
@@ -994,7 +1042,7 @@ impl ConversationRuntimeStore {
         debug_assert_eq!(outcome.conversation_id, conversation_id);
         debug_assert_eq!(&outcome.agent_run_id, agent_run_id);
         let _ = outcome.remaining_for_run;
-        self.last_errors.remove(&conversation_id);
+        self.clear_pending_notification(&conversation_id);
         cx.notify();
         true
     }
@@ -1029,7 +1077,7 @@ impl ConversationRuntimeStore {
         debug_assert_eq!(outcome.conversation_id, conversation_id);
         debug_assert_eq!(&outcome.agent_run_id, agent_run_id);
         let _ = outcome.remaining_for_run;
-        self.last_errors.remove(&conversation_id);
+        self.clear_pending_notification(&conversation_id);
         cx.notify();
         true
     }
@@ -1198,11 +1246,13 @@ impl ConversationRuntimeStore {
         match result {
             Err(error) => {
                 if !(&mut self.active_runs).transition(SubmissionFailed {
-                    conversation_id,
+                    conversation_id: conversation_id.clone(),
                     key,
                 }) {
                     return false;
                 }
+                self.failures
+                    .insert(conversation_id, ConversationFailure::default());
                 cx.emit(ConversationRuntimeEvent::SubmissionFailed {
                     ticket,
                     kind,
@@ -1253,12 +1303,14 @@ impl ConversationRuntimeStore {
                     }
                     Err(error) => {
                         let removed = (&mut self.active_runs).transition(SubmissionFailed {
-                            conversation_id,
+                            conversation_id: conversation_id.clone(),
                             key,
                         });
                         if !removed {
                             return false;
                         }
+                        self.failures
+                            .insert(conversation_id, ConversationFailure::default());
                         cx.emit(ConversationRuntimeEvent::RunLaunchFailed { ticket, error });
                     }
                 }
@@ -1297,14 +1349,40 @@ impl ConversationRuntimeStore {
         }
 
         super::registry::release_active(&conversation_id, cx);
-        if let Err(err) = result {
-            let sessions = self.openai_sessions.clone();
-            let failed_conversation_id = conversation_id.clone();
-            cx.spawn(async move |_, _| {
-                sessions.close_conversation(&failed_conversation_id).await;
-            })
-            .detach();
-            self.last_errors.insert(conversation_id.clone(), err);
+        match result {
+            Err(error) => {
+                let sessions = self.openai_sessions.clone();
+                let failed_conversation_id = conversation_id.clone();
+                cx.spawn(async move |_, _| {
+                    sessions.close_conversation(&failed_conversation_id).await;
+                })
+                .detach();
+                self.failures.insert(
+                    conversation_id.clone(),
+                    ConversationFailure {
+                        pending_notification: Some(error),
+                    },
+                );
+            }
+            Ok(handle) => match handle.agent_run.status {
+                AgentRunStatus::Failed => {
+                    self.failures
+                        .insert(conversation_id.clone(), ConversationFailure::default());
+                }
+                AgentRunStatus::Completed | AgentRunStatus::Canceled => {
+                    self.failures.remove(&conversation_id);
+                }
+                AgentRunStatus::Running => {
+                    event!(
+                        Level::ERROR,
+                        %conversation_id,
+                        agent_run_id = %handle.agent_run.id,
+                        "finished agent run handle retained running status"
+                    );
+                    self.failures
+                        .insert(conversation_id.clone(), ConversationFailure::default());
+                }
+            },
         }
         cx.emit(ConversationRuntimeEvent::RunFinished {
             ticket: ConversationSubmissionTicket {
@@ -1334,6 +1412,7 @@ impl ConversationRuntimeStore {
         super::registry::release_active(&conversation_id, cx);
         match result {
             Ok(()) => {
+                self.failures.remove(&conversation_id);
                 super::registry::refresh_conversation(&conversation_id, cx);
             }
             Err(error) => {
@@ -1344,7 +1423,12 @@ impl ConversationRuntimeStore {
                     ?agent_run_id,
                     "cancel active conversation runs failed"
                 );
-                self.last_errors.insert(conversation_id.clone(), error);
+                self.failures.insert(
+                    conversation_id.clone(),
+                    ConversationFailure {
+                        pending_notification: Some(error),
+                    },
+                );
             }
         }
         cx.emit(ConversationRuntimeEvent::RunFinished {
@@ -1457,7 +1541,10 @@ fn request_recovery(store: Entity<ConversationRuntimeStore>, cx: &mut App) -> Ja
         let failed = result.is_err();
         let _ = completion_store.update(cx, |runtime, cx| {
             if runtime.recovery.is_running() {
-                runtime.recovery.transition(Complete(result.map(|_| ())));
+                match result {
+                    Ok(_) => runtime.recovery.transition(Complete(Ok(()))),
+                    Err(error) => runtime.recovery.transition(Complete(Err(error))),
+                }
                 cx.notify();
             }
         });
@@ -1627,6 +1714,12 @@ mod tests {
         }
     }
 
+    fn failure_with_notification(message: &str) -> ConversationFailure {
+        ConversationFailure {
+            pending_notification: Some(message.to_string()),
+        }
+    }
+
     struct DropFlag(Arc<AtomicBool>);
 
     impl Drop for DropFlag {
@@ -1696,6 +1789,52 @@ mod tests {
             Some(ConversationAttempt::Submitting(submitting))
                 if submitting.key == ActiveRunKey(2)
         ));
+    }
+
+    #[test]
+    fn sidebar_status_prioritizes_current_approval_and_retains_failure_marker() {
+        let conversation_id = "conversation-1".to_string();
+        let agent_run_id = "run-1".to_string();
+        let tool_invocation_id = "invocation-1".to_string();
+        let mut runtime = ConversationRuntimeStore::new_ready_for_test();
+
+        assert_eq!(
+            runtime.sidebar_status(&conversation_id),
+            ConversationSidebarStatus::Idle
+        );
+        runtime.failures.insert(
+            conversation_id.clone(),
+            failure_with_notification("provider failed"),
+        );
+        assert_eq!(
+            runtime.take_last_error(&conversation_id).as_deref(),
+            Some("provider failed")
+        );
+        assert_eq!(
+            runtime.sidebar_status(&conversation_id),
+            ConversationSidebarStatus::Failed
+        );
+
+        let active = active_run_with_agent_id(ActiveRunKey(1), agent_run_id.clone());
+        let _decision = active.approval_broker.register_pending_for_test(
+            conversation_id.clone(),
+            agent_run_id,
+            tool_invocation_id,
+        );
+        runtime.active_runs.insert(conversation_id.clone(), active);
+        assert_eq!(
+            runtime.sidebar_status(&conversation_id),
+            ConversationSidebarStatus::AwaitingApproval
+        );
+
+        let other_conversation_id = "conversation-2".to_string();
+        runtime
+            .active_runs
+            .insert(other_conversation_id.clone(), active_run(ActiveRunKey(2)));
+        assert_eq!(
+            runtime.sidebar_status(&other_conversation_id),
+            ConversationSidebarStatus::Running
+        );
     }
 
     #[test]
@@ -1806,6 +1945,35 @@ mod tests {
         assert!(runtime.release_archive_fence(&current));
     }
 
+    #[gpui::test]
+    fn archive_commit_clears_session_failure_marker(cx: &mut gpui::TestAppContext) {
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
+        let conversation_id = "conversation-1".to_string();
+        let project_id = "project-1".to_string();
+
+        cx.update(|cx| {
+            store.update(cx, |runtime, cx| {
+                runtime.failures.insert(
+                    conversation_id.clone(),
+                    failure_with_notification("provider failed"),
+                );
+                let ticket = runtime
+                    .reserve_conversation_archive(conversation_id.clone(), project_id)
+                    .unwrap();
+                let task = runtime.prepare_archive_commit(
+                    &ticket,
+                    std::slice::from_ref(&conversation_id),
+                    cx,
+                );
+                drop(task);
+                assert_eq!(
+                    runtime.sidebar_status(&conversation_id),
+                    ConversationSidebarStatus::Idle
+                );
+            });
+        });
+    }
+
     #[test]
     fn stale_submission_completion_cannot_replace_current_attempt() {
         let conversation_id = "conversation-1".to_string();
@@ -1864,6 +2032,37 @@ mod tests {
         }));
         cx.run_until_parked();
         assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[gpui::test]
+    fn submission_failure_sets_sidebar_marker_without_duplicate_notification(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
+        let conversation_id = "conversation-1".to_string();
+
+        cx.update(|cx| {
+            store.update(cx, |runtime, cx| {
+                let key = ActiveRunKey(4);
+                assert!((&mut runtime.active_runs).transition(SubmitAttempt {
+                    conversation_id: conversation_id.clone(),
+                    key,
+                    project_id: Some("project-1".to_string()),
+                    task: Task::ready(()),
+                }));
+                assert!(runtime.finish_submission(
+                    submission_ticket(conversation_id.clone(), key),
+                    ConversationSubmissionKind::Message,
+                    Err("write failed".to_string()),
+                    cx,
+                ));
+                assert_eq!(
+                    runtime.sidebar_status(&conversation_id),
+                    ConversationSidebarStatus::Failed
+                );
+                assert!(runtime.take_last_error(&conversation_id).is_none());
+            });
+        });
     }
 
     #[gpui::test]
@@ -1960,7 +2159,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn init_recovers_persisted_running_runs(cx: &mut gpui::TestAppContext) {
+    fn init_recovers_persisted_running_runs_without_sidebar_failure(cx: &mut gpui::TestAppContext) {
         let _dir = init_runtime_test(cx);
         let (conversation_id, agent_run_id) = cx.update(|cx| {
             let repository = test_repository(cx);
@@ -1980,11 +2179,17 @@ mod tests {
             assert_eq!(agent_run.status, AgentRunStatus::Failed);
             assert_eq!(agent_run.error.as_ref().unwrap().code, "interrupted");
             assert!(!runtime.read(cx).is_running(&conversation_id));
+            assert_eq!(
+                runtime.read(cx).sidebar_status(&conversation_id),
+                ConversationSidebarStatus::Idle
+            );
         });
     }
 
     #[gpui::test]
-    fn init_recovers_persisted_waiting_approval_runs(cx: &mut gpui::TestAppContext) {
+    fn init_recovers_persisted_waiting_approval_runs_without_sidebar_failure(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let _dir = init_runtime_test(cx);
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
             let repository = test_repository(cx);
@@ -2005,6 +2210,15 @@ mod tests {
             assert_eq!(agent_run.status, AgentRunStatus::Failed);
             assert_eq!(agent_run.error.as_ref().unwrap().code, "interrupted");
             assert!(!runtime.read(cx).is_running(&conversation_id));
+            assert_eq!(
+                runtime.read(cx).sidebar_status(&conversation_id),
+                ConversationSidebarStatus::Idle
+            );
+            assert!(!runtime.read(cx).can_decide_tool_invocation(
+                &conversation_id,
+                &agent_run_id,
+                &approval_id
+            ));
 
             let invocation = repository
                 .get_tool_invocation(&approval_id)
@@ -2051,9 +2265,10 @@ mod tests {
                         ..active_run_with_token(ActiveRunKey(0), cancellation_token.clone())
                     },
                 );
-                store
-                    .last_errors
-                    .insert(conversation_id.clone(), "runtime canceled".to_string());
+                store.failures.insert(
+                    conversation_id.clone(),
+                    failure_with_notification("runtime canceled"),
+                );
 
                 assert!(store.stop_run(&conversation_id, cx));
                 assert!(!store.stop_run(&conversation_id, cx));
@@ -2151,6 +2366,9 @@ mod tests {
             completed_at: Some(time::OffsetDateTime::now_utc()),
             updated_at: time::OffsetDateTime::now_utc(),
         };
+        let mut failed_agent_run = agent_run.clone();
+        failed_agent_run.id = "run-2".to_string();
+        failed_agent_run.status = AgentRunStatus::Failed;
 
         cx.update(|cx| {
             store.update(cx, |store, cx| {
@@ -2170,6 +2388,30 @@ mod tests {
                     cx
                 ));
                 assert!(!store.active_runs.contains_key(&conversation_id));
+                assert_eq!(
+                    store.sidebar_status(&conversation_id),
+                    ConversationSidebarStatus::Idle
+                );
+
+                store
+                    .active_runs
+                    .insert(conversation_id.clone(), active_run(ActiveRunKey(1)));
+                assert!(store.finish_run(
+                    conversation_id.clone(),
+                    ActiveRunKey(1),
+                    Ok(AgentRunHandle {
+                        agent_run: failed_agent_run,
+                        output: None,
+                        status: AgentRunHandleStatus::Finished,
+                        events: Vec::new(),
+                        steps: Vec::new(),
+                    }),
+                    cx
+                ));
+                assert_eq!(
+                    store.sidebar_status(&conversation_id),
+                    ConversationSidebarStatus::Failed
+                );
             });
         });
     }
@@ -2233,9 +2475,10 @@ mod tests {
                     approval_id.clone(),
                 );
                 store.active_runs.insert(conversation_id.clone(), active);
-                store
-                    .last_errors
-                    .insert(conversation_id.clone(), "previous error".to_string());
+                store.failures.insert(
+                    conversation_id.clone(),
+                    failure_with_notification("previous error"),
+                );
 
                 assert!(store.can_decide_tool_invocation(
                     &conversation_id,
@@ -2257,6 +2500,44 @@ mod tests {
                     }
                 );
                 assert!(store.take_last_error(&conversation_id).is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn denying_approval_does_not_create_failure_marker(cx: &mut gpui::TestAppContext) {
+        let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
+        let conversation_id = "conversation-1".to_string();
+        let agent_run_id = "run-1".to_string();
+        let tool_invocation_id = "invocation-1".to_string();
+
+        cx.update(|cx| {
+            store.update(cx, |runtime, cx| {
+                let active = active_run_with_agent_id(ActiveRunKey(0), agent_run_id.clone());
+                let mut decision = active.approval_broker.register_pending_for_test(
+                    conversation_id.clone(),
+                    agent_run_id,
+                    tool_invocation_id.clone(),
+                );
+                runtime.active_runs.insert(conversation_id.clone(), active);
+
+                assert!(runtime.deny_tool_invocation(
+                    conversation_id.clone(),
+                    tool_invocation_id,
+                    cx,
+                ));
+                assert_eq!(
+                    decision.try_recv().unwrap(),
+                    ToolApprovalDecision::Denied {
+                        decided_by: "user".to_string(),
+                        reason: None,
+                    }
+                );
+                assert!(!runtime.failures.contains_key(&conversation_id));
+                assert_eq!(
+                    runtime.sidebar_status(&conversation_id),
+                    ConversationSidebarStatus::Running
+                );
             });
         });
     }
@@ -2377,9 +2658,10 @@ mod tests {
                     tool_invocation_id.clone(),
                 );
                 store.active_runs.insert(conversation_id.clone(), active);
-                store
-                    .last_errors
-                    .insert(conversation_id.clone(), "previous error".to_string());
+                store.failures.insert(
+                    conversation_id.clone(),
+                    failure_with_notification("previous error"),
+                );
 
                 assert!(!store.deny_tool_invocation(
                     conversation_id.clone(),
@@ -2414,9 +2696,10 @@ mod tests {
                 );
                 store.active_runs.insert(conversation_id.clone(), active);
                 store.shutting_down = true;
-                store
-                    .last_errors
-                    .insert(conversation_id.clone(), "previous error".to_string());
+                store.failures.insert(
+                    conversation_id.clone(),
+                    failure_with_notification("previous error"),
+                );
 
                 assert!(!store.deny_tool_invocation(
                     conversation_id.clone(),
@@ -2451,9 +2734,10 @@ mod tests {
             window
                 .update(cx, |_view, window, cx| {
                     store.update(cx, |store, cx| {
-                        store
-                            .last_errors
-                            .insert(conversation_id.clone(), "previous error".to_string());
+                        store.failures.insert(
+                            conversation_id.clone(),
+                            failure_with_notification("previous error"),
+                        );
                         store.approve_tool_invocation(
                             conversation_id.clone(),
                             approval_id.clone(),
@@ -2549,9 +2833,10 @@ mod tests {
                     conversation_id.clone(),
                     active_run_with_agent_id(ActiveRunKey(0), agent_run_id.clone()),
                 );
-                store
-                    .last_errors
-                    .insert(conversation_id.clone(), "previous error".to_string());
+                store.failures.insert(
+                    conversation_id.clone(),
+                    failure_with_notification("previous error"),
+                );
 
                 assert!(!store.deny_tool_invocation(
                     conversation_id.clone(),

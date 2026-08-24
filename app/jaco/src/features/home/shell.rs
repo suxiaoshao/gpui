@@ -47,7 +47,8 @@ impl HomeView {
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
         let workspace = workspace::create(cx);
         let sidebar_workspace = workspace.clone();
-        let sidebar = cx.new(|cx| HomeSidebar::new(sidebar_workspace, cx));
+        let sidebar_runtime = runtime.clone();
+        let sidebar = cx.new(|cx| HomeSidebar::new(sidebar_workspace, sidebar_runtime, cx));
         let new_conversation_workspace = workspace.clone();
         let new_conversation_runtime = runtime.clone();
         let new_conversation = cx.new(|cx| {

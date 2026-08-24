@@ -265,8 +265,8 @@ impl ConversationRegistry {
 fn sort_catalog(catalog: &mut [ConversationSummary]) {
     catalog.sort_by(|left, right| {
         right
-            .updated_at
-            .cmp(&left.updated_at)
+            .recency_at
+            .cmp(&left.recency_at)
             .then_with(|| left.id.cmp(&right.id))
     });
 }
@@ -420,6 +420,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn catalog_sorts_by_recency_then_id_independently_of_updated_at() {
+        let mut older = summary("older");
+        older.id = "conversation-z".to_string();
+        older.updated_at = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20);
+        older.recency_at = OffsetDateTime::UNIX_EPOCH;
+
+        let mut tie_b = summary("tie-b");
+        tie_b.id = "conversation-b".to_string();
+        tie_b.recency_at = OffsetDateTime::UNIX_EPOCH + time::Duration::days(1);
+
+        let mut tie_a = summary("tie-a");
+        tie_a.id = "conversation-a".to_string();
+        tie_a.recency_at = tie_b.recency_at;
+
+        let mut catalog = vec![older, tie_b, tie_a];
+        sort_catalog(&mut catalog);
+
+        assert_eq!(
+            catalog
+                .iter()
+                .map(|conversation| conversation.id.as_str())
+                .collect::<Vec<_>>(),
+            ["conversation-a", "conversation-b", "conversation-z"]
+        );
+    }
+
     fn summary(title: &str) -> ConversationSummary {
         ConversationSummary {
             id: "conversation-1".to_string(),
@@ -450,6 +477,7 @@ mod tests {
             },
             created_at: OffsetDateTime::UNIX_EPOCH,
             updated_at: OffsetDateTime::UNIX_EPOCH,
+            recency_at: OffsetDateTime::UNIX_EPOCH,
             archived_at: None,
             deleted_at: None,
         }

@@ -58,6 +58,35 @@ fn fresh_schema_declares_structured_sqlite_types_and_checks() {
             .iter()
             .all(|name| name != "approval_decisions")
     );
+
+    let conversation_columns = sql_query(
+        "SELECT COUNT(*) AS value FROM pragma_table_info('conversations')
+         WHERE name = 'recency_at' AND \"notnull\" = 1",
+    )
+    .load::<CountRow>(&mut conn)
+    .unwrap()[0]
+        .value;
+    assert_eq!(conversation_columns, 1);
+}
+
+#[test]
+fn conversation_recency_column_rejects_null_values() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let project = store
+        .repository()
+        .insert_project(project("null-recency"))
+        .unwrap();
+    let conversation = store
+        .repository()
+        .insert_conversation(conversation(&project))
+        .unwrap();
+    let mut conn = store.pool().get().unwrap();
+    let error = sql_query("UPDATE conversations SET recency_at = NULL WHERE id = ?")
+        .bind::<Text, _>(&conversation.id)
+        .execute(&mut conn)
+        .unwrap_err();
+    assert!(error.to_string().contains("NOT NULL constraint failed"));
 }
 
 #[test]

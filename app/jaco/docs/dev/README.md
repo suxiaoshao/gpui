@@ -12,6 +12,7 @@
 | [#188](https://github.com/suxiaoshao/gpui/issues/188) 侧边栏项目与对话上下文菜单 | `In progress`；PR [#208](https://github.com/suxiaoshao/gpui/pull/208) 已提交，shared actions、conversation 右键菜单与 pin/archive 直接按钮等已实现；人工 UI 受阻，远端 CI 等待结果 | [issue-188/README.md](issue-188/README.md) |
 | [#189](https://github.com/suxiaoshao/gpui/issues/189) Message/composer、Settings analytics、activity与cost UI | `Implemented`；`WP-501`–`WP-505`已实施 | [issue-189/README.md](issue-189/README.md) |
 | [#190](https://github.com/suxiaoshao/gpui/issues/190) 持久化工具调用详情 | `Implemented`；页面、preview、实时更新、审批与reload实现及本地自动化已验证，完整人工场景和远端 CI 待验证 | [issue-190/README.md](issue-190/README.md) |
+| [#193](https://github.com/suxiaoshao/gpui/issues/193) 侧边栏 HoverCard、活动时间与运行状态 | `In progress`；production 与本地自动化完成，人工 UI/远端 CI 未执行 | [issue-193/README.md](issue-193/README.md) |
 | [#199](https://github.com/suxiaoshao/gpui/issues/199) Form 多轮迁移与 Conversation runtime | `Done`；Form consumer 迁移及 Conversation 私有 Transition 已交付；实际 UI、打包与跨平台 CI 未执行 | [issue-199/README.md](issue-199/README.md) |
 
 ## 跨功能迁移

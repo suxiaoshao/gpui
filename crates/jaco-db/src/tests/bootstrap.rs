@@ -79,3 +79,32 @@ fn empty_first_run_has_no_user_data_or_source_tables() {
         assert!(!tables.contains(disallowed));
     }
 }
+
+#[test]
+fn fresh_database_declares_recency_column_and_index() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let mut conn = store.pool().get().unwrap();
+
+    assert_eq!(count(&mut conn, "schema_migrations"), 1);
+    assert_eq!(column_count(&mut conn, "conversations", "recency_at"), 1);
+    assert_eq!(
+        index_count(&mut conn, "idx_conversations_active_recency"),
+        1
+    );
+}
+
+fn column_count(conn: &mut SqliteConnection, table: &str, column: &str) -> i64 {
+    let query = format!(
+        "SELECT COUNT(*) AS value FROM pragma_table_info('{table}') WHERE name = '{column}'"
+    );
+    sql_query(query).load::<CountRow>(conn).unwrap()[0].value
+}
+
+fn index_count(conn: &mut SqliteConnection, index: &str) -> i64 {
+    sql_query("SELECT COUNT(*) AS value FROM sqlite_master WHERE type = 'index' AND name = ?")
+        .bind::<Text, _>(index)
+        .load::<CountRow>(conn)
+        .unwrap()[0]
+        .value
+}

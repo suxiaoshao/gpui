@@ -6,3 +6,4 @@
 | --- | --- | --- |
 | [#188](https://github.com/suxiaoshao/gpui/issues/188) Conversation rename 与 project batch archive | `In progress`；PR [#208](https://github.com/suxiaoshao/gpui/pull/208) 已提交，owner tests 通过，随 root 等待人工 UI/远端 CI 结果 | [issue-188/README.md](issue-188/README.md) |
 | [#189](https://github.com/suxiaoshao/gpui/issues/189) Message/context、Settings selected/activity与cost projections | `Implemented`；`WP-201`–`WP-205`已实施，本地DB手工迁移已由root完成 | [issue-189/README.md](issue-189/README.md) |
+| [#193](https://github.com/suxiaoshao/gpui/issues/193) Conversation recency fresh schema 与排序 | `In progress`；production 与本地自动化完成，等待 root 验收 | [issue-193/README.md](issue-193/README.md) |

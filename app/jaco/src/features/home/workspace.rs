@@ -9,6 +9,7 @@ use gpui_operation::refresh::Phase;
 use gpui_store::{Select, StoreSelection};
 use jaco_core::{ConversationId, ConversationStatus, ConversationSummary, ProjectId, ProjectKind};
 use jaco_db::ProjectRecord;
+use time::OffsetDateTime;
 
 use crate::{
     database, features::conversation::registry::ConversationCatalogModel, state::projects,
@@ -89,7 +90,7 @@ struct WorkspaceConversationInput {
     title: String,
     pinned: bool,
     status: ConversationStatus,
-    updated_at: i128,
+    recency_at: OffsetDateTime,
     deleted_at: Option<i128>,
 }
 
@@ -133,7 +134,8 @@ pub(crate) struct SidebarConversationNode {
     pub(crate) id: ConversationId,
     pub(crate) project_id: ProjectId,
     pub(crate) title: SharedString,
-    pub(crate) updated_at: i128,
+    pub(crate) recency_at: OffsetDateTime,
+    pub(crate) project_display_name: Option<SharedString>,
     pub(crate) pinned: bool,
 }
 
@@ -488,15 +490,21 @@ impl HomeWorkspace {
                 .map(|conversations| SidebarSearchLoad {
                     results: conversations
                         .into_iter()
-                        .map(|conversation| SidebarSearchResult {
-                            project: project_by_id.get(&conversation.project_id).cloned(),
-                            conversation: SidebarConversationNode {
-                                id: conversation.id,
-                                project_id: conversation.project_id,
-                                title: conversation.title.into(),
-                                updated_at: conversation.updated_at.unix_timestamp_nanos(),
-                                pinned: conversation.pinned,
-                            },
+                        .map(|conversation| {
+                            let project = project_by_id.get(&conversation.project_id);
+                            SidebarSearchResult {
+                                project: project.map(|(header, _)| header.clone()),
+                                conversation: SidebarConversationNode {
+                                    id: conversation.id,
+                                    project_id: conversation.project_id,
+                                    title: conversation.title.into(),
+                                    recency_at: conversation.recency_at,
+                                    project_display_name: project
+                                        .filter(|(_, kind)| *kind == ProjectKind::Normal)
+                                        .map(|(header, _)| header.display_name.clone()),
+                                    pinned: conversation.pinned,
+                                },
+                            }
                         })
                         .collect(),
                     stale_problem: None,
@@ -519,14 +527,14 @@ impl HomeWorkspace {
             .is_some_and(|conversation| &conversation.project_id == project_id)
     }
 
-    fn visible_project_headers(&self) -> HashMap<ProjectId, SidebarProjectHeader> {
+    fn visible_project_headers(&self) -> HashMap<ProjectId, (SidebarProjectHeader, ProjectKind)> {
         self.projects.read(|projects| {
             projects
                 .projects
                 .as_deref()
                 .unwrap_or_default()
                 .iter()
-                .map(|project| (project.id.clone(), project_header(project)))
+                .map(|project| (project.id.clone(), (project_header(project), project.kind)))
                 .collect()
         })
     }
@@ -564,7 +572,7 @@ fn workspace_conversation_input(conversation: &ConversationSummary) -> Workspace
         title: conversation.title.clone(),
         pinned: conversation.pinned,
         status: conversation.status,
-        updated_at: conversation.updated_at.unix_timestamp_nanos(),
+        recency_at: conversation.recency_at,
         deleted_at: conversation
             .deleted_at
             .map(|deleted_at| deleted_at.unix_timestamp_nanos()),
@@ -588,10 +596,15 @@ fn build_sidebar_snapshot(
             .then_with(|| left.path.cmp(&right.path))
     });
 
-    let normal_project_ids = normal_projects
+    let normal_project_names = normal_projects
         .iter()
-        .map(|project| project.id.clone())
-        .collect::<HashSet<_>>();
+        .map(|project| {
+            (
+                project.id.clone(),
+                SharedString::from(project.display_name.clone()),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let scratch_project_ids = visible_projects
         .iter()
         .filter(|project| project.kind == ProjectKind::Scratch)
@@ -605,14 +618,14 @@ fn build_sidebar_snapshot(
         .iter()
         .filter(|conversation| conversation.status == ConversationStatus::Active)
     {
-        let node = conversation_node(conversation);
-        if normal_project_ids.contains(&node.project_id) {
+        if let Some(project_display_name) = normal_project_names.get(&conversation.project_id) {
+            let node = conversation_node(conversation, Some(project_display_name.clone()));
             conversations_by_project
                 .entry(node.project_id.clone())
                 .or_default()
                 .push(node);
-        } else if scratch_project_ids.contains(&node.project_id) {
-            no_project_conversations.push(node);
+        } else if scratch_project_ids.contains(&conversation.project_id) {
+            no_project_conversations.push(conversation_node(conversation, None));
         }
     }
 
@@ -628,9 +641,9 @@ fn build_sidebar_snapshot(
         .collect::<Vec<_>>();
 
     for project in &mut projects {
-        sort_conversations_by_updated_at(&mut project.conversations);
+        sort_conversations_by_recency(&mut project.conversations);
     }
-    sort_conversations_by_updated_at(&mut no_project_conversations);
+    sort_conversations_by_recency(&mut no_project_conversations);
 
     let mut pinned_conversations = projects
         .iter()
@@ -639,7 +652,7 @@ fn build_sidebar_snapshot(
         .filter(|conversation| conversation.pinned)
         .cloned()
         .collect::<Vec<_>>();
-    sort_conversations_by_updated_at(&mut pinned_conversations);
+    sort_conversations_by_recency(&mut pinned_conversations);
 
     let mut pinned_projects = projects
         .iter()
@@ -671,19 +684,28 @@ fn project_header(project: &WorkspaceProjectInput) -> SidebarProjectHeader {
     }
 }
 
-fn conversation_node(conversation: &WorkspaceConversationInput) -> SidebarConversationNode {
+fn conversation_node(
+    conversation: &WorkspaceConversationInput,
+    project_display_name: Option<SharedString>,
+) -> SidebarConversationNode {
     debug_assert_eq!(conversation.status, ConversationStatus::Active);
     SidebarConversationNode {
         id: conversation.id.clone(),
         project_id: conversation.project_id.clone(),
         title: conversation.title.clone().into(),
-        updated_at: conversation.updated_at,
+        recency_at: conversation.recency_at,
+        project_display_name,
         pinned: conversation.pinned,
     }
 }
 
-fn sort_conversations_by_updated_at(conversations: &mut [SidebarConversationNode]) {
-    conversations.sort_by_key(|conversation| Reverse(conversation.updated_at));
+fn sort_conversations_by_recency(conversations: &mut [SidebarConversationNode]) {
+    conversations.sort_by(|left, right| {
+        right
+            .recency_at
+            .cmp(&left.recency_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
 }
 
 #[cfg(test)]
@@ -713,7 +735,7 @@ mod tests {
             title: title.to_string(),
             pinned,
             status: ConversationStatus::Active,
-            updated_at: 1,
+            recency_at: OffsetDateTime::UNIX_EPOCH,
             deleted_at: None,
         }
     }
@@ -736,13 +758,55 @@ mod tests {
 
         assert_eq!(snapshot.projects[0].conversations[0].title, "Renamed");
         assert_eq!(
+            snapshot.projects[0].conversations[0].project_display_name,
+            Some("project-1".into())
+        );
+        assert_eq!(
             snapshot.no_project_conversations[0].title,
             "Scratch Renamed"
         );
+        assert_eq!(
+            snapshot.no_project_conversations[0].project_display_name,
+            None
+        );
         assert!(matches!(
             &snapshot.pinned[0],
-            SidebarPinnedEntry::Conversation(conversation) if conversation.title == "Renamed"
+            SidebarPinnedEntry::Conversation(conversation)
+                if conversation.title == "Renamed"
+                    && conversation.project_display_name.as_deref() == Some("project-1")
         ));
+    }
+
+    #[test]
+    fn conversations_sort_by_recency_then_id_in_every_projection() {
+        let projects = [project("project-1", ProjectKind::Normal)];
+        let mut conversations = vec![
+            conversation("conversation-b", "project-1", "B", true),
+            conversation("conversation-a", "project-1", "A", true),
+            conversation("conversation-new", "project-1", "New", true),
+        ];
+        conversations[2].recency_at = OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(1);
+
+        let snapshot = build_sidebar_snapshot(&HashSet::new(), &projects, &conversations);
+        let project_ids = snapshot.projects[0]
+            .conversations
+            .iter()
+            .map(|conversation| conversation.id.as_str())
+            .collect::<Vec<_>>();
+        let pinned_ids = snapshot
+            .pinned
+            .iter()
+            .filter_map(|entry| match entry {
+                SidebarPinnedEntry::Conversation(conversation) => Some(conversation.id.as_str()),
+                SidebarPinnedEntry::Project(_) => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            project_ids,
+            ["conversation-new", "conversation-a", "conversation-b"]
+        );
+        assert_eq!(pinned_ids, project_ids);
     }
 
     #[test]

@@ -196,6 +196,50 @@ fn typed_json_roundtrips_for_repository_records() {
 }
 
 #[test]
+fn conversation_creation_and_append_advance_persisted_recency() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let project = repo.insert_project(project("recency-create")).unwrap();
+
+    let empty = repo.insert_conversation(conversation(&project)).unwrap();
+    assert_eq!(empty.recency_at, empty.created_at);
+    assert_eq!(empty.recency_at, empty.updated_at);
+
+    let with_item = repo
+        .insert_conversation_with_user_item(NewConversationWithUserItem {
+            conversation: conversation(&project),
+            user_item: message_item("", "first entry"),
+        })
+        .unwrap();
+    assert_eq!(with_item.conversation.last_entry_seq, 1);
+    assert_eq!(
+        with_item.conversation.recency_at,
+        with_item.conversation.updated_at
+    );
+    assert!(with_item.conversation.recency_at >= with_item.conversation.created_at);
+
+    let prior = empty.recency_at;
+    let appended = repo
+        .append_conversation_entry(message_item(&empty.id, "advance recency"))
+        .unwrap();
+    assert!(appended.conversation.recency_at >= prior);
+    assert_eq!(
+        appended.conversation.recency_at,
+        appended.conversation.updated_at
+    );
+    assert_eq!(
+        appended.index_delta,
+        crate::ConversationIndexDelta::EntryAdvanced {
+            id: empty.id,
+            last_entry_seq: 1,
+            updated_at: appended.conversation.updated_at,
+            recency_at: appended.conversation.recency_at,
+        }
+    );
+}
+
+#[test]
 fn provider_model_manual_refresh_updates_cached_row() {
     let dir = tempdir().unwrap();
     let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();

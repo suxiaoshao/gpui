@@ -402,6 +402,7 @@ mod tests {
                 },
                 created_at: OffsetDateTime::UNIX_EPOCH,
                 updated_at: OffsetDateTime::UNIX_EPOCH,
+                recency_at: OffsetDateTime::UNIX_EPOCH,
                 archived_at: None,
                 deleted_at: None,
             },
