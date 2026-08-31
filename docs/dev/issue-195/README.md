@@ -2,7 +2,7 @@
 
 ## 状态与范围
 
-- 状态：`Implemented locally`；本地实现、自动化与已授权人工场景完成，远端 CI、commit 和 PR 待执行
+- 状态：`PR open`；本地实现与验收完成，PR [#210](https://github.com/suxiaoshao/gpui/pull/210) 已提交，远端 CI 运行中
 - 关联 issue：[#195](https://github.com/suxiaoshao/gpui/issues/195)
 - Parent：[#159](https://github.com/suxiaoshao/gpui/issues/159)
 - Plan ID：`issue-195`
@@ -10,7 +10,7 @@
 - 分支：`codex/195-jaco-render-persisted-attachments`
 - 基线：`origin/main@184772e0f0a26de4a69e40151e65781d130361b7`
 - 受影响 owner：`app/jaco`
-- 实施状态：`WP-101`–`WP-104` 与 `WP-001` 本地门禁已完成；远端发布门尚未执行
+- 实施状态：`WP-101`–`WP-104` 与 `WP-001` 本地门禁已完成；实现提交 `1ca2c1f` 已推送，远端发布门运行中
 - 最近证据刷新：2026-08-31
 
 ### 高影响变更摘要
@@ -420,14 +420,14 @@ git diff --exit-code -- \
 
 | Evidence | Actual result |
 | --- | --- |
-| Plan/root + owner topology | `Implemented locally`；root/Jaco 计划、实现和本地验收证据于 2026-08-31 同步 |
+| Plan/root + owner topology | `PR open`；root/Jaco 计划、实现和本地验收证据于 2026-08-31 同步至 PR #210 |
 | Production implementation | Complete；ordered projection、per-block Markdown state、共享 User/Assistant renderer、trusted access、Open/Reveal/Save、atomic copy、i18n/icons 已实现；可见类型只有 File/Attachment，Audio 仅在 ingress 归一化 |
 | Focused automated tests | Complete；相关 projection/access/action/persistence/i18n/GPUI 回归由最终 `cargo test -p jaco --locked --no-fail-fast` 覆盖，结果 575 passed、2 ignored |
 | Jaco full tests/check/clippy | Passed；`cargo test -p jaco --locked --no-fail-fast`、`cargo clippy -p jaco --all-targets --all-features --locked -- -D warnings`、`cargo test -p jaco-db --locked attachments` |
 | Manual restart/actions/privacy/image parity | Persisted fixture 重新打开并在 Jaco 中验证 exact mixed order、User/Assistant surfaces、Image 显示、Audio→Attachment、External/Provider unavailable、Save cancel/success + byte equality、Open/Reveal dispatch；最终缓存修正后按用户要求未再次启动 GUI，由新增 GPUI regression test覆盖该修正 |
 | Workspace aggregate gate | Passed；`cargo fmt --all -- --check`、`cargo build --workspace --locked`、`cargo test --workspace --locked --no-fail-fast`、workspace clippy、`git diff --check` 与 unchanged-scope audit；workspace tests 因 sandbox 禁止 loopback 首次失败，原命令提权后 exit 0 |
-| Remote macOS/Linux/Windows CI | Pending |
-| Commit/PR | Pending |
+| Remote macOS/Linux/Windows CI | In progress on PR [#210](https://github.com/suxiaoshao/gpui/pull/210) |
+| Commit/PR | 实现提交 `1ca2c1f` 已推送；普通 PR [#210](https://github.com/suxiaoshao/gpui/pull/210) 指向 `main` |
 
 Bundle evidence：`cargo run -p xtask -- bundle jaco` 成功生成
 `target/release/bundle/macos/Jaco.app`。受限构建环境中的 `actool` 无法连接
@@ -447,4 +447,5 @@ manifest、lockfile、schema、platform crates 或 workflows。
 - [x] 执行 T-01–T-05 与已授权 T-06 人工场景并记录实际结果。
 - [x] 执行 WP-001 本地 aggregate gate。
 - [x] 同步两份计划的本地完成状态与 evidence。
-- [ ] 推送后执行远端三平台 CI，并补充 commit/PR/CI evidence。
+- [x] 推送分支并补充 commit/PR evidence。
+- [ ] 等待远端三平台 CI 完成并补充最终 CI evidence。

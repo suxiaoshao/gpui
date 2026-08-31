@@ -6,7 +6,7 @@
 - Owner：`app/jaco`
 - Assigned work packages：`WP-101`–`WP-104`
 - Assigned ID ranges：`E/D/F/L/ST/ERR/R/T-1xx`
-- Owner readiness：root status为 `Implemented locally`；本文件没有新增待确认产品或架构问题
+- Owner readiness：root status为 `PR open`；本文件没有新增待确认产品或架构问题
 - Implementation evidence：2026-08-31 已完成 `WP-101`–`WP-104`、owner tests 和本地 aggregate gate
 
 本 owner 计划只解释 Jaco 内部如何执行 root `D-01`–`D-10`、`C-01`–`C-02`、`ST-01`–`ST-02`、`ERR-01`–`ERR-05` 和 `R-01`–`R-14`。产品范围、Audio compatibility、跨 crate 兼容策略和 root completion gate 以根计划为唯一 authority。
@@ -804,14 +804,14 @@ Owner tests and manual evidence satisfyR-101–R-112；owner file list/unchanged
 
 | Evidence | Actual result |
 | --- | --- |
-| Owner implementation plan | `Implemented locally`；F/L/ST/R/T/WP 与实际实现/验证一致 |
+| Owner implementation plan | `PR open`；F/L/ST/R/T/WP 与实际实现/验证一致，PR #210 指向 `main` |
 | WP-101 | Complete；source-ordered blocks、stable per-block TextViewState、structural reconciliation 与 Audio→Attachment compatibility tests 已实现 |
 | WP-102 | Complete；User、Assistant primary/loose/expanded Message 共用 renderer，non-Message/tool/status/error 与 text-only copy 保持 |
 | WP-103 | Complete；deny-first resolver、safe card metadata、background probes、action-time revalidation、Open/Reveal/Save、atomic streaming copy、icons/i18n 已实现 |
 | WP-104 focused automated validation | Passed；`cargo test -p jaco --locked --no-fail-fast` 为 575 passed、2 ignored；Jaco clippy、jaco-db attachment regression、fmt 和 diff checks 通过 |
 | Manual restart/actions/privacy/image parity | Persisted fixture 重新打开并验证 exact order、User/Assistant、Image、Audio→Attachment、External/Provider unavailable、Save cancel/success byte equality、Open/Reveal dispatch；缓存指纹最终修正后未再启动 GUI，新增 GPUI test验证同 ID kind conflict 消失时会重新探测 |
 | Unchanged core/db/agent/dependency audit | Passed；core/db/agent、conversation formatter、manifests、lockfile、platform crates 和 workflows 无 diff |
-| Root WP-001 / remote CI | Local aggregate passed；remote macOS/Linux/Windows CI、commit 和 PR pending |
+| Root WP-001 / remote CI | Local aggregate passed；实现提交 `1ca2c1f` 已推送，PR [#210](https://github.com/suxiaoshao/gpui/pull/210) 的 macOS/Linux/Windows CI 运行中 |
 
 Final bundle：`cargo run -p xtask -- bundle jaco` 成功生成
 `target/release/bundle/macos/Jaco.app`；受限环境的 Liquid Glass `actool` 步骤失败后，
