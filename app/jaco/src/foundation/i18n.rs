@@ -391,4 +391,54 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn conversation_attachment_messages_exist_in_each_locale() {
+        let mut args = FluentArgs::new();
+        args.set("name", "report.pdf");
+        let keys = [
+            "conversation-attachment-fallback-name",
+            "conversation-attachment-type-file",
+            "conversation-attachment-type-attachment",
+            "conversation-attachment-source-managed",
+            "conversation-attachment-source-local",
+            "conversation-attachment-source-generated",
+            "conversation-attachment-source-external",
+            "conversation-attachment-source-provider",
+            "conversation-attachment-status-checking",
+            "conversation-attachment-status-unavailable",
+            "conversation-attachment-unavailable-missing-record",
+            "conversation-attachment-unavailable-invalid-record",
+            "conversation-attachment-unavailable-source",
+            "conversation-attachment-unavailable-missing-file",
+            "conversation-attachment-unavailable-access",
+            "conversation-attachment-open",
+            "conversation-attachment-reveal-macos",
+            "conversation-attachment-reveal-windows",
+            "conversation-attachment-reveal-linux",
+            "conversation-attachment-save-copy",
+            "conversation-attachment-action-failed-title",
+            "conversation-attachment-action-failed-message",
+            "conversation-attachment-save-failed-title",
+            "conversation-attachment-save-failed-message",
+            "conversation-attachment-save-success-title",
+            "conversation-attachment-save-success-message",
+        ];
+
+        for locale in ["en-US", "zh-CN"] {
+            let i18n = I18n::for_locale_tag(locale);
+            for key in keys {
+                assert_ne!(
+                    i18n.t_with_args(key, &args),
+                    key,
+                    "missing conversation attachment i18n key {key} for {locale}"
+                );
+            }
+            assert!(
+                i18n.t_with_args("conversation-attachment-save-success-message", &args)
+                    .contains("report.pdf"),
+                "conversation attachment success message must interpolate $name for {locale}"
+            );
+        }
+    }
 }

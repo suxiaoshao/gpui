@@ -6,6 +6,7 @@
 | --- | --- | --- |
 | [#200](https://github.com/suxiaoshao/gpui/issues/200) HTTP Client Response 音频迁移与 GStreamer 删除 | `In progress`；Rodio/CPAL/Symphonia 替换 GStreamer，保留 PDF、删除视频与全部 GStreamer 产品/打包链路 | [issue-200/README.md](issue-200/README.md) |
 | [#199](https://github.com/suxiaoshao/gpui/issues/199) form owner、app store/form/operation 与 Transition 重构 | `Done`；显式 owner v2、Form vNext、Feiwen、Jaco（含 Conversation 私有 Transition）与 HTTP Client 基础单请求已交付；历史媒体计划已由 #200 的 Rodio 迁移取代，MCP runtime 已移交 #201 | [issue-199/README.md](issue-199/README.md) |
+| [#195](https://github.com/suxiaoshao/gpui/issues/195) Jaco 会话时间线持久化文件附件 | `Implemented locally`；File/Attachment ordered projection、Audio compatibility 与 safe actions 已实现并通过本地自动化/人工验收，远端 CI、commit 和 PR 待执行 | [issue-195/README.md](issue-195/README.md) |
 | [#193](https://github.com/suxiaoshao/gpui/issues/193) Jaco 侧边栏会话悬浮预览、活动时间与运行状态 | `In progress`；production 与本地自动化完成，人工 UI/远端 CI 未执行 | [issue-193/README.md](issue-193/README.md) |
 | [#190](https://github.com/suxiaoshao/gpui/issues/190) Jaco 持久化工具调用详情 | `Implemented`；生产实现与本地自动化已验证，完整 Local/MCP 人工场景和远端三平台 CI 待验证 | [issue-190/README.md](issue-190/README.md) |
 | [#189](https://github.com/suxiaoshao/gpui/issues/189) Jaco 消息请求用量、输入框上下文占用、时间范围统计、活动热力图与费用 | `In progress`；五份计划均已实施或待最终验证，request-time费用代码与本地DB手工迁移已完成 | [issue-189/README.md](issue-189/README.md) |
