@@ -469,6 +469,49 @@ impl FreshRepository {
         })
     }
 
+    pub fn append_conversation_entries_with_attachments(
+        &self,
+        items: Vec<NewConversationEntryBatchItem>,
+    ) -> Result<ConversationCommit<AppendedConversationEntryBatch>> {
+        let mut conn = self.conn()?;
+        conn.immediate_transaction(|conn| {
+            let conversation_id = validate_prelinked_conversation_entry_batch(conn, &items)?;
+            let mut entries = Vec::with_capacity(items.len());
+            let mut attachment_records = Vec::new();
+
+            for item in items {
+                let mut attachments_by_id = item
+                    .attachments
+                    .into_iter()
+                    .map(|attachment| (attachment.id.clone(), attachment))
+                    .collect::<HashMap<_, _>>();
+                if let ConversationEntryPayload::Message { content, .. } = &item.entry.payload {
+                    for part in content {
+                        let ContentPart::Image { attachment_id } = part else {
+                            continue;
+                        };
+                        let attachment = attachments_by_id.remove(attachment_id).ok_or_else(|| {
+                            DbError::Invariant(format!(
+                                "validated attachment {attachment_id} is missing from its batch item"
+                            ))
+                        })?;
+                        attachment_records.push(insert_attachment_with_conn(conn, attachment)?);
+                    }
+                }
+                entries.push(append_conversation_entry_with_conn(conn, item.entry)?);
+            }
+
+            conversation_commit_with_conn(
+                conn,
+                conversation_id,
+                AppendedConversationEntryBatch {
+                    entries,
+                    attachments: attachment_records,
+                },
+            )
+        })
+    }
+
     pub fn conversation_entries(
         &self,
         conversation_id: &str,
@@ -489,6 +532,18 @@ impl FreshRepository {
         attachments::table
             .filter(attachments::conversation_id.eq(conversation_id))
             .order(attachments::created_at.asc())
+            .select(SqlAttachmentRow::as_select())
+            .load::<SqlAttachmentRow>(&mut conn)?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
+    }
+
+    pub fn generated_file_attachments(&self) -> Result<Vec<AttachmentRecord>> {
+        let mut conn = self.conn()?;
+        attachments::table
+            .filter(attachments::storage_kind.eq(db_label(&AttachmentStorageKind::GeneratedFile)?))
+            .order((attachments::conversation_id.asc(), attachments::id.asc()))
             .select(SqlAttachmentRow::as_select())
             .load::<SqlAttachmentRow>(&mut conn)?
             .into_iter()

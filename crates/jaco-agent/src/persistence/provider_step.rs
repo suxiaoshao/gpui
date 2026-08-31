@@ -7,6 +7,52 @@ use jaco_db::{
 use rig::completion::{AssistantContent, CompletionRequest, CompletionResponse, Usage};
 use serde::Serialize;
 
+pub(crate) fn safe_generated_response_body(response: &CompletionResponse) -> ProviderRawPayload {
+    let image_count = response
+        .choice
+        .iter()
+        .filter(|content| matches!(content, AssistantContent::Image(_)))
+        .count();
+    let mut value = response.raw.clone();
+    let mut redacted = 0_usize;
+    if let Some(choices) = value
+        .get_mut("choices")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for choice in choices {
+            let Some(images) = choice
+                .get_mut("message")
+                .and_then(|message| message.get_mut("images"))
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                continue;
+            };
+            for image in images {
+                let Some(locator) = image
+                    .get_mut("image_url")
+                    .and_then(|image_url| image_url.get_mut("url"))
+                else {
+                    continue;
+                };
+                if locator.is_string() {
+                    *locator = serde_json::Value::String("[redacted-generated-image]".to_string());
+                    redacted += 1;
+                }
+            }
+        }
+    }
+    if image_count == 0 || redacted != image_count {
+        value = serde_json::json!({
+            "providerResponse": "redacted_generated_images",
+            "imageCount": image_count,
+        });
+    }
+    ProviderRawPayload {
+        provider_kind: "rig".to_string(),
+        value,
+    }
+}
+
 impl PersistenceContext {
     pub(super) async fn insert_provider_step(
         &self,
@@ -77,8 +123,23 @@ impl PersistenceContext {
         provider_step_id: &str,
         response: &CompletionResponse,
     ) -> Result<()> {
-        self.finish_provider_step_with_continuation(provider_step_id, response, None)
+        self.finish_provider_step_with_options(provider_step_id, response, None, None)
             .await
+    }
+
+    pub(super) async fn finish_provider_step_with_response_body(
+        &self,
+        provider_step_id: &str,
+        response: &CompletionResponse,
+        response_body: ProviderRawPayload,
+    ) -> Result<()> {
+        self.finish_provider_step_with_options(
+            provider_step_id,
+            response,
+            None,
+            Some(response_body),
+        )
+        .await
     }
 
     pub(crate) async fn finish_openai_provider_step(
@@ -103,15 +164,16 @@ impl PersistenceContext {
             time::OffsetDateTime::now_utc(),
         )
         .map_err(|error| crate::AgentRuntimeError::Invariant(error.to_string()))?;
-        self.finish_provider_step_with_continuation(provider_step_id, response, Some(continuation))
+        self.finish_provider_step_with_options(provider_step_id, response, Some(continuation), None)
             .await
     }
 
-    async fn finish_provider_step_with_continuation(
+    async fn finish_provider_step_with_options(
         &self,
         provider_step_id: &str,
         response: &CompletionResponse,
         continuation: Option<ProviderContinuationSnapshot>,
+        response_body_override: Option<ProviderRawPayload>,
     ) -> Result<()> {
         let output_item_ids = response
             .choice
@@ -121,10 +183,10 @@ impl PersistenceContext {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let response_body = ProviderRawPayload {
+        let response_body = response_body_override.unwrap_or_else(|| ProviderRawPayload {
             provider_kind: "rig".to_string(),
             value: response.raw.clone(),
-        };
+        });
         let state_snapshot = ProviderRunStateSnapshot {
             provider_id: self.provider_id.clone(),
             provider_run_id: response.message_id.clone(),
@@ -502,5 +564,70 @@ fn openai_streaming_continuation(
             "OpenAI GPT-5.6 websocket response omitted response ID or reasoning context"
                 .to_string(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod generated_response_tests {
+    use super::*;
+    use rig::{
+        completion::Usage,
+        message::{AdditionalParams, DocumentSourceKind, Image, ImageMediaType},
+    };
+
+    fn image() -> AssistantContent {
+        AssistantContent::Image(Image {
+            data: DocumentSourceKind::Base64("sensitive-base64".to_string()),
+            media_type: Some(ImageMediaType::PNG),
+            detail: None,
+            additional_params: AdditionalParams::from_entries([(
+                "openrouter",
+                serde_json::json!({
+                    "response_only": true,
+                    "source": "assistant.images",
+                }),
+            )]),
+        })
+    }
+
+    #[test]
+    fn generated_response_body_redacts_every_proven_image_slot() {
+        let response = CompletionResponse::new(vec![image()], Usage::new(), "openrouter").with_raw(
+            serde_json::json!({
+                "id": "response-secret",
+                "choices": [{
+                    "message": {
+                        "images": [{
+                            "image_url": { "url": "https://secret.example/image.png?token=x" }
+                        }]
+                    }
+                }]
+            }),
+        );
+
+        let body = safe_generated_response_body(&response);
+        let serialized = serde_json::to_string(&body.value).unwrap();
+        assert!(serialized.contains("[redacted-generated-image]"));
+        assert!(!serialized.contains("secret.example"));
+        assert!(!serialized.contains("token=x"));
+        assert!(!serialized.contains("sensitive-base64"));
+    }
+
+    #[test]
+    fn generated_response_body_falls_back_when_slot_mapping_is_unproven() {
+        let response = CompletionResponse::new(vec![image()], Usage::new(), "openrouter").with_raw(
+            serde_json::json!({
+                "id": "must-not-survive",
+                "choices": [{ "message": { "images": [] } }]
+            }),
+        );
+
+        assert_eq!(
+            safe_generated_response_body(&response).value,
+            serde_json::json!({
+                "providerResponse": "redacted_generated_images",
+                "imageCount": 1,
+            })
+        );
     }
 }

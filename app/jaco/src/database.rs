@@ -276,6 +276,20 @@ pub(crate) fn ready_executor(
         .map_err(|error| DbError::Invariant(error.to_string()))
 }
 
+pub(crate) fn ready_data_dir(cx: &impl AppContext) -> jaco_db::Result<PathBuf> {
+    ensure_not_shutting_down()?;
+    store(cx)
+        .read(cx, |resource| match &resource.operation {
+            DatabaseOperation::Ready(_) => Some(resource.target.data_dir.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            DbError::Invariant(
+                "database data directory requires an exact Ready session".to_string(),
+            )
+        })
+}
+
 fn ensure_not_shutting_down() -> jaco_db::Result<()> {
     if crate::app::is_shutting_down() {
         return Err(DbError::Invariant(
@@ -724,6 +738,26 @@ mod tests {
             with_ready_repository(cx, |_| Ok(())).expect("database command stays available");
             assert!(ready_executor(cx).is_ok());
             assert!(ready_agent_persistence(cx).is_ok());
+            assert_eq!(ready_data_dir(cx).unwrap(), dir.path());
+        });
+    }
+
+    #[gpui::test]
+    fn ready_data_dir_rejects_non_ready_database_without_fallback(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            install_database_for_test(cx, dir.path());
+            store(cx).update(cx, |resource| {
+                resource
+                    .operation
+                    .transition(DatabaseMessage::Refresh(Task::ready(())));
+            });
+
+            assert!(matches!(
+                ready_data_dir(cx),
+                Err(DbError::Invariant(message))
+                    if message == "database data directory requires an exact Ready session"
+            ));
         });
     }
 

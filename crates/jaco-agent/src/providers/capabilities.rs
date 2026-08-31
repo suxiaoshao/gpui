@@ -145,6 +145,7 @@ pub(crate) fn capabilities_from_gemini_model(
 pub(crate) fn capabilities_from_openrouter_model(
     supported_parameters: Vec<String>,
     input_modalities: Vec<String>,
+    output_modalities: Option<Vec<String>>,
     context_length: Option<serde_json::Value>,
     raw: Option<ProviderRawPayload>,
 ) -> ModelCapabilitiesSnapshot {
@@ -174,6 +175,22 @@ pub(crate) fn capabilities_from_openrouter_model(
     }
     if supports_modality("file") {
         enable_file_input(&mut snapshot);
+    }
+    let known_output_modalities = output_modalities
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(
+            |modality| match modality.trim().to_ascii_lowercase().as_str() {
+                "text" => Some("text"),
+                "image" => Some("image"),
+                _ => None,
+            },
+        )
+        .collect::<std::collections::BTreeSet<_>>();
+    if !known_output_modalities.is_empty() {
+        snapshot.text_output = known_output_modalities.contains("text");
+        snapshot.image_generation = known_output_modalities.contains("image");
     }
 
     if supports_reasoning {
@@ -657,6 +674,7 @@ mod tests {
         let openrouter = capabilities_from_openrouter_model(
             values(["tools"]),
             values(["text"]),
+            None,
             Some(serde_json::json!(272_000)),
             None,
         );
@@ -700,13 +718,19 @@ mod tests {
                 .is_none()
             );
             assert!(
-                capabilities_from_openrouter_model(Vec::new(), Vec::new(), Some(invalid), None,)
-                    .context_window
-                    .is_none()
+                capabilities_from_openrouter_model(
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    Some(invalid),
+                    None,
+                )
+                .context_window
+                .is_none()
             );
         }
         assert!(
-            capabilities_from_openrouter_model(Vec::new(), Vec::new(), None, None)
+            capabilities_from_openrouter_model(Vec::new(), Vec::new(), None, None, None)
                 .context_window
                 .is_none()
         );
@@ -714,6 +738,7 @@ mod tests {
             capabilities_from_openrouter_model(
                 Vec::new(),
                 Vec::new(),
+                None,
                 Some(serde_json::json!(u64::from(u32::MAX) + 1)),
                 None,
             )
@@ -922,6 +947,7 @@ mod tests {
             values(["text", "image", "file"]),
             None,
             None,
+            None,
         );
         let reasoning = snapshot.reasoning.expect("reasoning");
         assert!(snapshot.tool_calling.is_some());
@@ -937,13 +963,48 @@ mod tests {
             Some(ReasoningControlSnapshot::Composite { .. })
         ));
 
-        let basic =
-            capabilities_from_openrouter_model(values(["tools"]), values(["text"]), None, None);
+        let basic = capabilities_from_openrouter_model(
+            values(["tools"]),
+            values(["text"]),
+            None,
+            None,
+            None,
+        );
         assert!(basic.tool_calling.is_some());
         assert!(!basic.structured_output);
         assert!(basic.image_input.is_none());
         assert!(basic.file_input.is_none());
         assert!(basic.reasoning.is_none());
+    }
+
+    #[test]
+    fn openrouter_output_modalities_are_nullable_and_known_values_are_authoritative() {
+        for output in [None, Some(Vec::new()), Some(values(["future"]))] {
+            let snapshot =
+                capabilities_from_openrouter_model(Vec::new(), Vec::new(), output, None, None);
+            assert!(snapshot.text_output);
+            assert!(!snapshot.image_generation);
+        }
+
+        let text_and_image = capabilities_from_openrouter_model(
+            Vec::new(),
+            Vec::new(),
+            Some(values([" Text ", "IMAGE", "future"])),
+            None,
+            None,
+        );
+        assert!(text_and_image.text_output);
+        assert!(text_and_image.image_generation);
+
+        let image_only = capabilities_from_openrouter_model(
+            Vec::new(),
+            Vec::new(),
+            Some(values(["image", "future"])),
+            None,
+            None,
+        );
+        assert!(!image_only.text_output);
+        assert!(image_only.image_generation);
     }
 
     #[test]

@@ -14,9 +14,10 @@ use jaco_core::{
     ToolInvocationId,
 };
 use jaco_db::{
-    AgentRunRecord, CompleteProviderStep, CompletedProviderStep, ConversationCommit,
-    ConversationEntryRecord, ConversationTimelineRecords, FinishAgentRun, FinishedAgentRun,
-    FreshRepository, FreshStore, NewAgentRun, NewConversationEntry, NewProviderStep,
+    AgentRunRecord, AppendedConversationEntryBatch, AttachmentRecord, CompleteProviderStep,
+    CompletedProviderStep, ConversationCommit, ConversationEntryRecord,
+    ConversationTimelineRecords, FinishAgentRun, FinishedAgentRun, FreshRepository, FreshStore,
+    NewAgentRun, NewConversationEntry, NewConversationEntryBatchItem, NewProviderStep,
     NewToolInvocation, NewToolInvocationApproval, ProviderStepRecord,
     ToolInvocationApprovalOutcome, ToolInvocationRecord, UpdateProviderStepStatus,
     UpdateToolInvocationStatus,
@@ -175,6 +176,13 @@ impl SessionDatabaseExecutor {
         }
     }
 
+    pub(crate) async fn generated_file_attachments(
+        &self,
+    ) -> jaco_db::Result<Vec<AttachmentRecord>> {
+        self.execute(|repository| repository.generated_file_attachments())
+            .await
+    }
+
     pub(crate) fn begin_draining(&self) {
         self.activity.accepting.store(false, Ordering::Release);
     }
@@ -252,6 +260,13 @@ impl AgentPersistence for SessionAgentPersistence {
         input: NewConversationEntry,
     ) -> jaco_db::Result<ConversationCommit<ConversationEntryRecord>> {
         repository_call!(self, append_conversation_entry(input))
+    }
+
+    async fn append_conversation_entries_with_attachments(
+        &self,
+        items: Vec<NewConversationEntryBatchItem>,
+    ) -> jaco_db::Result<ConversationCommit<AppendedConversationEntryBatch>> {
+        repository_call!(self, append_conversation_entries_with_attachments(items))
     }
 
     async fn update_conversation_entry_payload(
@@ -475,5 +490,52 @@ mod tests {
             overlapped,
             "the executor must leave database concurrency to repository transactions"
         );
+    }
+
+    #[test]
+    fn generated_attachment_index_uses_the_session_drain_guard() {
+        let directory = tempfile::tempdir().expect("create database directory");
+        let store = FreshStore::open_or_create_initial(directory.path().join("jaco.sqlite3"))
+            .expect("open database");
+        let executor = SessionDatabaseExecutor::for_test(store);
+
+        assert!(
+            smol::block_on(executor.generated_file_attachments())
+                .expect("read generated attachment index")
+                .is_empty()
+        );
+
+        executor.begin_draining();
+        assert!(matches!(
+            smol::block_on(executor.generated_file_attachments()),
+            Err(jaco_db::DbError::Invariant(message))
+                if message == "database session is draining"
+        ));
+    }
+
+    #[test]
+    fn generated_batch_adapter_forwards_through_the_session_drain_guard() {
+        let directory = tempfile::tempdir().expect("create database directory");
+        let store = FreshStore::open_or_create_initial(directory.path().join("jaco.sqlite3"))
+            .expect("open database");
+        let executor = SessionDatabaseExecutor::for_test(store);
+        let persistence = SessionAgentPersistence::new(executor.clone());
+
+        assert!(matches!(
+            smol::block_on(
+                persistence.append_conversation_entries_with_attachments(Vec::new())
+            ),
+            Err(jaco_db::DbError::Invariant(message))
+                if message == "conversation entry batch must not be empty"
+        ));
+
+        executor.begin_draining();
+        assert!(matches!(
+            smol::block_on(
+                persistence.append_conversation_entries_with_attachments(Vec::new())
+            ),
+            Err(jaco_db::DbError::Invariant(message))
+                if message == "database session is draining"
+        ));
     }
 }

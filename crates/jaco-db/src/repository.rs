@@ -35,7 +35,7 @@ use diesel::{
     upsert::excluded,
 };
 use jaco_core::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use time::OffsetDateTime;
 
 #[derive(Clone)]
@@ -339,7 +339,7 @@ fn insert_attachment_with_conn(
 ) -> Result<AttachmentRecord> {
     let now = now_string()?;
     let row = SqlNewAttachmentRow {
-        id: new_id(),
+        id: input.id,
         conversation_id: input.conversation_id,
         kind: db_label(&input.kind)?,
         storage_kind: db_label(&input.storage_kind)?,
@@ -360,6 +360,190 @@ fn insert_attachment_with_conn(
         .returning(SqlAttachmentRow::as_returning())
         .get_result::<SqlAttachmentRow>(conn)?
         .try_into()
+}
+
+fn validate_prelinked_conversation_entry_batch(
+    conn: &mut SqliteConnection,
+    items: &[NewConversationEntryBatchItem],
+) -> Result<ConversationId> {
+    let first = items.first().ok_or_else(|| {
+        DbError::Invariant("conversation entry batch must not be empty".to_string())
+    })?;
+    let conversation_id = &first.entry.conversation_id;
+    let agent_run_id = first.entry.agent_run_id.as_deref().ok_or_else(|| {
+        DbError::Invariant("conversation entry batch requires an agent run".to_string())
+    })?;
+    let provider_step_id = first.entry.provider_step_id.as_deref().ok_or_else(|| {
+        DbError::Invariant("conversation entry batch requires a provider step".to_string())
+    })?;
+
+    let run = load_agent_run_row(conn, agent_run_id)?;
+    ensure_conversation_owner(
+        "agent run",
+        agent_run_id,
+        &run.conversation_id,
+        conversation_id,
+    )?;
+    let provider_step = load_provider_step_row(conn, provider_step_id)?;
+    ensure_agent_link(
+        "provider step",
+        provider_step_id,
+        &provider_step.agent_run_id,
+        Some(agent_run_id),
+    )?;
+    let provider_step_status: ProviderStepStatus = db_label_parse(provider_step.status)?;
+    if provider_step_status != ProviderStepStatus::Completed {
+        return Err(DbError::Invariant(format!(
+            "provider step {provider_step_id} is not completed"
+        )));
+    }
+
+    let mut attachment_item_by_id = HashMap::<&str, usize>::new();
+    for (item_index, item) in items.iter().enumerate() {
+        if item.entry.conversation_id != *conversation_id {
+            return Err(DbError::Invariant(
+                "conversation entry batch spans multiple conversations".to_string(),
+            ));
+        }
+        if item.entry.agent_run_id.as_deref() != Some(agent_run_id) {
+            return Err(DbError::Invariant(
+                "conversation entry batch spans multiple agent runs".to_string(),
+            ));
+        }
+        if item.entry.provider_step_id.as_deref() != Some(provider_step_id) {
+            return Err(DbError::Invariant(
+                "conversation entry batch spans multiple provider steps".to_string(),
+            ));
+        }
+        validate_execution_links(conn, conversation_id, &item.entry)?;
+
+        match &item.entry.payload {
+            ConversationEntryPayload::Reasoning { .. } => {
+                if !item.attachments.is_empty() {
+                    return Err(DbError::Invariant(
+                        "reasoning entries cannot provide attachments".to_string(),
+                    ));
+                }
+            }
+            ConversationEntryPayload::Message { role, content } => {
+                if *role != TranscriptRole::Assistant {
+                    return Err(DbError::Invariant(
+                        "prelinked message entries must use the assistant role".to_string(),
+                    ));
+                }
+                if content.is_empty() {
+                    return Err(DbError::Invariant(
+                        "prelinked message entries must contain content".to_string(),
+                    ));
+                }
+                for part in content {
+                    match part {
+                        ContentPart::Text { text } if text.is_empty() => {
+                            return Err(DbError::Invariant(
+                                "prelinked message text must not be empty".to_string(),
+                            ));
+                        }
+                        ContentPart::Text { .. } | ContentPart::Image { .. } => {}
+                        ContentPart::File { .. }
+                        | ContentPart::Audio { .. }
+                        | ContentPart::Attachment { .. } => {
+                            return Err(DbError::Invariant(
+                                "prelinked messages only support text and image content"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                }
+            }
+            _ => {
+                return Err(DbError::Invariant(
+                    "prelinked entries must be assistant messages or reasoning".to_string(),
+                ));
+            }
+        }
+
+        for attachment in &item.attachments {
+            if attachment.id.is_empty() {
+                return Err(DbError::Invariant(
+                    "prelinked attachment ID must not be empty".to_string(),
+                ));
+            }
+            if attachment.conversation_id != *conversation_id {
+                return Err(DbError::Invariant(
+                    "prelinked attachment conversation does not match the batch".to_string(),
+                ));
+            }
+            if attachment.kind != AttachmentKind::Image
+                || attachment.storage_kind != AttachmentStorageKind::GeneratedFile
+            {
+                return Err(DbError::Invariant(
+                    "prelinked attachments must be generated images".to_string(),
+                ));
+            }
+            if attachment_item_by_id
+                .insert(attachment.id.as_str(), item_index)
+                .is_some()
+            {
+                return Err(DbError::Invariant(format!(
+                    "prelinked attachment {} is duplicated",
+                    attachment.id
+                )));
+            }
+        }
+    }
+
+    if !attachment_item_by_id.is_empty() {
+        let existing_ids = attachments::table
+            .filter(attachments::id.eq_any(attachment_item_by_id.keys().copied()))
+            .select(attachments::id)
+            .load::<String>(conn)?;
+        if let Some(existing_id) = existing_ids.first() {
+            return Err(DbError::Invariant(format!(
+                "prelinked attachment {existing_id} already exists"
+            )));
+        }
+    }
+
+    let mut referenced = HashSet::<&str>::new();
+    for (item_index, item) in items.iter().enumerate() {
+        let ConversationEntryPayload::Message { content, .. } = &item.entry.payload else {
+            continue;
+        };
+        for part in content {
+            let ContentPart::Image { attachment_id } = part else {
+                continue;
+            };
+            let Some(provided_item_index) = attachment_item_by_id.get(attachment_id.as_str())
+            else {
+                return Err(DbError::Invariant(format!(
+                    "image part references unprovided attachment {attachment_id}"
+                )));
+            };
+            if *provided_item_index != item_index {
+                return Err(DbError::Invariant(format!(
+                    "image part references attachment {attachment_id} from another batch item"
+                )));
+            }
+            if !referenced.insert(attachment_id.as_str()) {
+                return Err(DbError::Invariant(format!(
+                    "prelinked attachment {attachment_id} is referenced more than once"
+                )));
+            }
+        }
+    }
+
+    if referenced.len() != attachment_item_by_id.len() {
+        let unused = attachment_item_by_id
+            .keys()
+            .find(|id| !referenced.contains(**id))
+            .copied()
+            .unwrap_or("unknown");
+        return Err(DbError::Invariant(format!(
+            "prelinked attachment {unused} is not referenced"
+        )));
+    }
+
+    Ok(conversation_id.clone())
 }
 
 fn validate_timeline_run_entries(

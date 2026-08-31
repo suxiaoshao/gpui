@@ -19,6 +19,7 @@ grep-searcher = "0.1.17"
 hex = "0.4.3"
 http = "1.4.2"
 ignore = "0.4.31"
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 rig.workspace = true
 rmcp.workspace = true
 reqwest = { version = "0.13.4", features = ["json"] }
@@ -28,7 +29,7 @@ sha2 = "0.11.0"
 similar = "3.1.1"
 thiserror = "2.0.19"
 time = { version = "0.3.54", features = ["formatting", "parsing", "serde"] }
-tokio = { version = "1.53.1", features = ["process", "sync", "time"] }
+tokio = { version = "1.53.1", features = ["fs", "io-util", "net", "process", "rt", "sync", "time"] }
 tokio-util = "0.7.19"
 tracing = "0.1.44"
 url = "2.5.8"

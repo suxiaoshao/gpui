@@ -14,6 +14,7 @@
 | [#190](https://github.com/suxiaoshao/gpui/issues/190) 持久化工具调用详情 | `Implemented`；页面、preview、实时更新、审批与reload实现及本地自动化已验证，完整人工场景和远端 CI 待验证 | [issue-190/README.md](issue-190/README.md) |
 | [#193](https://github.com/suxiaoshao/gpui/issues/193) 侧边栏 HoverCard、活动时间与运行状态 | `In progress`；production 与本地自动化完成，人工 UI/远端 CI 未执行 | [issue-193/README.md](issue-193/README.md) |
 | [#195](https://github.com/suxiaoshao/gpui/issues/195) 会话时间线持久化文件附件 | `PR open`；File/Attachment ordered projection、Audio compatibility 与 safe open/reveal/save 已通过本地验收，PR [#210](https://github.com/suxiaoshao/gpui/pull/210) 的远端 CI 运行中 | [issue-195/README.md](issue-195/README.md) |
+| [#196](https://github.com/suxiaoshao/gpui/issues/196) provider 生成图片 managed storage 与恢复 | `Ready`；锁定 database-target 注入、batch adapter、stable attachment ID 与 startup orphan reconciliation，等待实施 | [issue-196/README.md](issue-196/README.md) |
 | [#199](https://github.com/suxiaoshao/gpui/issues/199) Form 多轮迁移与 Conversation runtime | `Done`；Form consumer 迁移及 Conversation 私有 Transition 已交付；实际 UI、打包与跨平台 CI 未执行 | [issue-199/README.md](issue-199/README.md) |
 
 ## 跨功能迁移

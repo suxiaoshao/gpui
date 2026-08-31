@@ -1,4 +1,5 @@
 pub(crate) mod attachments;
+pub(crate) mod generated_artifacts;
 pub(crate) mod model;
 pub(crate) mod registry;
 pub(crate) mod resources;
@@ -30,9 +31,6 @@ use crate::{
     foundation::I18n,
     state::{projects, providers::ProviderModelChoice},
 };
-
-#[cfg(not(test))]
-use crate::foundation::paths;
 
 use self::attachments::{
     ComposerAttachment, cleanup_stored_attachment_files, prepare_message_attachments_in,
@@ -118,9 +116,9 @@ pub(crate) fn create_conversation(
             Err(error) => return Task::ready(Err(error)),
         },
     };
-    let data_dir = match conversation_data_dir(cx) {
+    let data_dir = match database::ready_data_dir(cx) {
         Ok(path) => path,
-        Err(error) => return Task::ready(Err(error)),
+        Err(error) => return Task::ready(Err(error.into())),
     };
     let executor = match database::ready_executor(cx) {
         Ok(executor) => executor,
@@ -227,9 +225,9 @@ pub(crate) fn send_conversation_message(
             Ok(provider) => provider,
             Err(error) => return Task::ready(Err(error.into())),
         };
-    let data_dir = match conversation_data_dir(cx) {
+    let data_dir = match database::ready_data_dir(cx) {
         Ok(path) => path,
-        Err(error) => return Task::ready(Err(error)),
+        Err(error) => return Task::ready(Err(error.into())),
     };
     let executor = match database::ready_executor(cx) {
         Ok(executor) => executor,
@@ -317,16 +315,6 @@ pub(crate) fn send_conversation_message(
             .map(|(_, sent)| sent)
             .map_err(crate::errors::JacoError::from)
     })
-}
-
-#[cfg(not(test))]
-fn conversation_data_dir(_cx: &App) -> JacoResult<PathBuf> {
-    paths::data_dir()
-}
-
-#[cfg(test)]
-fn conversation_data_dir(cx: &App) -> JacoResult<PathBuf> {
-    Ok(database::store(cx).read(cx, |resource| resource.target.data_dir.clone()))
 }
 
 fn follow_up_prompt_snapshot(
@@ -692,7 +680,7 @@ mod tests {
         let dir = tempdir().unwrap();
         cx.update(|cx| database::install_for_test(cx, dir.path()));
 
-        let data_dir = cx.update(|cx| conversation_data_dir(cx).unwrap());
+        let data_dir = cx.update(|cx| database::ready_data_dir(cx).unwrap());
 
         assert_eq!(data_dir, dir.path());
     }

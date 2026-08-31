@@ -2877,6 +2877,7 @@ mod tests {
         let source = source_path.to_string_lossy().into_owned();
         let attachment = repository
             .insert_attachment(NewAttachment {
+                id: jaco_core::new_id(),
                 conversation_id: conversation.id.clone(),
                 kind: AttachmentKind::File,
                 storage_kind: AttachmentStorageKind::LocalFile,

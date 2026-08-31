@@ -1,11 +1,12 @@
 use async_trait::async_trait;
 use jaco_core::*;
 use jaco_db::{
-    AgentRunRecord, CompleteProviderStep, CompletedProviderStep, ConversationCommit,
-    ConversationEntryRecord, ConversationTimelineRecords, FinishAgentRun, FinishedAgentRun,
-    NewAgentRun, NewConversationEntry, NewProviderStep, NewToolInvocation,
-    NewToolInvocationApproval, ProviderStepRecord, ToolInvocationApprovalOutcome,
-    ToolInvocationRecord, UpdateProviderStepStatus, UpdateToolInvocationStatus,
+    AgentRunRecord, AppendedConversationEntryBatch, CompleteProviderStep, CompletedProviderStep,
+    ConversationCommit, ConversationEntryRecord, ConversationTimelineRecords, FinishAgentRun,
+    FinishedAgentRun, NewAgentRun, NewConversationEntry, NewConversationEntryBatchItem,
+    NewProviderStep, NewToolInvocation, NewToolInvocationApproval, ProviderStepRecord,
+    ToolInvocationApprovalOutcome, ToolInvocationRecord, UpdateProviderStepStatus,
+    UpdateToolInvocationStatus,
 };
 
 #[async_trait]
@@ -24,6 +25,11 @@ pub trait AgentPersistence: Send + Sync {
         &self,
         input: NewConversationEntry,
     ) -> jaco_db::Result<ConversationCommit<ConversationEntryRecord>>;
+
+    async fn append_conversation_entries_with_attachments(
+        &self,
+        items: Vec<NewConversationEntryBatchItem>,
+    ) -> jaco_db::Result<ConversationCommit<AppendedConversationEntryBatch>>;
 
     async fn update_conversation_entry_payload(
         &self,
@@ -205,6 +211,12 @@ impl AgentPersistence for DirectAgentPersistence {
             ));
         }
         direct!(self, append_conversation_entry(input))
+    }
+    async fn append_conversation_entries_with_attachments(
+        &self,
+        items: Vec<NewConversationEntryBatchItem>,
+    ) -> jaco_db::Result<ConversationCommit<AppendedConversationEntryBatch>> {
+        direct!(self, append_conversation_entries_with_attachments(items))
     }
     async fn update_conversation_entry_payload(
         &self,

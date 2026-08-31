@@ -1,3 +1,4 @@
+mod artifacts;
 mod error;
 mod mcp;
 mod persistence;
@@ -6,6 +7,7 @@ mod runtime;
 mod skills;
 mod tools;
 
+pub use artifacts::ManagedArtifactStore;
 pub use error::{AgentRuntimeError, Result};
 pub use mcp::{
     McpConfigLayer, McpConnector, McpOAuthCredentialsSnapshot, McpOAuthStatusSnapshot,
