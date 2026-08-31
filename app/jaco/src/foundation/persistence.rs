@@ -86,6 +86,9 @@ pub(crate) fn atomic_copy_file(source: &Path, target: &Path) -> std::io::Result<
     let mut source = File::open(source)?;
     let mut staged = NamedTempFile::new_in(parent)?;
     let copied = io::copy(&mut source, staged.as_file_mut())?;
+    // Release the source before replacing the target so copying a file onto
+    // itself also works on Windows.
+    drop(source);
     staged.as_file_mut().flush()?;
     staged.as_file().sync_all()?;
     persist_staged_copy(staged, target, parent)?;
