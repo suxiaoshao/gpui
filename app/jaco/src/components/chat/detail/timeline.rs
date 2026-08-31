@@ -6,16 +6,19 @@ use std::{
 use gpui::{App, Entity, Window};
 use gpui_component::text::TextViewState;
 use jaco_core::{
-    AgentMessageRequestUsage, AgentRun, AgentRunId, Conversation, ConversationAttachment,
-    ConversationEntry, ConversationEntryId, ToolInvocation, ToolInvocationId,
+    AgentMessageRequestUsage, AgentRun, AgentRunId, AttachmentId, Conversation,
+    ConversationAttachment, ConversationEntry, ConversationEntryId, ToolInvocation,
+    ToolInvocationId,
 };
 
 use crate::foundation::conversation_format as format;
 
-use super::attachments;
+use super::attachment_access::AttachmentAccessView;
+use super::attachments::{self, TimelineTextKey};
 use super::copy_button::OnCopy;
 use super::message::{
-    AgentTurnRow, OnApprovalDecision, OnToggleAgent, TimelineRow, TimelineRowKey, UserMessageRow,
+    AgentTurnRow, OnApprovalDecision, OnAttachmentAction, OnToggleAgent, TimelineRow,
+    TimelineRowKey, UserMessageRow,
 };
 use super::tool_invocation::{
     AgentDetailItem, OnToggleToolInvocation, ToolInvocationDetail, ToolInvocationPreviewCacheEntry,
@@ -28,6 +31,7 @@ pub(super) struct TimelineCallbacks {
     on_toggle_tool_invocation: OnToggleToolInvocation,
     on_copy: OnCopy,
     on_approval_decision: OnApprovalDecision,
+    on_attachment_action: OnAttachmentAction,
 }
 
 pub(super) struct ConversationTimelineRows {
@@ -68,7 +72,8 @@ impl ConversationTimelineRows {
         &mut self,
         entry: ConversationEntry,
         attachments: &[ConversationAttachment],
-        text_state: Option<Entity<TextViewState>>,
+        text_states: &HashMap<TimelineTextKey, Entity<TextViewState>>,
+        attachment_access: &HashMap<AttachmentId, AttachmentAccessView>,
     ) -> Option<TimelineRowKey> {
         if is_tool_lifecycle_entry(&entry) {
             return None;
@@ -77,9 +82,9 @@ impl ConversationTimelineRows {
         for row in &mut self.rows {
             match row {
                 TimelineRow::User(user) if user.item.id == entry.id => {
-                    user.image_attachments =
-                        attachments::user_image_attachments(&entry, &attachments_by_id);
-                    user.text_state = text_state;
+                    user.content = attachments::project_message_content(&entry, &attachments_by_id);
+                    user.text_states = text_states.clone();
+                    user.attachment_access = attachment_access.clone();
                     user.item = entry;
                     return Some(row.key());
                 }
@@ -96,11 +101,19 @@ impl ConversationTimelineRows {
                     {
                         *current = AgentDetailItem::Entry(entry.clone());
                     }
-                    if let Some(text_state) = text_state {
-                        agent.text_states.insert(entry.id.clone(), text_state);
+                    if matches!(
+                        &entry.payload,
+                        jaco_core::ConversationEntryPayload::Message { .. }
+                    ) {
+                        agent.message_content.insert(
+                            entry.id.clone(),
+                            attachments::project_message_content(&entry, &attachments_by_id),
+                        );
                     } else {
-                        agent.text_states.remove(&entry.id);
+                        agent.message_content.remove(&entry.id);
                     }
+                    agent.text_states = text_states.clone();
+                    agent.attachment_access = attachment_access.clone();
                     return Some(row.key());
                 }
                 TimelineRow::User(_) | TimelineRow::Agent(_) => {}
@@ -198,7 +211,8 @@ pub(super) fn build_rows(
     expanded_tool_invocations: &HashMap<ToolInvocationId, bool>,
     previews: &HashMap<ToolInvocationId, ToolInvocationPreviewCacheEntry>,
     approval_decidable: &HashSet<ToolInvocationId>,
-    text_states: &HashMap<ConversationEntryId, Entity<TextViewState>>,
+    text_states: &HashMap<TimelineTextKey, Entity<TextViewState>>,
+    attachment_access: &HashMap<AttachmentId, AttachmentAccessView>,
     callbacks: TimelineCallbacks,
 ) -> Vec<TimelineRow> {
     let attachments_by_id = attachments::attachments_by_id(&snapshot.attachments);
@@ -226,9 +240,11 @@ pub(super) fn build_rows(
         .into_iter()
         .map(|row| match row {
             PendingTimelineRow::User(item) => TimelineRow::User(Box::new(UserMessageRow {
-                text_state: text_states.get(&item.id).cloned(),
-                image_attachments: attachments::user_image_attachments(item, &attachments_by_id),
+                content: attachments::project_message_content(item, &attachments_by_id),
+                text_states: text_states.clone(),
+                attachment_access: attachment_access.clone(),
                 item: item.clone(),
+                on_attachment_action: callbacks.on_attachment_action.clone(),
                 on_copy: callbacks.on_copy.clone(),
             })),
             PendingTimelineRow::Agent(run_id) => {
@@ -246,7 +262,9 @@ pub(super) fn build_rows(
                     expanded_tool_invocations,
                     previews,
                     approval_decidable,
+                    &attachments_by_id,
                     text_states,
+                    attachment_access,
                     callbacks.clone(),
                 )))
             }
@@ -260,7 +278,9 @@ pub(super) fn build_rows(
                 expanded_tool_invocations,
                 previews,
                 approval_decidable,
+                &attachments_by_id,
                 text_states,
+                attachment_access,
                 callbacks.clone(),
             ))),
         })
@@ -387,7 +407,9 @@ fn agent_turn_row(
     expanded_tool_invocations: &HashMap<ToolInvocationId, bool>,
     previews: &HashMap<ToolInvocationId, ToolInvocationPreviewCacheEntry>,
     approval_decidable: &HashSet<ToolInvocationId>,
-    text_states: &HashMap<ConversationEntryId, Entity<TextViewState>>,
+    attachments_by_id: &HashMap<AttachmentId, ConversationAttachment>,
+    text_states: &HashMap<TimelineTextKey, Entity<TextViewState>>,
+    attachment_access: &HashMap<AttachmentId, AttachmentAccessView>,
     callbacks: TimelineCallbacks,
 ) -> AgentTurnRow {
     let default_expanded = !run.as_ref().is_some_and(format::is_terminal_run);
@@ -403,18 +425,37 @@ fn agent_turn_row(
         previews,
         approval_decidable,
     );
+    let message_content = items
+        .iter()
+        .filter_map(AgentDetailItem::entry)
+        .filter(|entry| {
+            matches!(
+                &entry.payload,
+                jaco_core::ConversationEntryPayload::Message { .. }
+            )
+        })
+        .map(|entry| {
+            (
+                entry.id.clone(),
+                attachments::project_message_content(entry, attachments_by_id),
+            )
+        })
+        .collect();
 
     AgentTurnRow {
         run_id,
         run,
         request_usage,
         items,
+        message_content,
         text_states: text_states.clone(),
+        attachment_access: attachment_access.clone(),
         expanded,
         on_toggle: callbacks.on_toggle,
         on_toggle_tool_invocation: callbacks.on_toggle_tool_invocation,
         on_copy: callbacks.on_copy,
         on_approval_decision: callbacks.on_approval_decision,
+        on_attachment_action: callbacks.on_attachment_action,
     }
 }
 
@@ -424,12 +465,19 @@ pub(super) fn callbacks(
     on_toggle_tool_invocation: impl Fn(ToolInvocationId, &mut Window, &mut App) + 'static,
     on_copy: impl Fn(String, &mut Window, &mut App) -> bool + 'static,
     on_approval_decision: impl Fn(ToolInvocationId, bool, &mut Window, &mut App) + 'static,
+    on_attachment_action: impl Fn(
+        super::attachment_access::AttachmentActionTarget,
+        super::attachment_access::AttachmentAction,
+        &mut Window,
+        &mut App,
+    ) + 'static,
 ) -> TimelineCallbacks {
     TimelineCallbacks {
         on_toggle: Rc::new(on_toggle),
         on_toggle_tool_invocation: Rc::new(on_toggle_tool_invocation),
         on_copy: Rc::new(on_copy),
         on_approval_decision: Rc::new(on_approval_decision),
+        on_attachment_action: Rc::new(on_attachment_action),
     }
 }
 
@@ -715,7 +763,7 @@ mod tests {
         );
         detail_a.approval_decidable = true;
         detail_b.approval_decidable = true;
-        let callbacks = callbacks(|_, _, _| {}, |_, _, _| {}, |_, _, _| true, |_, _, _, _| {});
+        let callbacks = test_callbacks();
         let row = agent_turn_row(
             Some(run_a.clone()),
             None,
@@ -726,6 +774,8 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
             &HashMap::new(),
             callbacks,
         );
@@ -850,17 +900,22 @@ mod tests {
             },
         );
         let on_copy: OnCopy = Rc::new(|_, _, _| true);
+        let on_attachment_action: OnAttachmentAction = Rc::new(|_, _, _, _| {});
         let mut rows = ConversationTimelineRows::new(vec![
             TimelineRow::User(Box::new(UserMessageRow {
                 item: first,
-                image_attachments: Vec::new(),
-                text_state: None,
+                content: Vec::new(),
+                text_states: HashMap::new(),
+                attachment_access: HashMap::new(),
+                on_attachment_action: on_attachment_action.clone(),
                 on_copy: on_copy.clone(),
             })),
             TimelineRow::User(Box::new(UserMessageRow {
                 item: second.clone(),
-                image_attachments: Vec::new(),
-                text_state: None,
+                content: Vec::new(),
+                text_states: HashMap::new(),
+                attachment_access: HashMap::new(),
+                on_attachment_action,
                 on_copy,
             })),
         ]);
@@ -876,7 +931,7 @@ mod tests {
             },
         );
 
-        let key = rows.update_entry(updated.clone(), &[], None);
+        let key = rows.update_entry(updated.clone(), &[], &HashMap::new(), &HashMap::new());
 
         assert_eq!(key, Some(TimelineRowKey::User("entry-1".to_string())));
         let TimelineRow::User(first) = &rows.rows[0] else {
@@ -903,7 +958,7 @@ mod tests {
                 }],
             },
         );
-        let callbacks = callbacks(|_, _, _| {}, |_, _, _| {}, |_, _, _| true, |_, _, _, _| {});
+        let callbacks = test_callbacks();
         let row = agent_turn_row(
             Some(run_id.clone()),
             Some(active_run(run_id.clone())),
@@ -914,6 +969,8 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
             &HashMap::new(),
             callbacks,
         );
@@ -952,7 +1009,9 @@ mod tests {
             &HashMap::new(),
             &HashSet::new(),
             &HashMap::new(),
-            callbacks(|_, _, _| {}, |_, _, _| {}, |_, _, _| true, |_, _, _, _| {}),
+            &HashMap::new(),
+            &HashMap::new(),
+            test_callbacks(),
         );
         let row_b = agent_turn_row(
             Some(run_b.clone()),
@@ -965,7 +1024,9 @@ mod tests {
             &HashMap::new(),
             &HashSet::new(),
             &HashMap::new(),
-            callbacks(|_, _, _| {}, |_, _, _| {}, |_, _, _| true, |_, _, _, _| {}),
+            &HashMap::new(),
+            &HashMap::new(),
+            test_callbacks(),
         );
         let mut rows = ConversationTimelineRows::new(vec![
             TimelineRow::Agent(Box::new(row_a)),
@@ -1001,7 +1062,9 @@ mod tests {
             &HashMap::new(),
             &HashSet::new(),
             &HashMap::new(),
-            callbacks(|_, _, _| {}, |_, _, _| {}, |_, _, _| true, |_, _, _, _| {}),
+            &HashMap::new(),
+            &HashMap::new(),
+            test_callbacks(),
         );
         let mut rows = ConversationTimelineRows::new(vec![TimelineRow::Agent(Box::new(row))]);
 
@@ -1032,6 +1095,16 @@ mod tests {
             completed_at: OffsetDateTime::UNIX_EPOCH,
             usage: None,
         }
+    }
+
+    fn test_callbacks() -> TimelineCallbacks {
+        callbacks(
+            |_, _, _| {},
+            |_, _, _| {},
+            |_, _, _| true,
+            |_, _, _, _| {},
+            |_, _, _, _| {},
+        )
     }
 
     fn active_run(id: AgentRunId) -> AgentRun {

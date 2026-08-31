@@ -19,6 +19,7 @@ define_lucide_icons!(
         Clipboard => "clipboard",
         Copy => "copy",
         Database => "database",
+        Download => "download",
         Cloud => "cloud",
         Cpu => "cpu",
         File => "file",
@@ -368,6 +369,10 @@ mod tests {
         assert_eq!(
             IconName::Database.path(),
             SharedString::from("icons/database.svg")
+        );
+        assert_eq!(
+            IconName::Download.path(),
+            SharedString::from("icons/download.svg")
         );
         assert_eq!(
             IconName::Keyboard.path(),

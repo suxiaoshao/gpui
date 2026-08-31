@@ -65,6 +65,19 @@ pub(crate) struct PreparedMessageAttachments {
     pub(crate) stored_paths: Vec<PathBuf>,
 }
 
+pub(crate) fn managed_attachment_dir(data_dir: &Path, conversation_id: &str) -> PathBuf {
+    data_dir.join("attachments").join(conversation_id)
+}
+
+pub(crate) fn is_valid_managed_conversation_id(conversation_id: &str) -> bool {
+    if conversation_id.is_empty() || conversation_id.contains(['/', '\\']) {
+        return false;
+    }
+    let mut components = Path::new(conversation_id).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+}
+
 pub(crate) fn clipboard_item_has_attachments(item: &ClipboardItem) -> bool {
     item.entries().iter().any(|entry| {
         matches!(
@@ -119,7 +132,24 @@ pub(crate) fn prepare_message_attachments_in(
         return Ok(PreparedMessageAttachments::default());
     }
 
-    let attachment_dir = data_dir.join("attachments").join(conversation_id);
+    if !is_valid_managed_conversation_id(conversation_id) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "conversation id is not a safe managed path component",
+        )
+        .into());
+    }
+    let attachments_dir = data_dir.join("attachments");
+    fs::create_dir_all(&attachments_dir)?;
+    let attachment_dir = managed_attachment_dir(&data_dir, conversation_id);
+    if fs::symlink_metadata(&attachment_dir).is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "managed conversation attachment directory cannot be a symbolic link",
+        )
+        .into());
+    }
     fs::create_dir_all(&attachment_dir)?;
 
     let mut prepared = PreparedMessageAttachments::default();
@@ -554,6 +584,71 @@ mod tests {
     fn sanitizes_stored_file_names() {
         assert_eq!(sanitize_file_name("a/b:c\\d.txt"), "a-b-c-d.txt");
         assert_eq!(sanitize_file_name(""), "attachment");
+    }
+
+    #[test]
+    fn managed_attachment_dir_uses_database_data_dir() {
+        assert_eq!(
+            managed_attachment_dir(Path::new("/tmp/jaco-data"), "conversation-1"),
+            PathBuf::from("/tmp/jaco-data/attachments/conversation-1")
+        );
+    }
+
+    #[test]
+    fn managed_conversation_id_must_be_one_safe_path_component() {
+        assert!(is_valid_managed_conversation_id("conversation-1"));
+        assert!(!is_valid_managed_conversation_id(""));
+        assert!(!is_valid_managed_conversation_id("."));
+        assert!(!is_valid_managed_conversation_id(".."));
+        assert!(!is_valid_managed_conversation_id("../outside"));
+        assert!(!is_valid_managed_conversation_id("nested/path"));
+        assert!(!is_valid_managed_conversation_id("nested\\path"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preparing_attachments_supports_a_linked_top_level_attachments_directory() {
+        use std::os::unix::fs::symlink;
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let external_attachments = tempfile::tempdir().unwrap();
+        symlink(
+            external_attachments.path(),
+            data_dir.path().join("attachments"),
+        )
+        .unwrap();
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("notes.txt");
+        fs::write(&source, b"linked storage").unwrap();
+        let attachment = ComposerAttachment {
+            local_id: 1,
+            kind: ComposerAttachmentKind::File,
+            source: ComposerAttachmentSource::LocalFile { path: source },
+            name: "notes.txt".to_string(),
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: Some(14),
+            width: None,
+            height: None,
+        };
+
+        let prepared = prepare_message_attachments_in(
+            data_dir.path().to_path_buf(),
+            &"conversation-1".to_string(),
+            "message-1",
+            &[attachment],
+        )
+        .unwrap();
+
+        assert_eq!(prepared.stored_paths.len(), 1);
+        assert_eq!(
+            fs::read(&prepared.stored_paths[0]).unwrap(),
+            b"linked storage"
+        );
+        assert!(
+            fs::canonicalize(&prepared.stored_paths[0])
+                .unwrap()
+                .starts_with(fs::canonicalize(external_attachments.path()).unwrap())
+        );
     }
 
     #[test]

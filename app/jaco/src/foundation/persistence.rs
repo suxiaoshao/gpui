@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{ErrorKind, Write},
+    io::{self, ErrorKind, Write},
     path::{Path, PathBuf},
 };
 
@@ -74,6 +74,42 @@ pub(crate) fn atomic_replace(
         )));
     }
     Ok(committed)
+}
+
+pub(crate) fn atomic_copy_file(source: &Path, target: &Path) -> std::io::Result<u64> {
+    let parent = target.parent().ok_or_else(|| {
+        std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("path has no parent: {}", target.display()),
+        )
+    })?;
+    let mut source = File::open(source)?;
+    let mut staged = NamedTempFile::new_in(parent)?;
+    let copied = io::copy(&mut source, staged.as_file_mut())?;
+    // Release the source before replacing the target so copying a file onto
+    // itself also works on Windows.
+    drop(source);
+    staged.as_file_mut().flush()?;
+    staged.as_file().sync_all()?;
+    persist_staged_copy(staged, target, parent)?;
+    Ok(copied)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn persist_staged_copy(staged: NamedTempFile, path: &Path, parent: &Path) -> std::io::Result<()> {
+    staged.persist(path).map_err(|error| error.error)?;
+    if let Err(error) = sync_directory(parent) {
+        tracing::warn!(
+            error_kind = ?error.kind(),
+            "attachment copy committed but directory durability sync failed"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn persist_staged_copy(staged: NamedTempFile, path: &Path, parent: &Path) -> std::io::Result<()> {
+    persist_staged(staged, path, parent)
 }
 
 fn persist_staged_noclobber(
@@ -187,8 +223,8 @@ pub(crate) fn sync_directory(_path: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::atomic_replace;
-    use std::io::ErrorKind;
+    use super::{atomic_copy_file, atomic_replace};
+    use std::{collections::BTreeSet, fs, io::ErrorKind};
 
     #[test]
     fn atomic_replace_creates_and_replaces_the_destination() {
@@ -220,5 +256,118 @@ mod tests {
             std::fs::read(path).expect("read external winner"),
             b"external"
         );
+    }
+
+    #[test]
+    fn atomic_copy_file_creates_the_destination() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.bin");
+        let target = directory.path().join("copy.bin");
+        let contents = b"streamed source contents";
+        fs::write(&source, contents).expect("write source");
+
+        assert_eq!(
+            atomic_copy_file(&source, &target).expect("create destination"),
+            contents.len() as u64
+        );
+        assert_eq!(fs::read(target).expect("read destination"), contents);
+    }
+
+    #[test]
+    fn atomic_copy_file_replaces_the_destination() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.bin");
+        let target = directory.path().join("copy.bin");
+        fs::write(&source, b"new contents").expect("write source");
+        fs::write(&target, b"old contents").expect("write destination");
+
+        assert_eq!(
+            atomic_copy_file(&source, &target).expect("replace destination"),
+            12
+        );
+        assert_eq!(fs::read(target).expect("read destination"), b"new contents");
+    }
+
+    #[test]
+    fn atomic_copy_file_supports_the_same_source_and_destination() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("same.bin");
+        let contents = b"same source and destination";
+        fs::write(&path, contents).expect("write source");
+
+        assert_eq!(
+            atomic_copy_file(&path, &path).expect("copy onto source"),
+            contents.len() as u64
+        );
+        assert_eq!(fs::read(path).expect("read destination"), contents);
+    }
+
+    #[test]
+    fn atomic_copy_file_failure_preserves_destination_and_cleans_stage() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.bin");
+        let target = directory.path().join("destination");
+        fs::write(&source, b"contents that reach the staging file").expect("write source");
+        fs::create_dir(&target).expect("create directory destination");
+        let before = fs::read_dir(directory.path())
+            .expect("list directory before copy")
+            .map(|entry| entry.expect("read directory entry").file_name())
+            .collect::<BTreeSet<_>>();
+
+        atomic_copy_file(&source, &target).expect_err("directory destination must fail");
+
+        let after = fs::read_dir(directory.path())
+            .expect("list directory after copy")
+            .map(|entry| entry.expect("read directory entry").file_name())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(after, before, "failed copy must clean its staged file");
+        assert!(target.is_dir(), "failed copy must preserve the destination");
+    }
+
+    #[test]
+    fn atomic_copy_file_does_not_create_a_missing_parent() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.bin");
+        let parent = directory.path().join("missing");
+        let target = parent.join("copy.bin");
+        fs::write(&source, b"contents").expect("write source");
+
+        let error = atomic_copy_file(&source, &target).expect_err("missing parent must fail");
+
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+        assert!(!parent.exists(), "copy must not create the target parent");
+    }
+
+    #[test]
+    fn atomic_copy_file_missing_source_preserves_existing_destination() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("missing.bin");
+        let target = directory.path().join("copy.bin");
+        fs::write(&target, b"existing destination").expect("write destination");
+
+        let error = atomic_copy_file(&source, &target).expect_err("missing source must fail");
+
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+        assert_eq!(
+            fs::read(target).expect("read destination"),
+            b"existing destination"
+        );
+    }
+
+    #[test]
+    fn atomic_copy_file_streams_a_large_fixture_exactly() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("large-source.bin");
+        let target = directory.path().join("large-copy.bin");
+        let contents = (0..8 * 1024 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        fs::write(&source, &contents).expect("write large source");
+
+        assert_eq!(
+            atomic_copy_file(&source, &target).expect("copy large source"),
+            contents.len() as u64
+        );
+        assert_eq!(fs::read(target).expect("read large copy"), contents);
     }
 }

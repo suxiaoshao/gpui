@@ -9,13 +9,16 @@ use gpui_component::{
     v_flex,
 };
 use jaco_core::{
-    AgentMessageRequestUsage, AgentRun, AgentRunId, AgentRunStatus, ConversationEntry,
-    ConversationEntryId, ToolInvocationId,
+    AgentMessageRequestUsage, AgentRun, AgentRunId, AgentRunStatus, AttachmentId,
+    ConversationEntry, ConversationEntryId, ConversationEntryPayload, ToolInvocationId,
 };
 
 use crate::foundation::{I18n, assets::IconName, conversation_format as format};
 
-use super::attachments::{UserImageAttachment, render_user_image_attachments};
+use super::attachment_access::{AttachmentAccessView, AttachmentAction, AttachmentActionTarget};
+use super::attachments::{
+    MessageContentAppearance, MessageContentBlock, TimelineTextKey, render_message_content,
+};
 use super::copy_button::{CopyButton, OnCopy};
 use super::request_usage::RequestUsageDisclosure;
 use super::tool_invocation::{AgentDetailItem, OnToggleToolInvocation};
@@ -23,6 +26,8 @@ use super::tool_invocation::{AgentDetailItem, OnToggleToolInvocation};
 pub(super) type OnToggleAgent = Rc<dyn Fn(AgentRunId, &mut Window, &mut App) + 'static>;
 pub(super) type OnApprovalDecision =
     Rc<dyn Fn(ToolInvocationId, bool, &mut Window, &mut App) + 'static>;
+pub(super) type OnAttachmentAction =
+    Rc<dyn Fn(AttachmentActionTarget, AttachmentAction, &mut Window, &mut App) + 'static>;
 
 #[derive(Clone)]
 pub(super) enum TimelineRow {
@@ -71,8 +76,10 @@ impl RenderOnce for TimelineRow {
 #[derive(Clone)]
 pub(super) struct UserMessageRow {
     pub(super) item: ConversationEntry,
-    pub(super) image_attachments: Vec<UserImageAttachment>,
-    pub(super) text_state: Option<Entity<TextViewState>>,
+    pub(super) content: Vec<MessageContentBlock>,
+    pub(super) text_states: HashMap<TimelineTextKey, Entity<TextViewState>>,
+    pub(super) attachment_access: HashMap<AttachmentId, AttachmentAccessView>,
+    pub(super) on_attachment_action: OnAttachmentAction,
     pub(super) on_copy: OnCopy,
 }
 
@@ -80,8 +87,6 @@ impl RenderOnce for UserMessageRow {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let group = format!("conversation-user-message-{}", self.item.id);
         let markdown = format::item_markdown(&self.item);
-        let has_markdown = !markdown.trim().is_empty();
-        let has_image_attachments = !self.image_attachments.is_empty();
         let copy_text = markdown.clone();
         let on_copy = self.on_copy;
         let i18n = cx.global::<I18n>();
@@ -115,30 +120,15 @@ impl RenderOnce for UserMessageRow {
                     .max_w(px(680.))
                     .min_w_0()
                     .gap_2()
-                    .when(has_image_attachments, |this| {
-                        this.child(render_user_image_attachments(
-                            &self.item.id,
-                            self.image_attachments,
-                            cx,
-                        ))
-                    })
-                    .when(has_markdown || !has_image_attachments, |this| {
-                        this.child(
-                            div()
-                                .rounded(px(8.))
-                                .px_3()
-                                .py_2()
-                                .bg(cx.theme().tokens.primary.background.opacity(0.12))
-                                .border_1()
-                                .border_color(cx.theme().primary.opacity(0.18))
-                                .text_color(cx.theme().foreground)
-                                .child(markdown_view(
-                                    format!("conversation-user-message-markdown-{}", self.item.id),
-                                    self.text_state,
-                                    &markdown,
-                                )),
-                        )
-                    })
+                    .child(render_message_content(
+                        &self.item.id,
+                        self.content,
+                        &self.text_states,
+                        &self.attachment_access,
+                        MessageContentAppearance::User,
+                        self.on_attachment_action,
+                        cx,
+                    ))
                     .child(
                         h_flex()
                             .h(px(24.))
@@ -164,12 +154,15 @@ pub(super) struct AgentTurnRow {
     pub(super) run: Option<AgentRun>,
     pub(super) request_usage: Option<AgentMessageRequestUsage>,
     pub(super) items: Vec<AgentDetailItem>,
-    pub(super) text_states: HashMap<ConversationEntryId, Entity<TextViewState>>,
+    pub(super) message_content: HashMap<ConversationEntryId, Vec<MessageContentBlock>>,
+    pub(super) text_states: HashMap<TimelineTextKey, Entity<TextViewState>>,
+    pub(super) attachment_access: HashMap<AttachmentId, AttachmentAccessView>,
     pub(super) expanded: bool,
     pub(super) on_toggle: OnToggleAgent,
     pub(super) on_toggle_tool_invocation: OnToggleToolInvocation,
     pub(super) on_copy: OnCopy,
     pub(super) on_approval_decision: OnApprovalDecision,
+    pub(super) on_attachment_action: OnAttachmentAction,
 }
 
 impl RenderOnce for AgentTurnRow {
@@ -185,7 +178,14 @@ impl RenderOnce for AgentTurnRow {
             agent_copy_text(&self, i18n)
         };
         let on_copy = self.on_copy.clone();
-        let (copy_tooltip, copied_tooltip, hover_time, final_markdown) = {
+        let primary_item = self.primary_item();
+        let primary_message_content = primary_item.and_then(|item| {
+            matches!(&item.payload, ConversationEntryPayload::Message { .. })
+                .then(|| self.message_content.get(&item.id).cloned())
+                .flatten()
+                .map(|content| (item.id.clone(), content))
+        });
+        let (copy_tooltip, copied_tooltip, hover_time, primary_markdown) = {
             let i18n = cx.global::<I18n>();
             let hover_time = self
                 .run
@@ -206,7 +206,11 @@ impl RenderOnce for AgentTurnRow {
                 i18n.t("conversation-copy-tooltip"),
                 i18n.t("conversation-copy-success"),
                 hover_time,
-                agent_final_markdown(self.final_item(), i18n),
+                if primary_message_content.is_some() {
+                    String::new()
+                } else {
+                    agent_final_markdown(primary_item, i18n)
+                },
             )
         };
         let status_row = self.render_status_row(&id_suffix, cx);
@@ -224,9 +228,23 @@ impl RenderOnce for AgentTurnRow {
             window,
             cx,
         );
-        let final_text_state = self
-            .final_item()
-            .and_then(|item| self.text_states.get(&item.id).cloned());
+        let primary_text_state = primary_item.and_then(|item| {
+            self.text_states
+                .get(&TimelineTextKey::WholeEntry(item.id.clone()))
+                .cloned()
+        });
+        let primary_content = primary_message_content.map(|(entry_id, content)| {
+            render_message_content(
+                &entry_id,
+                content,
+                &self.text_states,
+                &self.attachment_access,
+                MessageContentAppearance::Assistant,
+                self.on_attachment_action.clone(),
+                cx,
+            )
+        });
+        let details = self.expanded.then(|| self.render_details(window, cx));
 
         v_flex()
             .id(format!("conversation-agent-row-{id_suffix}"))
@@ -239,10 +257,9 @@ impl RenderOnce for AgentTurnRow {
             .gap_2()
             .child(status_row)
             .child(separator)
-            .when(self.expanded, |this| {
-                this.child(self.render_details(window, cx))
-            })
-            .when(!final_markdown.is_empty(), |this| {
+            .when_some(details, |this, details| this.child(details))
+            .when_some(primary_content, |this, content| this.child(content))
+            .when(!primary_markdown.is_empty(), |this| {
                 this.child(
                     div()
                         .max_w(px(760.))
@@ -250,8 +267,8 @@ impl RenderOnce for AgentTurnRow {
                         .text_color(cx.theme().foreground)
                         .child(markdown_view(
                             format!("conversation-agent-final-markdown-{id_suffix}"),
-                            final_text_state,
-                            &final_markdown,
+                            primary_text_state,
+                            &primary_markdown,
                         )),
                 )
             })
@@ -266,6 +283,20 @@ impl AgentTurnRow {
             .iter()
             .filter_map(AgentDetailItem::entry)
             .find(|item| &item.id == final_entry_id)
+    }
+
+    pub(super) fn primary_item(&self) -> Option<&ConversationEntry> {
+        if self.run.is_some() {
+            return self.final_item();
+        }
+
+        let mut messages = self
+            .items
+            .iter()
+            .filter_map(AgentDetailItem::entry)
+            .filter(|entry| matches!(&entry.payload, ConversationEntryPayload::Message { .. }));
+        let primary = messages.next()?;
+        messages.next().is_none().then_some(primary)
     }
 
     fn render_status_row(&self, id_suffix: &str, cx: &mut App) -> AnyElement {
@@ -325,21 +356,35 @@ impl AgentTurnRow {
     }
 
     fn render_details(&self, window: &mut Window, cx: &mut App) -> AnyElement {
-        let final_item_id = self.final_item().map(|item| &item.id);
+        let primary_item_id = self.primary_item().map(|item| &item.id);
         let detail_items = self.items.iter().filter(|item| {
             item.entry()
-                .is_none_or(|entry| final_item_id != Some(&entry.id))
+                .is_none_or(|entry| primary_item_id != Some(&entry.id))
         });
         let text_states = self.text_states.clone();
         let mut blocks = Vec::with_capacity(detail_items.size_hint().0);
         for item in detail_items.cloned() {
             match item {
                 AgentDetailItem::Entry(item) => {
-                    let text_state = text_states.get(&item.id).cloned();
-                    blocks.push(
-                        super::tool_blocks::DetailBlock::new(item, text_state, window, cx)
-                            .into_any_element(),
-                    );
+                    if let Some(content) = self.message_content.get(&item.id).cloned() {
+                        blocks.push(render_message_content(
+                            &item.id,
+                            content,
+                            &text_states,
+                            &self.attachment_access,
+                            MessageContentAppearance::Assistant,
+                            self.on_attachment_action.clone(),
+                            cx,
+                        ));
+                    } else {
+                        let text_state = text_states
+                            .get(&TimelineTextKey::WholeEntry(item.id.clone()))
+                            .cloned();
+                        blocks.push(
+                            super::tool_blocks::DetailBlock::new(item, text_state, window, cx)
+                                .into_any_element(),
+                        );
+                    }
                 }
                 AgentDetailItem::ToolInvocation(detail) => {
                     blocks.push(
@@ -440,7 +485,7 @@ fn agent_action_row(row: AgentActionRow, window: &mut Window, cx: &mut App) -> A
 }
 
 fn agent_copy_text(row: &AgentTurnRow, i18n: &I18n) -> String {
-    let final_markdown = agent_final_markdown(row.final_item(), i18n);
+    let final_markdown = agent_final_markdown(row.primary_item(), i18n);
     if !row.expanded && !final_markdown.trim().is_empty() {
         return final_markdown;
     }

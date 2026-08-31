@@ -1,3 +1,4 @@
+mod attachment_access;
 mod attachments;
 mod copy_button;
 mod message;
@@ -9,11 +10,12 @@ mod tool_invocation;
 use std::{
     collections::{HashMap, HashSet},
     ops::Range,
-    path::Path,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
 };
 
+use fluent_bundle::FluentArgs;
 use gpui::{prelude::FluentBuilder as _, *};
 use gpui_component::{
     ActiveTheme, Disableable, Sizable, StyledExt, WindowExt as NotificationWindowExt,
@@ -26,7 +28,8 @@ use gpui_component::{
     v_flex,
 };
 use jaco_core::{
-    AgentRunId, ConversationEffect, ConversationEntryId, ConversationId, ToolInvocationId,
+    AgentRunId, AttachmentId, ConversationEffect, ConversationEntryId, ConversationId,
+    ToolInvocationId,
 };
 
 use crate::{
@@ -48,6 +51,14 @@ pub(crate) struct ConversationDetailPage {
     timeline: ListState,
     timeline_rows: timeline::ConversationTimelineRows,
     message_text_states: Vec<MessageTextState>,
+    attachment_access: HashMap<AttachmentId, attachment_access::AttachmentAccessState>,
+    attachment_access_targets: HashMap<AttachmentId, AttachmentAccessFingerprint>,
+    attachment_access_generation: u64,
+    attachment_probe_task: Option<Task<()>>,
+    attachment_actions_in_flight: HashSet<(
+        attachment_access::AttachmentActionTarget,
+        attachment_access::AttachmentAction,
+    )>,
     expanded_agent_runs: HashMap<AgentRunId, bool>,
     expanded_tool_invocations: HashMap<ToolInvocationId, bool>,
     tool_invocation_previews:
@@ -61,10 +72,25 @@ pub(crate) struct ConversationDetailPage {
 }
 
 struct MessageTextState {
-    id: ConversationEntryId,
+    key: attachments::TimelineTextKey,
     state: Entity<TextViewState>,
     source: String,
     _subscription: Subscription,
+}
+
+#[derive(Clone)]
+struct AttachmentProbeInput {
+    attachment_id: AttachmentId,
+    kind: attachment_access::AttachmentAccessKind,
+    static_problem: Option<attachment_access::AttachmentAccessProblem>,
+    record: Option<jaco_core::ConversationAttachment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AttachmentAccessFingerprint {
+    kind: attachment_access::AttachmentAccessKind,
+    static_problem: Option<attachment_access::AttachmentAccessProblem>,
+    record_updated_at: Option<time::OffsetDateTime>,
 }
 
 struct ConversationAgentRunStatus {
@@ -192,6 +218,11 @@ impl ConversationDetailPage {
             timeline,
             timeline_rows,
             message_text_states: Vec::new(),
+            attachment_access: HashMap::new(),
+            attachment_access_targets: HashMap::new(),
+            attachment_access_generation: 0,
+            attachment_probe_task: None,
+            attachment_actions_in_flight: HashSet::new(),
             expanded_agent_runs: HashMap::new(),
             expanded_tool_invocations: HashMap::new(),
             tool_invocation_previews: HashMap::new(),
@@ -210,6 +241,7 @@ impl ConversationDetailPage {
         };
         page.refresh_chat_form_context(cx);
         page.sync_message_text_states(cx);
+        page.sync_attachment_access(true, cx);
         page.sync_timeline(cx, None);
         page.timeline.scroll_to_end();
         page.sync_submission_problem(cx);
@@ -383,6 +415,7 @@ impl ConversationDetailPage {
                 self.refresh_chat_form_context(cx);
                 self.sync_tool_invocation_ui_state(cx);
                 self.sync_message_text_states(cx);
+                self.sync_attachment_access(true, cx);
                 self.sync_timeline(cx, None);
                 // A reload can change the height of a row in the unchanged key prefix while
                 // also adding or removing a later row. `splice` only invalidates the changed
@@ -404,13 +437,16 @@ impl ConversationDetailPage {
             ConversationEffect::SummaryChanged => {}
             ConversationEffect::EntryInserted { entry_id } => {
                 self.sync_message_text_state(entry_id, cx);
+                self.sync_attachment_access(false, cx);
                 self.sync_timeline(cx, None);
             }
             ConversationEffect::EntryChanged { entry_id, .. } => {
                 self.sync_message_text_state(entry_id, cx);
+                self.sync_attachment_access(false, cx);
                 self.update_timeline_entry(entry_id, cx);
             }
             ConversationEffect::AttachmentChanged { attachment_id } => {
+                self.sync_attachment_access(true, cx);
                 self.sync_attachment_rows(attachment_id, cx);
             }
             ConversationEffect::RunChanged { run_id } => self.update_timeline_run(run_id, cx),
@@ -426,6 +462,12 @@ impl ConversationDetailPage {
             }
             ConversationEffect::Deleted => {
                 self.message_text_states.clear();
+                self.attachment_access.clear();
+                self.attachment_access_targets.clear();
+                self.attachment_access_generation =
+                    self.attachment_access_generation.wrapping_add(1);
+                self.attachment_probe_task = None;
+                self.attachment_actions_in_flight.clear();
                 self.expanded_tool_invocations.clear();
                 self.tool_invocation_previews.clear();
                 self.sync_chat_form_context_usage(cx);
@@ -504,7 +546,16 @@ impl ConversationDetailPage {
                     });
                 }
             },
+            {
+                let page = page.clone();
+                move |target, action, window, cx| {
+                    let _ = page.update(cx, |page, cx| {
+                        page.handle_attachment_action(target, action, window, cx);
+                    });
+                }
+            },
         );
+        let attachment_access = self.attachment_access_view_map(cx);
         let rows = self
             .conversation
             .read(cx)
@@ -539,6 +590,7 @@ impl ConversationDetailPage {
                     &self.tool_invocation_previews,
                     &approval_decidable,
                     &self.message_text_state_map(),
+                    &attachment_access,
                     callbacks,
                 )
             })
@@ -560,58 +612,220 @@ impl ConversationDetailPage {
             .data()
             .and_then(Option::as_ref)
             .map(|snapshot| {
+                let attachments_by_id = attachments::attachments_by_id(&snapshot.attachments);
                 snapshot
                     .entries
                     .iter()
-                    .filter_map(|item| {
-                        if tool_invocation::is_tool_lifecycle_entry(item) {
-                            return None;
-                        }
-                        let source = format::item_markdown(item);
-                        (!source.is_empty()).then(|| (item.id.clone(), source))
-                    })
+                    .flat_map(|item| message_text_sources(item, &attachments_by_id))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let next_ids = sources
+        let next_keys = sources
             .iter()
-            .map(|(item_id, _)| item_id.clone())
+            .map(|(key, _)| key.clone())
             .collect::<HashSet<_>>();
 
-        for (item_id, source) in sources {
-            self.ensure_message_text_state(item_id, &source, cx);
+        for (key, source) in sources {
+            self.ensure_message_text_state(key, &source, cx);
         }
 
         self.message_text_states
-            .retain(|entry| next_ids.contains(&entry.id));
+            .retain(|entry| next_keys.contains(&entry.key));
     }
 
     fn sync_message_text_state(&mut self, item_id: &ConversationEntryId, cx: &mut Context<Self>) {
-        let source = self
+        let sources = self
             .conversation
             .read(cx)
             .operation()
             .data()
             .and_then(Option::as_ref)
             .and_then(|conversation| {
+                let attachments_by_id = attachments::attachments_by_id(&conversation.attachments);
                 conversation
                     .entries
                     .iter()
                     .find(|entry| &entry.id == item_id)
+                    .map(|entry| message_text_sources(entry, &attachments_by_id))
             })
-            .and_then(|entry| {
-                (!tool_invocation::is_tool_lifecycle_entry(entry))
-                    .then(|| format::item_markdown(entry))
-            });
-        match source {
-            Some(source) if !source.is_empty() => {
-                self.ensure_message_text_state(item_id.clone(), &source, cx);
-            }
-            Some(_) | None => {
-                self.message_text_states
-                    .retain(|state| &state.id != item_id);
-            }
+            .unwrap_or_default();
+        let next_keys = sources
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect::<HashSet<_>>();
+        let current_keys = self
+            .message_text_states
+            .iter()
+            .filter(|state| timeline_text_key_entry_id(&state.key) == item_id)
+            .map(|state| state.key.clone())
+            .collect::<HashSet<_>>();
+
+        if current_keys != next_keys {
+            self.message_text_states
+                .retain(|state| timeline_text_key_entry_id(&state.key) != item_id);
         }
+        for (key, source) in sources {
+            self.ensure_message_text_state(key, &source, cx);
+        }
+    }
+
+    fn sync_attachment_access(&mut self, force: bool, cx: &mut Context<Self>) {
+        let inputs = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .map(projected_attachment_probe_inputs)
+            .unwrap_or_default();
+        let targets = inputs
+            .iter()
+            .map(|(attachment_id, input)| {
+                (
+                    attachment_id.clone(),
+                    AttachmentAccessFingerprint {
+                        kind: input.kind,
+                        static_problem: input.static_problem.clone(),
+                        record_updated_at: input.record.as_ref().map(|record| record.updated_at),
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        if !force && targets == self.attachment_access_targets {
+            return;
+        }
+
+        self.attachment_access_generation = self.attachment_access_generation.wrapping_add(1);
+        let generation = self.attachment_access_generation;
+        self.attachment_probe_task = None;
+        self.attachment_access_targets = targets;
+        self.attachment_actions_in_flight.retain(|(target, _)| {
+            self.attachment_access_targets
+                .get(&target.attachment_id)
+                .is_some_and(|fingerprint| fingerprint.kind == target.kind.into())
+        });
+
+        let mut probes = Vec::new();
+        self.attachment_access = inputs
+            .into_iter()
+            .map(|(attachment_id, input)| {
+                let state = if let Some(problem) = input.static_problem {
+                    attachment_access::AttachmentAccessState::Unavailable(problem)
+                } else if let Some(record) = input.record {
+                    probes.push((input.attachment_id, input.kind, record));
+                    attachment_access::AttachmentAccessState::Checking
+                } else {
+                    attachment_access::AttachmentAccessState::Unavailable(
+                        attachment_access::AttachmentAccessProblem::MissingRecord,
+                    )
+                };
+                (attachment_id, state)
+            })
+            .collect();
+
+        if probes.is_empty() {
+            return;
+        }
+
+        let conversation_id = self.conversation_id.clone();
+        let data_dir =
+            crate::database::store(cx).read(cx, |resource| resource.target.data_dir.clone());
+        let probe = cx.background_spawn(async move {
+            probes
+                .into_iter()
+                .map(|(attachment_id, kind, record)| {
+                    let result = attachment_access::resolve_local_attachment(
+                        &record,
+                        &conversation_id,
+                        kind,
+                        &data_dir,
+                    );
+                    (attachment_id, result)
+                })
+                .collect::<Vec<_>>()
+        });
+        self.attachment_probe_task = Some(cx.spawn(async move |page, cx| {
+            let results = probe.await;
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            page.update(cx, |page, cx| {
+                if page.attachment_access_generation != generation {
+                    return;
+                }
+                let attachment_ids = results
+                    .iter()
+                    .map(|(attachment_id, _)| attachment_id.clone())
+                    .collect::<Vec<_>>();
+                for (attachment_id, result) in results {
+                    if !page.attachment_access_targets.contains_key(&attachment_id) {
+                        continue;
+                    }
+                    page.attachment_access.insert(
+                        attachment_id,
+                        match result {
+                            Ok(resolved) => {
+                                attachment_access::AttachmentAccessState::Available(resolved)
+                            }
+                            Err(problem) => {
+                                attachment_access::AttachmentAccessState::Unavailable(problem)
+                            }
+                        },
+                    );
+                }
+                for attachment_id in attachment_ids {
+                    page.sync_attachment_rows(&attachment_id, cx);
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn attachment_access_view_map(
+        &self,
+        cx: &App,
+    ) -> HashMap<AttachmentId, attachment_access::AttachmentAccessView> {
+        let records = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .map(|snapshot| attachments::attachments_by_id(&snapshot.attachments))
+            .unwrap_or_default();
+
+        self.attachment_access
+            .iter()
+            .map(|(attachment_id, state)| {
+                let source = state
+                    .resolved()
+                    .map(attachment_access::ResolvedLocalAttachment::source_label)
+                    .or_else(|| {
+                        records.get(attachment_id).map(|record| {
+                            attachment_access::AttachmentSourceLabel::from(
+                                attachment_access::attachment_source_hint(record),
+                            )
+                        })
+                    })
+                    .unwrap_or(attachment_access::AttachmentSourceLabel::Unknown);
+                let busy_actions = self
+                    .attachment_actions_in_flight
+                    .iter()
+                    .filter_map(|(target, action)| {
+                        (&target.attachment_id == attachment_id).then_some(*action)
+                    })
+                    .collect();
+                (
+                    attachment_id.clone(),
+                    attachment_access::AttachmentAccessView {
+                        availability: state.availability(),
+                        source,
+                        busy_actions,
+                        resolved: state.resolved().cloned(),
+                    },
+                )
+            })
+            .collect()
     }
 
     fn update_timeline_entry(&mut self, item_id: &ConversationEntryId, cx: &mut Context<Self>) {
@@ -641,14 +855,11 @@ impl ConversationDetailPage {
                 return;
             }
         };
-        let text_state = self
-            .message_text_states
-            .iter()
-            .find(|state| &state.id == item_id)
-            .map(|state| state.state.clone());
-        let Some(key) = self
-            .timeline_rows
-            .update_entry(entry, &attachments, text_state)
+        let text_states = self.message_text_state_map();
+        let attachment_access = self.attachment_access_view_map(cx);
+        let Some(key) =
+            self.timeline_rows
+                .update_entry(entry, &attachments, &text_states, &attachment_access)
         else {
             self.sync_timeline(cx, None);
             return;
@@ -734,6 +945,362 @@ impl ConversationDetailPage {
         }
     }
 
+    fn handle_attachment_action(
+        &mut self,
+        target: attachment_access::AttachmentActionTarget,
+        action: attachment_access::AttachmentAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let action_key = (target.clone(), action);
+        if !self.attachment_actions_in_flight.insert(action_key.clone()) {
+            return;
+        }
+        self.sync_attachment_rows(&target.attachment_id, cx);
+        cx.notify();
+
+        let record = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .and_then(|snapshot| {
+                snapshot
+                    .attachments
+                    .iter()
+                    .find(|record| record.id == target.attachment_id)
+                    .cloned()
+            });
+        let Some(record) = record else {
+            self.finish_attachment_action_failure(
+                action_key,
+                attachment_access::AttachmentAccessProblem::MissingRecord,
+                window,
+                cx,
+            );
+            return;
+        };
+        let record_updated_at = record.updated_at;
+        let conversation_id = self.conversation_id.clone();
+        let data_dir =
+            crate::database::store(cx).read(cx, |resource| resource.target.data_dir.clone());
+        let preflight_target = target.clone();
+        let preflight = cx.background_spawn(async move {
+            attachment_access::resolve_local_attachment(
+                &record,
+                &conversation_id,
+                preflight_target.kind,
+                &data_dir,
+            )
+        });
+        let page = cx.entity().downgrade();
+        let task = window.spawn(cx, async move |cx| {
+            let result = preflight.await;
+            let _ = page.update_in(cx, |page, window, cx| {
+                page.finish_attachment_preflight(action_key, record_updated_at, result, window, cx);
+            });
+        });
+        crate::app::tasks::retain_window(window, task, cx);
+    }
+
+    fn finish_attachment_preflight(
+        &mut self,
+        action_key: (
+            attachment_access::AttachmentActionTarget,
+            attachment_access::AttachmentAction,
+        ),
+        record_updated_at: time::OffsetDateTime,
+        result: Result<
+            attachment_access::ResolvedLocalAttachment,
+            attachment_access::AttachmentAccessProblem,
+        >,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (target, action) = &action_key;
+        let still_current = self.attachment_record_is_current(target, record_updated_at, cx);
+        if !still_current {
+            self.finish_stale_attachment_action(action_key, window, cx);
+            return;
+        }
+
+        let resolved = match result {
+            Ok(resolved) => resolved,
+            Err(problem) => {
+                self.finish_attachment_action_failure(action_key, problem, window, cx);
+                return;
+            }
+        };
+        if resolved.attachment_id() != &target.attachment_id
+            || resolved.kind() != target.kind.into()
+        {
+            self.finish_attachment_action_failure(
+                action_key,
+                attachment_access::AttachmentAccessProblem::KindMismatch,
+                window,
+                cx,
+            );
+            return;
+        }
+        self.attachment_access.insert(
+            target.attachment_id.clone(),
+            attachment_access::AttachmentAccessState::Available(resolved.clone()),
+        );
+
+        match action {
+            attachment_access::AttachmentAction::Open => {
+                cx.open_with_system(resolved.path());
+                self.finish_attachment_action_success(action_key, cx);
+            }
+            attachment_access::AttachmentAction::Reveal => {
+                cx.reveal_path(resolved.path());
+                self.finish_attachment_action_success(action_key, cx);
+            }
+            attachment_access::AttachmentAction::SaveCopy => {
+                self.prompt_attachment_save_copy(
+                    action_key,
+                    record_updated_at,
+                    resolved,
+                    window,
+                    cx,
+                );
+            }
+        }
+    }
+
+    fn attachment_record_is_current(
+        &self,
+        target: &attachment_access::AttachmentActionTarget,
+        record_updated_at: time::OffsetDateTime,
+        cx: &App,
+    ) -> bool {
+        self.attachment_access_targets
+            .get(&target.attachment_id)
+            .is_some_and(|fingerprint| fingerprint.kind == target.kind.into())
+            && self
+                .conversation
+                .read(cx)
+                .operation()
+                .data()
+                .and_then(Option::as_ref)
+                .and_then(|snapshot| {
+                    snapshot
+                        .attachments
+                        .iter()
+                        .find(|record| record.id == target.attachment_id)
+                })
+                .is_some_and(|record| record.updated_at == record_updated_at)
+    }
+
+    fn prompt_attachment_save_copy(
+        &mut self,
+        action_key: (
+            attachment_access::AttachmentActionTarget,
+            attachment_access::AttachmentAction,
+        ),
+        record_updated_at: time::OffsetDateTime,
+        resolved: attachment_access::ResolvedLocalAttachment,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let source = resolved.path().to_path_buf();
+        let initial_dir = source
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let suggested = self
+            .conversation
+            .read(cx)
+            .operation()
+            .data()
+            .and_then(Option::as_ref)
+            .and_then(|snapshot| {
+                snapshot
+                    .attachments
+                    .iter()
+                    .find(|record| record.id == action_key.0.attachment_id)
+            })
+            .and_then(|record| attachment_access::safe_display_name(record.name.as_deref()))
+            .unwrap_or_else(|| {
+                cx.global::<I18n>()
+                    .t("conversation-attachment-fallback-name")
+                    .to_string()
+            });
+        let prompt = cx.prompt_for_new_path(&initial_dir, Some(&suggested));
+        let fallback_name = cx
+            .global::<I18n>()
+            .t("conversation-attachment-fallback-name")
+            .to_string();
+        let page = cx.entity().downgrade();
+        let task = window.spawn(cx, async move |cx| {
+            let target_path = match prompt.await {
+                Ok(Ok(Some(path))) => path,
+                Ok(Ok(None)) => {
+                    let _ = page.update_in(cx, |page, _, cx| {
+                        page.finish_attachment_action_success(action_key, cx);
+                    });
+                    return;
+                }
+                Ok(Err(_)) | Err(_) => {
+                    let _ = page.update_in(cx, |page, window, cx| {
+                        page.finish_attachment_save_failure(action_key, window, cx);
+                    });
+                    return;
+                }
+            };
+            let action_key_for_check = action_key.clone();
+            let current = page
+                .update_in(cx, |page, window, cx| {
+                    let current = page.attachment_record_is_current(
+                        &action_key_for_check.0,
+                        record_updated_at,
+                        cx,
+                    );
+                    if !current {
+                        page.finish_stale_attachment_action(action_key_for_check, window, cx);
+                    }
+                    current
+                })
+                .unwrap_or(true);
+            if !current {
+                return;
+            }
+            let saved_name = attachment_saved_name(&target_path, &fallback_name);
+            let copy = cx.background_spawn(async move {
+                crate::foundation::persistence::atomic_copy_file(&source, &target_path)
+            });
+            let result = copy.await;
+            let _ = page.update_in(cx, |page, window, cx| match result {
+                Ok(_) => page.finish_attachment_save_success(action_key, saved_name, window, cx),
+                Err(_) => page.finish_attachment_save_failure(action_key, window, cx),
+            });
+        });
+        crate::app::tasks::retain_window(window, task, cx);
+    }
+
+    fn finish_attachment_action_success(
+        &mut self,
+        action_key: (
+            attachment_access::AttachmentActionTarget,
+            attachment_access::AttachmentAction,
+        ),
+        cx: &mut Context<Self>,
+    ) {
+        let attachment_id = action_key.0.attachment_id.clone();
+        self.attachment_actions_in_flight.remove(&action_key);
+        self.sync_attachment_rows(&attachment_id, cx);
+        cx.notify();
+    }
+
+    fn finish_attachment_action_failure(
+        &mut self,
+        action_key: (
+            attachment_access::AttachmentActionTarget,
+            attachment_access::AttachmentAction,
+        ),
+        problem: attachment_access::AttachmentAccessProblem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let attachment_id = action_key.0.attachment_id.clone();
+        self.attachment_actions_in_flight.remove(&action_key);
+        self.attachment_access.insert(
+            attachment_id.clone(),
+            attachment_access::AttachmentAccessState::Unavailable(problem),
+        );
+        self.sync_attachment_rows(&attachment_id, cx);
+        let title = cx
+            .global::<I18n>()
+            .t("conversation-attachment-action-failed-title");
+        let message = cx
+            .global::<I18n>()
+            .t("conversation-attachment-action-failed-message");
+        push_conversation_notification(window, cx, title, message, NotificationType::Error);
+        cx.notify();
+    }
+
+    fn finish_stale_attachment_action(
+        &mut self,
+        action_key: (
+            attachment_access::AttachmentActionTarget,
+            attachment_access::AttachmentAction,
+        ),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.refresh_after_stale_attachment_action(action_key, cx);
+        let title = cx
+            .global::<I18n>()
+            .t("conversation-attachment-action-failed-title");
+        let message = cx
+            .global::<I18n>()
+            .t("conversation-attachment-action-failed-message");
+        push_conversation_notification(window, cx, title, message, NotificationType::Error);
+    }
+
+    fn refresh_after_stale_attachment_action(
+        &mut self,
+        action_key: (
+            attachment_access::AttachmentActionTarget,
+            attachment_access::AttachmentAction,
+        ),
+        cx: &mut Context<Self>,
+    ) {
+        let attachment_id = action_key.0.attachment_id.clone();
+        self.attachment_actions_in_flight.remove(&action_key);
+        self.sync_attachment_access(true, cx);
+        self.sync_attachment_rows(&attachment_id, cx);
+        cx.notify();
+    }
+
+    fn finish_attachment_save_failure(
+        &mut self,
+        action_key: (
+            attachment_access::AttachmentActionTarget,
+            attachment_access::AttachmentAction,
+        ),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let attachment_id = action_key.0.attachment_id.clone();
+        self.attachment_actions_in_flight.remove(&action_key);
+        self.sync_attachment_rows(&attachment_id, cx);
+        let title = cx
+            .global::<I18n>()
+            .t("conversation-attachment-save-failed-title");
+        let message = cx
+            .global::<I18n>()
+            .t("conversation-attachment-save-failed-message");
+        push_conversation_notification(window, cx, title, message, NotificationType::Error);
+        cx.notify();
+    }
+
+    fn finish_attachment_save_success(
+        &mut self,
+        action_key: (
+            attachment_access::AttachmentActionTarget,
+            attachment_access::AttachmentAction,
+        ),
+        saved_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let attachment_id = action_key.0.attachment_id.clone();
+        self.attachment_actions_in_flight.remove(&action_key);
+        self.sync_attachment_rows(&attachment_id, cx);
+        let mut args = FluentArgs::new();
+        args.set("name", saved_name);
+        let title = cx
+            .global::<I18n>()
+            .t("conversation-attachment-save-success-title");
+        let message = cx
+            .global::<I18n>()
+            .t_with_args("conversation-attachment-save-success-message", &args);
+        push_conversation_notification(window, cx, title, message, NotificationType::Success);
+        cx.notify();
+    }
+
     fn remeasure_timeline_row(&mut self, key: &message::TimelineRowKey) {
         if let Some(range) = timeline_row_remeasure_range(self.timeline_rows.keys(), key) {
             #[cfg(test)]
@@ -746,14 +1313,14 @@ impl ConversationDetailPage {
 
     fn ensure_message_text_state(
         &mut self,
-        item_id: ConversationEntryId,
+        key: attachments::TimelineTextKey,
         source: &str,
         cx: &mut Context<Self>,
     ) {
         if let Some(entry) = self
             .message_text_states
             .iter_mut()
-            .find(|entry| entry.id == item_id)
+            .find(|entry| entry.key == key)
         {
             match message_text_update(&entry.source, source) {
                 MessageTextUpdate::Unchanged => {}
@@ -777,7 +1344,7 @@ impl ConversationDetailPage {
         }
 
         let state = cx.new(|cx| TextViewState::markdown(source, cx));
-        let observed_item_id = item_id.clone();
+        let observed_item_id = timeline_text_key_entry_id(&key).clone();
         let subscription = cx.observe(&state, move |page, _, cx| {
             if let Some(row_ix) = page.timeline_rows.row_index_for_item(&observed_item_id) {
                 page.timeline.remeasure_items(row_ix..row_ix + 1);
@@ -786,17 +1353,19 @@ impl ConversationDetailPage {
         });
 
         self.message_text_states.push(MessageTextState {
-            id: item_id,
+            key,
             state,
             source: source.to_owned(),
             _subscription: subscription,
         });
     }
 
-    fn message_text_state_map(&self) -> HashMap<ConversationEntryId, Entity<TextViewState>> {
+    fn message_text_state_map(
+        &self,
+    ) -> HashMap<attachments::TimelineTextKey, Entity<TextViewState>> {
         self.message_text_states
             .iter()
-            .map(|entry| (entry.id.clone(), entry.state.clone()))
+            .map(|entry| (entry.key.clone(), entry.state.clone()))
             .collect()
     }
 
@@ -1363,6 +1932,122 @@ fn entry_references_attachment(
     })
 }
 
+fn message_text_sources(
+    entry: &jaco_core::ConversationEntry,
+    attachments_by_id: &HashMap<jaco_core::AttachmentId, jaco_core::ConversationAttachment>,
+) -> Vec<(attachments::TimelineTextKey, String)> {
+    if tool_invocation::is_tool_lifecycle_entry(entry) {
+        return Vec::new();
+    }
+
+    if matches!(
+        &entry.payload,
+        jaco_core::ConversationEntryPayload::Message { .. }
+    ) {
+        return attachments::project_message_content(entry, attachments_by_id)
+            .into_iter()
+            .filter_map(|block| match block {
+                attachments::MessageContentBlock::Text {
+                    start_part_index,
+                    markdown,
+                } if !markdown.is_empty() => Some((
+                    attachments::TimelineTextKey::MessageBlock {
+                        entry_id: entry.id.clone(),
+                        start_part_index,
+                    },
+                    markdown,
+                )),
+                attachments::MessageContentBlock::Text { .. }
+                | attachments::MessageContentBlock::Images { .. }
+                | attachments::MessageContentBlock::File(_)
+                | attachments::MessageContentBlock::Attachment(_) => None,
+            })
+            .collect();
+    }
+
+    let source = format::item_markdown(entry);
+    if source.is_empty() {
+        Vec::new()
+    } else {
+        vec![(
+            attachments::TimelineTextKey::WholeEntry(entry.id.clone()),
+            source,
+        )]
+    }
+}
+
+fn projected_attachment_probe_inputs(
+    snapshot: &jaco_core::Conversation,
+) -> HashMap<AttachmentId, AttachmentProbeInput> {
+    let attachments_by_id = attachments::attachments_by_id(&snapshot.attachments);
+    let mut inputs = HashMap::<AttachmentId, AttachmentProbeInput>::new();
+    for entry in &snapshot.entries {
+        for block in attachments::project_message_content(entry, &attachments_by_id) {
+            match block {
+                attachments::MessageContentBlock::Images { attachments, .. } => {
+                    for image in attachments {
+                        let attachment_id = image.attachment_id().clone();
+                        insert_attachment_probe_input(
+                            &mut inputs,
+                            AttachmentProbeInput {
+                                attachment_id: attachment_id.clone(),
+                                kind: attachment_access::AttachmentAccessKind::Image,
+                                static_problem: None,
+                                record: attachments_by_id.get(&attachment_id).cloned(),
+                            },
+                        );
+                    }
+                }
+                attachments::MessageContentBlock::File(card)
+                | attachments::MessageContentBlock::Attachment(card) => {
+                    let attachment_id = card.attachment_id.clone();
+                    insert_attachment_probe_input(
+                        &mut inputs,
+                        AttachmentProbeInput {
+                            attachment_id: attachment_id.clone(),
+                            kind: card.kind.into(),
+                            static_problem: card.static_problem,
+                            record: attachments_by_id.get(&attachment_id).cloned(),
+                        },
+                    );
+                }
+                attachments::MessageContentBlock::Text { .. } => {}
+            }
+        }
+    }
+    inputs
+}
+
+fn insert_attachment_probe_input(
+    inputs: &mut HashMap<AttachmentId, AttachmentProbeInput>,
+    input: AttachmentProbeInput,
+) {
+    match inputs.entry(input.attachment_id.clone()) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(input);
+        }
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+            if entry.get().kind != input.kind {
+                entry.get_mut().static_problem =
+                    Some(attachment_access::AttachmentAccessProblem::KindMismatch);
+                entry.get_mut().record = None;
+            }
+        }
+    }
+}
+
+fn attachment_saved_name(path: &Path, fallback: &str) -> String {
+    attachment_access::safe_display_name(path.file_name().and_then(|name| name.to_str()))
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn timeline_text_key_entry_id(key: &attachments::TimelineTextKey) -> &ConversationEntryId {
+    match key {
+        attachments::TimelineTextKey::WholeEntry(entry_id)
+        | attachments::TimelineTextKey::MessageBlock { entry_id, .. } => entry_id,
+    }
+}
+
 fn sync_timeline_list(
     list_state: &ListState,
     previous_keys: &[message::TimelineRowKey],
@@ -1426,38 +2111,41 @@ fn reconcile_tool_invocation_ui_state<T>(
 mod tests {
     use std::{
         collections::{HashMap, HashSet},
+        fs,
         path::Path,
         sync::Arc,
     };
 
     use super::{
         ConversationDetailPage, ConversationModel, ConversationOperation, MessageTextUpdate,
-        conversation,
+        attachments, conversation,
         message::{TimelineRow, TimelineRowKey},
-        message_text_update, reconcile_tool_invocation_ui_state, take_matching_ticket,
-        timeline_row_remeasure_range,
+        message_text_sources, message_text_update, reconcile_tool_invocation_ui_state,
+        take_matching_ticket, timeline_row_remeasure_range, timeline_text_key_entry_id,
         tool_invocation::{
             AgentDetailItem, ToolInvocationDetail, ToolInvocationPreview,
             tool_inspection_evidence_for_test,
         },
     };
     use crate::database;
-    use gpui::{AppContext as _, TestAppContext};
+    use gpui::{AppContext as _, Context, Entity, TestAppContext, Window, WindowHandle};
     use jaco_core::{
         AgentEngineKind, AgentRunInput, AgentRunStatus, AgentRunTriggerKind, AgentRuntimeSnapshot,
-        AgentStoppedReason, ApprovalRequestPayload, ContentPart, ConversationChange,
-        ConversationChanges, ConversationEntryPayload, ConversationEntryStatus,
-        ConversationMetadata, ConversationSettingsSnapshot, ConversationStatusCode,
-        ConversationStatusEntry, ProjectKind, ProjectMetadata, ProviderRawPayload,
-        ProviderSettingsPayload, RunSettingsSnapshot, StructuredOutput, ToolAccessKind,
-        ToolAccessRequestPayload, ToolApprovalMode, ToolApprovalPolicy, ToolArguments,
-        ToolExecutionPolicy, ToolInvocationId, ToolInvocationInput, ToolInvocationOutput,
-        ToolInvocationStatus, ToolNameStrategy, ToolPolicySnapshot, ToolSource, TranscriptRole,
-        conservative_model_capabilities,
+        AgentStoppedReason, ApprovalRequestPayload, AttachmentKind, AttachmentMetadata,
+        AttachmentSource, AttachmentStorageKind, ContentPart, ConversationChange,
+        ConversationChanges, ConversationEntry, ConversationEntryKind, ConversationEntryPayload,
+        ConversationEntryStatus, ConversationMetadata, ConversationSettingsSnapshot,
+        ConversationStatusCode, ConversationStatusEntry, EntryChangeKind, ProjectKind,
+        ProjectMetadata, ProviderRawPayload, ProviderSettingsPayload, RunSettingsSnapshot,
+        StructuredOutput, ToolAccessKind, ToolAccessRequestPayload, ToolApprovalMode,
+        ToolApprovalPolicy, ToolArguments, ToolExecutionPolicy, ToolInvocationId,
+        ToolInvocationInput, ToolInvocationOutput, ToolInvocationStatus, ToolNameStrategy,
+        ToolPolicySnapshot, ToolSource, TranscriptRole, conservative_model_capabilities,
     };
     use jaco_db::{
-        AgentRunFinalEntry, FinishAgentRun, FreshStore, NewAgentRun, NewConversation,
-        NewConversationEntry, NewProject, NewToolInvocation, NewToolInvocationApproval,
+        AgentRunFinalEntry, FinishAgentRun, FreshStore, NewAgentRun, NewAttachment,
+        NewConversation, NewConversationEntry, NewProject, NewToolInvocation,
+        NewToolInvocationApproval,
     };
 
     struct ReloadToolFixture {
@@ -1467,6 +2155,13 @@ mod tests {
         collapsed_invocation_id: ToolInvocationId,
         inspectable_invocation_id: ToolInvocationId,
         lifecycle_entry_ids: Vec<String>,
+    }
+
+    struct AttachmentActionFixture {
+        directory: tempfile::TempDir,
+        attachment_id: String,
+        model: Entity<ConversationModel>,
+        page: WindowHandle<ConversationDetailPage>,
     }
 
     #[gpui::test]
@@ -1544,7 +2239,7 @@ mod tests {
                         !page
                             .message_text_states
                             .iter()
-                            .any(|state| &state.id == lifecycle_id),
+                            .any(|state| timeline_text_key_entry_id(&state.key) == lifecycle_id),
                         "tool lifecycle entry must not create TextViewState: {lifecycle_id}"
                     );
                 }
@@ -1745,7 +2440,7 @@ mod tests {
                         !page
                             .message_text_states
                             .iter()
-                            .any(|state| &state.id == lifecycle_id),
+                            .any(|state| timeline_text_key_entry_id(&state.key) == lifecycle_id),
                         "reloaded tool lifecycle entry must not create TextViewState: {lifecycle_id}"
                     );
                 }
@@ -1860,6 +2555,374 @@ mod tests {
             })
             .unwrap();
         });
+    }
+
+    #[gpui::test]
+    fn attachment_save_picker_cancel_is_silent_and_duplicate_actions_are_deduplicated(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = attachment_action_fixture(cx);
+        let target = super::attachment_access::AttachmentActionTarget {
+            attachment_id: fixture.attachment_id.clone(),
+            kind: attachments::AttachmentCardKind::File,
+        };
+        let action = super::attachment_access::AttachmentAction::SaveCopy;
+
+        update_attachment_page(&fixture, cx, |page, window, cx| {
+            page.handle_attachment_action(target.clone(), action, window, cx);
+            page.handle_attachment_action(target.clone(), action, window, cx);
+
+            assert_eq!(page.attachment_actions_in_flight.len(), 1);
+        });
+        cx.run_until_parked();
+
+        assert!(cx.did_prompt_for_new_path());
+        cx.simulate_new_path_selection(|_| None);
+        cx.run_until_parked();
+        assert!(
+            !cx.did_prompt_for_new_path(),
+            "one duplicate action must not leave a second save picker pending"
+        );
+
+        cx.update(|cx| {
+            let page = fixture.page.read(cx).unwrap();
+            assert!(page.attachment_actions_in_flight.is_empty());
+            assert!(matches!(
+                page.attachment_access.get(&fixture.attachment_id),
+                Some(super::attachment_access::AttachmentAccessState::Available(
+                    _
+                ))
+            ));
+        });
+    }
+
+    #[gpui::test]
+    fn stale_attachment_action_result_is_rejected_by_record_revision_fence(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = attachment_action_fixture(cx);
+        let target = super::attachment_access::AttachmentActionTarget {
+            attachment_id: fixture.attachment_id.clone(),
+            kind: attachments::AttachmentCardKind::File,
+        };
+        let action = super::attachment_access::AttachmentAction::Open;
+        let old_record = cx.update(|cx| {
+            fixture
+                .model
+                .read(cx)
+                .operation()
+                .data()
+                .and_then(Option::as_ref)
+                .and_then(|conversation| {
+                    conversation
+                        .attachments
+                        .iter()
+                        .find(|record| record.id == fixture.attachment_id)
+                })
+                .cloned()
+                .expect("fixture attachment record")
+        });
+
+        let latest_path = fixture.directory.path().join("latest.txt");
+        fs::write(&latest_path, b"latest attachment").unwrap();
+        let mut latest_record = old_record.clone();
+        latest_record.path = Some(latest_path.to_string_lossy().into_owned());
+        latest_record.metadata.source = AttachmentSource::LocalFile {
+            path: latest_path.to_string_lossy().into_owned(),
+        };
+        latest_record.updated_at = old_record.updated_at + time::Duration::seconds(1);
+
+        cx.update(|cx| {
+            fixture.model.update(cx, |model, cx| {
+                model.apply_changes(
+                    ConversationChanges(vec![ConversationChange::AttachmentUpserted {
+                        attachment: Box::new(latest_record.clone()),
+                    }]),
+                    cx,
+                );
+            });
+        });
+        let (stale_is_current, latest_is_current) =
+            update_attachment_page(&fixture, cx, |page, _window, cx| {
+                let stale_is_current =
+                    page.attachment_record_is_current(&target, old_record.updated_at, cx);
+                let latest_is_current =
+                    page.attachment_record_is_current(&target, latest_record.updated_at, cx);
+                page.attachment_actions_in_flight
+                    .insert((target.clone(), action));
+                page.refresh_after_stale_attachment_action((target.clone(), action), cx);
+                (stale_is_current, latest_is_current)
+            });
+        assert!(!stale_is_current);
+        assert!(latest_is_current);
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            let page = fixture.page.read(cx).unwrap();
+            let state = page
+                .attachment_access
+                .get(&fixture.attachment_id)
+                .expect("latest attachment availability");
+            assert!(matches!(
+                state,
+                super::attachment_access::AttachmentAccessState::Available(resolved)
+                    if resolved.path() == fs::canonicalize(&latest_path).unwrap()
+            ));
+            assert!(page.attachment_actions_in_flight.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn attachment_access_reprobes_when_same_id_kind_conflict_disappears_on_entry_change(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = attachment_action_fixture(cx);
+        let initial_entry = cx.update(|cx| {
+            fixture
+                .model
+                .read(cx)
+                .operation()
+                .data()
+                .and_then(Option::as_ref)
+                .and_then(|conversation| conversation.entries.first())
+                .cloned()
+                .expect("fixture message entry")
+        });
+        let conflict_entry = message_entry_with_content(
+            initial_entry,
+            vec![
+                ContentPart::File {
+                    attachment_id: fixture.attachment_id.clone(),
+                },
+                ContentPart::Attachment {
+                    attachment_id: fixture.attachment_id.clone(),
+                },
+            ],
+        );
+
+        cx.update(|cx| {
+            fixture.model.update(cx, |model, cx| {
+                model.apply_changes(
+                    ConversationChanges(vec![ConversationChange::EntryUpdated {
+                        entry: Box::new(conflict_entry.clone()),
+                        kind: EntryChangeKind::Replaced,
+                    }]),
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        // Establish the cached conflict state explicitly so this test remains focused on the
+        // recovery transition even if the preceding EntryChanged event is delivered eagerly.
+        update_attachment_page(&fixture, cx, |page, _window, cx| {
+            page.sync_attachment_access(true, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let page = fixture.page.read(cx).unwrap();
+            assert!(matches!(
+                page.attachment_access.get(&fixture.attachment_id),
+                Some(
+                    super::attachment_access::AttachmentAccessState::Unavailable(
+                        super::attachment_access::AttachmentAccessProblem::KindMismatch
+                    )
+                )
+            ));
+        });
+
+        let file_only_entry = message_entry_with_content(
+            conflict_entry,
+            vec![ContentPart::File {
+                attachment_id: fixture.attachment_id.clone(),
+            }],
+        );
+        cx.update(|cx| {
+            fixture.model.update(cx, |model, cx| {
+                model.apply_changes(
+                    ConversationChanges(vec![ConversationChange::EntryUpdated {
+                        entry: Box::new(file_only_entry),
+                        kind: EntryChangeKind::Replaced,
+                    }]),
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            let page = fixture.page.read(cx).unwrap();
+            assert!(matches!(
+                page.attachment_access.get(&fixture.attachment_id),
+                Some(super::attachment_access::AttachmentAccessState::Available(resolved))
+                    if resolved.path().ends_with("source.txt")
+            ));
+        });
+    }
+
+    fn attachment_action_fixture(cx: &mut TestAppContext) -> AttachmentActionFixture {
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("source.txt");
+        fs::write(&source_path, b"fixture attachment").unwrap();
+        let (conversation_id, attachment_id) =
+            seed_attachment_action_fixture(directory.path(), &source_path);
+
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::components::chat::input::init(cx);
+            database::install_for_test(cx, directory.path());
+            crate::foundation::i18n::init(cx);
+            crate::state::providers::init(cx);
+        });
+        cx.run_until_parked();
+
+        let runtime = cx.update(|cx| conversation::runtime::create(cx).unwrap());
+        cx.run_until_parked();
+        let model = cx.update(|cx| {
+            let executor = database::ready_executor(cx).unwrap();
+            cx.new(|_| ConversationModel::new(conversation_id.clone(), executor))
+        });
+        cx.update(|cx| model.update(cx, |model, cx| model.refresh(cx)));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(matches!(
+                model.read(cx).operation(),
+                ConversationOperation::Ready(ready) if ready.data().is_some()
+            ));
+        });
+
+        let page = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.new(|cx| {
+                    ConversationDetailPage::new_without_focus(
+                        model.clone(),
+                        runtime.clone(),
+                        window,
+                        cx,
+                    )
+                })
+            })
+            .unwrap()
+        });
+        cx.run_until_parked();
+
+        AttachmentActionFixture {
+            directory,
+            attachment_id,
+            model,
+            page,
+        }
+    }
+
+    fn update_attachment_page<R>(
+        fixture: &AttachmentActionFixture,
+        cx: &mut TestAppContext,
+        update: impl FnOnce(
+            &mut ConversationDetailPage,
+            &mut Window,
+            &mut Context<ConversationDetailPage>,
+        ) -> R,
+    ) -> R {
+        fixture.page.update(cx, update).unwrap()
+    }
+
+    fn message_entry_with_content(
+        mut entry: ConversationEntry,
+        content: Vec<ContentPart>,
+    ) -> ConversationEntry {
+        let ConversationEntryPayload::Message {
+            content: entry_content,
+            ..
+        } = &mut entry.payload
+        else {
+            panic!("fixture entry must be a message")
+        };
+        *entry_content = content;
+        entry
+    }
+
+    fn seed_attachment_action_fixture(data_dir: &Path, source_path: &Path) -> (String, String) {
+        let store =
+            FreshStore::open_or_create_initial(data_dir.join(jaco_db::DATABASE_FILE)).unwrap();
+        let repository = store.repository();
+        let project = repository
+            .insert_project(NewProject {
+                path: data_dir.to_string_lossy().into_owned(),
+                display_name: "Attachment action test".to_string(),
+                kind: ProjectKind::Normal,
+                pinned: false,
+                removed: false,
+                metadata: ProjectMetadata {
+                    scratch_reason: None,
+                    git_root: None,
+                    last_active_conversation_id: None,
+                },
+            })
+            .unwrap();
+        let conversation = repository
+            .insert_conversation(NewConversation {
+                project_id: project.id,
+                title: "Attachment action test".to_string(),
+                pinned: false,
+                prompt_id: None,
+                default_provider_id: None,
+                default_model_id: None,
+                metadata: ConversationMetadata {
+                    summary: None,
+                    tags: Vec::new(),
+                },
+                settings_snapshot: conversation_settings(),
+            })
+            .unwrap();
+        let source = source_path.to_string_lossy().into_owned();
+        let attachment = repository
+            .insert_attachment(NewAttachment {
+                conversation_id: conversation.id.clone(),
+                kind: AttachmentKind::File,
+                storage_kind: AttachmentStorageKind::LocalFile,
+                mime_type: Some("text/plain".to_string()),
+                name: Some("source.txt".to_string()),
+                path: Some(source.clone()),
+                external_uri: None,
+                provider_id: None,
+                provider_file_id: None,
+                sha256: None,
+                size_bytes: Some(17),
+                metadata: AttachmentMetadata {
+                    source: AttachmentSource::LocalFile { path: source },
+                    width: None,
+                    height: None,
+                    duration_ms: None,
+                    preview_attachment_id: None,
+                },
+            })
+            .unwrap();
+        repository
+            .append_conversation_entry(NewConversationEntry {
+                conversation_id: conversation.id.clone(),
+                status: ConversationEntryStatus::Completed,
+                agent_run_id: None,
+                provider_step_id: None,
+                tool_invocation_id: None,
+                provider_item_id: None,
+                payload: ConversationEntryPayload::Message {
+                    role: TranscriptRole::User,
+                    content: vec![
+                        ContentPart::Text {
+                            text: "before".to_string(),
+                        },
+                        ContentPart::File {
+                            attachment_id: attachment.id.clone(),
+                        },
+                        ContentPart::Text {
+                            text: "after".to_string(),
+                        },
+                    ],
+                },
+            })
+            .unwrap();
+
+        (conversation.id, attachment.id)
     }
 
     fn seed_reload_tool_fixture(data_dir: &Path) -> ReloadToolFixture {
@@ -2289,6 +3352,95 @@ mod tests {
     }
 
     #[test]
+    fn mixed_message_text_sources_use_distinct_stable_block_keys() {
+        let entry = message_entry_for_text_state(vec![
+            ContentPart::Text {
+                text: "before".to_string(),
+            },
+            ContentPart::File {
+                attachment_id: "file-1".to_string(),
+            },
+            ContentPart::Text {
+                text: "after".to_string(),
+            },
+        ]);
+
+        let sources = message_text_sources(&entry, &HashMap::new());
+
+        assert_eq!(
+            sources,
+            vec![
+                (
+                    attachments::TimelineTextKey::MessageBlock {
+                        entry_id: entry.id.clone(),
+                        start_part_index: 0,
+                    },
+                    "before".to_string(),
+                ),
+                (
+                    attachments::TimelineTextKey::MessageBlock {
+                        entry_id: entry.id.clone(),
+                        start_part_index: 2,
+                    },
+                    "after".to_string(),
+                ),
+            ]
+        );
+        assert_eq!(
+            message_text_update(&sources[1].1, "after streamed"),
+            MessageTextUpdate::Append(" streamed")
+        );
+    }
+
+    #[test]
+    fn structural_part_change_moves_only_to_new_message_block_keys() {
+        let before = message_entry_for_text_state(vec![
+            ContentPart::Text {
+                text: "first".to_string(),
+            },
+            ContentPart::File {
+                attachment_id: "file-1".to_string(),
+            },
+            ContentPart::Text {
+                text: "second".to_string(),
+            },
+        ]);
+        let after = message_entry_for_text_state(vec![
+            ContentPart::Text {
+                text: "first".to_string(),
+            },
+            ContentPart::Image {
+                attachment_id: "missing-image".to_string(),
+            },
+            ContentPart::File {
+                attachment_id: "file-1".to_string(),
+            },
+            ContentPart::Text {
+                text: "second".to_string(),
+            },
+        ]);
+
+        let before_keys = message_text_sources(&before, &HashMap::new())
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect::<Vec<_>>();
+        let after_keys = message_text_sources(&after, &HashMap::new())
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect::<Vec<_>>();
+
+        assert_eq!(before_keys[0], after_keys[0]);
+        assert_ne!(before_keys[1], after_keys[1]);
+        assert!(matches!(
+            after_keys[1],
+            attachments::TimelineTextKey::MessageBlock {
+                start_part_index: 3,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn message_text_update_replaces_non_append_source() {
         assert_eq!(
             message_text_update("hello world", "hello markdown"),
@@ -2338,5 +3490,26 @@ mod tests {
         assert!(source.contains("```javascript\nconst value = 1;\n```"));
         assert!(source.contains("```not-registered\nvalue\n```"));
         assert!(source.ends_with("after"));
+    }
+
+    fn message_entry_for_text_state(content: Vec<ContentPart>) -> ConversationEntry {
+        ConversationEntry {
+            id: "entry-mixed".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            seq: 1,
+            kind: ConversationEntryKind::Message,
+            status: ConversationEntryStatus::Completed,
+            agent_run_id: None,
+            provider_step_id: None,
+            tool_invocation_id: None,
+            provider_item_id: None,
+            payload: ConversationEntryPayload::Message {
+                role: TranscriptRole::User,
+                content,
+            },
+            search_text: "text only".to_string(),
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+            updated_at: time::OffsetDateTime::UNIX_EPOCH,
+        }
     }
 }
