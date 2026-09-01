@@ -3,20 +3,22 @@
 ## Root hub and ownership
 
 - Plan ID：`issue-196`
-- Root status：`Implemented locally`；发布仍受root `RG-01/T-07/T-10`约束
+- Root status：`Implemented locally`；动画首帧校验与root `T-11`基准已完成，发布仍受`RG-01/T-07/T-10`约束
 - Root hub：[Issue #196 root plan](../../../../../docs/dev/issue-196/README.md)
 - Owner：`crates/jaco-agent`
 - Owner index：[jaco-agent 开发计划](../README.md)
 - Assigned WPs：`WP-201`、`WP-202`
-- Root contracts consumed：`D-01`–`D-12`、`C-01`–`C-04`、`DB-01`、`G-01`、`ST-01`、`ERR-01`–`ERR-05`、`DEP-01`–`DEP-02`、`RG-01`
+- Root contracts consumed：`D-01`–`D-13`、`C-01`–`C-04`、`DB-01`、`G-01`、`ST-01`、`ERR-01`–`ERR-05`、`DEP-01`–`DEP-02`、`RG-01`、`R-17`、`T-11`
 - Owner-local IDs：`E/D/F/L/ST/ERR/DEP/R/T/WP-2xx`
 - Owns：OpenRouter capability/request policy、locked Rig capture、bounded materialization、DB port、runtime publication/error/history tests
 - Does not own：SQLite implementation/schema、ambient app data dir、startup orphan sweep、GPUI UI、credential UI或live gate decision
 
-## Owner implementation result（2026-08-31）
+## Owner implementation result（2026-09-01）
 
-- `WP-201/WP-202` 已实现；runtime `70/70`、generated `8/8`、artifacts `10/10`、providers `49/49` 通过。
-- `cargo check -p jaco-agent --all-targets --all-features --locked` 与 package clippy `-D warnings` 通过。
+- `WP-201/WP-202` 已实现；runtime `70/70`、generated `8/8`、artifacts `11/11`、providers `49/49` 通过。
+- 动画摄取已移除GIF/WebP后续帧像素解码，改为分配前校验逻辑画布并只解码首帧；`cargo test -p jaco-agent artifacts --locked`为`11/11`。首帧有效但后续帧损坏的GIF/WebP现在按root `D-13`持久化，损坏可能到展示阶段才暴露。
+- Root `T-11` release基准在2048×2048/1000帧样本上记录：23,039-byte GIF从全帧平均5.006s降至4ms，230,044-byte WebP从7.978s降至7–9ms，3,877,039-byte全画布GIF从9.037s降至5–6ms；CPU/RSS未测。
+- 本轮修订后的`cargo test -p jaco-agent artifacts --locked`（`11/11`）与`cargo clippy -p jaco-agent --all-targets --all-features --locked -- -D warnings`通过；上一代码状态的package check也已通过。
 - 生产 HTTPS downloader 的真实 redirect/status/timeout/body 联调未执行；root 继续把它与真实 OpenRouter E2E 作为发布前缺口记录。
 
 ## Owner evidence
@@ -48,7 +50,7 @@
 | `D-206` | response projection按source order形成Reasoning entries与maximal Text/Image Assistant Message runs；有Image+ToolCall立即失败 | root `C-04/R-14` | 不重排tool protocol，Text/Image/Text保持同entry |
 | `D-207` | all-image preparation完成并rename后才调用一个C-03batch；返回commit驱动event/step/final ID | root `D-06/D-08`；`E-207/E-208` | partial DB rows与非authoritative publication不可发生 |
 | `D-208` | batch error使用conversation timeline读回本批attachment IDs；只有证明无row时才立即清final和写fallback | root `G-01` | commit uncertainty不造成broken DB reference或duplicate text |
-| `D-209` | downloader使用explicit public-IP/DNS-pin policy；decoder完整解码并以magic为authority | root `C-02/D-10` | no raw URL trust或header-only validation |
+| `D-209` | downloader使用explicit public-IP/DNS-pin policy；实际编码文件大小、magic与逻辑画布为authority，decoder只解码首帧 | root `C-02/D-10/D-13` | no raw URL trust、header-only validation或全帧预解码 |
 | `D-210` | provider raw有images时必须redact exact slots；shape不可信时降级为safe summary | root `D-10`；`E-212` | SQLite不重复存base64/remote locator |
 | `D-211` | image-only history返回None，mixed用non-empty text；不加载attachment bytes进入assistant history | root `D-11/R-13`；`E-205/E-210` | follow-up符合OpenRouter response-only contract |
 | `D-212` | limits为production constant；tests可注入更小limits和fake resolver/transport，但production policy不可替换 | root `C-02` | deterministic boundary tests且无public security bypass |
@@ -215,9 +217,9 @@ Production downloader：
 
 ### Decode and metadata
 
-- use`ImageReader::with_guessed_format` + explicitallowlist + `Limits`；run header/full decode andSHA work undercurrent awaited blockingtask。
+- use`ImageReader::with_guessed_format` + explicitallowlist + `Limits`；先读取并校验逻辑画布尺寸/像素，再在current awaited blocking task中只解码首帧并计算SHA。
 - canonical format frommagic determinesextension/MIME；declared MIME/Content-Type, when present, must map tosame format。
-- full decode must succeed；dimensions andpixel math usechecked multiplication。
+- first-frame decode must succeed；header/decoded dimensions必须一致，dimension和pixel math使用checked multiplication。GIF/WebP首帧之后的损坏不在摄取阶段拒绝。
 - SHA-256 andsize derive from exact staged bytes that will be renamed。
 - final rename target uses theapp-reserved`.jaco-generated-{attachment_id}.{ext}`grammar；display name remains`generated-image-{ordinal}.{ext}`，andunprefixed UUID/composer/legacy files areoutsidecleanup authority。
 - before/after creation，reject symlink/non-directory at the immediate attachments root (`conversation_dir.parent()`)、conversation dir and`.pending`dir；also rejectpreexisting final or nonregular staged/final target。
@@ -360,7 +362,7 @@ No attachment lookup/read occurs forAssistant entries。System/Developer/User/To
 
 | ID | Manifest edit | Source/version/features | Local use | Verification |
 | --- | --- | --- | --- | --- |
-| `DEP-201` | add`image` runtime dependency | exact`0.25.10`, default-features=false, gif/jpeg/png/webp | L-204 magic/full decode/limits/dimensions | cargo tree shows sameexisting registry package，no duplicate/resolution change |
+| `DEP-201` | add`image` runtime dependency | exact`0.25.10`, default-features=false, gif/jpeg/png/webp | L-204 magic/header/first-frame decode/limits/dimensions | cargo tree shows sameexisting registry package，no duplicate/resolution change |
 | `DEP-202` | expandexisting`tokio` features | exact`1.53.1`; addfs/io-util/net/rt | asyncstage I/O、DNS、blocking decode task | agent focused build/tests onall targets; no secondruntime |
 
 `DEP-201`必然让`Cargo.lock`现有`jaco-agent.dependencies`增加`"image"`；`image 0.25.10` package/source/checksum与其解析依赖保持。`DEP-202`不应产生额外lock文本变化。`reqwest/base64/sha2/url/rig` declarations remain。No generated/copied docs、skills、submodule或native package synchronization。
@@ -395,7 +397,7 @@ Cleanup failure is aninternal warning added to theprimary category；it does not
 | --- | --- |
 | `R-201` | Models query，nullable/unknown mapping andgenerated effective transport followL-201 exactly. |
 | `R-202` | Only locked Rig marked Base64/URL assistant images enterL-203/L-204. |
-| `R-203` | L-204 enforces every rootC-02 network/resource/decode rule beforefinal files become durable. |
+| `R-203` | L-204 enforces every rootC-02 network/encoded-size/header/first-frame decode rule beforefinal files become durable，并明确不保证后续动画帧完整。 |
 | `R-204` | Provider step completes withsafe raw beforelocal ingestion；projection uses its explicit ID and artifact failure retainsCompleted state. |
 | `R-205` | Generated projection, batch, `ConversationCommitted` publication/summary andfinal_entry followL-203/L-206. |
 | `R-206` | G-01 error/cancel/uncertain outcomes leave no known broken reference orduplicate fallback. |
@@ -450,7 +452,7 @@ Cleanup failure is aninternal warning added to theprimary category；it does not
 | `T-201` | models URLquery；text/image/image-only/missing/null/empty/unknown-only/known+unknown output mapping；normalized metadata roundtrip. |
 | `T-202` | modalities afterexisting reasoning/tools merge；generated/nonobject/duplicate-key invariant；generated completion-only；normalstream called exactly once. |
 | `T-203` | Rig markedBase64/URL classification；all unsupported markers/source variants andImage+ToolCall. |
-| `T-204` | Base64 encoded/decoded/aggregate limits；validPNG/JPEG/GIF/WebP; invalid/truncated/mismatch/SVG/HEIC/pixel bomb. |
+| `T-204` | Base64 encoded-file/aggregate limits；validPNG/JPEG/GIF/WebP；invalid first frame/mismatch/SVG/HEIC/pixel bomb；动画GIF/WebP画布限制及首帧有效、后续帧损坏按D-13接受。 |
 | `T-205` | URL syntax/IP/DNS mix/redirect/timeout/status/content-length/chunk overflow/no proxy/auth with test-only transport. |
 | `T-206` | symlink/preexisting target/write/sync/rename failures cleanstage/final and createzeroDB rows. |
 | `T-207` | success uses explicitCompleted step ID，createsexactmetadata/hash/app-reserved`.jaco-generated-{attachment_id}.{ext}`path/order/lineage，and emits one authoritative`ConversationCommitted` withsummary/changes/final_entry. |
@@ -479,7 +481,7 @@ Root ownsfinal fmt/workspace/clippy/live/CI gates。
 - [ ] Provider step is Completed before local ingestion and never rewritten on artifact failure.
 - [ ] The explicit wrapper-local provider step ID reaches every generated/fallback entry；current step slot is never reread after completion.
 - [ ] All URL hops repeat no-proxy/DNS-pin/public-IP policy and body is bounded while streaming.
-- [ ] Full decode, actual MIME, dimensions, hash and final bytes all describe the same staged file.
+- [x] Header + first-frame pixel decode、actual MIME、encoded size、dimensions、hash与final bytes都描述同一staged file；后续动画帧完整性明确留给展示解码器；`max_alloc`只作为decoder output budget，不宣称覆盖codec内部总峰值RSS。
 - [ ] Files are disarmed only after authoritative DB commit; uncertainty never triggers blind deletion or duplicate fallback.
 - [ ] Safe raw snapshot and ERR payload contain no URL/base64/path/body/secret.
 - [ ] Generated completion calls the explicit response-body override API；ordinary and OpenAI continuation routes pass no override and preserve behavior.

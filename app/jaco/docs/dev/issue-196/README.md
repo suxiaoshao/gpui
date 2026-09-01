@@ -3,7 +3,7 @@
 ## Root hub and ownership
 
 - Plan ID：`issue-196`
-- Root status：`Implemented locally`；`Done`受root `RG-01/T-07/T-10`约束
+- Root status：`Implemented locally`；agent动画首帧校验与root `T-11`基准已完成，`Done`受`RG-01/T-07/T-10`约束
 - Root hub：[Issue #196 root plan](../../../../../docs/dev/issue-196/README.md)
 - Owner：`app/jaco`
 - Owner index：[Jaco 开发计划](../README.md)

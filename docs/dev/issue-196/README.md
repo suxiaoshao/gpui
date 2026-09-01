@@ -2,7 +2,7 @@
 
 ## 状态与范围
 
-- 状态：`Implemented locally`；本地实现与 workspace 门禁已完成，`Done` 仍受真实 OpenRouter legacy Chat assistant-image E2E、手工 UI 与远程 CI 发布门约束
+- 状态：`Implemented locally`；本地动画首帧校验与性能基准已完成，`Done` 仍受真实 OpenRouter legacy Chat assistant-image E2E、手工 UI 与远程 CI 发布门约束
 - 关联 issue：[#196](https://github.com/suxiaoshao/gpui/issues/196)
 - Parent：[#159](https://github.com/suxiaoshao/gpui/issues/159)
 - Plan ID：`issue-196`
@@ -11,7 +11,7 @@
 - 基线：`main` / `origin/main@eef94c958a9c02e28e3e6553a702520fe024e777`
 - 受影响 owner：`crates/jaco-db`、`crates/jaco-agent`、`app/jaco`
 - 明确保持无 diff：`crates/jaco-core`、`crates/jaco-conversation`、所有其他 app/crate、bundle/workflow
-- 最近证据刷新：2026-08-31
+- 最近证据刷新：2026-09-01
 
 ### 高影响变更摘要
 
@@ -21,7 +21,7 @@
 | Public or cross-owner contracts | `[Modify] [Breaking]` workspace-internal `NewAttachment` 改为调用方预分配 ID；新增批次 entry+attachment repository/port contract | `D-06`、`C-03`、`DB-01`、`WP-101/201/301` |
 | Global/shared authority | `None`；现有 `ConversationRuntimeStore`、`AgentRuntime`、`PersistenceContext` 和 database session 继续分别持有原有状态，不新增 Store/Global/Operation | `D-05`、`ST-01`、`WP-201/301` |
 | Persistence, data, configuration, or credentials | `[Modify]` 生成图片转为 `GeneratedFile` + attachment row + assistant entry；schema/version 不变，OpenRouter secret 生命周期不变 | `C-02`–`C-04`、`DB-01`、`G-01`、`ERR-01`–`ERR-05` |
-| Runtime, concurrency, performance, or shutdown | `[Modify]` OpenRouter image mode 强制 completion；每个 run 内串行有界摄取，复用 cancellation；启动 recovery 清理崩溃 orphan | `D-04`–`D-05`、`D-08`–`D-10`、`ST-01`、`WP-201/202/301` |
+| Runtime, concurrency, performance, or shutdown | `[Modify]` OpenRouter image mode 强制 completion；每个 run 内串行摄取，编码文件大小约束下载/落盘/哈希工作，画布与首帧边界约束摄取解码，复用 cancellation；启动 recovery 清理崩溃 orphan | `D-04`–`D-05`、`D-08`–`D-10`、`D-13`、`ST-01`、`WP-201/202/301` |
 | Security, privacy, or external access | `[Security-sensitive]` URL 下载仅允许经 DNS 固定的公网 HTTPS；禁止 proxy/credential/隐式 redirect；raw response 中图片 bytes/URL 必须脱敏 | `D-08`–`D-10`、`C-02`、`ERR-01`–`ERR-04` |
 | Dependencies, toolchains, generated, or vendored artifacts | `[Modify]` `jaco-agent` 直接复用已锁定 `image 0.25.10`，并给现有 Tokio 开启 `fs/io-util/net/rt`；`Cargo.lock` 预期只在 `jaco-agent.dependencies` 增加已有 `image` edge，package/version/source/checksum/resolution graph 不变 | `D-12`、`DEP-01`–`DEP-02`、`S-17`、`WP-202` |
 | Platform, packaging, CI, or release | `[Release-gated]` 不改 packaging/CI；当前官方已迁移到 `/images`，用户确认的 legacy Chat `message.images` 必须用真实 OpenRouter 在发布前验证 | `D-02`、`RG-01`、`T-08`、`WP-001` |
@@ -30,7 +30,7 @@
 
 ## 目标
 
-让 OpenRouter Chat Completions 在 assistant response 中返回的图片成为 Jaco 受管的持久化会话内容。图片经过来源、网络、大小、MIME、签名和解码校验后写入当前数据库对应的 managed attachment directory，并与 assistant entry、provider step、agent run 一起形成可重载的 lineage。现有 Issue #195 timeline renderer 直接展示这些 `GeneratedFile` 图片并提供 preview/save actions。
+让 OpenRouter Chat Completions 在 assistant response 中返回的图片成为 Jaco 受管的持久化会话内容。图片经过来源、网络、编码文件大小、MIME、签名、画布尺寸和首帧解码校验后写入当前数据库对应的 managed attachment directory，并与 assistant entry、provider step、agent run 一起形成可重载的 lineage。现有 Issue #195 timeline renderer 直接展示这些 `GeneratedFile` 图片并提供 preview/save actions。
 
 目标成功路径：
 
@@ -64,6 +64,7 @@ OpenRouter model discovery
 - 2026-08-31：OpenRouter 模型的 `image_generation == true` 时自动加入 image-output 参数并强制 non-stream；不增加 composer 开关；普通模型继续 streaming。
 - 2026-08-31：Base64 与 URL 图片都立即固化到 Jaco managed storage；任何 decode/download/validation/write 失败都令 run 失败，保留已产生 text/error context，并清理本轮 staged file/未提交 DB records。
 - 2026-08-31：计划继续采用上述 Chat assistant-image 路线；当前官方专用 `/images` 只作为已知替代方案和发布风险记录，不在本 issue 中静默替换用户选择。
+- 2026-09-01：动画图片在摄取阶段只解码首帧像素；继续执行单图 25 MiB、单响应 100 MiB 的实际编码文件大小限制，并保留 magic/MIME、画布尺寸、像素、decoder output allocation 与首帧解码校验。由此产生的行为后果是：后续损坏帧可能到展示阶段才暴露。
 
 产品范围已经封闭。安全数值、事务补偿和模块位置由当前仓库约束与本计划固定，实施者无需再选择。
 
@@ -71,7 +72,7 @@ OpenRouter model discovery
 
 | Scope | 文档 | Owns | Assigned IDs/WPs |
 | --- | --- | --- | --- |
-| Root hub | 本文档 | 状态、范围、用户决定、S/C/DB/G/ST/ERR/DEP/RG、跨 owner 顺序与聚合验收 | `E-01`–`E-12`、`D-01`–`D-12`、`C-01`–`C-04`、`DB-01`、`G-01`、`ST-01`、`ERR-01`–`ERR-05`、`DEP-01`–`DEP-02`、`RG-01`、`R-01`–`R-16`、`T-01`–`T-10`、`WP-001` |
+| Root hub | 本文档 | 状态、范围、用户决定、S/C/DB/G/ST/ERR/DEP/RG、跨 owner 顺序与聚合验收 | `E-01`–`E-13`、`D-01`–`D-13`、`C-01`–`C-04`、`DB-01`、`G-01`、`ST-01`、`ERR-01`–`ERR-05`、`DEP-01`–`DEP-02`、`RG-01`、`R-01`–`R-17`、`T-01`–`T-11`、`WP-001` |
 | `crates/jaco-db` | [owner plan](../../../crates/jaco-db/docs/dev/issue-196/README.md) | stable attachment ID、预关联 batch transaction、generated index 与 DB tests | `E/D/F/L/DB/R/T/WP-1xx` |
 | `crates/jaco-agent` | [owner plan](../../../crates/jaco-agent/docs/dev/issue-196/README.md) | capability/request、Rig capture、artifact ingestion、runtime errors/history/publication | `E/D/F/L/ST/ERR/DEP/R/T/WP-2xx` |
 | `app/jaco` | [owner plan](../../../app/jaco/docs/dev/issue-196/README.md) | database-target managed dir 注入、DB port adapter、startup reconciliation 与 integration tests | `E/D/F/L/ST/G/R/T/WP-3xx` |
@@ -84,7 +85,7 @@ OpenRouter model discovery
 | `S-02` | GPUI components, layout, interaction, and accessibility | No change | #195 已按 `ContentPart` 顺序渲染 Assistant Image，并提供 preview/save | 只发布既有 Image/Attachment shape；不改 renderer、focus、actions 或 accessibility | `D-11`、`R-11`、`WP-301` |
 | `S-03` | Entity, Store, Global, identity, and projections | No change | `ConversationRuntimeStore` 已持有 active run，database session 持有 target lease/executor | 不复制 artifact state；stable identity 使用预分配 attachment ID | `D-06`–`D-07`、`ST-01` |
 | `S-04` | Actions, events, subscriptions, focus, and windows | Applicable | Agent observer 已发布 conversation changes，#195 renderer消费 AttachmentUpserted/EntryAppended | 一个 batch commit 发一批 authoritative changes；无新 UI action/subscription | `C-04`、`WP-201/301` |
-| `S-05` | Async tasks, concurrency, cancellation, and shutdown | Applicable | run 已有 cancellation token、retained task 和 startup recovery | 同一 response 串行摄取；DNS/download/write/DB 前后检查取消；不 detach；recovery 后清 orphan | `D-05`、`D-08`–`D-10`、`ST-01`、`WP-202/301` |
+| `S-05` | Async tasks, concurrency, cancellation, and shutdown | Applicable | run 已有 cancellation token、retained task 和 startup recovery | 同一 response 串行摄取；DNS/download/write/DB 前后检查取消；动画在 blocking task 中只解码首帧像素；不 detach；recovery 后清 orphan | `D-05`、`D-08`–`D-10`、`D-13`、`ST-01`、`WP-202/301` |
 | `S-06` | Data acquisition and Operation state | Applicable, no new Operation | provider model fetch 与 runtime recovery 已有 owner | 扩展 OpenRouter models fetch；artifact cleanup 纳入既有 recovery，不创建 gpui-operation phase | `C-01`、`C-04`、`WP-201/301` |
 | `S-07` | Forms and editable state | N/A | 本 issue 没有新 control/draft/form | 不改 ChatForm、settings capability form 或 gpui-form | `S-07` |
 | `S-08` | Cross-crate, provider, Rig, MCP, platform, and external contracts | Applicable | locked Rig 可规范化 legacy `message.images`；官方当前主路线已转 `/images` | 锁定 legacy Chat + Rig adapter contract，真实 E2E 为 release gate；MCP/tool/platform不变 | `D-02`–`D-06`、`C-01`–`C-03`、`RG-01` |
@@ -116,6 +117,7 @@ OpenRouter model discovery
 | `E-10` | Locked dependency fact | Rig 0.42 OpenRouter non-stream normalizer把data URI/URL映射为marked AssistantContent::Image，history不回放这些图片；stream adapter没有images | locked `rig-core-0.42.0/src/providers/openrouter/completion.rs`、`openai/completion/streaming.rs` | 复用normalized type，禁止依赖raw/stream提取；实现history parity |
 | `E-11` | Current fact | app已有canonical managed directory、atomic-ish user attachment prep、database-target lease和interrupted-run recovery | `app/jaco/src/features/conversation/attachments.rs`、`database.rs`、`features/conversation/runtime.rs` | app注入concrete conversation dir并在既有recovery后清扫 |
 | `E-12` | Release-gated | 官方没有legacy Chat output字节上限、URL有效期或`message.images`稳定保证；本轮没有真实OpenRouter credential/E2E证据 | `E-08`–`E-10`与本轮环境 | 固定应用安全限额；RG-01在Done前必须满足 |
+| `E-13` | User decision + local benchmark | 用户确认移除动画全帧预解码，并询问以总文件大小作为主要资源边界 | 本轮对话，2026-09-01；本机release基准：2048×2048/1000帧、23,039-byte GIF从全帧平均5.006s降至首帧4ms；230,044-byte WebP从7.978s降至7–9ms；3,877,039-byte全画布GIF从9.037s降至5–6ms | `D-13`、`R-17`、`T-11` |
 
 ## Decisions
 
@@ -133,6 +135,7 @@ OpenRouter model discovery
 | `D-10` | 采用固定安全限制与公网HTTPS下载策略；remote URL只做一次性source，不进入record/UI/log；图片raw locator在provider snapshot中脱敏 | `E-08`、`E-10`–`E-12` | 任意URL/redirect/proxy、无限下载/解码、持久化data URI/URL | `C-02`、`G-01`、`WP-202` |
 | `D-11` | 复用现有core payload、GeneratedFile UI/access/save与runtime events；history忽略assistant images且不构造空assistant message | `E-03`、`E-06`、`E-10` | 新建artifact UI/domain，或把生成图片回传provider | `WP-201/301` |
 | `D-12` | agent直接依赖已锁定image decoder并开启现有Tokio features；不升级版本、不改Rig、不增加HTTP/TLS stack | `E-10`–`E-11` | app回调decode、手写格式parser、升级Rig或添加第二网络runtime | `DEP-01`–`DEP-02`、`WP-202` |
+| `D-13` | GIF/WebP 摄取只解码首帧像素；传输/存储边界使用实际落盘的单图编码字节与单响应累计编码字节，并在像素分配前校验逻辑画布尺寸/像素；不保证后续动画帧完整 | `E-13` | 继续解码全部帧像素，或仅看Content-Length/扩展名而不做magic、尺寸与首帧校验 | `C-02`、`ERR-01/02`、`WP-202` |
 
 ## C-01：OpenRouter capability、request 与 transport
 
@@ -179,14 +182,14 @@ AssistantContent::Image(Image {
 | Limit | Value | Enforcement |
 | --- | --- | --- |
 | images per provider response | 10 | 在任何decode/download/write前计数 |
-| decoded bytes per image | 25 MiB | Base64 encoded-length预检 + streaming counter |
-| decoded bytes per response | 100 MiB | 每张完成后累计，超限清全部本轮stage/final |
-| dimensions | width/height各≤16,384；总像素≤100,000,000 | image header + decoder limits，完整decode校验 |
-| decoder allocation | 400 MiB | `image::io::Limits.max_alloc` |
+| encoded file bytes per image | 25 MiB | Base64 解码后字节数预检 + URL body streaming counter + staged-file metadata复核 |
+| encoded file bytes per response | 100 MiB | 按每张实际落盘字节累计，超限清全部本轮stage/final |
+| dimensions | width/height各≤16,384；总像素≤100,000,000 | image header + decoder limits，在像素分配前校验；随后只解码首帧 |
+| decoder output allocation budget | 400 MiB | `image::io::Limits.max_alloc`；约束解码输出缓冲，不承诺包含WebP codec内部中间缓冲的总峰值RSS |
 | URL connection / overall | 10s / 30s per hop-download | reqwest client/request timeout |
 | redirects | at most 3 | 禁用自动redirect；每跳重新执行完整URL/DNS policy |
 
-允许format只有JPEG、PNG、GIF、WebP，magic/decoder为authority；declared MIME或HTTP Content-Type存在时必须属于allowlist且与实际format一致。缺少MIME可以由magic补全。SVG/HEIC/HEIF与其他内容进入`ERR-01`。
+允许format只有JPEG、PNG、GIF、WebP，magic/decoder为authority；declared MIME或HTTP Content-Type存在时必须属于allowlist且与实际format一致。缺少MIME可以由magic补全。SVG/HEIC/HEIF与其他内容进入`ERR-01`。GIF/WebP 只要求首帧可解码；首帧之后的截断或损坏不在摄取阶段拒绝，交由展示解码器按需处理。
 
 URL policy：
 
@@ -303,7 +306,7 @@ provider request
 | ERR-ID / code | Trigger | Retryable | Persisted/UI contract | Cleanup/recovery |
 | --- | --- | --- | --- | --- |
 | `ERR-01 generated_artifact_invalid` | source/marker/format/MIME/signature/dimensions/URL policy/混合tool shape非法 | false | 安全通用message，raw=None；保留Text/Reasoning + Error | 删除本轮stage/final；无attachment rows |
-| `ERR-02 generated_artifact_limit_exceeded` | count、per-image、aggregate、pixel或decoder allocation超限 | false | 不显示实际bytes、URL或path | 同ERR-01 |
+| `ERR-02 generated_artifact_limit_exceeded` | count、per-image、aggregate、pixel或decoder output allocation budget超限 | false | 不显示实际bytes、URL或path | 同ERR-01 |
 | `ERR-03 generated_artifact_download_failed` | DNS、timeout、redirect、HTTP status、body read失败 | true | 不显示host/status body；可只显示“generated image download failed” | drop response，删stage/final，无rows |
 | `ERR-04 generated_artifact_storage_failed` | managed dir/symlink/create/write/flush/sync/rename/cleanup准备失败 | true | 不显示local path；内部只记stage + ErrorKind | 尽力删除；失败交startup sweep |
 | `ERR-05 generated_artifact_persistence_failed` | batch transaction或commit outcome probe失败 | true | provider step保持Completed；run Failed；不把DB/raw细节放UI | 按G-01读回判定；未知交startup sweep |
@@ -314,7 +317,7 @@ Cancellation继续使用既有`code=canceled`与Canceled终态，不属于artifa
 
 | ID / dependency | Scope/kind | Current declaration/resolution | Target | Evidence and local uses | Runtime/platform constraints | Classification |
 | --- | --- | --- | --- | --- | --- | --- |
-| `DEP-01 image` | `jaco-agent` direct runtime decoder | agent无direct dependency；workspace已由`app/jaco`解析为registry `0.25.10`, default-features=false, gif/jpeg/png/webp | agent增加相同exact declaration/features；package resolution不变 | app manifest与locked source的`ImageReader/Limits`；C-02完整decode | pure Rust formats，三平台已有构建；SVG/HEIC不启用 | `Compatible`; lock预期只给`jaco-agent.dependencies`增加`image` |
+| `DEP-01 image` | `jaco-agent` direct runtime decoder | agent无direct dependency；workspace已由`app/jaco`解析为registry `0.25.10`, default-features=false, gif/jpeg/png/webp | agent增加相同exact declaration/features；package resolution不变 | app manifest与locked source的`ImageReader/Limits`；C-02 header + 首帧decode | pure Rust formats，三平台已有构建；SVG/HEIC不启用 | `Compatible`; lock预期只给`jaco-agent.dependencies`增加`image` |
 | `DEP-02 tokio` | `jaco-agent` direct runtime feature change | `1.53.1`, features process/sync/time；app已启用io-util/net | 同版本增加fs/io-util/net/rt，保留既有features | bounded async file I/O、DNS lookup、spawn_blocking | 不增加第二runtime；由现有gpui-tokio runtime执行 | `Compatible`; feature union通常无lock文本diff |
 
 Unchanged material dependencies：`rig 0.42.0`、`reqwest 0.13.4`、`base64 0.23.0`、`sha2 0.11.0`、`url 2.5.8`与TLS source全部保持。`Cargo.lock`预期唯一文本变化是现有`jaco-agent` package dependency列表增加`"image"`；若出现新package或其他version/source/checksum/dependency edge变化，立即停止`WP-202`并更新本计划的dependency evidence。Repo-local skills、generated schema/assets、submodules、vendored source和native bootstrap均无同步项。
@@ -368,13 +371,14 @@ Unchanged material dependencies：`rig 0.42.0`、`reqwest 0.13.4`、`base64 0.23
 | `R-07` | entry的run/step字段是lineage唯一authority；core/schema没有重复字段。 |
 | `R-08` | DB batch满足DB-01，失败无部分rows/seq/recency；成功以一个`ConversationCommitted`发布authoritative summary与全部changes。 |
 | `R-09` | G-01对prepare、cancel、DB error、commit uncertainty与crash给出确定清理/保留行为。 |
-| `R-10` | C-02限制、MIME/magic/decode与公网HTTPS策略全部执行；URL/base64/secret/path不进入UI/log/raw snapshot。 |
+| `R-10` | C-02编码文件大小、MIME/magic、画布尺寸、首帧decode与公网HTTPS策略全部执行；URL/base64/secret/path不进入UI/log/raw snapshot。 |
 | `R-11` | 现有#195 renderer直接显示Assistant生成图片并支持reload/preview/save；无UI/i18n/assets改动。 |
 | `R-12` | artifact失败使用ERR identity，DB可用时保留全部Text/Reasoning + Error；取消保持Canceled且无artifact Error。 |
 | `R-13` | image-only assistant history被省略，mixed只回放text；后续request没有空assistant message或生成图片。 |
 | `R-14` | OpenRouter response包含Image+ToolCall时安全失败并保留Text/Reasoning，不重排或执行半个tool协议。 |
 | `R-15` | 只执行DEP-01/02；Rig/reqwest/TLS/version/source保持，lock只出现`jaco-agent → image`预期metadata edge，其他manifests保持。 |
 | `R-16` | focused、workspace、manual、real API和remote CI证据齐全后才能Done。 |
+| `R-17` | 1000帧GIF/WebP在摄取校验中不解码后续帧像素；WebP仍可扫描容器/帧元数据；同一样本的首帧校验耗时相对原全帧基准有明确记录。 |
 
 ## Work packages
 
@@ -399,14 +403,16 @@ WP-001 aggregate verification + manual reload + RG-01 + remote CI
 
 ## 本地实施结果（2026-09-01）
 
-- `WP-101`、`WP-201`、`WP-202`、`WP-301` 已实现；未提交、未推送、未创建 PR。
-- 2026-09-01 命名隔离修复后的最终当前树通过`cargo fmt --all -- --check`、`cargo build --locked`、`cargo test --locked`、`cargo clippy --locked --all-targets --all-features -- -D warnings`；首次沙盒内workspace test仅有`http-client`本地监听用例因`PermissionDenied/ServerError Bind`失败，原命令在允许本地监听的环境重跑后全部通过。
-- 聚焦验证通过：jaco-db attachments `6/6`、agent `32/32`、catalog `9/9`；jaco-agent runtime `70/70`、generated `8/8`、artifacts `10/10`、providers `49/49`；Jaco conversation `89/89` 及 generated reconciliation/session/publication 聚焦测试。
+- `WP-101`、`WP-201`、`WP-202`、`WP-301` 已实现；本轮 D-13 动画校验修订尚未提交或推送。
+- 2026-09-01 命名隔离修复后的上一代码状态通过`cargo fmt --all -- --check`、`cargo build --locked`、`cargo test --locked`、`cargo clippy --locked --all-targets --all-features -- -D warnings`；首次沙盒内workspace test仅有`http-client`本地监听用例因`PermissionDenied/ServerError Bind`失败，原命令在允许本地监听的环境重跑后全部通过。
+- 本轮 D-13 修订后的当前树执行了`cargo fmt --all`、`cargo test -p jaco-agent artifacts --locked`（`11/11`）、`cargo clippy -p jaco-agent --all-targets --all-features --locked -- -D warnings`与`git diff --check`；未重复运行workspace aggregate gates。
+- 聚焦验证通过：jaco-db attachments `6/6`、agent `32/32`、catalog `9/9`；jaco-agent runtime `70/70`、generated `8/8`、artifacts `11/11`、providers `49/49`；Jaco conversation `89/89` 及 generated reconciliation/session/publication 聚焦测试。
 - `cargo tree -p jaco-agent --locked -i image@0.25.10` 只显示现有 `image 0.25.10 -> jaco-agent` direct edge；`Cargo.lock` 文本 diff 只给现有 `jaco-agent.dependencies` 增加 `"image"`。
 - 实际改动保持在 `crates/jaco-db`、`crates/jaco-agent`、`app/jaco`、四份 issue plan/index 与预期 manifest/lock 范围；schema、core、UI/locales/assets、packaging 和 workflow 无 diff。
 - 未执行 `T-07` 手工 Jaco 图片 preview/save/restart、`RG-01/T-08` 真实 OpenRouter legacy Chat、`T-10` PR SHA 三平台 CI；这些门禁继续阻止 `Done`。
-- `T-03` 已覆盖 Base64、格式/动画完整解码、MIME、IP/DNS policy、limits、symlink、hash/path/metadata；生产 HTTPS downloader 的真实 redirect/status/timeout/body 联调尚未执行，留在发布验收门禁中。
-- 2026-09-01提交前P1审查发现无前缀`{uuid}.{ext}`无法证明为provider-generated；final grammar已收紧为`.jaco-generated-{attachment_id}.{ext}`，reconciliation只删除该保留前缀，`.pending/{id}.part`不变。修复后agent artifacts`10/10`、Jaco generated reconciliation`7/7`、startup recovery`2/2`、publication/reload`1/1`与`cargo fmt --check`通过；无前缀UUID文件保留已有精确回归。
+- `T-03` 已覆盖 Base64、格式/首帧解码、MIME、IP/DNS policy、limits、symlink、hash/path/metadata；动画后续帧不再做摄取完整性保证。生产 HTTPS downloader 的真实 redirect/status/timeout/body 联调尚未执行，留在发布验收门禁中。
+- `T-11` 已用`image 0.25.10` release harness对同一样本比较旧全帧路径与目标首帧路径：23,039-byte GIF为`5016/5035/4967ms`对`4/4/4ms`；230,044-byte WebP为`8009/7978/7946ms`对`9/7/7ms`；3,877,039-byte全画布GIF为`9022/9063/9027ms`对`6/5/6ms`。两条路径都执行25 MiB实际编码文件大小、格式、画布、SHA校验；未测CPU、峰值RSS、网络与Tokio调度。
+- 2026-09-01提交前P1审查发现无前缀`{uuid}.{ext}`无法证明为provider-generated；final grammar已收紧为`.jaco-generated-{attachment_id}.{ext}`，reconciliation只删除该保留前缀，`.pending/{id}.part`不变。该修复当时agent artifacts`10/10`、Jaco generated reconciliation`7/7`、startup recovery`2/2`、publication/reload`1/1`与`cargo fmt --check`通过；本轮增加动画WebP回归后当前artifacts为`11/11`，无前缀UUID文件保留已有精确回归。
 
 ### WP-001：聚合验收与完成证据
 
@@ -423,7 +429,7 @@ Workspace root。
 **Procedure**
 
 1. 核对diff只包含三个owner、四份plan/index与DEP-01/02；lock仅有`jaco-agent.dependencies += image`预期edge；`crates/jaco-core`、UI/locales/assets/schema/workflow无diff。
-2. 执行T-01–T-06 focused gates并保存exact command/result。
+2. 执行T-01–T-06 focused gates与T-11动画摄取基准并保存exact command/result。
 3. 执行T-07 manual managed/restart/history matrix。
 4. 执行RG-01/T-08；失败时按RG-01 stop condition返回计划。
 5. 执行T-09 workspace fmt/build/test/clippy；同一状态同类命令只跑一次。
@@ -431,7 +437,7 @@ Workspace root。
 
 **Exit criteria**
 
-- R-01–R-16全有证据；RG-01满足；所有owner状态同步为Done。
+- R-01–R-17全有证据；RG-01满足；所有owner状态同步为Done。
 - 未引入dedicated `/images`、extra provider/artifact kind或schema/UI变化；lock只含DEP-01规定的direct-edge metadata。
 
 ## Validation matrix
@@ -440,14 +446,15 @@ Workspace root。
 | --- | --- | --- |
 | `T-01` | provider fixtures | models query；missing/null/empty/unknown-only/known+unknown output mapping；checked modalities merge/nonobject/duplicate invariant；image mode completion-only；ordinary stream/tool/reasoning regression |
 | `T-02` | locked Rig/runtime fixtures | marked Base64/URL；Text/Image order；image-only；unmarked/unsupported/mixed ToolCall；raw redaction |
-| `T-03` | artifact pure/local HTTP tests | base64, URL, redirects, DNS/IP policy, timeout/status, count/bytes/pixels, MIME/magic/decode, symlink, hash/metadata and exact`.jaco-generated-{attachment_id}.{ext}`path |
+| `T-03` | artifact pure + downloader integration | 当前pure tests覆盖base64、URL/IP policy、encoded per-image/aggregate bytes、pixels、MIME/magic、pre-allocation canvas limits、GIF/WebP first-frame与accepted late-frame corruption、symlink、hash/metadata和exact`.jaco-generated-{attachment_id}.{ext}`path；真实redirect/timeout/status/body integration仍是发布前缺口 |
 | `T-04` | DB owner | stable ID；prelinked order；run/conversation + Completed-step lineage；queued/running/wrong-run step rejection；duplicate/mismatch/wrong kind；mid-batch rollback；schema unchanged |
 | `T-05` | agent integration | explicit completed step ID；`ConversationCommitted` summary/changes；cancellation/pending/max-steps/prompt/runtime priority；fallback/error；cancel before/after DB；final_entry/history |
 | `T-06` | app integration | exact DatabaseTarget dir；Session batch/index adapters；startup pending andprefixed final orphan sweep；unprefixed UUID/composer/legacy files retained；missing root/reference degraded warning；referenced/unsafe files retained |
-| `T-07` | manual Jaco | generated image visible, preview/save, restart reload, follow-up succeeds, ordinary streaming still live |
+| `T-07` | manual Jaco | generated image visible, valid GIF/WebP animation plays, preview/save, restart reload, follow-up succeeds, ordinary streaming still live；late-corrupt animation允许停帧/播放失败但app必须保持响应 |
 | `T-08` | real provider | RG-01 exact procedure and recorded non-secret evidence |
 | `T-09` | local aggregate | `cargo fmt --check`; focused packages; exact expected lock metadata diff; then `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings` |
 | `T-10` | remote release | latest PR SHA passes existing macOS/Linux/Windows CI |
+| `T-11` | local performance | 已完成：同一2048×2048/1000帧GIF/WebP样本分别运行原全帧与目标首帧校验；release耗时与文件大小见“本地实施结果”，CPU/RSS未测 |
 
 ## Completion bookkeeping
 
@@ -459,6 +466,7 @@ Workspace root。
 - [ ] 先完成WP-101，再按顺序完成WP-201/202/301。
 - [ ] Normal streaming/hook/tool/provider路径有明确regression tests。
 - [ ] Raw redaction、URL policy、limits与G-01没有被简化为best effort。
+- [x] 动画校验只解码首帧像素；单图/单响应编码字节、pre-allocation canvas/pixel与decoder output allocation budget继续执行，测试明确记录后续帧损坏延迟到展示阶段暴露。
 - [ ] DB/source break同步更新全部`NewAttachment`call sites，schema/core保持；lock仅有预期direct-edge metadata变化。
 - [ ] Error/cancel/provider-step/run状态符合C-04与ERR catalog。
 - [ ] RG-01失败会停止发布，不会改架构。
@@ -476,4 +484,4 @@ Workspace root。
 
 ## Implementation status
 
-本计划状态为`Implemented locally`：产品选择与本地实现已经落地，owner 聚焦验证和 workspace fmt/build/test/clippy 均通过。OpenRouter 已迁移后的 legacy Chat response 兼容性、手工 UI 与远程 CI 仍未验证；RG-01/T-07/T-10 继续阻止`Done`，不会触发未经确认的替代 API 改造。
+本计划状态为`Implemented locally`：本地实现、D-13动画首帧校验、T-03与T-11已完成；OpenRouter legacy Chat response兼容性、手工UI与远程CI门禁仍阻止`Done`。RG-01/T-07/T-10不会触发未经确认的替代API改造。

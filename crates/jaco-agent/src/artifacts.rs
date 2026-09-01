@@ -7,10 +7,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose};
-use image::{
-    AnimationDecoder as _, GenericImageView as _, ImageDecoder as _, ImageFormat, ImageReader,
-    Limits,
-};
+use image::{GenericImageView as _, ImageFormat, ImageReader, Limits};
 use jaco_core::{
     AttachmentKind, AttachmentMetadata, AttachmentSource, AttachmentStorageKind, ConversationId,
     ProviderId, RunErrorPayload, new_id,
@@ -28,7 +25,7 @@ const MAX_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_DIMENSION: u32 = 16_384;
 const MAX_PIXELS: u64 = 100_000_000;
-const MAX_DECODER_ALLOC: u64 = 400 * 1024 * 1024;
+const MAX_DECODER_OUTPUT_BYTES: u64 = 400 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_REDIRECTS: usize = 3;
@@ -190,7 +187,7 @@ struct GeneratedImageLimits {
     max_response_bytes: u64,
     max_dimension: u32,
     max_pixels: u64,
-    max_decoder_alloc: u64,
+    max_decoder_output_bytes: u64,
 }
 
 impl GeneratedImageLimits {
@@ -201,7 +198,7 @@ impl GeneratedImageLimits {
             max_response_bytes: MAX_RESPONSE_BYTES,
             max_dimension: MAX_DIMENSION,
             max_pixels: MAX_PIXELS,
-            max_decoder_alloc: MAX_DECODER_ALLOC,
+            max_decoder_output_bytes: MAX_DECODER_OUTPUT_BYTES,
         }
     }
 }
@@ -715,13 +712,7 @@ fn inspect_image_blocking(
     {
         return Err(GeneratedArtifactError::invalid());
     }
-    let (width, height) = decode_all_frames(path, format, limits)?;
-    let pixels = u64::from(width)
-        .checked_mul(u64::from(height))
-        .ok_or_else(GeneratedArtifactError::limit)?;
-    if width > limits.max_dimension || height > limits.max_dimension || pixels > limits.max_pixels {
-        return Err(GeneratedArtifactError::limit());
-    }
+    let (width, height) = decode_first_frame(path, format, limits)?;
     let mut file = std::fs::File::open(path).map_err(GeneratedArtifactError::storage)?;
     let mut digest = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
@@ -744,82 +735,41 @@ fn inspect_image_blocking(
     })
 }
 
-fn decode_all_frames(
+fn decode_first_frame(
     path: &Path,
     format: ImageFormat,
     limits: GeneratedImageLimits,
 ) -> ArtifactResult<(u32, u32)> {
-    let configured_limits = decoder_limits(limits);
-    match format {
-        ImageFormat::Gif => {
-            let mut decoder = image::codecs::gif::GifDecoder::new(BufReader::new(
-                std::fs::File::open(path).map_err(GeneratedArtifactError::storage)?,
-            ))
-            .map_err(image_decode_error)?;
-            decoder
-                .set_limits(configured_limits)
-                .map_err(image_decode_error)?;
-            let dimensions = decoder.dimensions();
-            let mut frames = decoder.into_frames();
-            let mut frame_count = 0_usize;
-            for frame in &mut frames {
-                let frame = frame.map_err(image_decode_error)?;
-                validate_dimensions(frame.buffer().dimensions(), limits)?;
-                frame_count += 1;
-            }
-            if frame_count == 0 {
-                return Err(GeneratedArtifactError::invalid());
-            }
-            Ok(dimensions)
-        }
-        ImageFormat::WebP => {
-            let mut decoder = image::codecs::webp::WebPDecoder::new(BufReader::new(
-                std::fs::File::open(path).map_err(GeneratedArtifactError::storage)?,
-            ))
-            .map_err(image_decode_error)?;
-            decoder
-                .set_limits(configured_limits)
-                .map_err(image_decode_error)?;
-            let dimensions = decoder.dimensions();
-            if !decoder.has_animation() {
-                let mut reader = ImageReader::new(BufReader::new(
-                    std::fs::File::open(path).map_err(GeneratedArtifactError::storage)?,
-                ));
-                reader.set_format(ImageFormat::WebP);
-                reader.limits(decoder_limits(limits));
-                let image = reader.decode().map_err(image_decode_error)?;
-                return Ok(image.dimensions());
-            }
-            let mut frames = decoder.into_frames();
-            let mut frame_count = 0_usize;
-            for frame in &mut frames {
-                let frame = frame.map_err(image_decode_error)?;
-                validate_dimensions(frame.buffer().dimensions(), limits)?;
-                frame_count += 1;
-            }
-            if frame_count == 0 {
-                return Err(GeneratedArtifactError::invalid());
-            }
-            Ok(dimensions)
-        }
-        ImageFormat::Png | ImageFormat::Jpeg => {
-            let mut reader = ImageReader::new(BufReader::new(
-                std::fs::File::open(path).map_err(GeneratedArtifactError::storage)?,
-            ));
-            reader.set_format(format);
-            reader.limits(configured_limits);
-            let image = reader.decode().map_err(image_decode_error)?;
-            Ok(image.dimensions())
-        }
-        _ => Err(GeneratedArtifactError::invalid()),
+    let mut dimensions_reader = ImageReader::new(BufReader::new(
+        std::fs::File::open(path).map_err(GeneratedArtifactError::storage)?,
+    ));
+    dimensions_reader.set_format(format);
+    dimensions_reader.limits(decoder_limits(limits));
+    let dimensions = dimensions_reader
+        .into_dimensions()
+        .map_err(image_decode_error)?;
+    validate_dimensions(dimensions, limits)?;
+
+    let mut frame_reader = ImageReader::new(BufReader::new(
+        std::fs::File::open(path).map_err(GeneratedArtifactError::storage)?,
+    ));
+    frame_reader.set_format(format);
+    frame_reader.limits(decoder_limits(limits));
+    let decoded_dimensions = frame_reader
+        .decode()
+        .map_err(image_decode_error)?
+        .dimensions();
+    if decoded_dimensions != dimensions {
+        return Err(GeneratedArtifactError::invalid());
     }
+    Ok(dimensions)
 }
 
 fn decoder_limits(limits: GeneratedImageLimits) -> Limits {
     let mut decoder_limits = Limits::default();
     decoder_limits.max_image_width = Some(limits.max_dimension);
     decoder_limits.max_image_height = Some(limits.max_dimension);
-    decoder_limits.max_alloc = Some(limits.max_decoder_alloc);
+    decoder_limits.max_alloc = Some(limits.max_decoder_output_bytes);
     decoder_limits
 }
 
@@ -906,7 +856,7 @@ async fn sync_directory(_path: &Path) -> ArtifactResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
+    use image::{AnimationDecoder as _, DynamicImage, ImageBuffer, ImageFormat, Rgba};
     use std::io::Cursor;
     use tempfile::tempdir;
 
@@ -944,6 +894,15 @@ mod tests {
                 .unwrap();
         }
         bytes
+    }
+
+    fn animated_webp_bytes() -> Vec<u8> {
+        // 2x2 lossless red/blue two-frame WebP generated with img2webp.
+        general_purpose::STANDARD
+            .decode(
+                "UklGRoQAAABXRUJQVlA4WAoAAAACAAAAAQAAAQAAQU5JTQYAAAD/////AABBTk1GKAAAAAAAAAAAAAEAAAEAAGQAAAJWUDhMDwAAAC8BQAAABxDlj/4HIqL/AQBBTk1GKAAAAAAAAAAAAAEAAAEAAGQAAABWUDhMDwAAAC8BQAAABxDR/v4HIqL/AQA=",
+            )
+            .unwrap()
     }
 
     #[test]
@@ -1093,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn all_allowed_formats_are_fully_decoded_and_dimension_limited() {
+    fn allowed_formats_decode_first_frame_and_apply_limits() {
         let directory = tempdir().unwrap();
         for (format, extension, mime) in [
             (ImageFormat::Png, "png", "image/png"),
@@ -1130,7 +1089,7 @@ mod tests {
     }
 
     #[test]
-    fn animated_gif_corruption_after_first_frame_is_rejected() {
+    fn animated_gif_corruption_after_first_frame_is_deferred() {
         let valid = animated_gif_bytes();
         let directory = tempdir().unwrap();
         let path = directory.path().join("truncated.gif");
@@ -1153,13 +1112,61 @@ mod tests {
         }
         let truncated = found_late_corruption.expect("fixture corrupts only a later GIF frame");
         std::fs::write(&path, truncated).unwrap();
-        let error = inspect_image_blocking(
+        let inspected = inspect_image_blocking(
             &path,
             vec!["image/gif".to_string()],
             GeneratedImageLimits::production(),
         )
-        .unwrap_err();
-        assert_eq!(error.kind, GeneratedArtifactErrorKind::Invalid);
+        .unwrap();
+        assert_eq!((inspected.width, inspected.height), (2, 2));
+    }
+
+    #[test]
+    fn animated_webp_decodes_first_frame_and_defers_late_corruption() {
+        let valid = animated_webp_bytes();
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("animated.webp");
+        std::fs::write(&path, &valid).unwrap();
+        let inspected = inspect_image_blocking(
+            &path,
+            vec!["image/webp".to_string()],
+            GeneratedImageLimits::production(),
+        )
+        .unwrap();
+        assert_eq!((inspected.width, inspected.height), (2, 2));
+
+        let limited = GeneratedImageLimits {
+            max_pixels: 3,
+            ..GeneratedImageLimits::production()
+        };
+        let error = inspect_image_blocking(&path, Vec::new(), limited).unwrap_err();
+        assert_eq!(error.kind, GeneratedArtifactErrorKind::Limit);
+
+        let corrupted = (valid.len() / 2..valid.len())
+            .find_map(|index| {
+                let mut corrupted = valid.clone();
+                corrupted[index] ^= 0xff;
+                let first_frame_decodes = ImageReader::new(Cursor::new(&corrupted))
+                    .with_guessed_format()
+                    .ok()
+                    .and_then(|reader| reader.decode().ok())
+                    .is_some();
+                let all_frames_decode =
+                    image::codecs::webp::WebPDecoder::new(Cursor::new(&corrupted))
+                        .ok()
+                        .map(|decoder| decoder.into_frames().all(|frame| frame.is_ok()))
+                        .unwrap_or(false);
+                (first_frame_decodes && !all_frames_decode).then_some(corrupted)
+            })
+            .expect("fixture corrupts only a later WebP frame");
+        std::fs::write(&path, corrupted).unwrap();
+        let inspected = inspect_image_blocking(
+            &path,
+            vec!["image/webp".to_string()],
+            GeneratedImageLimits::production(),
+        )
+        .unwrap();
+        assert_eq!((inspected.width, inspected.height), (2, 2));
     }
 
     #[test]
