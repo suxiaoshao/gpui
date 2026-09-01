@@ -50,6 +50,7 @@ fn typed_json_roundtrips_for_repository_records() {
 
     let attachment = repo
         .insert_attachment(NewAttachment {
+            id: "attachment-json".to_string(),
             conversation_id: conversation.id.clone(),
             kind: AttachmentKind::File,
             storage_kind: AttachmentStorageKind::LocalFile,

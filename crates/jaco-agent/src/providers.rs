@@ -479,6 +479,8 @@ struct OpenRouterModelEntry {
 struct OpenRouterModelArchitecture {
     #[serde(default)]
     input_modalities: Vec<String>,
+    #[serde(default)]
+    output_modalities: Option<Vec<String>>,
 }
 
 async fn fetch_ollama_models(
@@ -637,12 +639,11 @@ async fn fetch_openrouter_models(
     let base_url = provider_base_url(&request.provider.settings, "https://openrouter.ai/api/v1")?;
     let api_key = required_secret(&request.secrets, "api_key")?;
     let client = reqwest::Client::new();
+    let models_url = openrouter_models_url(&base_url)?;
     let response = send_json::<OpenRouterModelsResponse>(
         "openrouter",
         "/models",
-        client
-            .get(provider_url(&base_url, "/models")?)
-            .bearer_auth(api_key),
+        client.get(models_url).bearer_auth(api_key),
     )
     .await?;
 
@@ -669,6 +670,10 @@ async fn fetch_openrouter_models(
                         .as_ref()
                         .map(|architecture| architecture.input_modalities.clone())
                         .unwrap_or_default(),
+                    model
+                        .architecture
+                        .as_ref()
+                        .and_then(|architecture| architecture.output_modalities.clone()),
                     model.context_length,
                     raw.clone(),
                 ),
@@ -683,6 +688,13 @@ async fn fetch_openrouter_models(
         .collect::<Vec<_>>();
     models.sort_by(|left, right| left.model_id.cmp(&right.model_id));
     Ok(models)
+}
+
+fn openrouter_models_url(base_url: &str) -> Result<url::Url, ProviderModelFetchError> {
+    let mut url = provider_url(base_url, "/models")?;
+    url.query_pairs_mut()
+        .append_pair("output_modalities", "text,image");
+    Ok(url)
 }
 
 fn required_secret<'a>(
@@ -992,7 +1004,8 @@ mod tests {
                 "created": 1,
                 "context_length": 272000,
                 "architecture": {
-                    "input_modalities": ["text", "image", "file"]
+                    "input_modalities": ["text", "image", "file"],
+                    "output_modalities": ["text", "image"]
                 },
                 "supported_parameters": ["tools", "reasoning"]
             }]
@@ -1011,6 +1024,13 @@ mod tests {
                 .as_ref()
                 .map(|architecture| architecture.input_modalities.as_slice()),
             Some(["text".to_string(), "image".to_string(), "file".to_string()].as_slice())
+        );
+        assert_eq!(
+            model
+                .architecture
+                .as_ref()
+                .and_then(|architecture| architecture.output_modalities.as_deref()),
+            Some(["text".to_string(), "image".to_string()].as_slice())
         );
     }
 
@@ -1119,6 +1139,17 @@ mod tests {
         let url = provider_url("https://example.com/openai/v1", "/models").unwrap();
 
         assert_eq!(url.as_str(), "https://example.com/openai/v1/models");
+    }
+
+    #[test]
+    fn openrouter_models_url_requests_text_and_image_outputs() {
+        let url = openrouter_models_url("https://openrouter.example/api/v1").unwrap();
+
+        assert_eq!(url.path(), "/api/v1/models");
+        assert_eq!(
+            url.query_pairs().collect::<Vec<_>>(),
+            vec![("output_modalities".into(), "text,image".into())]
+        );
     }
 
     #[tokio::test]

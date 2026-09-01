@@ -586,6 +586,9 @@ impl AgentHook for PersistingAgentHook {
         if self.context.cancellation_token.is_cancelled() {
             return ObservationAction::stop("runtime canceled");
         }
+        if self.context.generated_mode() {
+            return ObservationAction::continue_run();
+        }
         match self
             .persist_assistant_content(event.content.iter().cloned())
             .await

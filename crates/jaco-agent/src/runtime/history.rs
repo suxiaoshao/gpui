@@ -149,7 +149,10 @@ fn conversation_entry_to_rig_message_with_options(
                     })
                 }
             }
-            TranscriptRole::Assistant => Some(RigMessage::assistant(content_text(content))),
+            TranscriptRole::Assistant => {
+                let text = content_text(content);
+                (!text.is_empty()).then(|| RigMessage::assistant(text))
+            }
             TranscriptRole::Tool => Some(RigMessage::user(content_text(content))),
         },
         ConversationEntryPayload::SkillActivation(skill) => {
@@ -589,6 +592,76 @@ mod tests {
         let parts = content.iter().collect::<Vec<_>>();
         assert_eq!(parts.len(), 1);
         assert!(matches!(parts[0], UserContent::Image(_)));
+    }
+
+    #[test]
+    fn assistant_image_only_message_is_omitted_from_replay() {
+        let item = conversation_entry_with_payload(
+            "assistant-image-only",
+            1,
+            Some("run-1"),
+            ConversationEntryKind::Message,
+            ConversationEntryPayload::Message {
+                role: TranscriptRole::Assistant,
+                content: vec![ContentPart::Image {
+                    attachment_id: "generated-image".to_string(),
+                }],
+            },
+        );
+
+        let message = conversation_entry_to_rig_message(&item, &HashMap::new()).unwrap();
+
+        assert_eq!(message, None);
+    }
+
+    #[test]
+    fn assistant_mixed_image_message_replays_text_and_keeps_next_user_prompt() {
+        let items = vec![
+            conversation_entry_with_payload(
+                "assistant-mixed",
+                1,
+                Some("run-1"),
+                ConversationEntryKind::Message,
+                ConversationEntryPayload::Message {
+                    role: TranscriptRole::Assistant,
+                    content: vec![
+                        ContentPart::Text {
+                            text: "before".to_string(),
+                        },
+                        ContentPart::Image {
+                            attachment_id: "generated-image".to_string(),
+                        },
+                        ContentPart::Text {
+                            text: "after".to_string(),
+                        },
+                    ],
+                },
+            ),
+            conversation_entry_with_payload(
+                "next-user",
+                2,
+                None,
+                ConversationEntryKind::Message,
+                ConversationEntryPayload::Message {
+                    role: TranscriptRole::User,
+                    content: vec![ContentPart::Text {
+                        text: "continue".to_string(),
+                    }],
+                },
+            ),
+        ];
+
+        let prompt = build_prompt_history_with_options(
+            &items,
+            &[],
+            "next-user",
+            "run-2",
+            PromptHistoryOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(prompt.history, vec![RigMessage::assistant("before\nafter")]);
+        assert_eq!(prompt.prompt, RigMessage::user("continue"));
     }
 
     #[test]

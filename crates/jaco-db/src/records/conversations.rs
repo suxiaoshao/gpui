@@ -125,6 +125,7 @@ pub type AttachmentRecord = ConversationAttachment;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewAttachment {
+    pub id: AttachmentId,
     pub conversation_id: ConversationId,
     pub kind: AttachmentKind,
     pub storage_kind: AttachmentStorageKind,
@@ -137,4 +138,16 @@ pub struct NewAttachment {
     pub sha256: Option<String>,
     pub size_bytes: Option<i64>,
     pub metadata: AttachmentMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewConversationEntryBatchItem {
+    pub entry: NewConversationEntry,
+    pub attachments: Vec<NewAttachment>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppendedConversationEntryBatch {
+    pub entries: Vec<ConversationEntryRecord>,
+    pub attachments: Vec<AttachmentRecord>,
 }

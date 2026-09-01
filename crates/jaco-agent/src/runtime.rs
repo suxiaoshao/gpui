@@ -21,8 +21,8 @@ use self::{
 };
 use crate::{
     AgentRunHandle, AgentRunHandleStatus, AgentRunRequest, AgentRuntimeError, AgentRuntimeEvent,
-    AgentRuntimeObserver, AgentStep, McpSessionManager, ProviderSecretValues, Result, SkillCatalog,
-    SkillLoader, ToolApprovalBroker,
+    AgentRuntimeObserver, AgentStep, ManagedArtifactStore, McpSessionManager, ProviderSecretValues,
+    Result, SkillCatalog, SkillLoader, ToolApprovalBroker,
     persistence::{
         AgentPersistence, AgentRunOutcome, PersistenceContext, PersistingCompletionModel,
         finish_agent_run_spec, finished_agent_run_changes, new_agent_run_input, run_error,
@@ -41,6 +41,54 @@ use rig::{
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+fn uses_generated_image_completion(settings: &RunSettingsSnapshot) -> bool {
+    settings.provider_settings.provider_kind == "openrouter"
+        && settings.model_capabilities.image_generation
+}
+
+fn openrouter_output_params(settings: &RunSettingsSnapshot) -> Option<serde_json::Value> {
+    uses_generated_image_completion(settings).then(|| {
+        let modalities = if settings.model_capabilities.text_output {
+            vec!["image", "text"]
+        } else {
+            vec!["image"]
+        };
+        serde_json::json!({ "modalities": modalities })
+    })
+}
+
+fn merge_generated_output_params(
+    existing: Option<serde_json::Value>,
+    generated: Option<serde_json::Value>,
+) -> Result<Option<serde_json::Value>> {
+    let Some(generated) = generated else {
+        return Ok(existing);
+    };
+    let mut existing = match existing {
+        Some(serde_json::Value::Object(map)) => map,
+        Some(_) => {
+            return Err(AgentRuntimeError::Invariant(
+                "existing additional parameters must be a JSON object".to_string(),
+            ));
+        }
+        None => serde_json::Map::new(),
+    };
+    let serde_json::Value::Object(generated) = generated else {
+        return Err(AgentRuntimeError::Invariant(
+            "generated output parameters must be a JSON object".to_string(),
+        ));
+    };
+    for (key, value) in generated {
+        if existing.contains_key(&key) {
+            return Err(AgentRuntimeError::Invariant(format!(
+                "generated output parameter `{key}` conflicts with existing parameters"
+            )));
+        }
+        existing.insert(key, value);
+    }
+    Ok(Some(serde_json::Value::Object(existing)))
+}
+
 #[derive(Clone)]
 pub struct AgentRuntime {
     persistence: Arc<dyn AgentPersistence>,
@@ -48,6 +96,7 @@ pub struct AgentRuntime {
     mcp_session_manager: Option<Arc<Mutex<McpSessionManager>>>,
     approval_broker: Option<Arc<dyn ToolApprovalBroker>>,
     openai_sessions: crate::providers::openai::OpenAiResponsesSessionPool,
+    artifact_store: Option<ManagedArtifactStore>,
 }
 
 impl AgentRuntime {
@@ -58,6 +107,7 @@ impl AgentRuntime {
             mcp_session_manager: None,
             approval_broker: None,
             openai_sessions: crate::providers::openai::OpenAiResponsesSessionPool::new(),
+            artifact_store: None,
         }
     }
 
@@ -86,6 +136,11 @@ impl AgentRuntime {
         pool: crate::providers::openai::OpenAiResponsesSessionPool,
     ) -> Self {
         self.openai_sessions = pool;
+        self
+    }
+
+    pub fn with_managed_artifact_store(mut self, store: ManagedArtifactStore) -> Self {
+        self.artifact_store = Some(store);
         self
     }
 
@@ -214,6 +269,29 @@ impl AgentRuntime {
         if let Err(error) = self.activate_skills(&request, &agent_run.record().id).await {
             return self.record_setup_failed_started_run(agent_run, error).await;
         }
+        let generated_mode = uses_generated_image_completion(&request.settings_snapshot);
+        let artifact_store = if generated_mode {
+            match self
+                .artifact_store
+                .clone()
+                .filter(|store| store.conversation_id() == request.conversation_id)
+            {
+                Some(store) => Some(store),
+                None => {
+                    return self
+                        .record_setup_failed_started_run(
+                            agent_run,
+                            AgentRuntimeError::Invariant(
+                                "generated image run has no matching managed artifact store"
+                                    .to_string(),
+                            ),
+                        )
+                        .await;
+                }
+            }
+        } else {
+            None
+        };
 
         let timeline = match self
             .persistence
@@ -273,6 +351,8 @@ impl AgentRuntime {
             request.cancellation_token.clone(),
             agent_run.observer().cloned(),
             self.approval_broker.clone(),
+            generated_mode,
+            artifact_store,
         );
         let model = match openai_attempts {
             Some(attempts) => PersistingCompletionModel::new_with_openai_attempts(
@@ -300,6 +380,13 @@ impl AgentRuntime {
                 })
             }),
         );
+        let additional_params = match merge_generated_output_params(
+            additional_params,
+            openrouter_output_params(&request.settings_snapshot),
+        ) {
+            Ok(additional_params) => additional_params,
+            Err(error) => return self.record_setup_failed_started_run(agent_run, error).await,
+        };
         if let Some(additional_params) = additional_params {
             builder = builder.additional_params(additional_params);
         }
@@ -307,7 +394,9 @@ impl AgentRuntime {
         let agent_run = agent_run.transition(BeginExecution);
 
         let outcome: Result<AgentRunOutcome> = async {
-            let execution = if request.settings_snapshot.model_capabilities.streaming {
+            let execution = if request.settings_snapshot.model_capabilities.streaming
+                && !generated_mode
+            {
                 let stream = tokio::select! {
                     biased;
                     _ = request.cancellation_token.cancelled() => None,
@@ -462,25 +551,34 @@ impl AgentRuntime {
                     }
                 }
             } else {
-                let response = tokio::select! {
-                    biased;
-                    _ = request.cancellation_token.cancelled() => {
-                        let _ = context
-                            .cancel_current_provider_step(run_error(
-                                "canceled",
-                                "runtime canceled",
-                                false,
-                                None,
-                            ))
-                            .await;
-                        None
+                let prompt = agent
+                    .prompt(prompt_history.prompt)
+                    .history(prompt_history.history)
+                    .tool_concurrency(request.guards.tool_concurrency)
+                    .without_memory()
+                    .extended_details();
+                let response = if generated_mode {
+                    // Once a generated completion begins, its awaited persistence owns the
+                    // file/DB compensation boundary. Cancellation is observed inside the
+                    // model wrapper and by the materializer; dropping this future could delete
+                    // a final file after an uncertain or already-committed DB transaction.
+                    Some(prompt.await)
+                } else {
+                    tokio::select! {
+                        biased;
+                        _ = request.cancellation_token.cancelled() => {
+                            let _ = context
+                                .cancel_current_provider_step(run_error(
+                                    "canceled",
+                                    "runtime canceled",
+                                    false,
+                                    None,
+                                ))
+                                .await;
+                            None
+                        }
+                        response = prompt => Some(response),
                     }
-                    response = agent
-                        .prompt(prompt_history.prompt)
-                        .history(prompt_history.history)
-                        .tool_concurrency(request.guards.tool_concurrency)
-                        .without_memory()
-                        .extended_details() => Some(response),
                 };
                 match response {
                     None => Ok(AgentStoppedReason::Canceled),
@@ -518,13 +616,25 @@ impl AgentRuntime {
                         Ok(AgentRunOutcome::Completed { final_entry_id })
                     }
                 }
-                Err(error) if error.max_steps => Ok(AgentRunOutcome::MaxSteps {
-                    final_entry_id: context.final_entry_id(),
-                }),
+                Err(error) if error.max_steps => {
+                    if request.cancellation_token.is_cancelled() {
+                        Ok(AgentRunOutcome::Canceled {
+                            final_entry_id: context.final_entry_id(),
+                        })
+                    } else if let Some(payload) = context.pending_run_failure() {
+                        Ok(AgentRunOutcome::Failed { error: payload })
+                    } else {
+                        Ok(AgentRunOutcome::MaxSteps {
+                            final_entry_id: context.final_entry_id(),
+                        })
+                    }
+                }
                 Err(error) => {
                     let canceled = request.cancellation_token.is_cancelled();
                     let payload = if canceled {
                         run_error("canceled", "runtime canceled", false, None)
+                    } else if let Some(payload) = context.pending_run_failure() {
+                        payload
                     } else {
                         run_error("prompt_error", error.message, true, None)
                     };
@@ -556,7 +666,14 @@ impl AgentRuntime {
         let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(error) => {
-                let payload = run_error("runtime_error", error.to_string(), true, None);
+                let canceled = request.cancellation_token.is_cancelled();
+                let payload = if canceled {
+                    run_error("canceled", "runtime canceled", false, None)
+                } else if let Some(payload) = context.pending_run_failure() {
+                    payload
+                } else {
+                    run_error("runtime_error", error.to_string(), true, None)
+                };
                 let _ = context.fail_current_provider_step(payload.clone()).await;
                 let _ = self
                     .fail_active_provider_steps(&agent_run.record().id, payload.clone())
@@ -565,12 +682,22 @@ impl AgentRuntime {
                     .finalize_active_tool_invocations(
                         &agent_run.record().id,
                         &request.conversation_id,
-                        ToolInvocationStatus::Failed,
+                        if canceled {
+                            ToolInvocationStatus::Canceled
+                        } else {
+                            ToolInvocationStatus::Failed
+                        },
                         payload.clone(),
                         context.observer(),
                     )
                     .await;
-                AgentRunOutcome::Failed { error: payload }
+                if canceled {
+                    AgentRunOutcome::Canceled {
+                        final_entry_id: context.final_entry_id(),
+                    }
+                } else {
+                    AgentRunOutcome::Failed { error: payload }
+                }
             }
         };
         self.finish_execution(agent_run.transition(ExecutionFinished(outcome)), &context)

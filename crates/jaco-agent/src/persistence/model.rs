@@ -1,4 +1,7 @@
-use super::{PersistenceContext, completion_request_error, run_error};
+use super::{
+    PersistenceContext, completion_request_error, provider_step::safe_generated_response_body,
+    run_error,
+};
 use crate::AgentRuntimeError;
 use rig::{
     completion::{CompletionModel, CompletionRequest, CompletionResponse},
@@ -99,10 +102,26 @@ where
 
         match response {
             Ok(response) => {
-                context
-                    .finish_provider_step(&provider_step.id, &response)
-                    .await
-                    .map_err(completion_request_error)?;
+                if context.generated_mode() {
+                    let safe_response_body = safe_generated_response_body(&response);
+                    context
+                        .finish_provider_step_with_response_body(
+                            &provider_step.id,
+                            &response,
+                            safe_response_body,
+                        )
+                        .await
+                        .map_err(completion_request_error)?;
+                    context
+                        .persist_generated_completion(&provider_step.id, &response.choice)
+                        .await
+                        .map_err(completion_request_error)?;
+                } else {
+                    context
+                        .finish_provider_step(&provider_step.id, &response)
+                        .await
+                        .map_err(completion_request_error)?;
+                }
                 Ok(response)
             }
             Err(error) => {

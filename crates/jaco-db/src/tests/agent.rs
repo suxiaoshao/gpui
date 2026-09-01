@@ -87,6 +87,123 @@ fn request_usage_step(
     }
 }
 
+fn reasoning_batch_item(
+    conversation_id: &str,
+    agent_run_id: &str,
+    provider_step_id: &str,
+) -> NewConversationEntryBatchItem {
+    NewConversationEntryBatchItem {
+        entry: NewConversationEntry {
+            conversation_id: conversation_id.to_string(),
+            status: ConversationEntryStatus::Completed,
+            agent_run_id: Some(agent_run_id.to_string()),
+            provider_step_id: Some(provider_step_id.to_string()),
+            tool_invocation_id: None,
+            provider_item_id: None,
+            payload: ConversationEntryPayload::Reasoning {
+                text: "reasoning".to_string(),
+                summary: None,
+            },
+        },
+        attachments: Vec::new(),
+    }
+}
+
+#[test]
+fn prelinked_batch_requires_completed_step_with_matching_run_and_conversation() {
+    let dir = tempdir().unwrap();
+    let store = FreshStore::open_or_create_initial(dir.path().join(DATABASE_FILE)).unwrap();
+    let repo = store.repository();
+    let context = request_usage_context(&repo, "prelinked-step-status");
+
+    for (index, status) in [
+        ProviderStepStatus::Queued,
+        ProviderStepStatus::Running,
+        ProviderStepStatus::Failed,
+        ProviderStepStatus::Canceled,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let terminal_error = matches!(
+            status,
+            ProviderStepStatus::Failed | ProviderStepStatus::Canceled
+        )
+        .then(run_error);
+        let step = repo
+            .insert_provider_step(NewProviderStep {
+                agent_run_id: context.agent_run_id.clone(),
+                seq: i32::try_from(index + 1).unwrap(),
+                status,
+                request_snapshot: provider_step_request(
+                    &context.provider_id,
+                    &context.model_id,
+                    &context.trigger_entry_id,
+                ),
+                response_snapshot: None,
+                state_snapshot: None,
+                settings_snapshot: run_settings(&context.provider_id, &context.model_id),
+                error: terminal_error,
+            })
+            .unwrap();
+        assert!(
+            repo.append_conversation_entries_with_attachments(vec![reasoning_batch_item(
+                &context.conversation_id,
+                &context.agent_run_id,
+                &step.id,
+            )])
+            .is_err(),
+            "status {status:?} must be rejected"
+        );
+    }
+
+    assert!(
+        repo.append_conversation_entries_with_attachments(vec![reasoning_batch_item(
+            &context.conversation_id,
+            &context.agent_run_id,
+            "missing-provider-step",
+        )])
+        .is_err()
+    );
+
+    let completed_step = request_usage_step(&repo, &context, 5, None);
+    let second_run = next_request_usage_run(&repo, &context, "retry image");
+    assert!(
+        repo.append_conversation_entries_with_attachments(vec![reasoning_batch_item(
+            &context.conversation_id,
+            &second_run.agent_run_id,
+            &completed_step.id,
+        )])
+        .is_err()
+    );
+
+    let other_project = repo
+        .insert_project(project("prelinked-other-conversation"))
+        .unwrap();
+    let other_conversation = repo
+        .insert_conversation(conversation(&other_project))
+        .unwrap();
+    assert!(
+        repo.append_conversation_entries_with_attachments(vec![reasoning_batch_item(
+            &other_conversation.id,
+            &context.agent_run_id,
+            &completed_step.id,
+        )])
+        .is_err()
+    );
+    assert_eq!(
+        repo.conversation_entries(&context.conversation_id)
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(
+        repo.conversation_entries(&other_conversation.id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
 fn finish_request_usage_run(
     repo: &crate::FreshRepository,
     context: &RequestUsageContext,

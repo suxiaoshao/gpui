@@ -8,6 +8,7 @@ use std::{
 use gpui::{ClipboardEntry, ClipboardItem, Image, ImageFormat};
 use jaco_core::{
     AttachmentKind, AttachmentMetadata, AttachmentSource, AttachmentStorageKind, ConversationId,
+    new_id,
 };
 use jaco_db::NewAttachment;
 use tracing::{Level, event};
@@ -167,6 +168,7 @@ pub(crate) fn prepare_message_attachments_in(
             ComposerAttachmentKind::File => AttachmentKind::File,
         };
         prepared.new_attachments.push(NewAttachment {
+            id: new_id(),
             conversation_id: conversation_id.clone(),
             kind,
             storage_kind: AttachmentStorageKind::LocalFile,

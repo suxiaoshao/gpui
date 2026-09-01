@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    LocalTool, McpConnector, ProviderSecretValues, ToolApprovalBroker, ToolApprovalDecision,
-    ToolApprovalRequest, ToolDefinition, ToolExecutor, ToolRunPolicy,
+    LocalTool, ManagedArtifactStore, McpConnector, ProviderSecretValues, ToolApprovalBroker,
+    ToolApprovalDecision, ToolApprovalRequest, ToolDefinition, ToolExecutor, ToolRunPolicy,
 };
 use async_trait::async_trait;
 use jaco_db::{
@@ -16,7 +16,10 @@ use rig::{
         AssistantContent, CompletionError, CompletionRequest, CompletionResponse,
         Message as RigMessage,
     },
-    message::UserContent,
+    message::{
+        AdditionalParams, DocumentSourceKind, Image, ImageMediaType, Reasoning, ToolCall,
+        ToolFunction, UserContent,
+    },
     streaming::{
         RawStreamingChoice, StreamFinal, StreamPartId, StreamingCompletionResponse, StreamingResult,
     },
@@ -142,6 +145,370 @@ async fn no_tool_run_persists_provider_step_and_final_message() {
             role: TranscriptRole::Assistant,
             content,
         } if content[0].search_text() == Some("hello from model")
+    )));
+}
+
+#[tokio::test]
+async fn generated_openrouter_completion_persists_ordered_image_with_completed_step_lineage() {
+    let fixture = Fixture::new("generated-openrouter-image");
+    let conversation_dir = fixture
+        .dir
+        .path()
+        .join("attachments")
+        .join(&fixture.conversation.id);
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone()).with_managed_artifact_store(
+        ManagedArtifactStore::new(fixture.conversation.id.clone(), conversation_dir),
+    );
+    let mut request = fixture.streaming_request();
+    request.settings_snapshot.provider_settings.provider_kind = "openrouter".to_string();
+    request
+        .settings_snapshot
+        .model_capabilities
+        .image_generation = true;
+    request.settings_snapshot.model_capabilities.text_output = true;
+    let png = {
+        use base64::Engine as _;
+        let image = image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
+            2,
+            3,
+            image::Rgba([1, 2, 3, 255]),
+        ));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+    };
+    let marked_image = AssistantContent::Image(Image {
+        data: DocumentSourceKind::Base64(png),
+        media_type: Some(ImageMediaType::PNG),
+        detail: None,
+        additional_params: AdditionalParams::from_entries([(
+            "openrouter",
+            json!({ "response_only": true, "source": "assistant.images" }),
+        )]),
+    });
+    let model = MockCompletionModel::new([MockTurn::from_contents([
+        AssistantContent::Reasoning(Reasoning::new("private thought")),
+        AssistantContent::text("before"),
+        marked_image,
+        AssistantContent::text("after"),
+    ])
+    .with_raw(json!({
+        "choices": [{
+            "message": {
+                "images": [{ "image_url": { "url": "data:image/png;base64,secret" } }]
+            }
+        }]
+    }))]);
+
+    let handle = runtime
+        .run_with_model(request, model.clone())
+        .await
+        .unwrap();
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Completed);
+    let requests = model.requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "generated mode must use completion transport"
+    );
+    assert_eq!(
+        requests[0].additional_params,
+        Some(json!({ "modalities": ["image", "text"] }))
+    );
+    let timeline = fixture
+        .repo
+        .conversation_timeline_records(&fixture.conversation.id)
+        .unwrap()
+        .unwrap();
+    let provider_step = timeline.provider_steps.last().unwrap();
+    assert_eq!(provider_step.status, ProviderStepStatus::Completed);
+    let response_body = provider_step
+        .response_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.response_body.as_ref())
+        .unwrap();
+    let serialized = serde_json::to_string(&response_body.value).unwrap();
+    assert!(!serialized.contains("data:image"));
+    assert!(!serialized.contains("base64,secret"));
+
+    let generated_entries = timeline
+        .items
+        .iter()
+        .filter(|entry| entry.agent_run_id.as_deref() == Some(handle.agent_run.id.as_str()))
+        .collect::<Vec<_>>();
+    let reasoning = generated_entries
+        .iter()
+        .find(|entry| matches!(entry.payload, ConversationEntryPayload::Reasoning { .. }))
+        .unwrap();
+    let message = generated_entries
+        .iter()
+        .find(|entry| {
+            matches!(
+                entry.payload,
+                ConversationEntryPayload::Message {
+                    role: TranscriptRole::Assistant,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    assert!(reasoning.seq < message.seq);
+    assert_eq!(
+        message.provider_step_id.as_deref(),
+        Some(provider_step.id.as_str())
+    );
+    assert_eq!(
+        message.agent_run_id.as_deref(),
+        Some(handle.agent_run.id.as_str())
+    );
+    let content = match &message.payload {
+        ConversationEntryPayload::Message { content, .. } => content,
+        _ => unreachable!(),
+    };
+    assert!(matches!(content.as_slice(), [
+        ContentPart::Text { text: before },
+        ContentPart::Image { attachment_id },
+        ContentPart::Text { text: after },
+    ] if before == "before"
+        && after == "after"
+        && timeline.attachments.iter().any(|attachment| {
+            attachment.id == *attachment_id
+                && attachment.storage_kind == AttachmentStorageKind::GeneratedFile
+                && attachment.provider_id.as_deref() == Some(fixture.provider.id.as_str())
+                && attachment.path.as_deref().is_some_and(|path| std::path::Path::new(path).is_file())
+        })));
+    assert_eq!(
+        handle
+            .output
+            .as_ref()
+            .map(|output| output.final_entry_id.as_str()),
+        Some(message.id.as_str())
+    );
+}
+
+fn generated_test_image(data: DocumentSourceKind) -> AssistantContent {
+    AssistantContent::Image(Image {
+        data,
+        media_type: Some(ImageMediaType::PNG),
+        detail: None,
+        additional_params: AdditionalParams::from_entries([(
+            "openrouter",
+            json!({ "response_only": true, "source": "assistant.images" }),
+        )]),
+    })
+}
+
+fn generated_test_png_base64() -> String {
+    use base64::Engine as _;
+
+    let image = image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
+        2,
+        3,
+        image::Rgba([1, 2, 3, 255]),
+    ));
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+    base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+}
+
+fn generated_test_raw() -> serde_json::Value {
+    json!({
+        "choices": [{
+            "message": {
+                "images": [{ "image_url": { "url": "data:image/png;base64,secret" } }]
+            }
+        }]
+    })
+}
+
+fn generated_test_request(fixture: &Fixture) -> AgentRunRequest {
+    let mut request = fixture.streaming_request();
+    request.settings_snapshot.provider_settings.provider_kind = "openrouter".to_string();
+    request
+        .settings_snapshot
+        .model_capabilities
+        .image_generation = true;
+    request.settings_snapshot.model_capabilities.text_output = true;
+    request
+}
+
+#[tokio::test]
+async fn invalid_generated_image_keeps_text_and_typed_error_without_downgrading_step() {
+    let fixture = Fixture::new("generated-openrouter-invalid");
+    let conversation_dir = fixture
+        .dir
+        .path()
+        .join("attachments")
+        .join(&fixture.conversation.id);
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone()).with_managed_artifact_store(
+        ManagedArtifactStore::new(fixture.conversation.id.clone(), conversation_dir),
+    );
+    let model = MockCompletionModel::new([MockTurn::from_contents([
+        AssistantContent::text("text survives"),
+        generated_test_image(DocumentSourceKind::Raw(vec![1, 2, 3])),
+    ])
+    .with_raw(generated_test_raw())]);
+
+    let handle = runtime
+        .run_with_model(generated_test_request(&fixture), model)
+        .await
+        .unwrap();
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Failed);
+    assert_eq!(
+        handle
+            .agent_run
+            .error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("generated_artifact_invalid")
+    );
+    let timeline = fixture
+        .repo
+        .conversation_timeline_records(&fixture.conversation.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        timeline.provider_steps.last().unwrap().status,
+        ProviderStepStatus::Completed
+    );
+    assert!(timeline.attachments.is_empty());
+    assert!(timeline.items.iter().any(|entry| matches!(
+        &entry.payload,
+        ConversationEntryPayload::Message {
+            role: TranscriptRole::Assistant,
+            content,
+        } if content.iter().any(|part| part.search_text() == Some("text survives"))
+    )));
+    assert!(timeline.items.iter().any(|entry| matches!(
+        &entry.payload,
+        ConversationEntryPayload::Error(error)
+            if error.code == "generated_artifact_invalid" && error.raw.is_none()
+    )));
+}
+
+#[tokio::test]
+async fn generated_image_mixed_with_tool_call_is_rejected_without_executing_tool() {
+    let fixture = Fixture::new("generated-openrouter-mixed-tool");
+    let conversation_dir = fixture
+        .dir
+        .path()
+        .join("attachments")
+        .join(&fixture.conversation.id);
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone()).with_managed_artifact_store(
+        ManagedArtifactStore::new(fixture.conversation.id.clone(), conversation_dir),
+    );
+    let model = MockCompletionModel::new([MockTurn::from_contents([
+        AssistantContent::Reasoning(Reasoning::new("reasoning survives")),
+        AssistantContent::text("text survives"),
+        generated_test_image(DocumentSourceKind::Base64(generated_test_png_base64())),
+        AssistantContent::ToolCall(ToolCall::from_wire(
+            "call_must_not_run",
+            ToolFunction::new("missing_tool".to_string(), json!({})),
+        )),
+    ])
+    .with_raw(generated_test_raw())]);
+
+    let handle = runtime
+        .run_with_model(generated_test_request(&fixture), model)
+        .await
+        .unwrap();
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Failed);
+    assert_eq!(
+        handle
+            .agent_run
+            .error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("generated_artifact_invalid")
+    );
+    let timeline = fixture
+        .repo
+        .conversation_timeline_records(&fixture.conversation.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        timeline.provider_steps.last().unwrap().status,
+        ProviderStepStatus::Completed
+    );
+    assert!(timeline.attachments.is_empty());
+    assert!(timeline.items.iter().any(|entry| matches!(
+        &entry.payload,
+        ConversationEntryPayload::Reasoning { text, .. } if text == "reasoning survives"
+    )));
+    assert!(timeline.items.iter().any(|entry| matches!(
+        &entry.payload,
+        ConversationEntryPayload::Message {
+            role: TranscriptRole::Assistant,
+            content,
+        } if content.iter().any(|part| part.search_text() == Some("text survives"))
+    )));
+    assert!(
+        fixture
+            .repo
+            .tool_invocations_for_run(&handle.agent_run.id)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn cancellation_observed_after_generated_batch_commit_preserves_rows_and_final_file() {
+    let fixture = Fixture::new("generated-cancel-after-commit");
+    let conversation_dir = fixture
+        .dir
+        .path()
+        .join("attachments")
+        .join(&fixture.conversation.id);
+    let runtime = AgentRuntime::from_repository(fixture.repo.clone()).with_managed_artifact_store(
+        ManagedArtifactStore::new(fixture.conversation.id.clone(), conversation_dir),
+    );
+    let request = generated_test_request(&fixture);
+    let cancellation = request.cancellation_token.clone();
+    let observer = AgentRuntimeObserver::new(move |event| {
+        if matches!(
+            event,
+            AgentRuntimeEvent::ConversationCommitted { changes, .. }
+                if changes.iter().any(|change| matches!(
+                    change,
+                    ConversationChange::AttachmentUpserted { .. }
+                ))
+        ) {
+            cancellation.cancel();
+        }
+    });
+    let model = MockCompletionModel::new([MockTurn::from_contents([generated_test_image(
+        DocumentSourceKind::Base64(generated_test_png_base64()),
+    )])
+    .with_raw(generated_test_raw())]);
+
+    let handle = runtime
+        .run_with_model_observed(request, model, Some(observer))
+        .await
+        .unwrap();
+
+    assert_eq!(handle.agent_run.status, AgentRunStatus::Canceled);
+    let timeline = fixture
+        .repo
+        .conversation_timeline_records(&fixture.conversation.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(timeline.attachments.len(), 1);
+    let path = timeline.attachments[0].path.as_deref().unwrap();
+    assert!(std::path::Path::new(path).is_file());
+    assert!(timeline.items.iter().any(|entry| matches!(
+        entry.payload,
+        ConversationEntryPayload::Message {
+            role: TranscriptRole::Assistant,
+            ..
+        }
+    )));
+    assert!(!timeline.items.iter().any(|entry| matches!(
+        &entry.payload,
+        ConversationEntryPayload::Error(error)
+            if error.code.starts_with("generated_artifact_")
     )));
 }
 
@@ -3875,6 +4242,68 @@ fn model_capabilities() -> ModelCapabilitiesSnapshot {
             raw: None,
         },
     }
+}
+
+#[test]
+fn generated_openrouter_output_params_are_checked_and_do_not_mutate_capabilities() {
+    let mut settings = run_settings("provider-1", "model-1");
+    settings.provider_settings.provider_kind = "openrouter".to_string();
+    settings.model_capabilities.image_generation = true;
+    settings.model_capabilities.text_output = true;
+    let streaming = settings.model_capabilities.streaming;
+
+    assert!(uses_generated_image_completion(&settings));
+    assert_eq!(
+        openrouter_output_params(&settings),
+        Some(json!({ "modalities": ["image", "text"] }))
+    );
+    assert_eq!(settings.model_capabilities.streaming, streaming);
+
+    let merged = merge_generated_output_params(
+        Some(json!({ "reasoning": { "effort": "medium" } })),
+        openrouter_output_params(&settings),
+    )
+    .unwrap();
+    assert_eq!(
+        merged,
+        Some(json!({
+            "reasoning": { "effort": "medium" },
+            "modalities": ["image", "text"]
+        }))
+    );
+
+    settings.model_capabilities.text_output = false;
+    assert_eq!(
+        openrouter_output_params(&settings),
+        Some(json!({ "modalities": ["image"] }))
+    );
+    assert!(
+        merge_generated_output_params(
+            Some(json!({ "modalities": ["text"] })),
+            openrouter_output_params(&settings),
+        )
+        .is_err()
+    );
+    assert!(
+        merge_generated_output_params(
+            Some(json!(["not-an-object"])),
+            openrouter_output_params(&settings),
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn non_generated_output_params_preserve_existing_value() {
+    let settings = run_settings("provider-1", "model-1");
+    let existing = Some(json!(["legacy-shape"]));
+
+    assert!(!uses_generated_image_completion(&settings));
+    assert_eq!(openrouter_output_params(&settings), None);
+    assert_eq!(
+        merge_generated_output_params(existing.clone(), None).unwrap(),
+        existing
+    );
 }
 
 fn rig_message_text(message: &RigMessage) -> String {

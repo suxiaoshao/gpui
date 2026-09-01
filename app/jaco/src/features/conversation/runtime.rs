@@ -6,7 +6,7 @@ use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakE
 use gpui_operation::{Cancel, Complete, Load, Retry, Transition, refresh};
 use jaco_agent::{
     AgentCancellationToken, AgentPersistence, AgentRunHandle, AgentRunRequest, AgentRuntime,
-    AgentRuntimeObserver, OpenAiResponsesSessionPool, ToolApprovalDecision,
+    AgentRuntimeObserver, ManagedArtifactStore, OpenAiResponsesSessionPool, ToolApprovalDecision,
 };
 use jaco_core::{AgentRunId, AgentRunStatus, ConversationId, ProjectId, ToolInvocationId};
 use jaco_db::ProviderRecord;
@@ -919,6 +919,17 @@ impl ConversationRuntimeStore {
             Ok(persistence) => persistence,
             Err(error) => return Err(error.to_string()),
         };
+        let data_dir = match database::ready_data_dir(cx) {
+            Ok(data_dir) => data_dir,
+            Err(error) => return Err(error.to_string()),
+        };
+        if !super::attachments::is_valid_managed_conversation_id(&conversation_id) {
+            return Err("conversation id is not a safe managed path component".to_string());
+        }
+        let artifact_store = ManagedArtifactStore::new(
+            conversation_id.clone(),
+            super::attachments::managed_attachment_dir(&data_dir, &conversation_id),
+        );
         let provider = match crate::state::providers::ready_provider(&request.provider_id, cx) {
             Ok(provider) => provider,
             Err(error) => return Err(error.to_string()),
@@ -935,9 +946,12 @@ impl ConversationRuntimeStore {
                 persistence,
                 provider,
                 request,
-                tx.clone(),
-                runtime_approval_broker,
-                openai_sessions,
+                RunAgentResources {
+                    publications: tx.clone(),
+                    approval_broker: runtime_approval_broker,
+                    openai_sessions,
+                    artifact_store,
+                },
                 cx,
             )
             .await;
@@ -1521,6 +1535,8 @@ pub(crate) fn retry_recovery_if_needed(store: &Entity<ConversationRuntimeStore>,
 
 fn request_recovery(store: Entity<ConversationRuntimeStore>, cx: &mut App) -> JacoResult<()> {
     let persistence = database::ready_agent_persistence(cx)?;
+    let executor = database::ready_executor(cx)?;
+    let data_dir = database::ready_data_dir(cx)?;
     let openai_sessions = store.read(cx).openai_sessions.clone();
     let completion_store = store.downgrade();
     let task = cx.spawn(async move |cx| {
@@ -1529,15 +1545,36 @@ fn request_recovery(store: Entity<ConversationRuntimeStore>, cx: &mut App) -> Ja
             .recover_interrupted_runs()
             .await
             .map_err(|error| ConversationRuntimeProblem(error.to_string()));
-        if let Ok(recovered) = &result
-            && !recovered.is_empty()
-        {
-            event!(
-                Level::WARN,
-                recovered_count = recovered.len(),
-                "recovered interrupted jaco agent runs"
-            );
-        }
+        let result = match result {
+            Ok(recovered) => {
+                if !recovered.is_empty() {
+                    event!(
+                        Level::WARN,
+                        recovered_count = recovered.len(),
+                        "recovered interrupted jaco agent runs"
+                    );
+                }
+                match executor.generated_file_attachments().await {
+                    Ok(records) => {
+                        #[cfg(test)]
+                        let summary = super::generated_artifacts::reconcile_generated_artifacts(
+                            data_dir, records,
+                        );
+                        #[cfg(not(test))]
+                        let summary = smol::unblock(move || {
+                            super::generated_artifacts::reconcile_generated_artifacts(
+                                data_dir, records,
+                            )
+                        })
+                        .await;
+                        summary.emit_warnings();
+                        Ok(())
+                    }
+                    Err(error) => Err(ConversationRuntimeProblem(error.to_string())),
+                }
+            }
+            Err(error) => Err(error),
+        };
         let failed = result.is_err();
         let _ = completion_store.update(cx, |runtime, cx| {
             if runtime.recovery.is_running() {
@@ -1549,7 +1586,7 @@ fn request_recovery(store: Entity<ConversationRuntimeStore>, cx: &mut App) -> Ja
             }
         });
         if failed {
-            event!(Level::ERROR, "recover interrupted jaco agent runs failed");
+            event!(Level::ERROR, "conversation runtime recovery failed");
             cx.update(database::request_refresh);
         }
     });
@@ -1570,22 +1607,34 @@ fn request_recovery(store: Entity<ConversationRuntimeStore>, cx: &mut App) -> Ja
     Ok(())
 }
 
+struct RunAgentResources {
+    publications: Sender<RuntimePublication>,
+    approval_broker: Arc<ConversationApprovalBroker>,
+    openai_sessions: OpenAiResponsesSessionPool,
+    artifact_store: ManagedArtifactStore,
+}
+
 async fn run_agent_with_saved_provider(
     persistence: Arc<dyn AgentPersistence>,
     provider: ProviderRecord,
     request: AgentRunRequest,
-    tx: Sender<RuntimePublication>,
-    approval_broker: Arc<ConversationApprovalBroker>,
-    openai_sessions: OpenAiResponsesSessionPool,
+    resources: RunAgentResources,
     cx: &mut AsyncApp,
 ) -> Result<AgentRunHandle, String> {
+    let RunAgentResources {
+        publications,
+        approval_broker,
+        openai_sessions,
+        artifact_store,
+    } = resources;
     let observer = AgentRuntimeObserver::new(move |event| {
-        if let Err(err) = tx.send_blocking(RuntimePublication::Event(event)) {
+        if let Err(err) = publications.send_blocking(RuntimePublication::Event(event)) {
             event!(Level::ERROR, error = ?err, "send conversation runtime event failed");
         }
     });
     let runtime = AgentRuntime::new(persistence)
         .with_openai_session_pool(openai_sessions)
+        .with_managed_artifact_store(artifact_store)
         .with_approval_broker(approval_broker);
     let mut request = match crate::state::mcp::prepare_run_request(request, cx).await {
         Ok(prepared) => prepared.request,
@@ -1635,16 +1684,17 @@ mod tests {
     use jaco_agent::AgentRunHandleStatus;
     use jaco_core::{
         AgentEngineKind, AgentRunInput, AgentRunStatus, AgentRunTriggerKind, AgentRuntimeSnapshot,
-        ApprovalRequestPayload, ApprovalStatus, ContentPart, ConversationEntryPayload,
-        ConversationEntryStatus, ConversationMetadata, ConversationSettingsSnapshot, ProjectKind,
-        ProjectMetadata, ProviderSettingsPayload, ToolApprovalMode, ToolApprovalPolicy,
-        ToolArguments, ToolExecutionPolicy, ToolInvocationInput, ToolInvocationStatus,
-        ToolNameStrategy, ToolPolicySnapshot, ToolSource, TranscriptRole,
-        conservative_model_capabilities,
+        ApprovalRequestPayload, ApprovalStatus, AttachmentKind, AttachmentMetadata,
+        AttachmentSource, AttachmentStorageKind, ContentPart, ConversationChange,
+        ConversationEntryPayload, ConversationEntryStatus, ConversationMetadata,
+        ConversationSettingsSnapshot, ProjectKind, ProjectMetadata, ProviderSettingsPayload,
+        ToolApprovalMode, ToolApprovalPolicy, ToolArguments, ToolExecutionPolicy,
+        ToolInvocationInput, ToolInvocationStatus, ToolNameStrategy, ToolPolicySnapshot,
+        ToolSource, TranscriptRole, conservative_model_capabilities,
     };
     use jaco_db::{
-        FreshRepository, NewAgentRun, NewConversation, NewConversationEntry, NewProject,
-        NewToolInvocation, NewToolInvocationApproval,
+        FreshRepository, NewAgentRun, NewAttachment, NewConversation, NewConversationEntry,
+        NewProject, NewToolInvocation, NewToolInvocationApproval,
     };
     use std::sync::{
         Arc, Mutex,
@@ -2183,6 +2233,247 @@ mod tests {
                 runtime.read(cx).sidebar_status(&conversation_id),
                 ConversationSidebarStatus::Idle
             );
+        });
+    }
+
+    #[gpui::test]
+    fn init_recovery_removes_generated_pending_and_orphan_before_ready(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = init_runtime_test(cx);
+        let conversation_id =
+            cx.update(|cx| insert_conversation_with_user_item(&test_repository(cx)));
+        let conversation_dir =
+            super::super::attachments::managed_attachment_dir(dir.path(), &conversation_id);
+        let pending_dir = conversation_dir.join(".pending");
+        std::fs::create_dir_all(&pending_dir).unwrap();
+        let pending = pending_dir.join(format!("{}.part", jaco_core::new_id()));
+        let orphan = conversation_dir.join(format!(".jaco-generated-{}.png", jaco_core::new_id()));
+        std::fs::write(&pending, b"pending").unwrap();
+        std::fs::write(&orphan, b"orphan").unwrap();
+
+        let runtime = cx.update(|cx| create(cx).expect("initialize conversation runtime"));
+        cx.run_until_parked();
+
+        assert!(!pending.exists());
+        assert!(!orphan.exists());
+        cx.update(|cx| {
+            assert!(matches!(
+                runtime.read(cx).recovery,
+                refresh::Operation::Ready(_)
+            ));
+        });
+    }
+
+    #[gpui::test]
+    fn init_recovery_keeps_missing_generated_reference_and_becomes_ready(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = init_runtime_test(cx);
+        cx.update(|cx| {
+            let repository = test_repository(cx);
+            let conversation_id = insert_conversation_with_user_item(&repository);
+            let attachment_id = jaco_core::new_id();
+            let missing_path =
+                super::super::attachments::managed_attachment_dir(dir.path(), &conversation_id)
+                    .join(format!(".jaco-generated-{attachment_id}.png"))
+                    .to_string_lossy()
+                    .into_owned();
+            repository
+                .insert_attachment(NewAttachment {
+                    id: attachment_id,
+                    conversation_id,
+                    kind: AttachmentKind::Image,
+                    storage_kind: AttachmentStorageKind::GeneratedFile,
+                    mime_type: Some("image/png".to_string()),
+                    name: Some("generated-image-1.png".to_string()),
+                    path: Some(missing_path.clone()),
+                    external_uri: None,
+                    provider_id: None,
+                    provider_file_id: None,
+                    sha256: None,
+                    size_bytes: Some(4),
+                    metadata: AttachmentMetadata {
+                        source: AttachmentSource::GeneratedFile { path: missing_path },
+                        width: Some(1),
+                        height: Some(1),
+                        duration_ms: None,
+                        preview_attachment_id: None,
+                    },
+                })
+                .expect("insert generated attachment authority");
+        });
+
+        let runtime = cx.update(|cx| create(cx).expect("initialize conversation runtime"));
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            assert_eq!(
+                test_repository(cx)
+                    .generated_file_attachments()
+                    .expect("reload generated authority")
+                    .len(),
+                1
+            );
+            assert!(matches!(
+                runtime.read(cx).recovery,
+                refresh::Operation::Ready(_)
+            ));
+        });
+    }
+
+    #[gpui::test]
+    fn conversation_committed_publishes_generated_attachment_to_catalog_model_and_reload(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = init_runtime_test(cx);
+        let conversation_id =
+            cx.update(|cx| insert_conversation_with_user_item(&test_repository(cx)));
+        let (runtime, model, catalog) = cx.update(|cx| {
+            let executor = database::ready_executor(cx).unwrap();
+            let registry =
+                cx.new(|cx| super::super::registry::ConversationRegistry::new(executor, cx));
+            let runtime = cx.new(|_| ConversationRuntimeStore::new_ready_for_test());
+            super::super::resources::store(cx).set(
+                cx,
+                super::super::resources::ConversationResourcesState::Ready(
+                    super::super::resources::ConversationResources {
+                        conversations: registry.clone(),
+                        runtime: runtime.clone(),
+                    },
+                ),
+            );
+            let catalog = registry.read(cx).catalog();
+            catalog.update(cx, |catalog, cx| catalog.refresh(cx));
+            let model = registry.update(cx, |registry, cx| {
+                registry.retain_active(conversation_id.clone(), cx)
+            });
+            (runtime, model, catalog)
+        });
+        cx.run_until_parked();
+
+        let attachment_id = jaco_core::new_id();
+        let file_path =
+            super::super::attachments::managed_attachment_dir(dir.path(), &conversation_id)
+                .join(format!(".jaco-generated-{attachment_id}.png"));
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        std::fs::write(&file_path, b"image").unwrap();
+        let (conversation, entry, attachment) = cx.update(|cx| {
+            let repository = test_repository(cx);
+            let path = file_path.to_string_lossy().into_owned();
+            let commit = repository
+                .append_conversation_entry_with_attachments(
+                    NewConversationEntry {
+                        conversation_id: conversation_id.clone(),
+                        status: ConversationEntryStatus::Completed,
+                        agent_run_id: None,
+                        provider_step_id: None,
+                        tool_invocation_id: None,
+                        provider_item_id: None,
+                        payload: ConversationEntryPayload::Message {
+                            role: TranscriptRole::Assistant,
+                            content: vec![ContentPart::Text {
+                                text: "generated".to_string(),
+                            }],
+                        },
+                    },
+                    vec![NewAttachment {
+                        id: attachment_id.clone(),
+                        conversation_id: conversation_id.clone(),
+                        kind: AttachmentKind::Image,
+                        storage_kind: AttachmentStorageKind::GeneratedFile,
+                        mime_type: Some("image/png".to_string()),
+                        name: Some("generated-image-1.png".to_string()),
+                        path: Some(path.clone()),
+                        external_uri: None,
+                        provider_id: None,
+                        provider_file_id: None,
+                        sha256: None,
+                        size_bytes: Some(5),
+                        metadata: AttachmentMetadata {
+                            source: AttachmentSource::GeneratedFile { path },
+                            width: Some(1),
+                            height: Some(1),
+                            duration_ms: None,
+                            preview_attachment_id: None,
+                        },
+                    }],
+                )
+                .expect("persist generated assistant attachment");
+            let attachment = repository
+                .conversation_attachments(&conversation_id)
+                .unwrap()
+                .into_iter()
+                .find(|attachment| attachment.id == attachment_id)
+                .unwrap();
+            (commit.conversation, commit.value, attachment)
+        });
+
+        cx.update(|cx| {
+            runtime.update(cx, |runtime, cx| {
+                runtime
+                    .active_runs
+                    .insert(conversation_id.clone(), active_run(ActiveRunKey(0)));
+                runtime.handle_runtime_event(
+                    ActiveRunKey(0),
+                    jaco_agent::AgentRuntimeEvent::ConversationCommitted {
+                        conversation: Box::new(conversation.clone()),
+                        changes: vec![
+                            ConversationChange::AttachmentUpserted {
+                                attachment: Box::new(attachment.clone()),
+                            },
+                            ConversationChange::EntryAppended {
+                                entry: Box::new(entry.clone()),
+                            },
+                        ],
+                    },
+                    cx,
+                );
+            });
+
+            let super::super::registry::ConversationCatalogOperation::Ready(ready) =
+                catalog.read(cx).operation()
+            else {
+                panic!("catalog must remain ready after ConversationCommitted");
+            };
+            let summary = ready
+                .data()
+                .iter()
+                .find(|summary| summary.id == conversation_id)
+                .expect("updated conversation remains in catalog");
+            assert_eq!(summary.last_entry_seq, conversation.last_entry_seq);
+
+            let super::super::model::ConversationOperation::Ready(ready) =
+                model.read(cx).operation()
+            else {
+                panic!("retained conversation model must remain ready");
+            };
+            let loaded = ready.data().as_ref().expect("conversation remains loaded");
+            assert!(
+                loaded
+                    .attachments
+                    .iter()
+                    .any(|current| current.id == attachment_id)
+            );
+            assert!(loaded.entries.iter().any(|current| current.id == entry.id));
+        });
+
+        cx.update(|cx| model.update(cx, |model, cx| model.refresh(cx)));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let super::super::model::ConversationOperation::Ready(ready) =
+                model.read(cx).operation()
+            else {
+                panic!("reloaded conversation model must be ready");
+            };
+            let loaded = ready.data().as_ref().expect("reloaded conversation exists");
+            assert!(
+                loaded
+                    .attachments
+                    .iter()
+                    .any(|current| current.id == attachment_id)
+            );
+            assert!(loaded.entries.iter().any(|current| current.id == entry.id));
         });
     }
 

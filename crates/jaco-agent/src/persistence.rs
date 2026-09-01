@@ -40,6 +40,7 @@ pub(crate) fn direct_agent_persistence_failing_continuation_lookup(
 }
 
 use self::tool_hook::PersistingAgentHook;
+use crate::ManagedArtifactStore;
 use rig::completion::Usage;
 use std::{
     collections::HashMap,
@@ -165,6 +166,9 @@ pub(crate) struct PersistenceContext {
     cancellation_token: CancellationToken,
     observer: Option<AgentRuntimeObserver>,
     approval_broker: Option<Arc<dyn ToolApprovalBroker>>,
+    generated_mode: bool,
+    artifact_store: Option<ManagedArtifactStore>,
+    pending_run_failure: Arc<Mutex<Option<RunErrorPayload>>>,
 }
 
 impl PersistenceContext {
@@ -183,6 +187,8 @@ impl PersistenceContext {
         cancellation_token: CancellationToken,
         observer: Option<AgentRuntimeObserver>,
         approval_broker: Option<Arc<dyn ToolApprovalBroker>>,
+        generated_mode: bool,
+        artifact_store: Option<ManagedArtifactStore>,
     ) -> Self {
         Self {
             persistence,
@@ -210,6 +216,9 @@ impl PersistenceContext {
             cancellation_token,
             observer,
             approval_broker,
+            generated_mode,
+            artifact_store,
+            pending_run_failure: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -233,6 +242,25 @@ impl PersistenceContext {
 
     pub(crate) fn final_entry_id(&self) -> Option<ConversationEntryId> {
         mutex_clone(&self.final_entry_id)
+    }
+
+    pub(crate) fn generated_mode(&self) -> bool {
+        self.generated_mode
+    }
+
+    pub(crate) fn artifact_store(&self) -> Option<&ManagedArtifactStore> {
+        self.artifact_store.as_ref()
+    }
+
+    pub(crate) fn set_pending_run_failure(&self, payload: RunErrorPayload) {
+        let mut pending = lock(&self.pending_run_failure);
+        if pending.is_none() {
+            *pending = Some(payload);
+        }
+    }
+
+    pub(crate) fn pending_run_failure(&self) -> Option<RunErrorPayload> {
+        mutex_clone(&self.pending_run_failure)
     }
 
     pub(crate) async fn finish_run(
@@ -270,6 +298,7 @@ impl PersistenceContext {
         let finished = finalizing
             .transition(FinishCommitted(commit.value))
             .into_finished();
+        mutex_replace(&self.pending_run_failure, None);
         self.set_final_entry_id(Some(finished.final_entry.id.clone()));
         self.push_step(AgentStep::ConversationEntry(
             finished.final_entry.id.clone(),
