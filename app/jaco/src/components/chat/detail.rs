@@ -28,8 +28,8 @@ use gpui_component::{
     v_flex,
 };
 use jaco_core::{
-    AgentRunId, AttachmentId, ConversationEffect, ConversationEntryId, ConversationId,
-    ToolInvocationId,
+    AgentRunId, AttachmentId, ConversationEffect, ConversationEntryId, ConversationEntryStatus,
+    ConversationId, ToolInvocationId,
 };
 
 use crate::{
@@ -75,6 +75,7 @@ struct MessageTextState {
     key: attachments::TimelineTextKey,
     state: Entity<TextViewState>,
     source: String,
+    has_streaming_baseline: bool,
     _subscription: Subscription,
 }
 
@@ -132,6 +133,15 @@ fn message_text_update<'a>(previous: &str, next: &'a str) -> MessageTextUpdate<'
     }
 
     MessageTextUpdate::Replace
+}
+
+fn requires_streaming_text_state_rebuild(
+    is_streaming: bool,
+    has_streaming_baseline: bool,
+    update: &MessageTextUpdate<'_>,
+) -> bool {
+    (!has_streaming_baseline && (is_streaming || matches!(update, MessageTextUpdate::Append(_))))
+        || (is_streaming && matches!(update, MessageTextUpdate::Replace))
 }
 
 impl ConversationDetailPage {
@@ -616,17 +626,22 @@ impl ConversationDetailPage {
                 snapshot
                     .entries
                     .iter()
-                    .flat_map(|item| message_text_sources(item, &attachments_by_id))
+                    .flat_map(|item| {
+                        let is_streaming = item.status == ConversationEntryStatus::Running;
+                        message_text_sources(item, &attachments_by_id)
+                            .into_iter()
+                            .map(move |(key, source)| (key, source, is_streaming))
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
         let next_keys = sources
             .iter()
-            .map(|(key, _)| key.clone())
+            .map(|(key, _, _)| key.clone())
             .collect::<HashSet<_>>();
 
-        for (key, source) in sources {
-            self.ensure_message_text_state(key, &source, cx);
+        for (key, source, is_streaming) in sources {
+            self.ensure_message_text_state(key, &source, is_streaming, cx);
         }
 
         self.message_text_states
@@ -646,12 +661,18 @@ impl ConversationDetailPage {
                     .entries
                     .iter()
                     .find(|entry| &entry.id == item_id)
-                    .map(|entry| message_text_sources(entry, &attachments_by_id))
+                    .map(|entry| {
+                        let is_streaming = entry.status == ConversationEntryStatus::Running;
+                        message_text_sources(entry, &attachments_by_id)
+                            .into_iter()
+                            .map(|(key, source)| (key, source, is_streaming))
+                            .collect::<Vec<_>>()
+                    })
             })
             .unwrap_or_default();
         let next_keys = sources
             .iter()
-            .map(|(key, _)| key.clone())
+            .map(|(key, _, _)| key.clone())
             .collect::<HashSet<_>>();
         let current_keys = self
             .message_text_states
@@ -664,8 +685,8 @@ impl ConversationDetailPage {
             self.message_text_states
                 .retain(|state| timeline_text_key_entry_id(&state.key) != item_id);
         }
-        for (key, source) in sources {
-            self.ensure_message_text_state(key, &source, cx);
+        for (key, source, is_streaming) in sources {
+            self.ensure_message_text_state(key, &source, is_streaming, cx);
         }
     }
 
@@ -1315,14 +1336,27 @@ impl ConversationDetailPage {
         &mut self,
         key: attachments::TimelineTextKey,
         source: &str,
+        is_streaming: bool,
         cx: &mut Context<Self>,
     ) {
-        if let Some(entry) = self
+        if let Some(index) = self
             .message_text_states
-            .iter_mut()
-            .find(|entry| entry.key == key)
+            .iter()
+            .position(|entry| entry.key == key)
         {
-            match message_text_update(&entry.source, source) {
+            let update = message_text_update(&self.message_text_states[index].source, source);
+            if requires_streaming_text_state_rebuild(
+                is_streaming,
+                self.message_text_states[index].has_streaming_baseline,
+                &update,
+            ) {
+                self.message_text_states[index] =
+                    Self::create_message_text_state(key, source, true, cx);
+                return;
+            }
+
+            let entry = &mut self.message_text_states[index];
+            match update {
                 MessageTextUpdate::Unchanged => {}
                 MessageTextUpdate::Append(delta) => {
                     let delta = delta.to_owned();
@@ -1338,12 +1372,28 @@ impl ConversationDetailPage {
                         .update(cx, |state, cx| state.set_text(source, cx));
                     entry.source.clear();
                     entry.source.push_str(source);
+                    entry.has_streaming_baseline = false;
                 }
             }
             return;
         }
 
-        let state = cx.new(|cx| TextViewState::markdown(source, cx));
+        self.message_text_states
+            .push(Self::create_message_text_state(
+                key,
+                source,
+                is_streaming,
+                cx,
+            ));
+    }
+
+    fn create_message_text_state(
+        key: attachments::TimelineTextKey,
+        source: &str,
+        is_streaming: bool,
+        cx: &mut Context<Self>,
+    ) -> MessageTextState {
+        let state = cx.new(|cx| message_text_view_state(source, is_streaming, cx));
         let observed_item_id = timeline_text_key_entry_id(&key).clone();
         let subscription = cx.observe(&state, move |page, _, cx| {
             if let Some(row_ix) = page.timeline_rows.row_index_for_item(&observed_item_id) {
@@ -1352,12 +1402,13 @@ impl ConversationDetailPage {
             }
         });
 
-        self.message_text_states.push(MessageTextState {
+        MessageTextState {
             key,
             state,
             source: source.to_owned(),
+            has_streaming_baseline: is_streaming,
             _subscription: subscription,
-        });
+        }
     }
 
     fn message_text_state_map(
@@ -1908,6 +1959,21 @@ fn push_conversation_notification(
     );
 }
 
+fn message_text_view_state(
+    source: &str,
+    is_streaming: bool,
+    cx: &mut Context<TextViewState>,
+) -> TextViewState {
+    if !is_streaming {
+        return TextViewState::markdown(source, cx);
+    }
+
+    // Seed the async parser through the same append path used by later streaming deltas.
+    let mut state = TextViewState::markdown("", cx);
+    state.push_str(source, cx);
+    state
+}
+
 fn entry_references_attachment(
     entry: &jaco_core::ConversationEntry,
     attachment_id: &jaco_core::AttachmentId,
@@ -2120,7 +2186,8 @@ mod tests {
         ConversationDetailPage, ConversationModel, ConversationOperation, MessageTextUpdate,
         attachments, conversation,
         message::{TimelineRow, TimelineRowKey},
-        message_text_sources, message_text_update, reconcile_tool_invocation_ui_state,
+        message_text_sources, message_text_update, message_text_view_state,
+        reconcile_tool_invocation_ui_state, requires_streaming_text_state_rebuild,
         take_matching_ticket, timeline_row_remeasure_range, timeline_text_key_entry_id,
         tool_invocation::{
             AgentDetailItem, ToolInvocationDetail, ToolInvocationPreview,
@@ -3350,6 +3417,58 @@ mod tests {
             message_text_update("streaming", "streaming output"),
             MessageTextUpdate::Append(" output")
         );
+    }
+
+    #[test]
+    fn streaming_text_state_rebuilds_when_its_background_baseline_is_stale() {
+        assert!(requires_streaming_text_state_rebuild(
+            false,
+            false,
+            &MessageTextUpdate::Append(" suffix"),
+        ));
+        assert!(requires_streaming_text_state_rebuild(
+            true,
+            true,
+            &MessageTextUpdate::Replace,
+        ));
+        assert!(!requires_streaming_text_state_rebuild(
+            true,
+            true,
+            &MessageTextUpdate::Append(" suffix"),
+        ));
+        assert!(!requires_streaming_text_state_rebuild(
+            false,
+            false,
+            &MessageTextUpdate::Replace,
+        ));
+    }
+
+    #[gpui::test]
+    fn streaming_text_state_keeps_initial_chunk_after_first_append(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let state = cx.update(|cx| cx.new(|cx| message_text_view_state("你是", true, cx)));
+        cx.run_until_parked();
+
+        state.update(cx, |state, cx| state.push_str(" Grok 4.6", cx));
+        cx.run_until_parked();
+        state.update(cx, |state, cx| state.select_all(cx));
+
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.selected_text().trim_end(), "你是 Grok 4.6");
+        });
+    }
+
+    #[gpui::test]
+    fn streaming_text_state_keeps_initial_chunk_when_appends_coalesce(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let state = cx.update(|cx| cx.new(|cx| message_text_view_state("你是", true, cx)));
+        state.update(cx, |state, cx| state.push_str(" Grok 4.6", cx));
+        cx.run_until_parked();
+        state.update(cx, |state, cx| state.select_all(cx));
+
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.selected_text().trim_end(), "你是 Grok 4.6");
+        });
     }
 
     #[test]
