@@ -1,13 +1,13 @@
-use gpui::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement as _, Styled, Subscription, Window,
-};
-use gpui_component::{
+use gpui_form::Form;
+use gpui_form_gpui_component::{IntegerInput, IntegerInputEvent, IntegerInputState};
+use gpui_kit::component::{
     Disableable as _,
     checkbox::Checkbox,
     form::{field, v_form},
 };
-use gpui_form::Form;
-use gpui_form_gpui_component::{IntegerInput, IntegerInputEvent, IntegerInputState};
+use gpui_kit::{
+    AppContext as _, Context, Entity, IntoElement, ParentElement as _, Styled, Subscription, Window,
+};
 
 use super::draft::{HttpClientTransportSettings, RequestDraft, RequestSettingsDraft};
 use crate::foundation::I18n;
@@ -51,7 +51,7 @@ impl SettingsView {
     }
 }
 
-impl gpui::Render for SettingsView {
+impl gpui_kit::Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = RequestDraft::ROOT.then(RequestDraft::SETTINGS);
         let follow_path = settings

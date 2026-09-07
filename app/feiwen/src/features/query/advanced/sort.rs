@@ -1,7 +1,7 @@
 use crate::foundation::assets::IconName as FeiwenIconName;
-use gpui::{Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, px};
-use gpui_component::{ActiveTheme, Icon, IconName, StyledExt, h_flex, label::Label};
 use gpui_form::PathKey;
+use gpui_kit::component::{ActiveTheme, Icon, IconName, StyledExt, h_flex, label::Label};
+use gpui_kit::{Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, px};
 
 #[derive(Clone)]
 pub(super) struct DragSortRow {

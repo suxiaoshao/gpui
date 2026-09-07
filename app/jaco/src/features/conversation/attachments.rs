@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use gpui::{ClipboardEntry, ClipboardItem, Image, ImageFormat};
+use gpui_kit::{ClipboardEntry, ClipboardItem, Image, ImageFormat};
 use jaco_core::{
     AttachmentKind, AttachmentMetadata, AttachmentSource, AttachmentStorageKind, ConversationId,
     new_id,

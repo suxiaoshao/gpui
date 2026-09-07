@@ -184,6 +184,30 @@ location retires, drop its adapter. If a later model change creates another
 condition at the same schema position, create a new adapter; never retarget the
 old one.
 
+## Bind multiline text and code
+
+`FormTextarea` and `FormEditor` expose the same `new`, `try_new`, and `Deref`
+contract as `FormInput`, with `TextareaState` and `EditorState` respectively.
+All three use `InputEvent::Change` / `Blur` and silent `set_value` projections.
+Dynamic path retirement and binding teardown follow the same rules above.
+
+```rust,ignore
+let body = FormEditor::new(
+    &request_form,
+    RequestDraft::BODY,
+    |window, cx| EditorState::new(window, cx).language("json"),
+    window,
+    cx,
+);
+// Render with Editor::new(&body). For prose, use FormTextarea,
+// TextareaState::new(window, cx), and Textarea::new(&body).
+```
+
+Import these types from `gpui_form_gpui_component` and `gpui_component::input`.
+Workspace apps can use the same input types through `gpui_kit::component::input`.
+A read-only response viewer uses `Editor::readonly(true)` so selection and copy
+remain available; it does not need a form binding.
+
 ## Bind integer input
 
 `FormIntegerInput` keeps incomplete or invalid editor text in its native state.

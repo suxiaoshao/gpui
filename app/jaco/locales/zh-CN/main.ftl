@@ -791,3 +791,5 @@ chat-form-send-provider-unavailable = 模型目录恢复就绪前无法发送消
 critical-action-cancel = 取消
 critical-action-confirm = 继续
 sidebar-project-pin-failed = 更新项目置顶状态失败
+
+conversation-jump-to-latest = 回到最新消息

@@ -1,5 +1,7 @@
 # jaco-agent 开发计划
 
+- [Issue #215：依赖升级](issue-215/README.md)：jaco-agent 的依赖/API 配套迁移与验证边界。
+
 这里登记 `crates/jaco-agent` owner 的实施级计划。跨 owner 状态、共享契约、顺序和聚合完成证据由 workspace root plan 持有。
 
 | Issue | 状态 | 入口 |

@@ -1,9 +1,6 @@
 use crate::foundation::assets::IconName;
-use gpui::{
-    Action as _, AnyElement, App, ElementId, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, SharedString, Styled as _, Window, prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_form::PathKey;
+use gpui_kit::component::{
     ActiveTheme, Disableable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
@@ -11,7 +8,10 @@ use gpui_component::{
     label::Label,
     v_flex,
 };
-use gpui_form::PathKey;
+use gpui_kit::{
+    Action as _, AnyElement, App, ElementId, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, SharedString, Styled as _, Window, prelude::FluentBuilder as _, px,
+};
 use serde::Deserialize;
 use std::{rc::Rc, sync::Arc};
 
@@ -24,7 +24,7 @@ pub(super) enum McpRowList {
     EnvHeaders,
 }
 
-#[derive(gpui::Action, Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(gpui_kit::Action, Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[action(namespace = jaco_mcp_dialog, no_json)]
 pub(super) struct AddMcpRow {
     pub(super) list: McpRowList,
@@ -200,7 +200,7 @@ fn input_with_errors(
         .into_any_element()
 }
 
-fn row_container(label: impl Into<SharedString>) -> gpui::Div {
+fn row_container(label: impl Into<SharedString>) -> gpui_kit::Div {
     v_flex()
         .w_full()
         .gap_2()
@@ -223,7 +223,7 @@ fn add_button(
         })
 }
 
-fn row_shell(field_id: &'static str, row_id: &PathKey) -> gpui::Stateful<gpui::Div> {
+fn row_shell(field_id: &'static str, row_id: &PathKey) -> gpui_kit::Stateful<gpui_kit::Div> {
     h_flex()
         .id(row_element_id(field_id, row_id, "row"))
         .w_full()
@@ -232,7 +232,7 @@ fn row_shell(field_id: &'static str, row_id: &PathKey) -> gpui::Stateful<gpui::D
 }
 
 fn row_with_errors(
-    row: gpui::Stateful<gpui::Div>,
+    row: gpui_kit::Stateful<gpui_kit::Div>,
     errors: Vec<SharedString>,
     cx: &mut App,
 ) -> AnyElement {

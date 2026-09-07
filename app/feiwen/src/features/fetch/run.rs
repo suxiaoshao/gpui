@@ -1,4 +1,4 @@
-use gpui::Task;
+use gpui_kit::Task;
 use gpui_operation::Transition;
 use tracing::{Level, event};
 
@@ -537,7 +537,7 @@ pub(super) fn retry_page_after_failure(
 
 #[cfg(test)]
 mod tests {
-    use gpui::{AppContext as _, Task, TestAppContext};
+    use gpui_kit::{AppContext as _, Task, TestAppContext};
     use gpui_operation::Transition;
     use gpui_store::Store;
 
@@ -597,7 +597,7 @@ mod tests {
         run: Store<FetchRun>,
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn dropping_non_global_owner_cancels_task_without_a_store_cycle(cx: &mut TestAppContext) {
         let owner = cx.new(|cx| FetchOwner {
             run: Store::new(cx, FetchRun::default()),

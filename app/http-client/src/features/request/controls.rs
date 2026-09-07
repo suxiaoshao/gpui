@@ -6,19 +6,19 @@ use std::{
     rc::Rc,
 };
 
-use gpui::{
-    AppContext as _, Context, Entity, EventEmitter, ParentElement as _, PathPromptOptions, Render,
-    SharedString, Styled as _, Subscription, Task, Window,
+use gpui_form::{
+    ControlBinding, ControlProjection, DynamicPath, Form, FormSchema, IntoTotalPath, ResolveError,
 };
-use gpui_component::{
+use gpui_kit::component::{
     Disableable as _,
     button::Button,
     h_flex,
     searchable_list::{SearchableListDelegate, SearchableListItem},
     select::{Select, SelectEvent, SelectState},
 };
-use gpui_form::{
-    ControlBinding, ControlProjection, DynamicPath, Form, FormSchema, IntoTotalPath, ResolveError,
+use gpui_kit::{
+    AppContext as _, Context, Entity, EventEmitter, ParentElement as _, PathPromptOptions, Render,
+    SharedString, Styled as _, Subscription, Task, Window,
 };
 
 pub(super) struct FormScalarSelect<Root, D, Value>
@@ -437,7 +437,11 @@ impl FilePathState {
 impl EventEmitter<FilePathEvent> for FilePathState {}
 
 impl Render for FilePathState {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
         let select_label = if self.path.is_some() {
             self.labels.change.clone()
         } else {
@@ -451,7 +455,7 @@ impl Render for FilePathState {
 
         h_flex()
             .gap_2()
-            .child(gpui::div().flex_1().truncate().child(path_label))
+            .child(gpui_kit::div().flex_1().truncate().child(path_label))
             .child(
                 Button::new(("request-file-select", cx.entity_id()))
                     .label(select_label)
@@ -639,7 +643,7 @@ impl Drop for FormFilePathInput {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{IntoElement, TestAppContext, VisualTestContext, WindowHandle, div};
+    use gpui_kit::{IntoElement, TestAppContext, VisualTestContext, WindowHandle, div};
 
     use super::*;
     use crate::features::request::draft::{BinaryBodyDraft, RequestBodyDraft, RequestDraft};
@@ -745,7 +749,7 @@ mod tests {
         cx.update(|_, cx| root.read_with(cx, |root, _| root.control.test_has_picker_task()))
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn picker_writes_only_absolute_paths_and_clear_and_cancel_are_explicit(
         cx: &mut TestAppContext,
     ) {
@@ -787,7 +791,7 @@ mod tests {
         cx.update(|_, cx| assert!(state.read(cx).path.is_none()));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn retired_picker_drops_task_and_cannot_write_a_fresh_occurrence(cx: &mut TestAppContext) {
         let window = open_picker_harness(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);

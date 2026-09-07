@@ -1,6 +1,6 @@
 use duckdb::Connection;
-use gpui::{IntoElement, ParentElement, RenderOnce};
-use gpui_component::tag::Tag as TagComponent;
+use gpui_kit::component::tag::Tag as TagComponent;
+use gpui_kit::{IntoElement, ParentElement, RenderOnce};
 
 use crate::errors::FeiwenResult;
 
@@ -11,7 +11,11 @@ pub(crate) struct Tag {
 }
 
 impl RenderOnce for Tag {
-    fn render(self, _window: &mut gpui::Window, _cx: &mut gpui::App) -> impl gpui::IntoElement {
+    fn render(
+        self,
+        _window: &mut gpui_kit::Window,
+        _cx: &mut gpui_kit::App,
+    ) -> impl gpui_kit::IntoElement {
         TagComponent::primary().child(self.name)
     }
 }

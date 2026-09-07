@@ -5,13 +5,13 @@ use std::{
 
 use crate::foundation::I18n;
 use crate::state::config::{McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind};
-use gpui::{App, AppContext as _, Context, Entity, Window};
-use gpui_component::input::InputState;
 use gpui_form::{
     Form, FormSchema, GardeValidator, ItemPath, MutationError, PathKey, ResolveError,
     TotalItemsPath,
 };
 use gpui_form_gpui_component::FormInput;
+use gpui_kit::component::input::InputState;
+use gpui_kit::{App, AppContext as _, Context, Entity, Window};
 
 #[derive(Clone, Debug, PartialEq, FormSchema)]
 pub(super) struct McpArgRowInput {
@@ -881,15 +881,15 @@ mod tests {
             McpOAuthTomlConfig, McpServerTomlConfig, McpToolApprovalMode, McpTransportKind,
         },
     };
-    use gpui::{
-        AppContext as _, IntoElement, Render, TestAppContext, VisualTestContext, WindowHandle, div,
-    };
     use gpui_form::{
         DynamicPath, Form, GardeValidator, IntoTotalPath, TotalPath, ValidationTrigger,
     };
+    use gpui_kit::{
+        AppContext as _, IntoElement, Render, TestAppContext, VisualTestContext, WindowHandle, div,
+    };
     use std::{collections::BTreeMap, path::PathBuf};
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn merge_preserves_hidden_fields_when_editing_stdio(cx: &mut TestAppContext) {
         init_form_state_test(cx);
         let window = open_test_window(cx);
@@ -949,7 +949,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn transport_validation_requires_the_active_endpoint(cx: &mut TestAppContext) {
         init_form_state_test(cx);
         let window = open_test_window(cx);
@@ -1004,7 +1004,7 @@ mod tests {
         assert!(url_has_errors);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn validation_allows_authorization_header_when_draft_oauth_disabled(cx: &mut TestAppContext) {
         init_form_state_test(cx);
         let window = open_test_window(cx);
@@ -1063,7 +1063,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn incomplete_header_error_is_attached_only_to_the_missing_field(cx: &mut TestAppContext) {
         init_form_state_test(cx);
         let window = open_test_window(cx);
@@ -1099,7 +1099,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn merge_clears_stdio_only_fields_when_saving_http(cx: &mut TestAppContext) {
         init_form_state_test(cx);
         let window = open_test_window(cx);
@@ -1139,7 +1139,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn remove_last_array_row_leaves_empty_list(cx: &mut TestAppContext) {
         init_form_state_test(cx);
         let window = open_test_window(cx);
@@ -1169,7 +1169,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn stale_remove_is_a_noop_and_reinsert_gets_a_new_key(cx: &mut TestAppContext) {
         init_form_state_test(cx);
         let window = open_test_window(cx);
@@ -1200,7 +1200,7 @@ mod tests {
         assert_ne!(old_key, new_row.key());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn same_list_reorder_preserves_row_keys(cx: &mut TestAppContext) {
         init_form_state_test(cx);
         let window = open_test_window(cx);
@@ -1261,7 +1261,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn wrong_session_remove_keeps_the_model_unchanged(cx: &mut TestAppContext) {
         init_form_state_test(cx);
         let window = open_test_window(cx);
@@ -1290,7 +1290,7 @@ mod tests {
 
     fn init_form_state_test(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             foundation::init_i18n(cx);
         });
     }
@@ -1306,7 +1306,7 @@ mod tests {
     }
 
     fn set_form_text_value(
-        form: &gpui::Entity<Form<McpServerFormInput>>,
+        form: &gpui_kit::Entity<Form<McpServerFormInput>>,
         handle: TotalPath<McpServerFormInput, String>,
         value: &str,
         cx: &mut VisualTestContext,
@@ -1317,7 +1317,7 @@ mod tests {
     }
 
     fn set_partial_form_text_value(
-        form: &gpui::Entity<Form<McpServerFormInput>>,
+        form: &gpui_kit::Entity<Form<McpServerFormInput>>,
         handle: DynamicPath<McpServerFormInput, String>,
         value: &str,
         cx: &mut VisualTestContext,
@@ -1334,8 +1334,8 @@ mod tests {
     impl Render for TestView {
         fn render(
             &mut self,
-            _window: &mut gpui::Window,
-            _cx: &mut gpui::Context<Self>,
+            _window: &mut gpui_kit::Window,
+            _cx: &mut gpui_kit::Context<Self>,
         ) -> impl IntoElement {
             div()
         }

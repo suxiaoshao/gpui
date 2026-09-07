@@ -21,7 +21,8 @@ Use this index to choose the smallest existing component set for an app UI task.
 | --- | --- |
 | Form layout and field labels | [Form](form.md), [Label](label.md), [GroupBox](group-box.md) |
 | Text input | [Input](input.md) |
-| Multiline/code input | [Editor](editor.md) |
+| Multiline text | [Textarea](textarea.md) |
+| Code input | [Editor](editor.md) |
 | Numeric, one-time-code, date, and color input | [NumberInput](number-input.md), [OtpInput](otp-input.md), [DatePicker](date-picker.md), [ColorPicker](color-picker.md) |
 | Simple single choice | [Select](select.md), [Radio](radio.md) |
 | Searchable, multi-select, custom trigger, or custom option rendering | [Combobox](combobox.md) |
@@ -42,6 +43,10 @@ Use this index to choose the smallest existing component set for an app UI task.
 
 | Need | Component docs |
 | --- | --- |
+| Search and commands | [Command](command.md) |
+| Chat content and scroll following | [Message](message.md), [Bubble](bubble.md), [Attachment](attachment.md), [MessageScroller](message-scroller.md) |
+| Active processing | [Marker](marker.md), [Shimmer](shimmer.md) |
+| Sequential progress | [Stepper](stepper.md) |
 | App navigation | [Sidebar](sidebar.md), [Tabs](tabs.md), [Pagination](pagination.md) |
 | Scroll and resize | [Scrollable](scrollable.md), [Resizable](resizable.md), [VirtualList](virtual-list.md) |
 | Data presentation | [Table](table.md), [DataTable](data-table.md), [List](list.md), [Tree](tree.md), [DescriptionList](description-list.md) |
@@ -65,8 +70,9 @@ Use this index to choose the smallest existing component set for an app UI task.
 | shadcn-style need | gpui-component reference |
 | --- | --- |
 | Button, Toggle, ToggleGroup | [Button](button.md), [Toggle](toggle.md) |
-| Input, Textarea, InputOTP, Slider | [Input](input.md), [Editor](editor.md), [OtpInput](otp-input.md), [Slider](slider.md) |
-| Checkbox, RadioGroup, Switch, Select, Combobox, Command-like searchable picker | [Checkbox](checkbox.md), [Radio](radio.md), [Switch](switch.md), [Select](select.md), [Combobox](combobox.md) |
+| Input, Textarea, InputOTP, Slider | [Input](input.md), [Textarea](textarea.md), [OtpInput](otp-input.md), [Slider](slider.md) |
+| Checkbox, RadioGroup, Switch, Select, Combobox | [Checkbox](checkbox.md), [Radio](radio.md), [Switch](switch.md), [Select](select.md), [Combobox](combobox.md) |
+| Command | [Command](command.md) |
 | Dialog, AlertDialog, Sheet, Popover, Tooltip, HoverCard | [Dialog](dialog.md), [AlertDialog](alert-dialog.md), [Sheet](sheet.md), [Popover](popover.md), [Tooltip](tooltip.md), [HoverCard](hover-card.md) |
 | Alert, Badge, Skeleton, Progress | [Alert](alert.md), [Badge](badge.md), [Skeleton](skeleton.md), [Progress](progress.md) |
 | Tabs, Accordion, Collapsible, Sidebar, Pagination | [Tabs](tabs.md), [Accordion](accordion.md), [Collapsible](collapsible.md), [Sidebar](sidebar.md), [Pagination](pagination.md) |

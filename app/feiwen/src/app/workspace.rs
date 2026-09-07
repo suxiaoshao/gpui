@@ -1,5 +1,5 @@
-use gpui::*;
-use gpui_component::v_flex;
+use gpui_kit::component::v_flex;
+use gpui_kit::*;
 use gpui_store::Store;
 use tracing::{Level, event};
 

@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gpui::Task;
+use gpui_kit::Task;
 use gpui_operation::Transition;
 
 use super::response::{
@@ -405,7 +405,7 @@ impl Error for RequestProblem {
 mod tests {
     use std::{cell::Cell, rc::Rc};
 
-    use gpui::{App, TestAppContext};
+    use gpui_kit::{App, TestAppContext};
 
     use super::*;
     use crate::features::request::response::{
@@ -444,7 +444,7 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn cancel_installs_idle_before_dropping_the_owned_task(cx: &mut TestAppContext) {
         let dropped = Rc::new(Cell::new(false));
         let owned = cx.update(|cx| task(cx, dropped.clone()));
@@ -461,7 +461,7 @@ mod tests {
         assert!(dropped.get());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn head_progress_and_completion_form_one_ready_response(cx: &mut TestAppContext) {
         let dropped = Rc::new(Cell::new(false));
         let owned = cx.update(|cx| task(cx, dropped));
@@ -495,7 +495,7 @@ mod tests {
         assert_eq!(response.timing().head_after, Duration::from_millis(2));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn illegal_and_regressing_messages_preserve_the_exact_running_state(cx: &mut TestAppContext) {
         let dropped = Rc::new(Cell::new(false));
         let owned = cx.update(|cx| task(cx, dropped.clone()));
@@ -519,7 +519,7 @@ mod tests {
         assert!(!dropped.get());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn illegal_clear_success_without_head_and_duplicate_head_are_ignored(cx: &mut TestAppContext) {
         let dropped = Rc::new(Cell::new(false));
         let owned = cx.update(|cx| task(cx, dropped.clone()));

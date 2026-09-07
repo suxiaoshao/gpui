@@ -7,7 +7,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use gpui::{RenderImage, Task, TestAppContext};
+use gpui_kit::{RenderImage, Task, TestAppContext};
 use http::{HeaderMap, StatusCode, Version};
 use url::Url;
 
@@ -220,7 +220,7 @@ fn reading_the_complete_response_is_a_loading_preview_phase() {
     assert!(preview.is_loading());
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn stale_token_and_page_generation_cannot_replace_the_latest_pdf_page(cx: &mut TestAppContext) {
     let preview_token = token(1);
     let stale_token = token(2);
@@ -274,7 +274,7 @@ fn stale_token_and_page_generation_cannot_replace_the_latest_pdf_page(cx: &mut T
     assert_eq!(preview.viewport(), Some(PdfViewport::new(640, 480)));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn stop_and_owner_drop_cancel_the_route_and_stabilize_the_pdf_worker(cx: &mut TestAppContext) {
     for stop_explicitly in [true, false] {
         let route_dropped = Arc::new(AtomicBool::new(false));

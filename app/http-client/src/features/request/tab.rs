@@ -1,14 +1,14 @@
 use fluent_bundle::FluentArgs;
-use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement, Styled, Window,
-    div, prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _,
     label::Label,
     scroll::ScrollableElement as _,
     tab::{Tab, TabBar},
     v_flex,
+};
+use gpui_kit::{
+    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement, Styled, Window,
+    div, prelude::FluentBuilder as _, px,
 };
 
 use super::{
@@ -114,7 +114,7 @@ impl RequestTabsView {
     }
 }
 
-impl gpui::Render for RequestTabsView {
+impl gpui_kit::Render for RequestTabsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let labels = {
             let i18n = cx.global::<I18n>();
@@ -181,7 +181,7 @@ fn api_key_query_override(
 
 #[cfg(test)]
 mod tests {
-    use gpui::TestAppContext;
+    use gpui_kit::TestAppContext;
 
     use super::*;
     use crate::features::request::draft::ApiKeyAuthDraft;
@@ -196,10 +196,10 @@ mod tests {
         assert!(RequestTab::ALL.get(usize::MAX).is_none());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn query_override_notice_uses_decoded_keys_and_query_auth_only(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             init_i18n(cx);
         });
         let (view, cx) = cx.add_window_view(|window, cx| {

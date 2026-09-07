@@ -1,21 +1,13 @@
 use crate::{
-    components::picker::{PickerListDelegate, PickerSection},
+    components::picker::{PickerControl, PickerSection},
     foundation::assets::IconName,
 };
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
-    ActiveTheme, Icon, Sizable, StyledExt,
-    button::{Button, ButtonVariants},
-    h_flex,
-    label::Label,
-    list::ListState,
-    select::SelectItem,
+use gpui_kit::component::{
+    ActiveTheme, Icon, Sizable, StyledExt, h_flex, label::Label, select::SelectItem,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use jaco_core::ProjectId;
 use jaco_db::ProjectRecord;
-
-const PROJECT_PICKER_TRIGGER_SIZE: f32 = 28.;
-const PROJECT_PICKER_TRIGGER_RADIUS: f32 = 999.;
 
 #[derive(Clone, Debug)]
 pub(crate) enum ProjectPickerOptionKind {
@@ -124,54 +116,7 @@ impl SelectItem for ProjectPickerOption {
 }
 
 pub(crate) struct ProjectControlState {
-    pub(crate) open: bool,
-    pub(crate) picker: Entity<ListState<PickerListDelegate<ProjectPickerOption>>>,
-}
-
-pub(crate) fn project_picker_trigger(
-    id: &'static str,
-    icon: IconName,
-    label: impl Into<SharedString>,
-    open: bool,
-    cx: &App,
-) -> Button {
-    let foreground = cx.theme().muted_foreground;
-    let hover_foreground = cx.theme().foreground.opacity(0.78);
-    let active_background = cx.theme().foreground.opacity(0.08);
-
-    Button::new(id)
-        .ghost()
-        .with_size(px(PROJECT_PICKER_TRIGGER_SIZE))
-        .h(px(PROJECT_PICKER_TRIGGER_SIZE))
-        .px(px(8.))
-        .py(px(0.))
-        .rounded(px(PROJECT_PICKER_TRIGGER_RADIUS))
-        .text_color(foreground)
-        .when(open, |this| {
-            this.bg(active_background).text_color(hover_foreground)
-        })
-        .child(
-            h_flex()
-                .items_center()
-                .min_w_0()
-                .gap_1p5()
-                .child(Icon::new(icon).size_4())
-                .child(
-                    Label::new(label.into())
-                        .text_sm()
-                        .font_medium()
-                        .whitespace_nowrap()
-                        .truncate(),
-                )
-                .child(
-                    Icon::new(if open {
-                        IconName::ChevronUp
-                    } else {
-                        IconName::ChevronDown
-                    })
-                    .size_3(),
-                ),
-        )
+    pub(crate) picker: PickerControl<ProjectPickerOption>,
 }
 
 pub(crate) fn project_sections(

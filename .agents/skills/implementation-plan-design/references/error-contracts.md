@@ -2,7 +2,7 @@
 
 Use this reference whenever a plan adds, removes, renames, remaps, or changes handling of a validation, domain, database, provider, transport, MCP/tool, GPUI, cancellation, or shutdown failure. Treat error identity and recovery as an end-to-end contract independent of one crate or UI component.
 
-**Contents:** [Canonical model](#canonical-model-and-ownership) · [End-to-end chain](#end-to-end-chain) · [Producer mapping](#producer-normalization) · [Boundary mapping](#boundary-adapters) · [GPUI recovery](#gpui-classification-and-recovery) · [Failure classes](#failure-classes-and-partial-success) · [Security](#compatibility-security-and-observability) · [Tests](#required-tests) · [Order](#synchronization-order)
+**Contents:** [Canonical model](#canonical-model-and-ownership) · [End-to-end chain](#end-to-end-chain) · [Producer mapping](#producer-normalization) · [Boundary mapping](#boundary-adapters) · [GPUI recovery](#gpui-classification-and-recovery) · [Failure classes](#failure-classes-and-partial-success) · [Security](#compatibility-security-and-observability) · [Validation](#validation) · [Order](#synchronization-order)
 
 ## Canonical Model and Ownership
 
@@ -12,13 +12,7 @@ Give every materially distinct failure one stable ERR-ID in the plan:
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `ERR-01` | `<class>` | `<testable semantics>` | `<L-ID/type/None>` | `<policy>` | `<action>` | `<policy>` |
 
-For each ERR-ID define:
-
-- exact typed producer variant or stable public code when one exists;
-- meaning and testable trigger;
-- user-safe details and unknown-field policy;
-- retryability, idempotency, cancellation distinction, and default recovery;
-- compatibility when variants/codes/details change.
+Name the exact typed producer variant or stable public code. Preserve cancellation distinctions and the safe-details unknown-field policy.
 
 Provide Rust declarations for changed error enums, details types, `From`/mapping functions, parser/encoder functions, and recovery classification. The catalog owns meaning and safe details; operations, adapters, notifications, and tests reference ERR-IDs.
 
@@ -114,28 +108,17 @@ Never expose database query text, environment contents, transport debug output, 
 
 Define public field allowlists, protected-resource disclosure, unknown/internal fallback, log location, correlation identifier, severity, and redaction.
 
-## Required Tests
+## Validation
 
-Map applicable layers:
+Map changed error-contract risks to sufficient existing or missing evidence:
 
 | R-ID | Layer | Scenario | Fixture/producer | Expected ERR-ID/encoding | State/security/UI assertions |
 | --- | --- | --- | --- | --- | --- |
 
-Cover producer normalization and exhaustiveness, cross-boundary mapping, database/transaction consequences, Operation/runtime transition, known/unknown classification, exactly-once recovery, i18n variables, UI actions/focus, redaction, cancellation, partial output, and compatibility.
+Select checks for the affected failure, recovery or security contract. One scenario may cover several boundaries; this table is not a quota of tests per layer.
 
 Compilation alone does not verify an error contract.
 
 ## Synchronization Order
 
-When an error changes:
-
-1. Update the canonical ERR catalog and compatibility decision.
-2. Update owner-local variants and exhaustive producer mappings.
-3. Update affected C-ID adapters.
-4. Update persistence, partial-output, and rollback behavior.
-5. Update Operation/runtime transitions and recovery ownership.
-6. Update Fluent keys, GPUI presentation, actions, accessibility, and diagnostics.
-7. Add focused and cross-layer tests.
-8. Remove stale variants, aliases, mappings, translations, fallbacks, and consumers.
-
-A plan is incomplete if implementation must invent an error, infer safe details or UI behavior, match strings, or discover an undocumented producer-to-user conversion.
+Order affected WPs from canonical error identity through producer normalization, boundary encoding and consumer recovery. Include stale code/alias/translation removal when applicable. Use the contracts above as the field definitions and the plan's validation table for sufficient regression evidence; do not recreate the same inventory as a handoff checklist.

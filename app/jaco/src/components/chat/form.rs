@@ -5,8 +5,7 @@ mod project_control;
 
 use std::path::PathBuf;
 
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, ElementExt, Icon, Sizable, box_shadow,
     button::{Button, ButtonVariants},
     h_flex,
@@ -14,13 +13,13 @@ use gpui_component::{
     menu::{DropdownMenu, PopupMenuItem},
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
     components::{
         chat::context_occupancy::{ComposerContextProjection, ContextOccupancyDisclosure},
         chat::input::{ChatFormSkillCompletionPlacement, ComposerEditor, attachments},
         chat::run_settings,
-        picker::{PickerPopover, PickerPopoverConfig},
     },
     features::conversation::attachments::{
         ComposerAttachment, ComposerAttachmentKind, ComposerAttachmentSource,
@@ -45,7 +44,7 @@ pub(crate) use controls::{
 };
 pub(crate) use project_control::{
     ProjectControlState, ProjectPickerOption, ProjectPickerOptionKind, ProjectPickerValue,
-    project_picker_trigger, project_picker_value, project_sections,
+    project_picker_value, project_sections,
 };
 
 #[derive(Clone, Debug)]
@@ -173,69 +172,54 @@ impl ChatForm {
             ControlSlot::Disabled(state) => (state.clone(), false),
             ControlSlot::Enabled(state) => (state.clone(), true),
         };
-        let (label, icon, open, picker) = {
-            let state = state.read(cx);
-            let (label, icon) = state
-                .picker
-                .read(cx)
-                .delegate()
-                .selected_item()
-                .map(|item| item.trigger_presentation())
-                .unwrap_or_else(|| {
-                    (
-                        cx.global::<crate::foundation::I18n>()
-                            .t("new-conversation-project-none")
-                            .into(),
-                        IconName::FolderX,
-                    )
-                });
-            (label, icon, enabled && state.open, state.picker.clone())
-        };
-        let project_state = state.clone();
-        let event_target = self.state.downgrade();
-        let add_project = Button::new("jaco-chat-form-add-project")
-            .ghost()
-            .icon(IconName::FolderPlus)
-            .label(
-                cx.global::<crate::foundation::I18n>()
-                    .t("button-add-project"),
-            )
-            .small()
-            .w_full()
-            .disabled(!enabled)
-            .on_click(move |_, _window, cx| {
-                let _ = event_target.update(cx, |_, cx| {
-                    cx.emit(ChatFormUiEvent::AddProjectRequested);
-                });
+        let picker = state.read(cx).picker.clone();
+        let (label, icon) = picker
+            .selected_item(cx)
+            .map(|item| item.trigger_presentation())
+            .unwrap_or_else(|| {
+                (
+                    cx.global::<crate::foundation::I18n>()
+                        .t("new-conversation-project-none")
+                        .into(),
+                    IconName::FolderX,
+                )
             });
-
-        let picker = PickerPopover::new(PickerPopoverConfig {
-            id: "jaco-chat-form-project-popover",
-            open,
-            trigger: project_picker_trigger(
-                "jaco-chat-form-project-trigger",
-                icon,
-                label,
-                open,
-                cx,
-            )
-            .disabled(!enabled),
-            list: picker,
-            width: px(320.),
-            max_height: rems(18.).into(),
-            search_placeholder: Some(
+        let event_target = self.state.downgrade();
+        let picker = picker
+            .element()
+            .placeholder(label)
+            .icon(icon)
+            .disabled(!enabled)
+            .menu_width(px(320.))
+            .menu_max_h(rems(18.))
+            .search_placeholder(
                 cx.global::<crate::foundation::I18n>()
-                    .t("new-conversation-project-search")
-                    .into(),
-            ),
-            footer: enabled.then_some(add_project.into_any_element()),
-            on_open_change: move |open, _window, cx| {
-                project_state.update(cx, |state, cx| {
-                    state.open = *open;
-                    cx.notify();
-                });
-            },
-        });
+                    .t("new-conversation-project-search"),
+            )
+            .empty(|_, cx| {
+                Label::new(
+                    cx.global::<crate::foundation::I18n>()
+                        .t("new-conversation-project-empty"),
+                )
+            })
+            .when(enabled, |this| {
+                this.footer(move |_, cx| {
+                    let event_target = event_target.clone();
+                    Button::new("jaco-chat-form-add-project")
+                        .ghost()
+                        .icon(IconName::FolderPlus)
+                        .label(
+                            cx.global::<crate::foundation::I18n>()
+                                .t("button-add-project"),
+                        )
+                        .small()
+                        .w_full()
+                        .on_click(move |_, _, cx| {
+                            let _ = event_target
+                                .update(cx, |_, cx| cx.emit(ChatFormUiEvent::AddProjectRequested));
+                        })
+                })
+            });
 
         Some(
             h_flex()
@@ -870,52 +854,11 @@ mod tests {
         ChatForm, ChatFormControls, ChatFormState, ControlSlot, PrimaryAction,
         PrimaryActionControlState, RunSettingsControls, footer_primary_controls,
     };
-    use crate::components::picker::{
-        PickerContentPopoverConfig, picker_content_popover, picker_trigger_with_icon,
-    };
-    use gpui::{
+    use gpui_kit::component::{h_flex, v_flex};
+    use gpui_kit::{
         AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _,
         TestAppContext, View as _, Window, div, px,
     };
-    use gpui_component::{h_flex, v_flex};
-
-    struct FooterControlsLayout;
-
-    impl Render for FooterControlsLayout {
-        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let picker = |id| {
-                picker_content_popover(
-                    cx,
-                    PickerContentPopoverConfig {
-                        id,
-                        open: false,
-                        trigger: picker_trigger_with_icon(
-                            id,
-                            div().size_4().into_any_element(),
-                            "gpt-5.5",
-                            false,
-                        ),
-                        content: div().into_any_element(),
-                        width: px(200.),
-                        footer: None,
-                        on_open_change: |_, _, _| {},
-                    },
-                )
-            };
-
-            v_flex().child(h_flex().child(picker("natural"))).child(
-                h_flex()
-                    .w(px(180.))
-                    .child(div().w(px(100.)).flex_none())
-                    .child(div().flex_1().min_w_0())
-                    .child(
-                        footer_primary_controls()
-                            .child(picker("footer"))
-                            .child(div().size(px(28.)).flex_none()),
-                    ),
-            )
-        }
-    }
 
     fn hidden_controls() -> ChatFormControls {
         ChatFormControls {
@@ -932,7 +875,7 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn direct_views_use_backing_identity_across_rebuilds(cx: &mut TestAppContext) {
         let controls = hidden_controls();
         let form_state = cx.new(|cx| ChatFormState::new(&controls, cx));
@@ -956,21 +899,5 @@ mod tests {
 
         assert_eq!(first_primary.entity_id(), Some(primary_state.entity_id()));
         assert_eq!(refreshed_primary.entity_id(), first_primary.entity_id());
-    }
-
-    #[gpui::test]
-    fn footer_primary_controls_preserve_model_trigger_intrinsic_width(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        let (_, cx) = cx.add_window_view(|_, _| FooterControlsLayout);
-        cx.run_until_parked();
-
-        let natural = cx
-            .debug_bounds("picker-trigger-label:natural")
-            .expect("natural picker trigger label should be rendered");
-        let footer = cx
-            .debug_bounds("picker-trigger-label:footer")
-            .expect("footer picker trigger label should be rendered");
-
-        assert_eq!(footer.size.width, natural.size.width);
     }
 }

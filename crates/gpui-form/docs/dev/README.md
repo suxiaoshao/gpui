@@ -1,5 +1,7 @@
 # gpui-form 开发计划
 
+- [Issue #215：依赖升级](issue-215/README.md)：gpui-form 的依赖/API 配套迁移与验证边界。
+
 本目录保存维护者使用的实施计划，不定义 crate 的公开 API。使用者应阅读
 [英文指南](../guide.md) 或 [中文指南](../guide.zh-CN.md)。
 

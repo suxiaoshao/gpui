@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use gpui::{AnyElement, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window};
-use gpui_component::{ActiveTheme, label::Label, v_flex};
+use gpui_kit::component::{ActiveTheme, label::Label, v_flex};
+use gpui_kit::{AnyElement, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window};
 
 #[derive(IntoElement)]
 pub(super) struct ProviderListPane {
@@ -17,7 +17,7 @@ impl ProviderListPane {
 }
 
 impl RenderOnce for ProviderListPane {
-    fn render(self, _: &mut Window, _: &mut gpui::App) -> impl IntoElement {
+    fn render(self, _: &mut Window, _: &mut gpui_kit::App) -> impl IntoElement {
         self.body
     }
 }
@@ -36,7 +36,7 @@ impl ProviderDetailPane {
 }
 
 impl RenderOnce for ProviderDetailPane {
-    fn render(self, _: &mut Window, _: &mut gpui::App) -> impl IntoElement {
+    fn render(self, _: &mut Window, _: &mut gpui_kit::App) -> impl IntoElement {
         self.body
     }
 }
@@ -55,7 +55,7 @@ impl ProviderFieldControl {
 }
 
 impl RenderOnce for ProviderFieldControl {
-    fn render(self, _: &mut Window, _: &mut gpui::App) -> impl IntoElement {
+    fn render(self, _: &mut Window, _: &mut gpui_kit::App) -> impl IntoElement {
         self.body
     }
 }
@@ -74,7 +74,7 @@ impl ProviderModelTable {
 }
 
 impl RenderOnce for ProviderModelTable {
-    fn render(self, _: &mut Window, _: &mut gpui::App) -> impl IntoElement {
+    fn render(self, _: &mut Window, _: &mut gpui_kit::App) -> impl IntoElement {
         self.body
     }
 }
@@ -93,7 +93,7 @@ impl CapabilityTagRow {
 }
 
 impl RenderOnce for CapabilityTagRow {
-    fn render(self, _: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut gpui_kit::App) -> impl IntoElement {
         v_flex()
             .rounded(cx.theme().radius)
             .bg(cx.theme().tokens.muted.background)

@@ -1,13 +1,13 @@
 use std::rc::Rc;
 
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, IndexPath, Selectable, Sizable, StyledExt, h_flex,
     label::Label,
     list::{ListDelegate, ListState},
     tag::Tag,
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use jaco_core::SkillSourceKind;
 
 use crate::{
@@ -277,13 +277,13 @@ pub(super) fn skill_completion_rows(
 #[cfg(test)]
 mod reentrancy_tests {
     use super::{ComposerSkill, SkillCompletionDelegate, SkillCompletionRow};
-    use gpui::{
-        App, AppContext, Context, Entity, IntoElement, Render, SharedString, TestAppContext,
-        Window, div,
-    };
-    use gpui_component::{
+    use gpui_kit::component::{
         IndexPath,
         list::{ListDelegate, ListState},
+    };
+    use gpui_kit::{
+        App, AppContext, Context, Entity, IntoElement, Render, SharedString, TestAppContext,
+        Window, div,
     };
     use jaco_core::SkillSourceKind;
     use std::{
@@ -315,7 +315,7 @@ mod reentrancy_tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn confirm_callback_runs_after_list_update_finishes(cx: &mut TestAppContext) {
         let list_slot = Rc::new(RefCell::new(
             None::<Entity<ListState<SkillCompletionDelegate>>>,

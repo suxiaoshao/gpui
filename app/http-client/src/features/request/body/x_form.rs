@@ -3,11 +3,9 @@ use std::{
     sync::Arc,
 };
 
-use gpui::{
-    AnyElement, Context, ElementId, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, Styled as _, Subscription, Window, div, px,
-};
-use gpui_component::{
+use gpui_form::{DynamicItemsPath, DynamicPath, Form, FormEvent, ItemPath, PathKey};
+use gpui_form_gpui_component::FormInput;
+use gpui_kit::component::{
     button::Button,
     checkbox::Checkbox,
     h_flex,
@@ -15,8 +13,10 @@ use gpui_component::{
     label::Label,
     v_flex,
 };
-use gpui_form::{DynamicItemsPath, DynamicPath, Form, FormEvent, ItemPath, PathKey};
-use gpui_form_gpui_component::FormInput;
+use gpui_kit::{
+    AnyElement, Context, ElementId, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Styled as _, Subscription, Window, div, px,
+};
 
 use crate::{
     features::request::draft::{KeyValueDraft, RequestDraft, UrlEncodedBodyDraft},
@@ -283,16 +283,16 @@ fn child_id(scope: &'static str, key: &PathKey, role: &'static str) -> ElementId
 
 #[cfg(test)]
 mod tests {
-    use gpui::{AppContext as _, TestAppContext, VisualTestContext};
+    use gpui_kit::{AppContext as _, TestAppContext, VisualTestContext};
 
     use crate::{features::request::draft::RequestBodyDraft, foundation::i18n::init_i18n};
 
     use super::*;
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn same_parent_reorder_preserves_urlencoded_native_rows(cx: &mut TestAppContext) {
         let (form, window) = cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             init_i18n(cx);
             let draft = RequestDraft {
                 body: RequestBodyDraft::UrlEncoded(UrlEncodedBodyDraft {
@@ -358,10 +358,10 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn failed_urlencoded_binding_is_retried_once_from_the_live_path_key(cx: &mut TestAppContext) {
         let (form, window) = cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             init_i18n(cx);
             let draft = RequestDraft {
                 body: RequestBodyDraft::UrlEncoded(UrlEncodedBodyDraft {

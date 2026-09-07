@@ -16,17 +16,17 @@ use std::{
 };
 
 use fluent_bundle::FluentArgs;
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Sizable, StyledExt, WindowExt as NotificationWindowExt,
     button::Button,
     label::Label,
+    message_scroller::{MessageScroller, MessageScrollerState},
     notification::{Notification, NotificationType},
-    scroll::ScrollableElement,
     spinner::Spinner,
     text::TextViewState,
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use jaco_core::{
     AgentRunId, AttachmentId, ConversationEffect, ConversationEntryId, ConversationEntryStatus,
     ConversationId, ToolInvocationId,
@@ -48,7 +48,7 @@ pub(crate) struct ConversationDetailPage {
     conversation_id: ConversationId,
     conversation: Entity<ConversationModel>,
     chat_form: Entity<ChatInputController>,
-    timeline: ListState,
+    timeline: Entity<MessageScrollerState>,
     timeline_rows: timeline::ConversationTimelineRows,
     message_text_states: Vec<MessageTextState>,
     attachment_access: HashMap<AttachmentId, attachment_access::AttachmentAccessState>,
@@ -184,7 +184,8 @@ impl ConversationDetailPage {
             chat_form.set_agent_run_status(run_status, cx);
             chat_form
         });
-        let timeline = ListState::new(0, ListAlignment::Top, px(2048.)).measure_all();
+        let timeline = cx.new(|cx| MessageScrollerState::new(0, cx));
+        let timeline_observation = cx.observe(&timeline, |_, _, cx| cx.notify());
         let timeline_rows = timeline::ConversationTimelineRows::new(Vec::new());
         let chat_form_subscription = cx.subscribe_in(
             &chat_form,
@@ -242,6 +243,7 @@ impl ConversationDetailPage {
             #[cfg(test)]
             last_tool_invocation_remeasure: None,
             _subscriptions: vec![
+                timeline_observation,
                 chat_form_subscription,
                 runtime_subscription,
                 runtime_observation,
@@ -253,7 +255,8 @@ impl ConversationDetailPage {
         page.sync_message_text_states(cx);
         page.sync_attachment_access(true, cx);
         page.sync_timeline(cx, None);
-        page.timeline.scroll_to_end();
+        page.timeline
+            .update(cx, |state, cx| state.scroll_to_end(cx));
         page.sync_submission_problem(cx);
         page
     }
@@ -344,8 +347,8 @@ impl ConversationDetailPage {
                 self.chat_form.update(cx, |chat_form, cx| {
                     chat_form.clear_after_submit(window, cx);
                 });
-                self.timeline.set_follow_mode(FollowMode::Tail);
-                self.timeline.scroll_to_end();
+                self.timeline
+                    .update(cx, |state, cx| state.scroll_to_end(cx));
             }
             conversation::runtime::ConversationRuntimeEvent::SubmissionFailed {
                 ticket,
@@ -430,7 +433,7 @@ impl ConversationDetailPage {
                 // A reload can change the height of a row in the unchanged key prefix while
                 // also adding or removing a later row. `splice` only invalidates the changed
                 // suffix, so explicitly invalidate every retained row after the rebuild.
-                self.timeline.remeasure();
+                self.timeline.update(cx, |state, cx| state.remeasure(cx));
             }
             ConversationModelEvent::Changed(effects) => {
                 for effect in effects {
@@ -606,12 +609,31 @@ impl ConversationDetailPage {
             })
             .unwrap_or_default();
         let previous_keys = self.timeline_rows.set_rows(rows);
-        sync_timeline_list(
-            &self.timeline,
-            &previous_keys,
-            self.timeline_rows.keys(),
-            remeasure_hint.as_ref(),
-        );
+        let next_keys = self.timeline_rows.keys();
+        self.timeline.update(cx, |state, cx| {
+            if previous_keys == next_keys {
+                if let Some(range) = remeasure_hint
+                    .as_ref()
+                    .and_then(|key| timeline_row_remeasure_range(next_keys, key))
+                {
+                    state.remeasure_items(range, cx);
+                } else {
+                    state.remeasure(cx);
+                }
+            } else {
+                // The app maps domain row identities; MessageScroller owns list bookkeeping.
+                let first_diff = previous_keys
+                    .iter()
+                    .zip(next_keys)
+                    .position(|(previous, next)| previous != next)
+                    .unwrap_or_else(|| previous_keys.len().min(next_keys.len()));
+                state.splice(
+                    first_diff..previous_keys.len(),
+                    next_keys.len() - first_diff,
+                    cx,
+                );
+            }
+        });
     }
 
     fn sync_message_text_states(&mut self, cx: &mut Context<Self>) {
@@ -885,7 +907,7 @@ impl ConversationDetailPage {
             self.sync_timeline(cx, None);
             return;
         };
-        self.remeasure_timeline_row(&key);
+        self.remeasure_timeline_row(&key, cx);
     }
 
     fn update_timeline_run(&mut self, run_id: &AgentRunId, cx: &mut Context<Self>) {
@@ -910,7 +932,7 @@ impl ConversationDetailPage {
             self.sync_timeline(cx, None);
             return;
         };
-        self.remeasure_timeline_row(&key);
+        self.remeasure_timeline_row(&key, cx);
     }
 
     fn update_timeline_request_usage(&mut self, agent_run_id: &AgentRunId, cx: &mut Context<Self>) {
@@ -938,7 +960,7 @@ impl ConversationDetailPage {
             self.sync_timeline(cx, None);
             return;
         };
-        self.remeasure_timeline_row(&key);
+        self.remeasure_timeline_row(&key, cx);
     }
 
     fn sync_attachment_rows(
@@ -1322,13 +1344,14 @@ impl ConversationDetailPage {
         cx.notify();
     }
 
-    fn remeasure_timeline_row(&mut self, key: &message::TimelineRowKey) {
+    fn remeasure_timeline_row(&mut self, key: &message::TimelineRowKey, cx: &mut Context<Self>) {
         if let Some(range) = timeline_row_remeasure_range(self.timeline_rows.keys(), key) {
             #[cfg(test)]
             {
                 self.last_tool_invocation_remeasure = Some(range.clone());
             }
-            self.timeline.remeasure_items(range);
+            self.timeline
+                .update(cx, |state, cx| state.remeasure_items(range, cx));
         }
     }
 
@@ -1397,7 +1420,9 @@ impl ConversationDetailPage {
         let observed_item_id = timeline_text_key_entry_id(&key).clone();
         let subscription = cx.observe(&state, move |page, _, cx| {
             if let Some(row_ix) = page.timeline_rows.row_index_for_item(&observed_item_id) {
-                page.timeline.remeasure_items(row_ix..row_ix + 1);
+                page.timeline.update(cx, |state, cx| {
+                    state.remeasure_items(row_ix..row_ix + 1, cx)
+                });
                 cx.notify();
             }
         });
@@ -1495,7 +1520,6 @@ impl ConversationDetailPage {
             .copied()
             .unwrap_or(false);
         let row_key = self.timeline_rows.row_key_for_tool_invocation(&id);
-        self.timeline.set_follow_mode(FollowMode::Normal);
         self.expanded_tool_invocations.insert(id.clone(), expanded);
         if expanded {
             self.ensure_tool_invocation_preview(&id, cx);
@@ -1635,7 +1659,7 @@ impl ConversationDetailPage {
             self.sync_timeline(cx, None);
             return;
         };
-        self.remeasure_timeline_row(&row_key);
+        self.remeasure_timeline_row(&row_key, cx);
         cx.notify();
     }
 
@@ -1719,7 +1743,6 @@ impl ConversationDetailPage {
             .get(&agent_run_id)
             .copied()
             .unwrap_or_else(|| self.default_agent_run_expanded(&agent_run_id, cx));
-        self.timeline.set_follow_mode(FollowMode::Normal);
         self.expanded_agent_runs
             .insert(agent_run_id.clone(), !current);
         self.sync_timeline(cx, Some(message::TimelineRowKey::Agent(agent_run_id)));
@@ -1888,17 +1911,40 @@ impl Render for ConversationDetailPage {
                         }
 
                         this.child(
-                            list(timeline.clone(), move |ix, window, cx| {
-                                page.upgrade()
-                                    .and_then(|page| page.read(cx).timeline_rows.row(ix))
-                                    .map(|row| {
-                                        gpui::RenderOnce::render(row, window, cx).into_any_element()
-                                    })
-                                    .unwrap_or_else(|| div().into_any_element())
-                            })
+                            MessageScroller::new(
+                                "conversation-messages",
+                                timeline.clone(),
+                                move |ix, window, cx| {
+                                    page.upgrade()
+                                        .and_then(|page| {
+                                            let page = page.read(cx);
+                                            let mut row = page.timeline_rows.row(ix)?;
+                                            if let message::TimelineRow::Agent(agent) = &mut row {
+                                                agent.is_active_run =
+                                                    agent.run_id.as_ref().is_some_and(|id| {
+                                                        page.runtime
+                                                            .read(cx)
+                                                            .active_agent_run_id(
+                                                                &page.conversation_id,
+                                                            )
+                                                            .as_ref()
+                                                            == Some(id)
+                                                    });
+                                            }
+                                            Some(row)
+                                        })
+                                        .map(|row| {
+                                            gpui_kit::RenderOnce::render(row, window, cx)
+                                                .into_any_element()
+                                        })
+                                        .unwrap_or_else(|| div().into_any_element())
+                                },
+                            )
+                            .with_jump_button_label(
+                                cx.global::<I18n>().t("conversation-jump-to-latest"),
+                            )
                             .size_full(),
                         )
-                        .vertical_scrollbar(&timeline)
                     }),
             )
             .child(
@@ -2114,35 +2160,6 @@ fn timeline_text_key_entry_id(key: &attachments::TimelineTextKey) -> &Conversati
     }
 }
 
-fn sync_timeline_list(
-    list_state: &ListState,
-    previous_keys: &[message::TimelineRowKey],
-    next_keys: &[message::TimelineRowKey],
-    remeasure_hint: Option<&message::TimelineRowKey>,
-) {
-    if previous_keys == next_keys {
-        if let Some(row_ix) = remeasure_hint
-            .and_then(|key| next_keys.iter().position(|current_key| current_key == key))
-        {
-            list_state.remeasure_items(row_ix..row_ix + 1);
-        } else {
-            list_state.remeasure();
-        }
-        return;
-    }
-
-    let first_diff = previous_keys
-        .iter()
-        .zip(next_keys.iter())
-        .position(|(previous, next)| previous != next)
-        .unwrap_or_else(|| previous_keys.len().min(next_keys.len()));
-
-    list_state.splice(
-        first_diff..previous_keys.len(),
-        next_keys.len().saturating_sub(first_diff),
-    );
-}
-
 fn timeline_row_remeasure_range(
     keys: &[message::TimelineRowKey],
     key: &message::TimelineRowKey,
@@ -2195,7 +2212,7 @@ mod tests {
         },
     };
     use crate::database;
-    use gpui::{AppContext as _, Context, Entity, TestAppContext, Window, WindowHandle};
+    use gpui_kit::{AppContext as _, Context, Entity, TestAppContext, Window, WindowHandle};
     use jaco_core::{
         AgentEngineKind, AgentRunInput, AgentRunStatus, AgentRunTriggerKind, AgentRuntimeSnapshot,
         AgentStoppedReason, ApprovalRequestPayload, AttachmentKind, AttachmentMetadata,
@@ -2231,13 +2248,13 @@ mod tests {
         page: WindowHandle<ConversationDetailPage>,
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn db_reopen_and_real_reload_rebuilds_tool_invocation_page_state(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         let fixture = seed_reload_tool_fixture(directory.path());
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             crate::components::chat::input::init(cx);
             database::install_for_test(cx, directory.path());
             crate::foundation::i18n::init(cx);
@@ -2624,7 +2641,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn attachment_save_picker_cancel_is_silent_and_duplicate_actions_are_deduplicated(
         cx: &mut TestAppContext,
     ) {
@@ -2663,7 +2680,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn stale_attachment_action_result_is_rejected_by_record_revision_fence(
         cx: &mut TestAppContext,
     ) {
@@ -2739,7 +2756,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn attachment_access_reprobes_when_same_id_kind_conflict_disappears_on_entry_change(
         cx: &mut TestAppContext,
     ) {
@@ -2835,7 +2852,7 @@ mod tests {
             seed_attachment_action_fixture(directory.path(), &source_path);
 
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             crate::components::chat::input::init(cx);
             database::install_for_test(cx, directory.path());
             crate::foundation::i18n::init(cx);
@@ -3443,9 +3460,9 @@ mod tests {
         ));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn streaming_text_state_keeps_initial_chunk_after_first_append(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui_kit::init);
         let state = cx.update(|cx| cx.new(|cx| message_text_view_state("你是", true, cx)));
         cx.run_until_parked();
 
@@ -3458,9 +3475,9 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn streaming_text_state_keeps_initial_chunk_when_appends_coalesce(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui_kit::init);
         let state = cx.update(|cx| cx.new(|cx| message_text_view_state("你是", true, cx)));
         state.update(cx, |state, cx| state.push_str(" Grok 4.6", cx));
         cx.run_until_parked();

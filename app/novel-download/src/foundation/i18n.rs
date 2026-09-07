@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
 
 use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
-use gpui::{App, Global, SharedString};
 use gpui_form::{ErrorParamValue, ValidationMessage};
+use gpui_kit::{App, Global, SharedString};
 use unic_langid::LanguageIdentifier;
 
 const EN_US: &str = include_str!("../../locales/en-US/main.ftl");

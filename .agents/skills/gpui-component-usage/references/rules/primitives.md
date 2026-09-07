@@ -32,6 +32,6 @@ Use this file when custom app UI is necessary but should still feel native to gp
 
 ## Initialization
 
-Application entrypoints should call `gpui_component::init(cx)` once before using components. This initializes theme, global state, root behavior, focus trap, overlays, menus, table, text, tree, tooltip, and other component systems.
+Workspace application entrypoints use `gpui_kit::application()` and call `gpui_kit::init(cx)` once before using components. This initializes theme, global state, root behavior, focus trap, overlays, menus, table, text, tree, tooltip, and other component systems.
 
 When diagnosing missing overlay, tooltip, menu, theme, or focus behavior, check initialization before changing component code.

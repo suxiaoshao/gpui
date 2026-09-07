@@ -1,16 +1,19 @@
 use std::{collections::HashMap, rc::Rc};
 
 use fluent_bundle::FluentArgs;
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, h_flex,
     label::Label,
+    marker::{Marker, MarkerContent, MarkerLoadingStyle, MarkerVariant},
+    message::{Message, MessageAlignment, MessageContent, MessageFooter, MessageHeader},
     text::{TextView, TextViewState},
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use jaco_core::{
     AgentMessageRequestUsage, AgentRun, AgentRunId, AgentRunStatus, AttachmentId,
     ConversationEntry, ConversationEntryId, ConversationEntryPayload, ToolInvocationId,
+    ToolInvocationStatus,
 };
 
 use crate::foundation::{I18n, assets::IconName, conversation_format as format};
@@ -65,9 +68,11 @@ impl TimelineRow {
 impl RenderOnce for TimelineRow {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         match self {
-            TimelineRow::User(row) => gpui::RenderOnce::render(*row, window, cx).into_any_element(),
+            TimelineRow::User(row) => {
+                gpui_kit::RenderOnce::render(*row, window, cx).into_any_element()
+            }
             TimelineRow::Agent(row) => {
-                gpui::RenderOnce::render(*row, window, cx).into_any_element()
+                gpui_kit::RenderOnce::render(*row, window, cx).into_any_element()
             }
         }
     }
@@ -85,7 +90,6 @@ pub(super) struct UserMessageRow {
 
 impl RenderOnce for UserMessageRow {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let group = format!("conversation-user-message-{}", self.item.id);
         let markdown = format::item_markdown(&self.item);
         let copy_text = markdown.clone();
         let on_copy = self.on_copy;
@@ -107,43 +111,27 @@ impl RenderOnce for UserMessageRow {
             cx,
         );
 
-        h_flex()
-            .id(format!("conversation-user-row-{}", self.item.id))
-            .group(group.clone())
-            .w_full()
-            .justify_end()
+        Message::new()
+            .alignment(MessageAlignment::End)
             .px_6()
             .py_3()
-            .child(
-                v_flex()
-                    .items_end()
-                    .max_w(px(680.))
-                    .min_w_0()
-                    .gap_2()
-                    .child(render_message_content(
-                        &self.item.id,
-                        self.content,
-                        &self.text_states,
-                        &self.attachment_access,
-                        MessageContentAppearance::User,
-                        self.on_attachment_action,
-                        cx,
-                    ))
+            .content(MessageContent::new().child(render_message_content(
+                &self.item.id,
+                self.content,
+                &self.text_states,
+                &self.attachment_access,
+                MessageContentAppearance::User,
+                self.on_attachment_action,
+                cx,
+            )))
+            .footer(
+                MessageFooter::new()
                     .child(
-                        h_flex()
-                            .h(px(24.))
-                            .items_center()
-                            .justify_end()
-                            .gap_1()
-                            .opacity(0.)
-                            .group_hover(group.clone(), |this| this.opacity(1.))
-                            .child(
-                                Label::new(sent_time)
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground),
-                            )
-                            .child(copy_button),
-                    ),
+                        Label::new(sent_time)
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(copy_button),
             )
     }
 }
@@ -152,6 +140,7 @@ impl RenderOnce for UserMessageRow {
 pub(super) struct AgentTurnRow {
     pub(super) run_id: Option<AgentRunId>,
     pub(super) run: Option<AgentRun>,
+    pub(super) is_active_run: bool,
     pub(super) request_usage: Option<AgentMessageRequestUsage>,
     pub(super) items: Vec<AgentDetailItem>,
     pub(super) message_content: HashMap<ConversationEntryId, Vec<MessageContentBlock>>,
@@ -172,7 +161,6 @@ impl RenderOnce for AgentTurnRow {
             .clone()
             .or_else(|| self.items.first().map(AgentDetailItem::stable_id_suffix))
             .unwrap_or_else(|| "agent".to_string());
-        let group = format!("conversation-agent-turn-{id_suffix}");
         let copy_text = {
             let i18n = cx.global::<I18n>();
             agent_copy_text(&self, i18n)
@@ -214,7 +202,6 @@ impl RenderOnce for AgentTurnRow {
             )
         };
         let status_row = self.render_status_row(&id_suffix, cx);
-        let separator = self.render_separator(&id_suffix, cx);
         let action_row = agent_action_row(
             AgentActionRow {
                 id_suffix: id_suffix.clone(),
@@ -246,33 +233,23 @@ impl RenderOnce for AgentTurnRow {
         });
         let details = self.expanded.then(|| self.render_details(window, cx));
 
-        v_flex()
-            .id(format!("conversation-agent-row-{id_suffix}"))
-            .group(group.clone())
-            .relative()
-            .w_full()
-            .min_w_0()
+        Message::new()
             .px_6()
             .py_3()
-            .gap_2()
-            .child(status_row)
-            .child(separator)
-            .when_some(details, |this, details| this.child(details))
-            .when_some(primary_content, |this, content| this.child(content))
-            .when(!primary_markdown.is_empty(), |this| {
-                this.child(
-                    div()
-                        .max_w(px(760.))
-                        .min_w_0()
-                        .text_color(cx.theme().foreground)
-                        .child(markdown_view(
+            .header(MessageHeader::new().child(status_row))
+            .content(
+                MessageContent::new()
+                    .when_some(details, |this, details| this.child(details))
+                    .when_some(primary_content, |this, content| this.child(content))
+                    .when(!primary_markdown.is_empty(), |this| {
+                        this.child(markdown_view(
                             format!("conversation-agent-final-markdown-{id_suffix}"),
                             primary_text_state,
                             &primary_markdown,
-                        )),
-                )
-            })
-            .child(action_row)
+                        ))
+                    }),
+            )
+            .footer(MessageFooter::new().child(action_row))
     }
 }
 
@@ -325,33 +302,43 @@ impl AgentTurnRow {
             (i18n.t("conversation-agent-details"), IconName::ChevronDown)
         };
 
+        let waiting_approval = self.items.iter().any(|item| {
+            matches!(item, AgentDetailItem::ToolInvocation(detail)
+                if detail.status == ToolInvocationStatus::AwaitingApproval)
+        });
+        let running = self
+            .run
+            .as_ref()
+            .is_some_and(|run| run.status == AgentRunStatus::Running);
+        let processing = agent_is_processing(self.is_active_run, running, waiting_approval);
+        let label = if running && waiting_approval {
+            i18n.t("conversation-tool-status-awaiting-approval")
+        } else if running && !self.is_active_run {
+            i18n.t("conversation-agent-details")
+        } else {
+            label
+        };
         let run_id = self.run_id.clone();
         let on_toggle = self.on_toggle.clone();
-        h_flex()
-            .id(format!("conversation-agent-status-{id_suffix}"))
+        div()
+            .id(format!("conversation-agent-status-toggle-{id_suffix}"))
             .w_full()
-            .max_w(px(760.))
-            .items_center()
-            .gap_1()
-            .text_color(cx.theme().muted_foreground)
             .when(run_id.is_some(), |this| this.cursor_pointer())
             .on_click(move |_, window, cx| {
                 if let Some(run_id) = run_id.clone() {
                     on_toggle(run_id, window, cx);
                 }
             })
-            .child(Label::new(label).text_xs().whitespace_nowrap())
-            .child(Icon::new(icon).size_3())
-            .into_any_element()
-    }
-
-    fn render_separator(&self, id_suffix: &str, cx: &mut App) -> AnyElement {
-        div()
-            .id(format!("conversation-agent-separator-{id_suffix}"))
-            .w_full()
-            .max_w(px(760.))
-            .h(px(1.))
-            .bg(cx.theme().tokens.border.background.opacity(0.7))
+            .child(
+                Marker::new()
+                    .id(format!("conversation-agent-status-{id_suffix}"))
+                    .role(Role::Status)
+                    .with_variant(MarkerVariant::Border)
+                    .loading(processing)
+                    .with_loading_style(MarkerLoadingStyle::Shimmer)
+                    .content(MarkerContent::new().text(label))
+                    .child(Icon::new(icon).size_3()),
+            )
             .into_any_element()
     }
 
@@ -413,6 +400,10 @@ impl AgentTurnRow {
             .children(blocks)
             .into_any_element()
     }
+}
+
+fn agent_is_processing(active: bool, running: bool, waiting_approval: bool) -> bool {
+    active && running && !waiting_approval
 }
 
 fn markdown_view(
@@ -552,4 +543,21 @@ fn duration_arg_label(i18n: &I18n, key: &str, duration: String) -> String {
     let mut args = FluentArgs::new();
     args.set("duration", duration);
     i18n.t_with_args(key, &args)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn processing_requires_an_active_running_turn_without_approval_wait() {
+        for active in [false, true] {
+            for running in [false, true] {
+                for waiting in [false, true] {
+                    assert_eq!(
+                        super::agent_is_processing(active, running, waiting),
+                        active && running && !waiting
+                    );
+                }
+            }
+        }
+    }
 }

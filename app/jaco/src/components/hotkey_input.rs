@@ -1,10 +1,10 @@
 use crate::foundation::{I18n, assets::IconName};
-use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Sizable, Size, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
 };
+use gpui_kit::{prelude::FluentBuilder, *};
 
 actions!(
     jaco_hotkey_input,
@@ -61,109 +61,9 @@ pub(crate) fn keystroke_to_string(keystroke: &Keystroke) -> String {
     result
 }
 
-fn format_keystroke_label(keystroke: &Keystroke) -> String {
-    #[cfg(target_os = "macos")]
-    const DIVIDER: &str = "";
-    #[cfg(not(target_os = "macos"))]
-    const DIVIDER: &str = "+";
-
-    let mut parts = vec![];
-
-    if keystroke.modifiers.control {
-        #[cfg(target_os = "macos")]
-        parts.push("⌃".to_string());
-        #[cfg(not(target_os = "macos"))]
-        parts.push("Ctrl".to_string());
-    }
-
-    if keystroke.modifiers.alt {
-        #[cfg(target_os = "macos")]
-        parts.push("⌥".to_string());
-        #[cfg(not(target_os = "macos"))]
-        parts.push("Alt".to_string());
-    }
-
-    if keystroke.modifiers.shift {
-        #[cfg(target_os = "macos")]
-        parts.push("⇧".to_string());
-        #[cfg(not(target_os = "macos"))]
-        parts.push("Shift".to_string());
-    }
-
-    if keystroke.modifiers.platform {
-        #[cfg(target_os = "macos")]
-        parts.push("⌘".to_string());
-        #[cfg(not(target_os = "macos"))]
-        parts.push("Win".to_string());
-    }
-
-    let key = match keystroke.key.as_str() {
-        #[cfg(target_os = "macos")]
-        "ctrl" => "⌃".to_string(),
-        #[cfg(not(target_os = "macos"))]
-        "ctrl" => "Ctrl".to_string(),
-        #[cfg(target_os = "macos")]
-        "alt" => "⌥".to_string(),
-        #[cfg(not(target_os = "macos"))]
-        "alt" => "Alt".to_string(),
-        #[cfg(target_os = "macos")]
-        "shift" => "⇧".to_string(),
-        #[cfg(not(target_os = "macos"))]
-        "shift" => "Shift".to_string(),
-        #[cfg(target_os = "macos")]
-        "cmd" => "⌘".to_string(),
-        #[cfg(not(target_os = "macos"))]
-        "cmd" => "Win".to_string(),
-        "space" => "Space".to_string(),
-        #[cfg(target_os = "macos")]
-        "backspace" | "delete" => "⌫".to_string(),
-        #[cfg(not(target_os = "macos"))]
-        "backspace" => "Backspace".to_string(),
-        #[cfg(not(target_os = "macos"))]
-        "delete" => "Delete".to_string(),
-        #[cfg(target_os = "macos")]
-        "escape" => "⎋".to_string(),
-        #[cfg(not(target_os = "macos"))]
-        "escape" => "Esc".to_string(),
-        #[cfg(target_os = "macos")]
-        "enter" => "⏎".to_string(),
-        #[cfg(not(target_os = "macos"))]
-        "enter" => "Enter".to_string(),
-        "pagedown" => "Page Down".to_string(),
-        "pageup" => "Page Up".to_string(),
-        #[cfg(target_os = "macos")]
-        "left" => "←".to_string(),
-        #[cfg(not(target_os = "macos"))]
-        "left" => "Left".to_string(),
-        #[cfg(target_os = "macos")]
-        "right" => "→".to_string(),
-        #[cfg(not(target_os = "macos"))]
-        "right" => "Right".to_string(),
-        #[cfg(target_os = "macos")]
-        "up" => "↑".to_string(),
-        #[cfg(not(target_os = "macos"))]
-        "up" => "Up".to_string(),
-        #[cfg(target_os = "macos")]
-        "down" => "↓".to_string(),
-        #[cfg(not(target_os = "macos"))]
-        "down" => "Down".to_string(),
-        key if key.len() == 1 => key.to_uppercase(),
-        key => {
-            let mut chars = key.chars();
-            match chars.next() {
-                Some(first) => format!("{}{}", first.to_uppercase(), chars.collect::<String>()),
-                None => String::new(),
-            }
-        }
-    };
-
-    parts.push(key);
-    parts.join(DIVIDER)
-}
-
 pub(crate) fn format_hotkey_label(hotkey: &str) -> String {
     string_to_keystroke(hotkey)
-        .map(|keystroke| format_keystroke_label(&keystroke))
+        .map(|keystroke| gpui_kit::component::kbd::Kbd::format(&keystroke))
         .unwrap_or_else(|| hotkey.to_string())
 }
 
@@ -385,7 +285,7 @@ impl View for HotkeyInput {
             .border_color(cx.theme().input)
             .border_1()
             .when(cx.theme().shadow, |this| this.shadow_xs())
-            .focus(|this| this.focused_border(cx))
+            .focus(|this| this.border_color(cx.theme().ring))
             .when(is_recording, |this| this.border_color(cx.theme().primary))
             .child(
                 div()
@@ -417,7 +317,7 @@ impl View for HotkeyInput {
                             .child(
                                 self.value
                                     .as_ref()
-                                    .map(format_keystroke_label)
+                                    .map(gpui_kit::component::kbd::Kbd::format)
                                     .unwrap_or_else(|| {
                                         if is_recording {
                                             "REC".to_string()
@@ -503,7 +403,7 @@ mod tests {
         ClearHotkey, HotkeyInput, HotkeyInputEvent, HotkeyInputState, StartRecording,
         format_hotkey_label, keystroke_to_string, string_to_keystroke,
     };
-    use gpui::{
+    use gpui_kit::{
         AppContext as _, Context, Entity, IntoElement, KeyContext, Keystroke, KeystrokeEvent,
         Modifiers, Render, Subscription, TestAppContext, View, VisualTestContext, Window,
         WindowHandle,
@@ -558,7 +458,7 @@ mod tests {
         assert_eq!(format_hotkey_label("cmd-shift-k"), "cmd-shift-k");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn recorder_captures_modified_hotkey_and_clear_emits_value_changes(cx: &mut TestAppContext) {
         let window = open_hotkey_input_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -609,7 +509,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn recorder_ignores_plain_keys(cx: &mut TestAppContext) {
         let window = open_hotkey_input_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -637,7 +537,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn view_uses_backing_identity_across_rebuilds(cx: &mut TestAppContext) {
         let window = open_hotkey_input_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -660,7 +560,7 @@ mod tests {
 
     fn open_hotkey_input_window(cx: &mut TestAppContext) -> WindowHandle<HotkeyInputHarness> {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             crate::foundation::init_i18n(cx);
             cx.open_window(Default::default(), |window, cx| {
                 cx.new(|cx| HotkeyInputHarness::new(window, cx))

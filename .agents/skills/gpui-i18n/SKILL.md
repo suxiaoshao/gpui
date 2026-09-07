@@ -1,56 +1,19 @@
 ---
 name: gpui-i18n
-description: Use when adding, changing, reviewing, or debugging user-facing text, Fluent locale files, language selection, or macOS bundle localization in gpui workspace apps.
+description: Implement or review user-visible text, Fluent locales, language settings, or macOS bundle localization in GPUI workspace apps.
 ---
 
 # GPUI I18n
 
-Use this skill for app-local localization work under `app/`.
+## Runtime text
 
-## Current Pattern
+- Each app owns `foundation::i18n`, Fluent bundles and an `I18n` global. UI uses `cx.global::<I18n>().t(...)` or `t_with_args(...)`; language settings rebuild that global where supported.
+- Runtime locale files are `app/{name}/locales/{en-US,zh-CN}/main.ftl`. Keep changed keys and interpolation variables aligned across both languages.
+- Use semantic keys and the app's naming convention. Use `FluentArgs` for interpolation; avoid composing sentences from translated fragments with `format!`.
+- User-facing Rust literals are reserved for intentionally unlocalized text; debug/test strings are separate. The current missing-key fallback returns the key itself and is not acceptable shipped copy.
 
-- App runtime text lives in Fluent files:
-  - `app/{name}/locales/en-US/main.ftl`
-  - `app/{name}/locales/zh-CN/main.ftl`
-- macOS bundle strings live in:
-  - `app/{name}/locales/macos/en-US.lproj/InfoPlist.strings`
-  - `app/{name}/locales/macos/zh-Hans.lproj/InfoPlist.strings`
-- Each app owns an app-local `foundation::i18n` module that builds `FluentBundle`s and installs an `I18n` global.
-- UI code reads localized text through the app's `I18n`, typically with `cx.global::<I18n>().t(...)` or `t_with_args(...)`.
-- Apps that support language settings rebuild the `I18n` global after the language changes.
+## macOS bundle text
 
-## Workflow
-
-1. Identify the affected app and inspect its existing `foundation/i18n.rs`.
-2. Add or update keys in both `en-US/main.ftl` and `zh-CN/main.ftl`.
-3. Use existing naming style for keys in that app.
-4. Use `FluentArgs` and `t_with_args` for interpolated values.
-5. Keep user-facing strings out of Rust code unless they are debug-only, test-only, or intentionally not localized.
-6. Update tests that assert required localization keys when the app already has key coverage for that feature surface.
-
-## Fluent Rules
-
-- Prefer semantic keys such as `dialog-delete-message-title` over text-shaped keys.
-- Do not build localized sentences with `format!` around translated fragments when grammar may differ by language.
-- Keep placeholders explicit and stable, for example `{ $name }` or `{ $path }`.
-- Missing keys intentionally fall back to the key string in current app implementations; do not rely on that fallback for shipped UI.
-
-## macOS Bundle Localization
-
-- `crates/xtask/src/bundle/settings.rs` maps app `locales/macos` resources into bundle `.lproj` directories.
-- `crates/xtask/src/bundle/macos.rs` sets `CFBundleAllowMixedLocalizations` and `CFBundleLocalizations`.
-- Do not add manual bundle localization resources outside the existing `locales/macos` tree.
-- If a new app is added, it needs both runtime Fluent locale files and macOS `InfoPlist.strings` files so `xtask bundle <app>` can package it.
-
-## Validation
-
-For i18n changes, run the most focused affected app tests/checks, for example:
-
-```sh
-cargo fmt
-cargo test -p jaco i18n
-cargo check -p jaco
-git diff --check
-```
-
-If bundle localization logic changes, also run focused `xtask` tests.
+- Bundle strings live under `app/{name}/locales/macos/{en-US,zh-Hans}.lproj/InfoPlist.strings`.
+- `crates/xtask/src/bundle/settings.rs` maps these resources; `bundle/macos.rs` sets `CFBundleAllowMixedLocalizations` and `CFBundleLocalizations`. New apps need both runtime and bundle locale files.
+- Text-only edits use key/variable parity checks. Bundle localization logic changes use affected xtask coverage; text-only edits do not require bundling.

@@ -1,4 +1,4 @@
-use gpui::{Pixels, Point};
+use gpui_kit::{Pixels, Point};
 use platform_ext::ocr::ImageFrame;
 use thiserror::Error;
 

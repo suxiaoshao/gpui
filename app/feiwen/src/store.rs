@@ -18,7 +18,7 @@ pub(crate) type DbConn = Pool<DuckdbConnectionManager>;
 
 static DATABASE_FILE: &str = "data.duckdb";
 
-pub(crate) fn init_store(cx: &mut gpui::App) {
+pub(crate) fn init_store(cx: &mut gpui_kit::App) {
     event!(Level::INFO, "initializing feiwen store");
     catalog::init(cx);
     database::init(cx);

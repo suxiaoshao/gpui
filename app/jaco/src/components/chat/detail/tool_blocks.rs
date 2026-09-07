@@ -1,6 +1,5 @@
 use fluent_bundle::FluentArgs;
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
@@ -8,6 +7,7 @@ use gpui_component::{
     text::{TextView, TextViewState},
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use jaco_core::{ConversationEntry, ConversationEntryPayload};
 
 use crate::foundation::{I18n, assets::IconName, conversation_format as format};
@@ -235,7 +235,7 @@ fn label_with_name(i18n: &I18n, key: &str, name: &str) -> String {
 mod tests {
     use std::{cell::RefCell, rc::Rc};
 
-    use gpui::{Context, Entity, EntityId, IntoElement, Render, TestAppContext, Window, div};
+    use gpui_kit::{Context, Entity, EntityId, IntoElement, Render, TestAppContext, Window, div};
     use jaco_core::{
         ConversationEntry, ConversationEntryPayload, ConversationEntryStatus, TranscriptRole,
     };
@@ -266,12 +266,12 @@ mod tests {
         state: Entity<TestRoot>,
     }
 
-    impl gpui::View for DetailBlockTestView {
+    impl gpui_kit::View for DetailBlockTestView {
         fn entity_id(&self) -> Option<EntityId> {
             Some(self.state.entity_id())
         }
 
-        fn render(self, window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
+        fn render(self, window: &mut Window, cx: &mut gpui_kit::App) -> impl IntoElement {
             let (revision, snapshots) = {
                 let state = self.state.read(cx);
                 (state.revision, state.snapshots.clone())
@@ -291,7 +291,7 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn detail_block_keyed_state_preserves_identity_across_rebuilds_and_siblings(
         cx: &mut TestAppContext,
     ) {

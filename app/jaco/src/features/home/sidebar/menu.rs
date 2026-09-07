@@ -3,8 +3,7 @@ use crate::{
     foundation::{I18n, assets::IconName},
 };
 use fluent_bundle::FluentArgs;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     Disableable, WindowExt as NotificationWindowExt,
     button::{Button, ButtonVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
@@ -13,6 +12,7 @@ use gpui_component::{
     notification::{Notification, NotificationType},
     v_flex,
 };
+use gpui_kit::*;
 use std::rc::Rc;
 
 use super::{
@@ -621,11 +621,11 @@ fn show_project_label_key() -> &'static str {
 #[cfg(test)]
 mod tests {
     use crate::foundation::{I18n, assets::IconName};
-    use gpui::{
+    use gpui_kit::component::IconNamed;
+    use gpui_kit::{
         AppContext as _, IntoElement, Render, SharedString, TestAppContext, Window, WindowHandle,
         div,
     };
-    use gpui_component::IconNamed;
     use std::{
         cell::{Cell, RefCell},
         rc::Rc,
@@ -640,7 +640,7 @@ mod tests {
         fn render(
             &mut self,
             _window: &mut Window,
-            _cx: &mut gpui::Context<Self>,
+            _cx: &mut gpui_kit::Context<Self>,
         ) -> impl IntoElement {
             div()
         }
@@ -682,7 +682,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn rename_dialog_owns_submission_and_blocks_repeated_submit(cx: &mut TestAppContext) {
         let window = open_test_window(cx);
         let invocations = Rc::new(Cell::new(0));

@@ -9,8 +9,11 @@ use crate::{
     state,
 };
 use fluent_bundle::FluentArgs;
-use gpui::{StatefulInteractiveElement as _, prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_form::{
+    FieldDef, Form, FormRevision, FormSchema, PrepareError as SubmitError, ValidationIssue,
+};
+use gpui_form_gpui_component::{FormInput, FormSelect};
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
     button::{Button, ButtonVariants},
     form::field as component_form_field,
@@ -25,10 +28,7 @@ use gpui_component::{
     tag::Tag,
     v_flex,
 };
-use gpui_form::{
-    FieldDef, Form, FormRevision, FormSchema, PrepareError as SubmitError, ValidationIssue,
-};
-use gpui_form_gpui_component::{FormInput, FormSelect};
+use gpui_kit::{StatefulInteractiveElement as _, prelude::FluentBuilder as _, *};
 use jaco_agent::{ProviderModelFetchError, ProviderModelFetchRequest, fetch_provider_models};
 use jaco_core::{
     ProviderId, ProviderSecretRefs, ProviderSettingValue, ProviderSettingsPayload, new_id,
@@ -72,14 +72,14 @@ struct ProviderEditorKey {
 
 enum ProviderFormComponents {
     ApiKey {
-        api_key: Entity<gpui_component::input::InputState>,
-        base_url: Entity<gpui_component::input::InputState>,
+        api_key: Entity<gpui_kit::component::input::InputState>,
+        base_url: Entity<gpui_kit::component::input::InputState>,
         _api_key_control: ProviderSecretInput,
         _base_url_control: FormInput,
     },
     Ollama {
-        base_url: Entity<gpui_component::input::InputState>,
-        bearer_token: Entity<gpui_component::input::InputState>,
+        base_url: Entity<gpui_kit::component::input::InputState>,
+        bearer_token: Entity<gpui_kit::component::input::InputState>,
         _base_url_control: FormInput,
         _bearer_token_control: ProviderSecretInput,
     },
@@ -87,9 +87,9 @@ enum ProviderFormComponents {
 }
 
 struct CustomOpenAiFormComponents {
-    name: Entity<gpui_component::input::InputState>,
-    api_key: Entity<gpui_component::input::InputState>,
-    base_url: Entity<gpui_component::input::InputState>,
+    name: Entity<gpui_kit::component::input::InputState>,
+    api_key: Entity<gpui_kit::component::input::InputState>,
+    base_url: Entity<gpui_kit::component::input::InputState>,
     api_mode: Entity<SelectState<Vec<ApiModeChoice>>>,
     _name_control: FormInput,
     _api_key_control: ProviderSecretInput,
@@ -113,7 +113,7 @@ where
         form,
         field,
         move |window, cx| {
-            gpui_component::input::InputState::new(window, cx)
+            gpui_kit::component::input::InputState::new(window, cx)
                 .placeholder(placeholder)
                 .masked(masked)
         },
@@ -1421,7 +1421,7 @@ impl ProviderSettingsPage {
     fn render_text_input_row(
         &self,
         field: ProviderFormField,
-        input: Entity<gpui_component::input::InputState>,
+        input: Entity<gpui_kit::component::input::InputState>,
         errors: Vec<ValidationIssue>,
         required: bool,
         locked: bool,
@@ -1449,7 +1449,7 @@ impl ProviderSettingsPage {
     fn render_secret_input_row(
         &self,
         field: ProviderFormField,
-        input: Entity<gpui_component::input::InputState>,
+        input: Entity<gpui_kit::component::input::InputState>,
         errors: Vec<ValidationIssue>,
         required: bool,
         locked: bool,
@@ -1477,7 +1477,7 @@ impl ProviderSettingsPage {
     fn render_select_row(
         &self,
         field: ProviderFormField,
-        select: Entity<gpui_component::select::SelectState<Vec<forms::ApiModeChoice>>>,
+        select: Entity<gpui_kit::component::select::SelectState<Vec<forms::ApiModeChoice>>>,
         errors: Vec<ValidationIssue>,
         required: bool,
         locked: bool,
@@ -1813,9 +1813,9 @@ mod tests {
     };
     use crate::state::providers::secrets::{ProviderSecretStore, ProviderSecretWrite};
     use fluent_bundle::FluentArgs;
-    use gpui::{App, AppContext as _, Entity, TestAppContext, VisualTestContext, WindowHandle};
-    use gpui_component::IndexPath;
-    use gpui_component::list::ListEvent;
+    use gpui_kit::component::IndexPath;
+    use gpui_kit::component::list::ListEvent;
+    use gpui_kit::{App, AppContext as _, Entity, TestAppContext, VisualTestContext, WindowHandle};
     use jaco_core::{
         ProviderId, ProviderModelMetadata, ProviderSecretRef, ProviderSecretRefs,
         ProviderSettingFieldValue, ProviderSettingValue, ProviderSettingsPayload,
@@ -1985,7 +1985,7 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn validation_rejects_missing_secret_before_repository_write(cx: &mut TestAppContext) {
         let _dir = init_empty_provider_page_test(cx);
         let (window, page) = open_provider_settings_root_window(cx);
@@ -2001,7 +2001,7 @@ mod tests {
         assert!(cx.update(|_, cx| { test_repository(cx).list_providers().unwrap().is_empty() }));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn validation_accepts_saved_secret_consistently(cx: &mut TestAppContext) {
         let _dir = init_provider_page_test(cx);
         let window = open_provider_settings_window(cx);
@@ -2014,7 +2014,7 @@ mod tests {
         assert!(saved_valid);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn validation_accepts_pending_secret_consistently(cx: &mut TestAppContext) {
         let _dir = init_empty_provider_page_test(cx);
         let window = open_provider_settings_window(cx);
@@ -2047,7 +2047,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn secret_dirty_tracking_uses_secret_changed_binding(cx: &mut TestAppContext) {
         let _dir = init_provider_page_test(cx);
         let window = open_provider_settings_window(cx);
@@ -2221,7 +2221,7 @@ mod tests {
         assert_eq!(delegate.row_count_for_test(), 1);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn provider_editor_text_drafts_survive_selection_changes(cx: &mut TestAppContext) {
         let _dir = init_provider_page_test(cx);
         let window = open_provider_settings_window(cx);
@@ -2256,7 +2256,7 @@ mod tests {
         assert!(!ollama_dirty);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn provider_editor_secret_drafts_stay_with_their_provider(cx: &mut TestAppContext) {
         let _dir = init_provider_page_test(cx);
         let window = open_provider_settings_window(cx);
@@ -2297,7 +2297,7 @@ mod tests {
         assert!(openai_dirty_secret);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn provider_list_select_event_preserves_previous_provider_draft(cx: &mut TestAppContext) {
         let _dir = init_provider_page_test(cx);
         let window = open_provider_settings_window(cx);
@@ -2331,7 +2331,7 @@ mod tests {
         assert_eq!(value, "https://select-preserved.example/v1");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn provider_save_only_commits_selected_provider(cx: &mut TestAppContext) {
         let _dir = init_provider_page_test(cx);
         let (window, page) = open_provider_settings_root_window(cx);
@@ -2387,7 +2387,7 @@ mod tests {
         assert!(!ollama_dirty);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn provider_save_rejects_invalid_base_url_before_repository_write(cx: &mut TestAppContext) {
         let _dir = init_provider_page_test(cx);
         let (window, page) = open_provider_settings_root_window(cx);
@@ -2442,7 +2442,7 @@ mod tests {
         assert!(page.read_with(&cx, |page, cx| page.is_editor_dirty(&ollama, cx)));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn provider_save_running_locks_model_toggle_events(cx: &mut TestAppContext) {
         let _dir = init_provider_page_test(cx);
         let provider_id = cx.update(|cx| {
@@ -2499,7 +2499,7 @@ mod tests {
         assert!(model_still_enabled);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn provider_save_removes_cleared_optional_secret_ref(cx: &mut TestAppContext) {
         let _dir = init_provider_page_test(cx);
         set_provider_secret_refs_for_test(
@@ -2559,7 +2559,7 @@ mod tests {
         assert!(!page.read_with(&cx, |page, cx| page.is_editor_dirty(&ollama, cx)));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn provider_save_rejects_cleared_required_secret(cx: &mut TestAppContext) {
         let _dir = init_provider_page_test(cx);
         let (window, page) = open_provider_settings_root_window(cx);
@@ -2722,7 +2722,7 @@ mod tests {
     fn init_empty_provider_page_test(cx: &mut TestAppContext) -> TempDir {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             database::install_for_test(cx, dir.path());
             crate::foundation::i18n::init(cx);
             crate::state::hotkey::set_test_hotkey_state(cx);
@@ -2735,7 +2735,7 @@ mod tests {
     fn init_provider_page_test(cx: &mut TestAppContext) -> TempDir {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             database::install_for_test(cx, dir.path());
             crate::foundation::i18n::init(cx);
 
@@ -2875,7 +2875,7 @@ mod tests {
         cx.update(|window, cx| {
             input.update(cx, |input, cx| {
                 input.set_value(value.to_string(), window, cx);
-                cx.emit(gpui_component::input::InputEvent::Change);
+                cx.emit(gpui_kit::component::input::InputEvent::Change);
             });
         });
     }
@@ -2895,7 +2895,7 @@ mod tests {
         cx.update(|window, cx| {
             input.update(cx, |input, cx| {
                 input.set_value(value.to_string(), window, cx);
-                cx.emit(gpui_component::input::InputEvent::Change);
+                cx.emit(gpui_kit::component::input::InputEvent::Change);
             });
         });
     }
@@ -2935,7 +2935,7 @@ mod tests {
     fn input_state_for_test(
         components: &ProviderFormComponents,
         field: ProviderFormField,
-    ) -> Option<Entity<gpui_component::input::InputState>> {
+    ) -> Option<Entity<gpui_kit::component::input::InputState>> {
         match (components, field) {
             (ProviderFormComponents::ApiKey { api_key, .. }, ProviderFormField::ApiKey) => {
                 Some(api_key.clone())

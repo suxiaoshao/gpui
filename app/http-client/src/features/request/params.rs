@@ -1,10 +1,7 @@
 use std::{mem, ops::Deref};
 
-use gpui::{
-    AppContext as _, Context, Entity, EventEmitter, ParentElement as _, SharedString, Styled as _,
-    Subscription, Window, div, prelude::FluentBuilder as _,
-};
-use gpui_component::{
+use gpui_form::{ControlBinding, ControlProjection, Form};
+use gpui_kit::component::{
     ActiveTheme as _, Disableable as _,
     button::Button,
     h_flex,
@@ -12,7 +9,10 @@ use gpui_component::{
     label::Label,
     v_flex,
 };
-use gpui_form::{ControlBinding, ControlProjection, Form};
+use gpui_kit::{
+    AppContext as _, Context, Entity, EventEmitter, ParentElement as _, SharedString, Styled as _,
+    Subscription, Window, div, prelude::FluentBuilder as _,
+};
 use url::Url;
 
 use super::draft::RequestDraft;
@@ -152,7 +152,7 @@ impl HttpParamsState {
         }
     }
 
-    fn snapshots(&self, cx: &gpui::App) -> Vec<ParamSnapshot> {
+    fn snapshots(&self, cx: &gpui_kit::App) -> Vec<ParamSnapshot> {
         self.rows
             .iter()
             .map(|row| ParamSnapshot {
@@ -265,8 +265,12 @@ impl HttpParamsState {
 
 impl EventEmitter<HttpParamsEvent> for HttpParamsState {}
 
-impl gpui::Render for HttpParamsState {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+impl gpui_kit::Render for HttpParamsState {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
         let disabled = !self.can_edit();
         let (key_label, value_label, add_label, delete_label, up_label, down_label, invalid_label) = {
             let i18n = cx.global::<I18n>();
@@ -437,7 +441,7 @@ fn reconcile_row_ids(
 
 #[cfg(test)]
 mod tests {
-    use gpui::{IntoElement, Render, TestAppContext, VisualTestContext, WindowHandle, div};
+    use gpui_kit::{IntoElement, Render, TestAppContext, VisualTestContext, WindowHandle, div};
 
     use super::super::url_input::UrlInput;
     use super::*;
@@ -581,7 +585,7 @@ mod tests {
         assert!(ids == vec![ParamRowId(6), ParamRowId(5)]);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn url_input_and_params_are_source_aware_peers(cx: &mut TestAppContext) {
         let window = open_harness(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -627,7 +631,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn deleting_the_only_added_param_removes_the_query_delimiter(cx: &mut TestAppContext) {
         let window = open_harness(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -664,7 +668,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn decoded_key_lookup_is_read_only_and_disabled_for_invalid_url(cx: &mut TestAppContext) {
         let window = open_harness(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -688,7 +692,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn invalid_projection_preserves_rows_and_native_edit_is_the_only_normalizer(
         cx: &mut TestAppContext,
     ) {

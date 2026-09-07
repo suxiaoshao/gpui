@@ -3,8 +3,7 @@ use crate::{
     foundation::{assets::IconName, conversation_format::sidebar_relative_recency_label},
     state,
 };
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, ElementExt as _, Icon, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
@@ -16,6 +15,7 @@ use gpui_component::{
     tooltip::Tooltip,
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use jaco_core::ConversationId;
 use std::rc::Rc;
 
@@ -627,11 +627,11 @@ mod tests {
     use super::{
         CONVERSATION_DIRECT_ACTIONS, ConversationSidebarAction, conversation_hover_card_placement,
     };
-    use gpui::{
+    use gpui_kit::component::hover_card::HoverCard;
+    use gpui_kit::{
         Anchor, Bounds, Context, Modifiers, Pixels, Render, TestAppContext, VisualTestContext,
         Window, div, point, prelude::*, px, size,
     };
-    use gpui_component::hover_card::HoverCard;
     use std::time::Duration;
 
     struct HoverCardAnchorTestView;
@@ -703,9 +703,9 @@ mod tests {
         assert_eq!(placement.popover_offset, point(px(268.), px(-28.)));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn hover_card_moves_its_root_and_preserves_content_hover(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui_kit::init);
         let (_, cx) = cx.add_window_view(|_, _| HoverCardAnchorTestView);
         draw(cx);
 

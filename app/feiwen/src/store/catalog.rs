@@ -1,6 +1,6 @@
 use std::fmt;
 
-use gpui::{App, AppContext, Task};
+use gpui_kit::{App, AppContext, Task};
 use gpui_operation::{Complete, Load, Refresh, Retry, Transition, refresh};
 use gpui_store::Store;
 

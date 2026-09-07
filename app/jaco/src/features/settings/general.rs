@@ -6,8 +6,7 @@ use crate::{
     foundation::{I18n, assets::IconName},
     state::{self, JacoConfig},
 };
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
@@ -15,6 +14,7 @@ use gpui_component::{
     label::Label,
     menu::{DropdownMenu, PopupMenuItem},
 };
+use gpui_kit::*;
 use jaco_core::AppLanguage;
 
 use super::{
@@ -412,7 +412,7 @@ mod tests {
         database,
         state::{self, JacoConfig},
     };
-    use gpui::{AppContext as _, Render, TestAppContext, VisualTestContext, WindowHandle};
+    use gpui_kit::{AppContext as _, Render, TestAppContext, VisualTestContext, WindowHandle};
     use jaco_core::{AppLanguage, AppSettingsPayload};
     use tempfile::{TempDir, tempdir};
 
@@ -429,7 +429,7 @@ mod tests {
         assert_eq!(language_label_key(AppLanguage::System), "language-system");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn save_temporary_hotkey_updates_config_and_runtime(cx: &mut TestAppContext) {
         let dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
         let window = open_test_window(cx);
@@ -461,7 +461,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn invalid_temporary_hotkey_does_not_change_settings_or_runtime(cx: &mut TestAppContext) {
         let dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
         let window = open_test_window(cx);
@@ -493,7 +493,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn invalid_temporary_hotkey_inline_save_keeps_editor_open(cx: &mut TestAppContext) {
         let dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
         let window = open_test_window(cx);
@@ -534,7 +534,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn inline_hotkey_cancel_discards_draft(cx: &mut TestAppContext) {
         let _dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
         let window = open_test_window(cx);
@@ -565,7 +565,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn inline_hotkey_save_commits_draft_and_exits_editing(cx: &mut TestAppContext) {
         let dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
         let window = open_test_window(cx);
@@ -600,7 +600,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn save_temporary_hotkey_can_clear_config_and_runtime(cx: &mut TestAppContext) {
         let dir = init_hotkey_settings_test(cx, Some("cmd+shift+j"));
         let window = open_test_window(cx);
@@ -624,7 +624,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let config_path = dir.path().join("config.toml");
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             database::install_for_test(cx, dir.path());
             let payload = AppSettingsPayload {
                 temporary_hotkey: hotkey.map(str::to_string),
@@ -670,10 +670,10 @@ mod tests {
     impl Render for TestView {
         fn render(
             &mut self,
-            _window: &mut gpui::Window,
-            _cx: &mut gpui::Context<Self>,
-        ) -> impl gpui::IntoElement {
-            gpui::div()
+            _window: &mut gpui_kit::Window,
+            _cx: &mut gpui_kit::Context<Self>,
+        ) -> impl gpui_kit::IntoElement {
+            gpui_kit::div()
         }
     }
 }

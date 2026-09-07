@@ -10,7 +10,7 @@ An interactive element which expands/collapses.
 ## Import
 
 ```rust
-use gpui_component::collapsible::Collapsible;
+use gpui_kit::component::collapsible::Collapsible;
 ```
 
 ## Usage
@@ -53,5 +53,18 @@ Collapsible::new()
 ```
 
 We can use `open` method to control the collapsed state. If false, the `content` method added child elements will be hidden.
+
+### Animated reveal
+
+Opt into a reversible, measured height reveal with a stable motion ID:
+
+```rust
+Collapsible::new()
+    .motion_id("advanced-options")
+    .open(self.open)
+    .content(options)
+```
+
+The content remains mounted while closed so it can be measured and immediately reverse if toggled mid-animation. Without `motion_id`, the component keeps the immediate mount/unmount behavior. See the [GPUI Base Motion guide](/base/motion) for timing, reduced-motion, and performance details.
 
 [Collapsible]: https://docs.rs/gpui-component/latest/gpui_component/collapsible/struct.Collapsible.html

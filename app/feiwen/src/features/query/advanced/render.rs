@@ -1,10 +1,6 @@
 use fluent_bundle::FluentArgs;
-use gpui::{
-    AnyElement, AppContext as _, Context, ElementId, Entity, InteractiveElement, IntoElement,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
-    px, rems,
-};
-use gpui_component::{
+use gpui_form::{ErrorParamValue, PathKey, ValidationIssue, ValidationMessage};
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants, Toggle, ToggleGroup, ToggleVariants},
     combobox::Combobox,
@@ -18,7 +14,11 @@ use gpui_component::{
     table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
     v_flex,
 };
-use gpui_form::{ErrorParamValue, PathKey, ValidationIssue, ValidationMessage};
+use gpui_kit::{
+    AnyElement, AppContext as _, Context, ElementId, Entity, InteractiveElement, IntoElement,
+    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
+    px, rems,
+};
 
 use super::{
     controller::{
@@ -639,7 +639,7 @@ fn render_author_value(
 }
 
 fn render_multi_combobox<D>(
-    state: &Entity<gpui_component::combobox::ComboboxState<D>>,
+    state: &Entity<gpui_kit::component::combobox::ComboboxState<D>>,
     placeholder: &'static str,
     disabled: bool,
 ) -> AnyElement
@@ -656,7 +656,7 @@ where
         .menu_max_h(rems(12.))
         .disabled(disabled)
         .render_trigger(move |ctx, _, cx| {
-            let items = ctx.selection;
+            let items = ctx.selection();
             if items.is_empty() {
                 return div()
                     .text_color(cx.theme().muted_foreground)

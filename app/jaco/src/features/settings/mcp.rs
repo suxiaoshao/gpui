@@ -10,9 +10,7 @@ use crate::{
     foundation::{I18n, assets::IconName, search::field_matches_query},
     state,
 };
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
@@ -21,6 +19,8 @@ use gpui_component::{
     scroll::ScrollableElement,
     v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 use gpui_store::Select;
 
 use self::{

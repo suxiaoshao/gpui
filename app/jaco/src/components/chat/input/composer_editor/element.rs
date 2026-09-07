@@ -1,22 +1,31 @@
-use gpui::{
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, h_flex};
+use gpui_kit::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, Element, ElementId, ElementInputHandler,
     Entity, GlobalElementId, Hsla, InteractiveElement as _, IntoElement, LayoutId, PaintQuad,
     ParentElement as _, Pixels, Point, ShapedLine, Size, Style, Styled as _, TextAlign, TextRun,
     UnderlineStyle, Window, fill, point, px, relative, size,
 };
-use gpui_component::{ActiveTheme, Icon, Sizable, h_flex};
 
 use crate::foundation::assets::IconName;
 
-use super::{ComposerEditor, blink_cursor::CURSOR_WIDTH, buffer, token::ComposerToken};
+use super::{ComposerEditor, buffer, token::ComposerToken};
+
+#[cfg(target_os = "macos")]
+const CURSOR_WIDTH: Pixels = px(1.5);
+#[cfg(not(target_os = "macos"))]
+const CURSOR_WIDTH: Pixels = px(2.);
 
 pub(super) struct ComposerEditorElement {
     editor: Entity<ComposerEditor>,
+    pub(super) blink_on: bool,
 }
 
 impl ComposerEditorElement {
     pub(super) fn new(editor: Entity<ComposerEditor>) -> Self {
-        Self { editor }
+        Self {
+            editor,
+            blink_on: true,
+        }
     }
 }
 
@@ -354,7 +363,7 @@ impl Element for ComposerEditorElement {
     fn request_layout(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
@@ -368,7 +377,7 @@ impl Element for ComposerEditorElement {
     fn prepaint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         window: &mut Window,
@@ -382,7 +391,7 @@ impl Element for ComposerEditorElement {
         let tokens = editor.tokens().to_vec();
         let placeholder = editor.placeholder().clone();
         let disabled = editor.is_disabled();
-        let show_cursor = !disabled && editor.show_cursor(window, cx);
+        let show_cursor = !disabled && editor.show_cursor(window, self.blink_on);
         let text_style = window.text_style();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let line_height = window.line_height();
@@ -476,7 +485,7 @@ impl Element for ComposerEditorElement {
     fn paint(
         &mut self,
         _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         prepaint: &mut Self::PrepaintState,
@@ -613,9 +622,11 @@ fn layout_editor_line(input: LayoutEditorLineInput<'_>) -> PaintLine {
     let wrap_fragments = fragments
         .iter()
         .map(|fragment| match fragment {
-            SourceFragment::Text { range } => gpui::LineFragment::text(&input.text[range.clone()]),
+            SourceFragment::Text { range } => {
+                gpui_kit::LineFragment::text(&input.text[range.clone()])
+            }
             SourceFragment::Token { range, size, .. } => {
-                gpui::LineFragment::element(size.width, range.len())
+                gpui_kit::LineFragment::element(size.width, range.len())
             }
         })
         .collect::<Vec<_>>();
@@ -1044,7 +1055,7 @@ fn token_chip(
                 .text_color(cx.theme().blue),
         )
         .child(
-            gpui::div()
+            gpui_kit::div()
                 .text_color(cx.theme().foreground)
                 .child(token.name.clone()),
         )
@@ -1067,7 +1078,7 @@ fn ranges_overlap(a: &std::ops::Range<usize>, b: &std::ops::Range<usize>) -> boo
 fn text_run(len: usize, color: Hsla, underline: Option<UnderlineStyle>) -> TextRun {
     TextRun {
         len,
-        font: gpui::Font::default(),
+        font: gpui_kit::Font::default(),
         color,
         background_color: None,
         underline,

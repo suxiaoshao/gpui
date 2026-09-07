@@ -16,8 +16,9 @@ use futures::{
     channel::oneshot,
     future::{Abortable, Aborted},
 };
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_form::Form;
+use gpui_form_gpui_component::FormInput;
+use gpui_kit::component::{
     ActiveTheme, Disableable, StyledExt,
     alert::Alert,
     button::{Button, ButtonVariants},
@@ -29,8 +30,7 @@ use gpui_component::{
     progress::Progress,
     v_flex,
 };
-use gpui_form::Form;
-use gpui_form_gpui_component::FormInput;
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use gpui_operation::Transition;
 use tracing::{Level, event};
 
@@ -516,7 +516,7 @@ mod tests {
         task::{Context as TaskContext, Poll},
     };
 
-    use gpui::{AppContext as _, TestAppContext, WindowHandle};
+    use gpui_kit::{AppContext as _, TestAppContext, WindowHandle};
     use tempfile::tempdir;
 
     use super::{
@@ -654,7 +654,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) -> WindowHandle<WorkspaceView> {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             init_i18n(cx);
             cx.open_window(Default::default(), |window, cx| {
                 cx.new(|cx| WorkspaceView::new_with_backend(backend, window, cx))
@@ -678,7 +678,7 @@ mod tests {
                 items_written: 2,
             })
             .unwrap();
-        let mut worker = Box::pin(gpui::Task::ready(WorkerCompletion::Complete(Ok(
+        let mut worker = Box::pin(gpui_kit::Task::ready(WorkerCompletion::Complete(Ok(
             DownloadReceipt::fixture(2),
         ))));
 
@@ -708,7 +708,7 @@ mod tests {
         assert_eq!(receipt.items_written(), 2);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn running_snapshot_is_frozen_while_the_form_remains_editable(cx: &mut TestAppContext) {
         let fixture = pending_fixture();
         let window = open_workspace(fixture.backend, cx);
@@ -741,7 +741,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn cancel_aborts_the_worker_before_exposing_cancelled(cx: &mut TestAppContext) {
         let fixture = pending_fixture();
         let window = open_workspace(fixture.backend, cx);
@@ -774,7 +774,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn removing_the_window_cancels_the_owned_task_tree(cx: &mut TestAppContext) {
         let directory = tempdir().unwrap();
         let started = Arc::new(AtomicBool::new(false));
@@ -808,7 +808,7 @@ mod tests {
         assert!(!part_path.exists());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn terminal_problem_mapping_is_localized_without_response_content(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_global(I18n::for_locale_tag("en-US"));

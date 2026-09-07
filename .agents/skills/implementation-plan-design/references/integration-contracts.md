@@ -14,14 +14,7 @@ Assign one stable C-ID to every affected boundary:
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `C-01` | `<owner A -> owner B>` | `<Rust API/trait/event/channel/Rig/MCP/HTTP/DB/platform>` | `<path:symbol>` | `<owner>` | `<all consumers>` | `<class>` | `<ERR-IDs>` | `<section/WPs>` |
 
-For every row define:
-
-- exact direction and mechanism;
-- sole authoritative handwritten or generated definition;
-- producer and all consumers;
-- serialization, generation, adapter, and projection chain;
-- compatibility class and rollout owner;
-- referenced ERR-IDs, F/G/ST IDs, and work packages.
+Record the serialization, generation, adapter or composition chain through its F/G/ST IDs. Name the rollout owner; table rows reference the authoritative contract body.
 
 Do not put local-only types in the registry. Do not duplicate normal success shapes in the error catalog or error meaning in transport tables.
 
@@ -90,6 +83,4 @@ For an unpublished app, use the user-selected rebuild/incompatibility policy ins
 
 ## Validation
 
-Map every C-ID to producer tests, consumer tests, conversion/serialization tests, generated/snapshot diffs, integration tests, streaming/cancellation tests, and mixed-version checks when compatibility requires them.
-
-A plan is incomplete when implementation must infer the authoritative boundary, invent a consumer, duplicate a contract, discover an undocumented generation step, or choose compatibility behavior.
+Map changed C-IDs to sufficient evidence for the affected contract: existing producer/consumer coverage, serialization or composition checks, generated diffs, and lifecycle or mixed-version checks where relevant. One check may cover several layers; do not require a separate test at each layer. Use the canonical plan's validation table for commands and results.

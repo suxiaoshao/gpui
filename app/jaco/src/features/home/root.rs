@@ -1,10 +1,10 @@
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Sizable, WindowExt as _,
     notification::{Notification, NotificationType},
     spinner::Spinner,
     v_flex,
 };
+use gpui_kit::*;
 
 use crate::{
     components::resource::{

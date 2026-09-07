@@ -41,3 +41,9 @@ For deep-dive topics, additional reference files are available:
 **Testing:**
 - [test-examples.md](references/test-examples.md) — testing examples and patterns
 - [test-reference.md](references/test-reference.md) — complete testing API reference
+
+## Version and provenance
+
+Bundled references follow GPUI Kit v0.6.0. Workspace applications use
+`gpui_kit` and `gpui_kit::component`; shared crates may use the `gpui` alias
+for the same `gpui-pre` package. See [attribution](references/third-party/gpui-docs.md).

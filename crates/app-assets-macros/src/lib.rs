@@ -275,8 +275,8 @@ fn expand_icons(
             #( #variants, )*
         }
 
-        impl ::gpui_component::IconNamed for #name {
-            fn path(self) -> ::gpui::SharedString {
+        impl ::app_assets::__private::IconNamed for #name {
+            fn path(self) -> ::app_assets::__private::SharedString {
                 match self {
                     #( #path_arms )*
                 }
@@ -299,8 +299,8 @@ fn expand_icons(
                 }
             }
 
-            fn __app_assets_list(path: &str) -> Vec<::gpui::SharedString> {
-                let icons = [#( ::gpui::SharedString::from(#list_items), )*];
+            fn __app_assets_list(path: &str) -> Vec<::app_assets::__private::SharedString> {
+                let icons = [#( ::app_assets::__private::SharedString::from(#list_items), )*];
                 icons
                     .into_iter()
                     .filter(|icon| path.is_empty() || icon.as_ref().starts_with(path))
@@ -311,11 +311,11 @@ fn expand_icons(
         #[derive(Default)]
         #vis struct #asset_source;
 
-        impl ::gpui::AssetSource for #asset_source {
+        impl ::app_assets::__private::AssetSource for #asset_source {
             fn load(
                 &self,
                 path: &str,
-            ) -> ::gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+            ) -> ::app_assets::__private::Result<Option<std::borrow::Cow<'static, [u8]>>> {
                 if path.is_empty() {
                     return Ok(None);
                 }
@@ -323,7 +323,7 @@ fn expand_icons(
                 Ok(#name::__app_assets_load(path).map(std::borrow::Cow::Borrowed))
             }
 
-            fn list(&self, path: &str) -> ::gpui::Result<Vec<::gpui::SharedString>> {
+            fn list(&self, path: &str) -> ::app_assets::__private::Result<Vec<::app_assets::__private::SharedString>> {
                 Ok(#name::__app_assets_list(path))
             }
         }

@@ -1,10 +1,7 @@
 use std::time::Instant;
 
-use gpui::{
-    AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement, Pixels, Styled, Subscription, Window, div, prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_form::Form;
+use gpui_kit::component::{
     ActiveTheme as _, Disableable as _,
     button::{Button, ButtonVariants as _},
     label::Label,
@@ -12,7 +9,10 @@ use gpui_component::{
     select::SelectState,
     v_flex,
 };
-use gpui_form::Form;
+use gpui_kit::{
+    AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    ParentElement, Pixels, Styled, Subscription, Window, div, prelude::FluentBuilder as _, px,
+};
 use gpui_operation::Transition as _;
 
 use self::{
@@ -331,7 +331,7 @@ impl RequestView {
     }
 }
 
-impl gpui::Render for RequestView {
+impl gpui_kit::Render for RequestView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let send_label = {
             let i18n = cx.global::<I18n>();

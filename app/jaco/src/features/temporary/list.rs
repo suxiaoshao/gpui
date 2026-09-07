@@ -1,13 +1,13 @@
 use std::rc::Rc;
 
 use crate::{features::temporary::search::TemporaryConversationNode, foundation::assets::IconName};
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, IndexPath, Selectable, h_flex,
     label::Label,
     list::{ListDelegate, ListState},
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 
 type OnSelect = Rc<dyn Fn(usize, &mut Window, &mut App) + 'static>;
 
@@ -173,12 +173,12 @@ impl ListDelegate for TemporaryConversationListDelegate {
 mod tests {
     use super::TemporaryConversationListDelegate;
     use crate::features::temporary::search::TemporaryConversationNode;
-    use gpui::{
-        App, AppContext, Context, Entity, IntoElement, Render, TestAppContext, Window, div,
-    };
-    use gpui_component::{
+    use gpui_kit::component::{
         IndexPath,
         list::{ListDelegate, ListState},
+    };
+    use gpui_kit::{
+        App, AppContext, Context, Entity, IntoElement, Render, TestAppContext, Window, div,
     };
     use std::{
         cell::{Cell, RefCell},
@@ -203,7 +203,7 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn confirm_callback_runs_after_list_update_finishes(cx: &mut TestAppContext) {
         let list_slot = Rc::new(RefCell::new(
             None::<Entity<ListState<TemporaryConversationListDelegate>>>,

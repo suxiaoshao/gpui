@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use gpui::{App, ClipboardItem, Entity, Task, Window};
+use gpui_kit::{App, ClipboardItem, Entity, Task, Window};
 use jaco_core::{ConversationId, ProjectId};
 
 use super::{
@@ -437,7 +437,7 @@ fn retain_conversation_task<T: Send + 'static>(
 mod tests {
     use std::path::Path;
 
-    use gpui::TestAppContext;
+    use gpui_kit::TestAppContext;
 
     use super::{
         ConversationActionAvailability, ConversationSidebarAction, ProjectActionAvailability,
@@ -511,7 +511,7 @@ mod tests {
         ));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn copy_working_directory_writes_and_verifies_exact_project_path(cx: &mut TestAppContext) {
         let path = Path::new("/tmp/jaco-issue-188-project");
         let result = cx.update(|cx| super::copy_working_directory(path, cx));

@@ -1,5 +1,7 @@
-use gpui::{App, Entity, IntoElement, ParentElement, RenderOnce, SharedString, Styled};
-use gpui_component::{ActiveTheme, Disableable, Sizable, button::Button, h_flex, label::Label};
+use gpui_kit::component::{
+    ActiveTheme, Disableable, Sizable, button::Button, h_flex, label::Label,
+};
+use gpui_kit::{App, Entity, IntoElement, ParentElement, RenderOnce, SharedString, Styled};
 
 use crate::{features::conversation, foundation::I18n};
 
@@ -31,7 +33,7 @@ impl ConversationRuntimeStatus {
 }
 
 impl RenderOnce for ConversationRuntimeStatus {
-    fn render(self, _window: &mut gpui::Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut gpui_kit::Window, cx: &mut App) -> impl IntoElement {
         h_flex()
             .w_full()
             .items_center()

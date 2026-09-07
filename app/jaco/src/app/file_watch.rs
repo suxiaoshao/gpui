@@ -5,12 +5,12 @@ use std::{
     time::Duration,
 };
 
-use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, Global, Subscription, Task, Window,
-};
-use gpui_component::{
+use gpui_kit::component::{
     WindowExt as _,
     notification::{Notification, NotificationType},
+};
+use gpui_kit::{
+    App, AppContext as _, Context, Entity, EventEmitter, Global, Subscription, Task, Window,
 };
 use notify_debouncer_full::{
     DebounceEventResult, Debouncer, RecommendedCache, new_debouncer,

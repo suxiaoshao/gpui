@@ -5,9 +5,9 @@ use crate::{
 };
 use fluent_bundle::FluentArgs;
 #[cfg(target_os = "macos")]
-use gpui::SystemMenuType;
-use gpui::{App, KeyBinding, Menu, MenuItem, OwnedMenu, actions};
-use gpui_component::GlobalState;
+use gpui_kit::SystemMenuType;
+use gpui_kit::component::GlobalState;
+use gpui_kit::{App, KeyBinding, Menu, MenuItem, OwnedMenu, actions};
 #[cfg(target_os = "macos")]
 use tracing::{Level, event};
 
@@ -62,7 +62,7 @@ pub(crate) fn init(cx: &mut App) {
 pub(crate) fn app_menus(i18n: &I18n) -> Vec<Menu> {
     let mut app_items = vec![
         MenuItem::action(app_name_message(i18n, "app-menu-about"), About),
-        MenuItem::action(version_message(i18n), gpui::NoAction).disabled(true),
+        MenuItem::action(version_message(i18n), gpui_kit::NoAction).disabled(true),
         MenuItem::separator(),
         MenuItem::action(app_name_message(i18n, "app-menu-open-main"), OpenMainWindow),
         MenuItem::action(i18n.t("app-menu-open-temporary"), OpenTemporaryConversation),

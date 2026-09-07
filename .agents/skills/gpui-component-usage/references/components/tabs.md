@@ -10,7 +10,7 @@ A tabbed interface component for organizing content into separate sections. Supp
 ## Import
 
 ```rust
-use gpui_component::tab::{Tab, TabBar};
+use gpui_kit::component::tab::{Tab, TabBar};
 ```
 
 ## Usage
@@ -76,7 +76,7 @@ TabBar::new("outline-tabs")
 #### Segmented Tabs
 
 ```rust
-use gpui_component::IconName;
+use gpui_kit::component::IconName;
 
 TabBar::new("segmented-tabs")
     .segmented()
@@ -110,7 +110,7 @@ TabBar::new("tabs").large()
 ### Tabs with Icons
 
 ```rust
-use gpui_component::{Icon, IconName};
+use gpui_kit::component::{Icon, IconName};
 
 TabBar::new("icon-tabs")
     .child(Tab::default().icon(IconName::User).with_variant(TabVariant::Tab))
@@ -121,8 +121,8 @@ TabBar::new("icon-tabs")
 ### Tabs with Prefix and Suffix
 
 ```rust
-use gpui_component::button::Button;
-use gpui_component::{h_flex, IconName};
+use gpui_kit::component::button::Button;
+use gpui_kit::component::{h_flex, IconName};
 
 TabBar::new("tabs-with-controls")
     .prefix(
@@ -194,10 +194,36 @@ TabBar::new("tabs-with-menu")
     .child(Tab::new().label("Settings"))
 ```
 
+### Maximum Tab Width
+
+Use `max_width` to cap the width of each tab. For tabs created with `.label()`, text longer than the limit is truncated with an ellipsis automatically. Icon-only tabs (`.icon()`) are not affected. Prefix and suffix elements (e.g. a close button) are never truncated — the label yields space first. The *more* menu (when enabled) still shows the full label text.
+
+Tabs built from custom children (via `.child()`) are only given the width limit; add `truncate()` yourself to the part that should shrink.
+
+```rust
+use gpui_kit::{div, px};
+
+TabBar::new("tabs-with-max-width")
+    .max_width(px(100.))
+    .menu(true)
+    .selected_index(0)
+    .child(Tab::new().label("Account Settings & Preferences"))
+    .child(Tab::new().label("Documents & Files"))
+    .child(Tab::new().label("Appearance & Themes"))
+    .child(
+        Tab::new().child(
+            h_flex()
+                .gap_1()
+                .child(Icon::new(IconName::Bot))
+                .child(div().truncate().child("Custom Child Tab")),
+        ),
+    )
+```
+
 ### Scrollable Tabs
 
 ```rust
-use gpui::ScrollHandle;
+use gpui_kit::ScrollHandle;
 
 struct ScrollableTabsView {
     scroll_handle: ScrollHandle,
@@ -247,6 +273,7 @@ TabBar::new("custom-tabs")
 | `last_empty_space(element)` | Custom element for empty space at the end          |
 | `track_scroll(handle)`      | Enable scrolling with a scroll handle              |
 | `with_menu(bool)`           | Enable dropdown menu for tab selection             |
+| `max_width(width)`      | Set maximum width of each tab; truncates           |
 
 ### TabBar Variants
 

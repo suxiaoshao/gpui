@@ -1,4 +1,3 @@
-mod blink_cursor;
 mod buffer;
 mod completion;
 mod element;
@@ -18,23 +17,28 @@ use crate::{
     foundation::I18n,
 };
 
-use std::{collections::BTreeMap, ops::Range, rc::Rc};
-
-use gpui::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, CursorStyle, EntityInputHandler,
-    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point,
-    Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    UTF16Selection, Window, actions, div, point, px,
+use std::{
+    collections::BTreeMap,
+    ops::Range,
+    rc::Rc,
+    time::{Duration, Instant},
 };
-use gpui_component::{
+
+use gpui_kit::component::{
     ActiveTheme, Sizable,
     list::{List, ListState},
     scroll::ScrollableElement as _,
 };
+use gpui_kit::{
+    Animation, AnimationExt as _, AnyElement, App, AppContext as _, ClipboardItem, Context,
+    CursorStyle, EntityInputHandler, EventEmitter, FocusHandle, Focusable, InteractiveElement as _,
+    IntoElement, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement as _, Pixels, Point, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, UTF16Selection, Window, actions,
+    div, point, px,
+};
 
 use self::{
-    blink_cursor::BlinkCursor,
     buffer::{
         Selection, byte_range_to_utf16_range, byte_to_utf16, clamp_offset, line_start,
         next_grapheme_boundary, next_word_end, offset_for_line_column, previous_grapheme_boundary,
@@ -220,10 +224,10 @@ pub(crate) struct ComposerEditor {
     selecting: bool,
     scroll_cursor_into_view: bool,
     focus_handle: FocusHandle,
-    blink_cursor: gpui::Entity<BlinkCursor>,
+    cursor_hold_until: Instant,
     scroll_handle: ScrollHandle,
     last_layout: Option<element::LayoutCache>,
-    completion_list: gpui::Entity<ListState<SkillCompletionDelegate>>,
+    completion_list: gpui_kit::Entity<ListState<SkillCompletionDelegate>>,
     completion_trigger: Option<SkillCompletionTrigger>,
     completion_needs_selection_sync: bool,
     _subscriptions: Vec<Subscription>,
@@ -239,7 +243,6 @@ impl ComposerEditor {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
-        let blink_cursor = cx.new(|_| BlinkCursor::new());
         let state = cx.entity().downgrade();
         let completion_empty_label = if cx.has_global::<I18n>() {
             cx.global::<I18n>().t("chat-form-skill-completion-empty")
@@ -275,16 +278,11 @@ impl ComposerEditor {
             )
         });
         let _subscriptions = vec![
-            cx.observe(&blink_cursor, |_, _, cx| cx.notify()),
-            cx.observe_window_activation(window, |editor, window, cx| {
-                editor.sync_blink_cursor(window, cx);
+            cx.observe_window_activation(window, |_, _, cx| cx.notify()),
+            cx.on_focus(&focus_handle, window, |editor, _, cx| {
+                editor.pause_cursor_blink(cx)
             }),
-            cx.on_focus(&focus_handle, window, |editor, window, cx| {
-                editor.sync_blink_cursor(window, cx);
-                cx.notify();
-            }),
-            cx.on_blur(&focus_handle, window, |editor, window, cx| {
-                editor.sync_blink_cursor(window, cx);
+            cx.on_blur(&focus_handle, window, |editor, _, cx| {
                 editor.close_skill_completion(cx);
                 cx.notify();
             }),
@@ -306,7 +304,7 @@ impl ComposerEditor {
             selecting: false,
             scroll_cursor_into_view: false,
             focus_handle,
-            blink_cursor,
+            cursor_hold_until: Instant::now(),
             scroll_handle: ScrollHandle::new(),
             last_layout: None,
             completion_list,
@@ -328,7 +326,8 @@ impl ComposerEditor {
         if self.text.is_empty() && self.tokens.is_empty() {
             return;
         }
-        self.record_before_change();
+        let before = self.current_state();
+        self.composition_base = None;
         self.restore_state(
             EditorState {
                 text: String::new(),
@@ -338,6 +337,7 @@ impl ComposerEditor {
             },
             cx,
         );
+        self.history.record(before, self.current_state());
     }
 
     pub(crate) fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -406,10 +406,10 @@ impl ComposerEditor {
         &self.focus_handle
     }
 
-    pub(super) fn show_cursor(&self, window: &Window, cx: &App) -> bool {
+    pub(super) fn show_cursor(&self, window: &Window, blink_on: bool) -> bool {
         self.focus_handle.is_focused(window)
             && window.is_window_active()
-            && self.blink_cursor.read(cx).visible()
+            && (Instant::now() < self.cursor_hold_until || blink_on)
     }
 
     pub(super) fn display_line_count(&self) -> usize {
@@ -462,24 +462,9 @@ impl ComposerEditor {
         cx.emit(ComposerEditorEvent::Changed);
     }
 
-    fn record_before_change(&mut self) {
-        self.history.record_before(self.current_state());
-        self.composition_base = None;
-    }
-
-    fn sync_blink_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let active = window.is_window_active() && self.focus_handle.is_focused(window);
-        self.blink_cursor.update(cx, |cursor, cx| {
-            if active {
-                cursor.start(cx);
-            } else {
-                cursor.stop(cx);
-            }
-        });
-    }
-
     fn pause_cursor_blink(&mut self, cx: &mut Context<Self>) {
-        self.blink_cursor.update(cx, |cursor, cx| cursor.pause(cx));
+        self.cursor_hold_until = Instant::now() + Duration::from_millis(300);
+        cx.notify();
     }
 
     fn invalidate_layout(&mut self) {
@@ -675,7 +660,7 @@ impl ComposerEditor {
             let selected = open.then(|| list.delegate().first_index()).flatten();
             list.set_selected_index(selected, window, cx);
             if let Some(ix) = selected {
-                list.scroll_to_item(ix, gpui::ScrollStrategy::Top, window, cx);
+                list.scroll_to_item(ix, gpui_kit::ScrollStrategy::Top, window, cx);
             }
         });
         self.completion_needs_selection_sync = false;
@@ -703,9 +688,9 @@ impl ComposerEditor {
             } else {
                 current + 1
             };
-            let ix = gpui_component::IndexPath::default().row(next);
+            let ix = gpui_kit::component::IndexPath::default().row(next);
             list.set_selected_index(Some(ix), window, cx);
-            list.scroll_to_item(ix, gpui::ScrollStrategy::Top, window, cx);
+            list.scroll_to_item(ix, gpui_kit::ScrollStrategy::Top, window, cx);
         });
         cx.notify();
     }
@@ -768,7 +753,7 @@ impl ComposerEditor {
             .shadow_lg()
             .child(
                 List::new(&self.completion_list)
-                    .with_size(gpui_component::Size::Small)
+                    .with_size(gpui_kit::component::Size::Small)
                     .scrollbar_visible(true)
                     .max_h(max_height)
                     .p_1(),
@@ -792,8 +777,9 @@ impl ComposerEditor {
             return;
         }
         self.pause_cursor_blink(cx);
+        let before = record_history.then(|| self.current_state());
         if record_history {
-            self.record_before_change();
+            self.composition_base = None;
         }
 
         let range = self.expand_edit_range(range);
@@ -807,6 +793,9 @@ impl ComposerEditor {
         self.refresh_tokens();
         self.refresh_skill_completion(cx);
         self.request_cursor_visible(cx);
+        if let Some(before) = before {
+            self.history.record(before, self.current_state());
+        }
         cx.notify();
         cx.emit(ComposerEditorEvent::Changed);
     }
@@ -1308,7 +1297,7 @@ impl ComposerEditor {
         if self.disabled {
             return;
         }
-        if let Some(state) = self.history.undo(self.current_state()) {
+        if let Some(state) = self.history.undo() {
             self.restore_state(state, cx);
             self.refresh_skill_completion(cx);
         }
@@ -1318,7 +1307,7 @@ impl ComposerEditor {
         if self.disabled {
             return;
         }
-        if let Some(state) = self.history.redo(self.current_state()) {
+        if let Some(state) = self.history.redo() {
             self.restore_state(state, cx);
             self.refresh_skill_completion(cx);
         }
@@ -1397,8 +1386,7 @@ impl EntityInputHandler for ComposerEditor {
         if self.marked_range.take().is_some() {
             self.pause_cursor_blink(cx);
             if let Some(base) = self.composition_base.take() {
-                self.history.record_before(base);
-                self.history.clear_redo();
+                self.history.record(base, self.current_state());
             }
             cx.notify();
         }
@@ -1421,8 +1409,7 @@ impl EntityInputHandler for ComposerEditor {
 
         if let Some(base) = self.composition_base.take() {
             self.replace_range(range, text, false, cx);
-            self.history.record_before(base);
-            self.history.clear_redo();
+            self.history.record(base, self.current_state());
         } else {
             self.replace_range(range, text, true, cx);
         }
@@ -1495,10 +1482,10 @@ impl EntityInputHandler for ComposerEditor {
     fn bounds_for_range(
         &mut self,
         range_utf16: Range<usize>,
-        element_bounds: gpui::Bounds<Pixels>,
+        element_bounds: gpui_kit::Bounds<Pixels>,
         _: &mut Window,
         _: &mut Context<Self>,
-    ) -> Option<gpui::Bounds<Pixels>> {
+    ) -> Option<gpui_kit::Bounds<Pixels>> {
         let byte = buffer::utf16_to_byte(&self.text, range_utf16.start);
         let layout = self.last_layout.as_ref()?;
         let mut bounds = layout.bounds_for_offset(&self.text, byte)?;
@@ -1531,8 +1518,29 @@ impl Render for ComposerEditor {
         self.apply_scroll_before_render(window, cx);
         let height = window.line_height() * self.visible_line_count() as f32;
         let scroll_handle = self.scroll_handle.clone();
+        let element = ComposerEditorElement::new(cx.entity());
+        let element = if !self.disabled
+            && window.is_window_active()
+            && self.focus_handle.is_focused(window)
+        {
+            element
+                .with_animation(
+                    "composer-cursor",
+                    Animation::new(Duration::from_secs(1))
+                        .repeat_synced()
+                        .with_max_fps(2.),
+                    |mut element, phase| {
+                        // Reduced motion supplies the repeating animation's start frame (visible).
+                        element.blink_on = phase < 0.5;
+                        element
+                    },
+                )
+                .into_any_element()
+        } else {
+            element.into_any_element()
+        };
 
-        gpui::div()
+        gpui_kit::div()
             .id("jaco-composer-editor")
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
@@ -1583,12 +1591,12 @@ impl Render for ComposerEditor {
             .relative()
             .text_base()
             .child(
-                gpui::div()
+                gpui_kit::div()
                     .id("jaco-composer-scroll-area")
                     .size_full()
                     .track_scroll(&scroll_handle)
                     .overflow_y_scroll()
-                    .child(ComposerEditorElement::new(cx.entity())),
+                    .child(element),
             )
             .vertical_scrollbar(&scroll_handle)
     }
@@ -1599,7 +1607,7 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use crate::features::skills::GlobalSkillEntry;
-    use gpui::{TestAppContext, VisualTestContext, px, size};
+    use gpui_kit::{TestAppContext, VisualTestContext, px, size};
     use jaco_core::SkillSourceKind;
 
     use super::*;
@@ -1641,7 +1649,7 @@ mod tests {
 
     fn init_test_app(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             crate::foundation::i18n::init(cx);
         });
     }
@@ -1651,7 +1659,7 @@ mod tests {
         cx.run_until_parked();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn snapshot_contains_text_and_skill_requests(cx: &mut TestAppContext) {
         init_test_app(cx);
 
@@ -1679,7 +1687,7 @@ mod tests {
         assert_eq!(snapshot.token_ranges[0].range, 4..9);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn undo_redo_restores_text_selection_and_tokens(cx: &mut TestAppContext) {
         init_test_app(cx);
 
@@ -1705,11 +1713,19 @@ mod tests {
                 editor.on_redo(&ComposerRedo, window, cx);
                 assert_eq!(editor.text, "$rust");
                 assert_eq!(editor.tokens.len(), 1);
+                assert_eq!(editor.selection.range(), 5..5);
+                editor.on_undo(&ComposerUndo, window, cx);
+                editor.replace_range(0..0, "新分支", true, cx);
+                editor.on_redo(&ComposerRedo, window, cx);
+                assert_eq!(editor.text, "新分支");
+                assert!(editor.tokens.is_empty());
+                editor.on_undo(&ComposerUndo, window, cx);
+                assert_eq!(editor.selection.range(), 0..0);
             });
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn confirming_skill_completion_appends_space(cx: &mut TestAppContext) {
         init_test_app(cx);
 
@@ -1740,7 +1756,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn confirming_skill_completion_does_not_duplicate_existing_space(cx: &mut TestAppContext) {
         init_test_app(cx);
 
@@ -1773,7 +1789,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn ime_marked_text_replaces_as_single_undo_group(cx: &mut TestAppContext) {
         init_test_app(cx);
 
@@ -1799,7 +1815,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn ime_marked_text_keeps_candidate_bounds_available(cx: &mut TestAppContext) {
         init_test_app(cx);
 
@@ -1831,7 +1847,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn grapheme_actions_do_not_split_clusters(cx: &mut TestAppContext) {
         init_test_app(cx);
 
@@ -1871,7 +1887,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn word_actions_select_skill_token_and_unicode_words(cx: &mut TestAppContext) {
         init_test_app(cx);
 
@@ -1929,7 +1945,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn skill_token_edits_are_atomic(cx: &mut TestAppContext) {
         init_test_app(cx);
 
@@ -1971,7 +1987,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn soft_wrap_layout_maps_points_to_utf8_offsets(cx: &mut TestAppContext) {
         init_test_app(cx);
 
@@ -2019,7 +2035,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn soft_wrapped_composer_scrolls_cursor_into_view(cx: &mut TestAppContext) {
         init_test_app(cx);
 
@@ -2082,7 +2098,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn repeated_newlines_do_not_scroll_before_overflow(cx: &mut TestAppContext) {
         init_test_app(cx);
 
@@ -2139,7 +2155,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn soft_wrap_selection_paint_does_not_panic(cx: &mut TestAppContext) {
         init_test_app(cx);
 

@@ -1,8 +1,8 @@
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Disableable, Sizable, WindowExt as _, alert::Alert, button::Button,
     dialog::DialogButtonProps, spinner::Spinner, v_flex,
 };
+use gpui_kit::*;
 
 use crate::{app, database, foundation::I18n, state};
 

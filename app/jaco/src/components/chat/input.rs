@@ -29,8 +29,8 @@ use crate::{
     state::providers::{ProviderModelChoice, ProviderModelKey},
 };
 use conversation::attachments::{ComposerAttachment, ModelAttachmentSupportIssue};
-use gpui::*;
-use gpui_component::{
+use gpui_form::{Form, FormEvent};
+use gpui_kit::component::{
     ActiveTheme, Disableable, Sizable, WindowExt as _,
     button::Button,
     h_flex,
@@ -38,7 +38,7 @@ use gpui_component::{
     notification::{Notification, NotificationType},
     v_flex,
 };
-use gpui_form::{Form, FormEvent};
+use gpui_kit::*;
 use gpui_operation::{Complete, Load, Refresh, Retry, Transition};
 use jaco_core::{ConversationContextRequestUsage, ReasoningSelectionSnapshot, ToolApprovalMode};
 use std::{path::Path, rc::Rc};
@@ -866,7 +866,7 @@ mod tests {
         state::config::ChatFormModelConfig,
         state::providers::{ProviderModelChoice, ProviderModelKey},
     };
-    use gpui::{
+    use gpui_kit::{
         Anchor, App, AppContext as _, Bounds, Entity, IntoElement, ParentElement as _, Render,
         Styled as _, Subscription, TestAppContext, View, VisualTestContext, WindowHandle, div,
         point, px, size,
@@ -1017,7 +1017,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn skill_completion_popup_matches_chat_form_bounds(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         let window = open_chat_form_layout_window(cx);
@@ -1066,7 +1066,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn provider_catalog_refresh_updates_options_without_rebasing_form(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         configure_chat_form_model(cx, "gpt-5");
@@ -1098,7 +1098,7 @@ mod tests {
         assert!(submit_snapshot(&form, test_snapshot("hello"), &mut cx).is_none());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn submit_revalidation_preserves_custom_token_budget(cx: &mut TestAppContext) {
         let _dir = init_chat_form_reasoning_test(cx);
         configure_chat_form_model(cx, "claude-3-7-sonnet");
@@ -1140,7 +1140,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn submit_includes_selected_approval_mode(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         configure_chat_form_model(cx, "gpt-5");
@@ -1172,7 +1172,7 @@ mod tests {
         assert_eq!(changed_submit.approval_mode, ToolApprovalMode::FullAccess);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn chat_form_initializes_from_config_preferences(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         let provider_id = cx.update(|cx| provider_id_for_kind(cx, "openai"));
@@ -1197,7 +1197,7 @@ mod tests {
         assert_eq!(submit.approval_mode, ToolApprovalMode::FullAccess);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn selecting_model_and_approval_mode_persists_config(cx: &mut TestAppContext) {
         let dir = init_chat_form_test(cx);
         let config_path = test_config_path(&dir);
@@ -1241,7 +1241,7 @@ mod tests {
         assert_eq!(config.chat_form.approval_mode, ToolApprovalMode::FullAccess);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn chat_field_patch_preserves_external_sibling_fields(cx: &mut TestAppContext) {
         let dir = init_chat_form_test(cx);
         let config_path = test_config_path(&dir);
@@ -1280,7 +1280,7 @@ mod tests {
         assert_eq!(config.chat_form.approval_mode, ToolApprovalMode::FullAccess);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn switching_models_resets_an_unsupported_reasoning_level_to_the_new_default(
         cx: &mut TestAppContext,
     ) {
@@ -1347,7 +1347,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn composer_changes_do_not_publish_config(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         let deliveries = Rc::new(Cell::new(0));
@@ -1379,7 +1379,7 @@ mod tests {
         assert_eq!(deliveries.get(), 1);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn custom_token_budget_persists_config(cx: &mut TestAppContext) {
         let dir = init_chat_form_reasoning_test(cx);
         configure_chat_form_model(cx, "claude-3-7-sonnet");
@@ -1421,7 +1421,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn running_agent_blocks_submit_and_primary_button_stops(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         configure_chat_form_model(cx, "gpt-5");
@@ -1452,7 +1452,7 @@ mod tests {
         assert!(submit_snapshot(&form, test_snapshot("hello"), &mut cx).is_some());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn stopping_agent_blocks_submit_and_primary_button_action(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         configure_chat_form_model(cx, "gpt-5");
@@ -1478,7 +1478,7 @@ mod tests {
         assert_eq!(action, None);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn submitting_agent_blocks_repeated_submit(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         configure_chat_form_model(cx, "gpt-5");
@@ -1523,7 +1523,7 @@ mod tests {
     fn init_chat_form_test(cx: &mut TestAppContext) -> TempDir {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             database::install_for_test(cx, dir.path());
             let config =
                 state::JacoConfig::load_from_path_for_test(&test_config_path(&dir)).unwrap();
@@ -1561,7 +1561,7 @@ mod tests {
     fn init_chat_form_reasoning_test(cx: &mut TestAppContext) -> TempDir {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             database::install_for_test(cx, dir.path());
             let config =
                 state::JacoConfig::load_from_path_for_test(&test_config_path(&dir)).unwrap();
@@ -1605,8 +1605,8 @@ mod tests {
     impl Render for ChatInputTestHost {
         fn render(
             &mut self,
-            _window: &mut gpui::Window,
-            _cx: &mut gpui::Context<Self>,
+            _window: &mut gpui_kit::Window,
+            _cx: &mut gpui_kit::Context<Self>,
         ) -> impl IntoElement {
             ChatInput::new(&self.form, ChatFormSkillCompletionPlacement::BelowForm)
         }
@@ -1639,8 +1639,8 @@ mod tests {
     impl Render for ChatInputLayoutTestHost {
         fn render(
             &mut self,
-            _window: &mut gpui::Window,
-            _cx: &mut gpui::Context<Self>,
+            _window: &mut gpui_kit::Window,
+            _cx: &mut gpui_kit::Context<Self>,
         ) -> impl IntoElement {
             div()
                 .size_full()
@@ -1666,7 +1666,7 @@ mod tests {
         .unwrap()
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn view_uses_controller_identity_across_rebuilds(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         let window = open_chat_form_window(cx);
@@ -1680,7 +1680,7 @@ mod tests {
         assert_eq!(above.entity_id(), Some(controller.entity_id()));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn composer_context_occupancy_precedes_the_model_selector(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         configure_chat_form_model(cx, "gpt-5");
@@ -1692,7 +1692,7 @@ mod tests {
             .debug_bounds("conversation-context-occupancy-trigger")
             .expect("composer context occupancy trigger");
         let model = cx
-            .debug_bounds("picker-trigger-label:chat-form-model-trigger")
+            .debug_bounds("chat-form-model-selector")
             .expect("model selector label");
         assert!(
             occupancy.right() <= model.left(),
@@ -1700,7 +1700,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn context_request_usage_setter_notifies_only_for_value_changes(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         let window = open_chat_form_window(cx);
@@ -1764,7 +1764,7 @@ mod tests {
         assert_eq!(deliveries.get(), initial_deliveries + 2);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn constructor_can_leave_composer_unfocused_for_embedded_inputs(cx: &mut TestAppContext) {
         let _dir = init_chat_form_test(cx);
         let window = cx
@@ -1790,7 +1790,7 @@ mod tests {
     }
 
     fn submit_snapshot(
-        form: &gpui::Entity<ChatInputController>,
+        form: &gpui_kit::Entity<ChatInputController>,
         snapshot: ComposerSnapshot,
         cx: &mut VisualTestContext,
     ) -> Option<super::ChatInputSubmit> {
@@ -1800,7 +1800,7 @@ mod tests {
     }
 
     fn selected_model_id(
-        form: &gpui::Entity<ChatInputController>,
+        form: &gpui_kit::Entity<ChatInputController>,
         cx: &VisualTestContext,
     ) -> Option<String> {
         form.read_with(cx, |form, cx| {

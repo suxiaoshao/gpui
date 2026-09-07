@@ -2,7 +2,7 @@ pub(crate) mod secrets;
 
 use std::fmt;
 
-use gpui::{App, AppContext, Entity, Global, Subscription, Task};
+use gpui_kit::{App, AppContext, Entity, Global, Subscription, Task};
 use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh};
 use gpui_store::{Select, Store};
 use jaco_core::{ModelCapabilitiesSnapshot, ProviderId, ProviderModelId};
@@ -308,7 +308,7 @@ fn load_task(cx: &mut App) -> Option<Task<()>> {
     }))
 }
 
-pub(crate) fn catalog(cx: &impl gpui::AppContext) -> ProviderStore {
+pub(crate) fn catalog(cx: &impl gpui_kit::AppContext) -> ProviderStore {
     ProviderStore::global(cx)
 }
 
@@ -470,7 +470,7 @@ pub(crate) fn enabled_provider_models(cx: &App) -> jaco_db::Result<Vec<ProviderM
 
 pub(crate) fn ready_provider(
     provider_id: &ProviderId,
-    cx: &impl gpui::AppContext,
+    cx: &impl gpui_kit::AppContext,
 ) -> jaco_db::Result<ProviderRecord> {
     catalog(cx).read(cx, |operation| match operation {
         ProviderOperation::Ready(ready) => ready
@@ -600,8 +600,8 @@ mod tests {
         }
     }
 
-    #[gpui::test]
-    fn losing_database_readiness_cancels_the_provider_load(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn losing_database_readiness_cancels_the_provider_load(cx: &mut gpui_kit::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         cx.update(|cx| {
             database::install_for_test(cx, dir.path());

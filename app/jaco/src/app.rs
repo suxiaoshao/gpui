@@ -10,8 +10,8 @@ use crate::features::{
     settings::SettingsView,
 };
 use crate::{database, errors::JacoError, foundation, state};
-use gpui::*;
-use gpui_component::{Root, TitleBar};
+use gpui_kit::component::{Root, TitleBar};
+use gpui_kit::*;
 use gpui_store::Store;
 use std::{
     cell::RefCell,
@@ -47,7 +47,7 @@ pub(crate) fn run() -> crate::errors::JacoResult<()> {
     init_tracing()?;
     event!(Level::INFO, "startup begin");
 
-    let app = gpui_platform::application().with_assets(foundation::Assets::default());
+    let app = gpui_kit::application().with_assets(foundation::Assets::default());
     app.on_reopen(show_or_create_main_window);
     let startup_error = Rc::new(RefCell::new(None));
     let startup_error_for_run = Rc::clone(&startup_error);
@@ -151,7 +151,7 @@ fn init(cx: &mut App) -> crate::errors::JacoResult<()> {
     SHUTTING_DOWN.store(false, Ordering::Release);
     AppShutdownStore::install_global(cx, AppShutdownPhase::Running);
     tasks::init(cx);
-    gpui_component::init(cx);
+    gpui_kit::init(cx);
     foundation::init_bootstrap(cx);
 
     state::config::init(cx)?;
@@ -172,7 +172,6 @@ fn init(cx: &mut App) -> crate::errors::JacoResult<()> {
     state::prompts::init(cx);
     state::shortcuts::init(cx);
     state::hotkey::init_shortcuts(cx);
-    title_bar_menu::init(cx);
     temporary_window::init(cx);
     crate::features::init(cx);
 
@@ -309,9 +308,8 @@ pub(crate) fn open_main_window(cx: &mut App) -> Result<WindowHandle<Root>, JacoE
             window_bounds: Some(placement.window_bounds),
             display_id: placement.display_id,
             titlebar: Some(main_titlebar_options(title)),
-            app_owns_titlebar_drag: true,
             window_background: WindowBackgroundAppearance::Opaque,
-            ..Default::default()
+            ..TitleBar::window_options()
         },
         create_main_root,
     )
@@ -404,7 +402,7 @@ mod tests {
         APP_NAME, APP_TITLE, logs_dir_from_base, main_titlebar_options, override_dir_from_value,
         should_hide_main_window_on_close,
     };
-    use gpui_component::TitleBar;
+    use gpui_kit::component::TitleBar;
     use std::{ffi::OsString, path::PathBuf};
 
     #[test]

@@ -60,6 +60,7 @@ fn main() {
         "--filter".to_string(),
         "Windows.Graphics.Imaging.SoftwareBitmap".to_string(),
         "--no-comment".to_string(),
+        "--no-allow".to_string(),
     ];
 
     let warnings = windows_bindgen::bindgen(args);
@@ -68,11 +69,4 @@ fn main() {
         warnings.to_string(),
     )
     .expect("write windows ai warnings");
-    let generated = fs::read_to_string(&out_file).expect("read generated windows ai bindings");
-    let generated = generated.replacen(
-        "#![allow(\n    non_snake_case,\n    non_upper_case_globals,\n    non_camel_case_types,\n    dead_code,\n    clippy::all\n)]\n\n",
-        "",
-        1,
-    );
-    fs::write(&out_file, generated).expect("rewrite generated windows ai bindings");
 }

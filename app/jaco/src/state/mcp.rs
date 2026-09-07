@@ -6,7 +6,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Global, Subscription, Task};
+use gpui_kit::{
+    App, AppContext, AsyncApp, Context, Entity, EventEmitter, Global, Subscription, Task,
+};
 use jaco_agent::{
     AgentRunRequest, McpOAuthCredentialsSnapshot, McpOAuthStatusSnapshot, McpPreparedTools,
     McpRuntimeEvent, McpServerConnectionState, McpServerInfoSnapshot, McpServerRuntimeConfig,
@@ -225,7 +227,7 @@ impl McpRuntimeStore {
     pub(crate) fn test_server(
         &mut self,
         server_id: String,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         if let Some(servers) = config::store(cx).read(cx, ready_mcp_servers) {
@@ -306,7 +308,7 @@ impl McpRuntimeStore {
         status_key: String,
         server_id: String,
         server: config::McpServerTomlConfig,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         let Some((server_url, oauth_config)) = oauth_authorization_config(&server_id, &server)
@@ -437,7 +439,7 @@ impl McpRuntimeStore {
         &mut self,
         server_id: String,
         server: config::McpServerTomlConfig,
-        window: &mut gpui::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         if !oauth_configured(&server) {
@@ -456,7 +458,7 @@ impl McpRuntimeStore {
     pub(crate) fn disconnect_server(
         &mut self,
         server_id: String,
-        _window: &mut gpui::Window,
+        _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         let reconciled = config::store(cx)
@@ -1611,8 +1613,8 @@ mod tests {
         );
     }
 
-    #[gpui::test]
-    fn runtime_events_reject_stale_generation_after_config_aba(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn runtime_events_reject_stale_generation_after_config_aba(cx: &mut gpui_kit::TestAppContext) {
         let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("config.toml");
         let mut config = JacoConfig::load_from_path_for_test(&path).expect("load test config");
@@ -1676,9 +1678,9 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn accepted_session_authority_replaces_partial_sessions_and_rejects_old_events(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("config.toml");
@@ -1767,9 +1769,9 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn stale_completions_do_not_remove_or_overwrite_new_generation_tasks(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("config.toml");
@@ -1846,9 +1848,9 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn config_publication_reconciles_removed_disabled_and_changed_servers(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         cx.executor().allow_parking();
         let dir = tempfile::tempdir().expect("create temp dir");
@@ -2175,8 +2177,8 @@ mod tests {
         );
     }
 
-    #[gpui::test]
-    fn finish_oauth_authorization_uses_pending_draft_server(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn finish_oauth_authorization_uses_pending_draft_server(cx: &mut gpui_kit::TestAppContext) {
         let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("config.toml");
         let config = JacoConfig::load_from_path_for_test(&path).expect("load test config");
@@ -2221,8 +2223,8 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn promoted_draft_oauth_finish_updates_saved_server(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn promoted_draft_oauth_finish_updates_saved_server(cx: &mut gpui_kit::TestAppContext) {
         let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("config.toml");
         let config = JacoConfig::load_from_path_for_test(&path).expect("load test config");
@@ -2275,9 +2277,9 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn stale_oauth_authorization_completion_does_not_touch_new_attempt(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("config.toml");
@@ -2363,8 +2365,8 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn oauth_credentials_write_result_updates_status(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn oauth_credentials_write_result_updates_status(cx: &mut gpui_kit::TestAppContext) {
         let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("config.toml");
         let mut config = JacoConfig::load_from_path_for_test(&path).expect("load test config");

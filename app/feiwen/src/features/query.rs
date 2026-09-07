@@ -6,9 +6,7 @@ use crate::{
 };
 use advanced::{AdvancedQueryController, QueryDraft};
 use fluent_bundle::FluentArgs;
-use gpui::prelude::FluentBuilder;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable,
     alert::Alert,
     button::Button,
@@ -17,6 +15,8 @@ use gpui_component::{
     table::{DataTable, TableState},
     v_flex,
 };
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::*;
 use gpui_operation::Transition;
 use gpui_store::Store;
 use results_table::ResultsTableDelegate;
@@ -530,7 +530,7 @@ fn count_message(i18n: &I18n, key: &str, count: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use gpui::Task;
+    use gpui_kit::Task;
 
     use super::{
         QueryEffect, QueryMessage, QueryProblem, QueryRun, SearchResult, query_titlebar_summary,

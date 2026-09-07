@@ -10,8 +10,7 @@ use crate::{
     },
     state::hotkey::ShortcutRuntimeDiagnostics,
 };
-use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
@@ -20,6 +19,7 @@ use gpui_component::{
     tag::Tag,
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder, *};
 use jaco_core::{ShortcutId, ShortcutInputSource};
 use jaco_db::{PromptRecord, ProviderModelRecord, ProviderRecord, ShortcutRecord};
 

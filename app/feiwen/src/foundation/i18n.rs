@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
-use gpui::{App, Global};
+use gpui_kit::{App, Global};
 use unic_langid::LanguageIdentifier;
 
 const EN_US: &str = include_str!("../../locales/en-US/main.ftl");

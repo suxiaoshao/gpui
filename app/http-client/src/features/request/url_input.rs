@@ -1,9 +1,9 @@
 use std::ops::Deref;
 
-use gpui::{Context, Entity, Render, Window};
-use gpui_component::input::{Input, InputContentType, InputState};
 use gpui_form::Form;
 use gpui_form_gpui_component::FormInput;
+use gpui_kit::component::input::{Input, InputContentType, InputState};
+use gpui_kit::{Context, Entity, Render, Window};
 
 use super::draft::RequestDraft;
 use crate::foundation::I18n;
@@ -46,7 +46,11 @@ impl Deref for UrlInput {
 }
 
 impl Render for UrlInput {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
         self.element()
     }
 }

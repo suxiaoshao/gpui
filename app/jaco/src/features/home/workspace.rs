@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
 };
 
-use gpui::{App, AppContext, Context, Entity, SharedString, Subscription, Task};
+use gpui_kit::{App, AppContext, Context, Entity, SharedString, Subscription, Task};
 use gpui_operation::refresh::Phase;
 use gpui_store::{Select, StoreSelection};
 use jaco_core::{ConversationId, ConversationStatus, ConversationSummary, ProjectId, ProjectKind};

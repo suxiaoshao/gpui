@@ -21,9 +21,7 @@ category = "DeveloperTool"
 
 [dependencies]
 # ui
-gpui.workspace = true
-gpui_platform.workspace = true
-gpui-component.workspace = true
+gpui-kit.workspace = true
 gpui-form.workspace = true
 gpui-form-gpui-component.workspace = true
 gpui-operation = { workspace = true, features = ["tracing"] }
@@ -36,7 +34,7 @@ sys-locale = "0.3.2"
 pinyin = "0.11.0"
 
 # err
-thiserror = "2.0.19"
+thiserror = "2.0.20"
 
 # http
 reqwest = {version = "0.13.4",features=["query"]}
@@ -58,4 +56,4 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
 
 [dev-dependencies]
-gpui = { workspace = true, features = ["test-support"] }
+gpui-kit = { workspace = true, features = ["test-support"] }

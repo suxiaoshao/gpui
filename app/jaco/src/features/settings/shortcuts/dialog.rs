@@ -15,8 +15,9 @@ use crate::{
     state::{self, shortcuts::ShortcutDraft},
 };
 use fluent_bundle::FluentArgs;
-use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{
+use gpui_form::{ControlBinding, ControlProjection, Form, GardeValidator};
+use gpui_form_gpui_component::FormSelect;
+use gpui_kit::component::{
     ActiveTheme, Disableable, StyledExt, WindowExt as NotificationWindowExt,
     button::{Button, ButtonVariants, Toggle, ToggleGroup, ToggleVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
@@ -29,8 +30,7 @@ use gpui_component::{
     switch::Switch,
     v_flex,
 };
-use gpui_form::{ControlBinding, ControlProjection, Form, GardeValidator};
-use gpui_form_gpui_component::FormSelect;
+use gpui_kit::{prelude::FluentBuilder, *};
 use jaco_core::{ShortcutId, ShortcutInputSource};
 use jaco_db::ShortcutRecord;
 use std::rc::Rc;
@@ -113,7 +113,7 @@ impl ShortcutEditDialogState {
             &form,
             ShortcutEditFormInput::PROMPT,
             move |window, cx| {
-                gpui_component::select::SelectState::new(prompt_choices, None, window, cx)
+                gpui_kit::component::select::SelectState::new(prompt_choices, None, window, cx)
             },
             window,
             cx,
@@ -821,11 +821,11 @@ mod tests {
     use crate::components::chat::run_settings::RunSettingsInput;
     use crate::features::settings::shortcuts::form_state::ShortcutEditFormInput;
     use crate::{database, foundation, state};
-    use gpui::{AppContext as _, TestAppContext, VisualTestContext, WindowHandle};
+    use gpui_kit::{AppContext as _, TestAppContext, VisualTestContext, WindowHandle};
     use tempfile::{TempDir, tempdir};
     use tokio::sync::oneshot;
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn missing_hotkey_confirm_keeps_shortcut_dialog_open(cx: &mut TestAppContext) {
         let _dir = init_shortcut_dialog_test(cx);
         let required_message = foundation::I18n::english_for_test().t("gpui-form-error-required");
@@ -862,7 +862,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn shortcut_dialog_contains_run_settings_group(cx: &mut TestAppContext) {
         let _dir = init_shortcut_dialog_test(cx);
         let window = open_shortcut_state_window(cx);
@@ -875,7 +875,7 @@ mod tests {
         }));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn pending_save_rejects_repeated_shortcut_confirm(cx: &mut TestAppContext) {
         let _dir = init_shortcut_dialog_test(cx);
         let window = open_shortcut_state_window(cx);
@@ -924,7 +924,7 @@ mod tests {
     fn init_shortcut_dialog_test(cx: &mut TestAppContext) -> TempDir {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             database::install_for_test(cx, dir.path());
             cx.set_global(foundation::I18n::english_for_test());
             state::providers::init(cx);

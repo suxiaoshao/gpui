@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use duckdb::DuckdbConnectionManager;
-use gpui::{AsyncApp, WeakEntity};
+use gpui_kit::{AsyncApp, WeakEntity};
 use gpui_operation::Transition;
 use r2d2::PooledConnection;
 use reqwest::Client;

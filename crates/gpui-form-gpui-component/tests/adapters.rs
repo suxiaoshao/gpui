@@ -4,13 +4,13 @@ use gpui::{
 };
 use gpui_component::{
     combobox::{ComboboxEvent, ComboboxState},
-    input::{InputEvent, InputState},
+    input::{EditorState, InputEvent, InputState, TextareaState},
     select::{SelectEvent, SelectState},
 };
 use gpui_form::{ControlBinding, ControlProjection, DynamicPath, Form, FormSchema, ResolveError};
 use gpui_form_gpui_component::{
-    FormCombobox, FormInput, FormIntegerInput, FormSelect, IntegerInput, IntegerInputError,
-    IntegerInputEvent, IntegerInputPolicyError, IntegerInputState,
+    FormCombobox, FormEditor, FormInput, FormIntegerInput, FormSelect, FormTextarea, IntegerInput,
+    IntegerInputError, IntegerInputEvent, IntegerInputPolicyError, IntegerInputState,
 };
 
 #[derive(Clone, Debug, PartialEq, FormSchema)]
@@ -688,3 +688,60 @@ fn integer_policy_errors_are_stable() {
         "integer input step must be positive"
     );
 }
+
+// Exercise both concrete state types through the shared Form binding contract.
+macro_rules! multiline_adapter_test {
+    ($test:ident, $control:ident, $state:ident) => {
+        #[gpui::test]
+        fn $test(cx: &mut TestAppContext) {
+            let window = open_harness(cx);
+            let mut cx = VisualTestContext::from_window(window.into(), cx);
+            let root = window.root(&mut cx).unwrap();
+            let (form, _) = entities(&root, &mut cx);
+            let control = cx.update(|window, cx| {
+                root.update(cx, |root, cx| {
+                    $control::new(
+                        &root.form,
+                        AdapterInput::NAME,
+                        |window, cx| $state::new(window, cx),
+                        window,
+                        cx,
+                    )
+                })
+            });
+            cx.update(|window, cx| {
+                control.update(cx, |input, cx| {
+                    input.set_value("中文\nsecond line", window, cx);
+                    cx.emit(InputEvent::Change);
+                })
+            });
+            cx.run_until_parked();
+            cx.update(|_, cx| {
+                assert_eq!(AdapterInput::NAME.get(&form, cx), "中文\nsecond line");
+                AdapterInput::NAME.set(&form, "external\nvalue".into(), cx);
+            });
+            cx.run_until_parked();
+            cx.update(|_, cx| assert_eq!(control.read(cx).value().as_ref(), "external\nvalue"));
+            let state = (*control).clone();
+            drop(control);
+            cx.update(|window, cx| {
+                state.update(cx, |input, cx| {
+                    input.set_value("after drop", window, cx);
+                    cx.emit(InputEvent::Change);
+                })
+            });
+            cx.run_until_parked();
+            cx.update(|_, cx| assert_eq!(AdapterInput::NAME.get(&form, cx), "external\nvalue"));
+        }
+    };
+}
+multiline_adapter_test!(
+    textarea_binding_projects_and_detaches,
+    FormTextarea,
+    TextareaState
+);
+multiline_adapter_test!(
+    editor_binding_projects_and_detaches,
+    FormEditor,
+    EditorState
+);

@@ -1,5 +1,5 @@
 use super::*;
-use gpui::TestAppContext;
+use gpui_kit::TestAppContext;
 use std::{cell::Cell, rc::Rc};
 
 #[test]
@@ -201,7 +201,7 @@ fn repair_support_matrix_is_explicit() {
     assert!(!parse.supports(ConfigRepair::BackupAndOverwritePending));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn chat_preferences_commit_synchronously_without_leaving_ready(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
@@ -235,7 +235,7 @@ fn chat_preferences_commit_synchronously_without_leaving_ready(cx: &mut TestAppC
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn external_change_during_synchronous_commit_degrades_with_old_and_pending_data(
     cx: &mut TestAppContext,
 ) {
@@ -280,7 +280,7 @@ fn external_change_during_synchronous_commit_degrades_with_old_and_pending_data(
     assert_eq!(fs::read(path).unwrap(), external);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn locked_synchronous_commit_degrades_with_old_and_pending_data(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
@@ -321,7 +321,7 @@ fn locked_synchronous_commit_degrades_with_old_and_pending_data(cx: &mut TestApp
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn mcp_fragment_cas_rejects_changed_entry_without_publishing_or_writing(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
@@ -370,7 +370,7 @@ fn mcp_fragment_cas_rejects_changed_entry_without_publishing_or_writing(cx: &mut
     assert_eq!(fs::read(path).unwrap(), bytes);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn mcp_fragment_cas_preserves_unrelated_external_entries(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
@@ -421,7 +421,7 @@ fn mcp_fragment_cas_preserves_unrelated_external_entries(cx: &mut TestAppContext
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn mcp_fragment_cas_classifies_removed_and_occupied_entries(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
@@ -465,7 +465,7 @@ fn mcp_fragment_cas_classifies_removed_and_occupied_entries(cx: &mut TestAppCont
     assert_eq!(fs::read(path).unwrap(), bytes);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn credential_cleanup_blocks_mcp_mutation_and_defers_external_config(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
@@ -555,7 +555,7 @@ fn credential_cleanup_blocks_mcp_mutation_and_defers_external_config(cx: &mut Te
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn observed_same_bytes_do_not_publish_config(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
@@ -598,7 +598,7 @@ fn observed_same_bytes_do_not_publish_config(cx: &mut TestAppContext) {
     assert_eq!(deliveries.get(), 1);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn observed_invalid_config_retains_last_good_data(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
@@ -634,7 +634,7 @@ fn observed_invalid_config_retains_last_good_data(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn observed_restored_last_good_bytes_recovers_degraded_config(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
@@ -714,7 +714,7 @@ fn observed_restored_last_good_bytes_recovers_degraded_config(cx: &mut TestAppCo
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn observed_restored_source_retries_external_change_pending(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
@@ -803,7 +803,7 @@ fn observed_restored_source_retries_external_change_pending(cx: &mut TestAppCont
     assert_eq!(fs::read(path).unwrap(), pending_bytes);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn observed_external_change_retry_preserves_pending_after_another_race(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
@@ -926,7 +926,7 @@ fn observed_external_change_retry_preserves_pending_after_another_race(cx: &mut 
     assert_eq!(fs::read(path).unwrap(), raced_bytes);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn stale_probe_cannot_clear_failed_save_problem(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
@@ -996,7 +996,7 @@ fn stale_probe_cannot_clear_failed_save_problem(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn observer_shutdown_drops_owned_task_and_subscription(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let observer = cx.new(|_| ConfigFileObserver {

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use gpui::{App, BorrowAppContext, Global, Subscription, Task, Window, WindowId};
+use gpui_kit::{App, BorrowAppContext, Global, Subscription, Task, Window, WindowId};
 
 struct TaskOwners {
     application: Vec<Task<()>>,

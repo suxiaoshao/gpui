@@ -3,11 +3,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable,
     button::{Button, ButtonVariants},
 };
+use gpui_kit::*;
 
 use crate::foundation::assets::IconName;
 

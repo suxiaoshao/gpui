@@ -1,11 +1,11 @@
 use crate::foundation::I18n;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     Disableable, WindowExt,
     button::{Button, ButtonVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
     label::Label,
 };
+use gpui_kit::*;
 use std::rc::Rc;
 
 type OnConfirm = dyn Fn(&mut Window, &mut App);
@@ -173,16 +173,13 @@ mod tests {
         rc::Rc,
     };
 
-    use gpui::{
+    use gpui_kit::component::{Root, WindowExt};
+    use gpui_kit::{
         AppContext as _, ClickEvent, IntoElement, Render, TestAppContext, Window, WindowHandle, div,
     };
-    #[cfg(not(target_os = "macos"))]
-    use gpui::{ParentElement as _, Task, VisualTestContext};
-    #[cfg(not(target_os = "macos"))]
-    use gpui_component::{Root, WindowExt, dialog::ConfirmDialog};
+    use gpui_kit::{ParentElement as _, VisualTestContext};
     use tokio::sync::oneshot;
 
-    #[cfg(not(target_os = "macos"))]
     use super::open_async_destructive_confirm_dialog;
     use super::{AsyncDestructiveConfirmState, DestructiveAction};
 
@@ -192,21 +189,19 @@ mod tests {
         fn render(
             &mut self,
             _window: &mut Window,
-            _cx: &mut gpui::Context<Self>,
+            _cx: &mut gpui_kit::Context<Self>,
         ) -> impl IntoElement {
             div()
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
     struct DialogTestView;
 
-    #[cfg(not(target_os = "macos"))]
     impl Render for DialogTestView {
         fn render(
             &mut self,
             window: &mut Window,
-            cx: &mut gpui::Context<Self>,
+            cx: &mut gpui_kit::Context<Self>,
         ) -> impl IntoElement {
             div().children(Root::render_dialog_layer(window, cx))
         }
@@ -228,7 +223,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn async_destructive_confirmation_owns_task_and_blocks_repeated_submit(
         cx: &mut TestAppContext,
     ) {
@@ -281,28 +276,33 @@ mod tests {
             .expect("inspect completed confirmation");
     }
 
-    #[cfg(not(target_os = "macos"))]
-    #[gpui::test]
+    #[gpui_kit::test]
     fn async_destructive_confirmation_closes_only_after_success(cx: &mut TestAppContext) {
         let window = open_dialog_test_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let (sender, receiver) = oneshot::channel();
+        let receiver = Rc::new(RefCell::new(Some(receiver)));
 
         cx.update(|window, cx| {
             open_async_destructive_confirm_dialog(
                 "Delete",
                 "Delete this item?",
                 DestructiveAction::Delete,
-                |_, _| Task::ready(true),
+                move |window, cx| {
+                    let receiver = receiver.borrow_mut().take().expect("confirm once");
+                    window.spawn(cx, async move |_| receiver.await.unwrap_or(false))
+                },
                 window,
                 cx,
             );
         });
         cx.run_until_parked();
 
-        cx.update(|window, cx| {
-            window.dispatch_action(Box::new(ConfirmDialog), cx);
-            assert!(window.has_active_dialog(cx));
-        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        cx.update(|window, cx| assert!(window.has_active_dialog(cx)));
+
+        sender.send(true).expect("complete deletion");
         cx.run_until_parked();
         cx.update(|window, cx| assert!(!window.has_active_dialog(cx)));
     }
@@ -314,10 +314,9 @@ mod tests {
         })
     }
 
-    #[cfg(not(target_os = "macos"))]
     fn open_dialog_test_window(cx: &mut TestAppContext) -> WindowHandle<Root> {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             crate::foundation::init_i18n(cx);
             cx.open_window(Default::default(), |window, cx| {
                 let view = cx.new(|_| DialogTestView);

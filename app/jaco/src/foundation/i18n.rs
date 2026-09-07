@@ -1,5 +1,5 @@
 use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
-use gpui::{App, AppContext, Entity, Global, Subscription};
+use gpui_kit::{App, AppContext, Entity, Global, Subscription};
 use gpui_store::Select;
 use jaco_core::AppLanguage;
 use std::{collections::HashMap, rc::Rc};

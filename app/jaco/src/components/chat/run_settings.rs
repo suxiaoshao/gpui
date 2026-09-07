@@ -14,25 +14,13 @@ use crate::{
     components::{
         chat::input::{approval_select, effort_select},
         chat::model_picker::{ModelOption, model_sections},
-        picker::{
-            PickerContentPopoverConfig, PickerListDelegate, PickerPopover, PickerPopoverConfig,
-        },
+        picker::PickerControl,
         resource_status::refresh_status,
     },
     features::settings,
     foundation::{self, I18n},
     state,
     state::providers::{ProviderModelChoice, ProviderModelKey},
-};
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
-    ActiveTheme, Disableable, Sizable, Size, StyledExt,
-    button::Button,
-    h_flex,
-    input::{InputState, NumberInput},
-    label::Label,
-    list::{List, ListState},
-    v_flex,
 };
 use gpui_form::{
     ControlBinding, ControlProjection, ControlWriter, Form, FormSchema, TotalPath,
@@ -41,6 +29,16 @@ use gpui_form::{
 use gpui_form_gpui_component::integer_input::{
     IntegerInputError, IntegerInputEvent, IntegerInputPolicy, IntegerInputState,
 };
+use gpui_kit::component::{
+    ActiveTheme, Disableable, Sizable,
+    button::Button,
+    h_flex,
+    input::{InputState, NumberInput},
+    label::Label,
+    tooltip::Tooltip,
+    v_flex,
+};
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use jaco_core::{ModelCapabilitiesSnapshot, ReasoningSelectionSnapshot, ToolApprovalMode};
 
 pub(crate) use policy::{
@@ -49,7 +47,6 @@ pub(crate) use policy::{
 };
 use policy::{projected_reasoning_selection, reasoning_selection_after_model_change};
 
-pub(crate) type ControlOpenHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 type SettingsWriter<M> = ControlWriter<M, RunSettingsInput>;
 type ReasoningWriter<M> = ControlWriter<M, Option<ReasoningSelectionSnapshot>>;
 type ApprovalWriter<M> = ControlWriter<M, ToolApprovalMode>;
@@ -142,25 +139,19 @@ pub(crate) fn resolve_run_settings(
 
 pub(crate) struct ModelControlState {
     pub(crate) selected: Option<ProviderModelKey>,
-    pub(crate) picker: Entity<ListState<PickerListDelegate<ModelOption>>>,
-    pub(crate) open: bool,
-    pub(crate) on_open_change: ControlOpenHandler,
+    pub(crate) picker: PickerControl<ModelOption>,
 }
 
 pub(crate) struct ReasoningControlState {
     pub(crate) capability: Option<ModelCapabilitiesSnapshot>,
     pub(crate) selected: Option<ReasoningSelectionSnapshot>,
-    pub(crate) picker: Entity<ListState<PickerListDelegate<effort_select::EffortOption>>>,
+    pub(crate) picker: PickerControl<effort_select::EffortOption>,
     pub(crate) token_budget_input: Option<Entity<InputState>>,
-    pub(crate) open: bool,
-    pub(crate) on_open_change: ControlOpenHandler,
 }
 
 pub(crate) struct ApprovalControlState {
     pub(crate) selected: ToolApprovalMode,
-    pub(crate) picker: Entity<ListState<PickerListDelegate<approval_select::ApprovalModeOption>>>,
-    pub(crate) open: bool,
-    pub(crate) on_open_change: ControlOpenHandler,
+    pub(crate) picker: PickerControl<approval_select::ApprovalModeOption>,
 }
 
 #[derive(Clone)]
@@ -346,8 +337,6 @@ where
         let state = cx.entity().downgrade();
 
         let model_sections = model_sections(choices.as_ref().map(Vec::as_slice).unwrap_or(&[]));
-        let model_selected_ix =
-            PickerListDelegate::selected_index_for(&model_sections, selected_model.as_ref());
         let model_writer: Rc<RefCell<Option<SettingsWriter<M>>>> = Rc::new(RefCell::new(None));
         let model_confirm = Rc::new({
             let state = state.clone();
@@ -362,61 +351,26 @@ where
                 let Some(settings) = explicit_model_selection(settings, option.key(), cx) else {
                     return;
                 };
-                let _ = state.update(cx, |controller, cx| {
+                let _ = state.update(cx, |_controller, cx| {
                     if let Some(writer) = writer.borrow().as_ref() {
                         writer.defer_set(settings, window, cx);
                     }
-                    controller.set_model_open(false, window, cx);
+                    cx.notify();
                 });
             }
         });
-        let model_cancel = Rc::new({
-            let state = state.clone();
-            move |window: &mut Window, cx: &mut App| {
-                let _ = state.update(cx, |controller, cx| {
-                    controller.set_model_open(false, window, cx);
-                });
-            }
-        });
-        let model_open_change: ControlOpenHandler = Rc::new({
-            let state = state.clone();
-            move |open, window, cx| {
-                let _ = state.update(cx, |controller, cx| {
-                    controller.set_model_open(open, window, cx);
-                });
-            }
-        });
-        let model_picker = cx.new(|cx| {
-            let mut picker = ListState::new(
-                PickerListDelegate::new(
-                    model_sections,
-                    selected_model.clone(),
-                    |cx| {
-                        cx.global::<I18n>()
-                            .t("chat-form-model-none-configured")
-                            .into()
-                    },
-                    model_confirm,
-                    model_cancel,
-                ),
-                window,
-                cx,
-            )
-            .searchable(true);
-            picker.delegate_mut().set_selectable(
-                model_catalog_is_ready(cx),
-                Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
-            );
-            picker.set_selected_index(model_selected_ix, window, cx);
-            picker
-        });
+        let model_picker = PickerControl::new(
+            model_sections,
+            selected_model.clone(),
+            model_catalog_is_ready(cx),
+            true,
+            move |option, window, cx| model_confirm(option, window, cx),
+            window,
+            cx,
+        );
 
         let reasoning_sections =
             effort_select::effort_sections(capability.as_ref(), cx.global::<foundation::I18n>());
-        let reasoning_selected_ix = PickerListDelegate::selected_index_for(
-            &reasoning_sections,
-            projected_reasoning.as_ref(),
-        );
         let reasoning_writer: Rc<RefCell<Option<ReasoningWriter<M>>>> = Rc::new(RefCell::new(None));
         let reasoning_confirm = Rc::new({
             let state = state.clone();
@@ -425,49 +379,23 @@ where
                 if !config_is_ready(cx) {
                     return;
                 }
-                let _ = state.update(cx, |controller, cx| {
+                let _ = state.update(cx, |_controller, cx| {
                     if let Some(writer) = writer.borrow().as_ref() {
                         writer.defer_set(Some(option.selection().clone()), window, cx);
                     }
-                    controller.set_reasoning_open(false, window, cx);
+                    cx.notify();
                 });
             }
         });
-        let reasoning_cancel = Rc::new({
-            let state = state.clone();
-            move |window: &mut Window, cx: &mut App| {
-                let _ = state.update(cx, |controller, cx| {
-                    controller.set_reasoning_open(false, window, cx);
-                });
-            }
-        });
-        let reasoning_open_change: ControlOpenHandler = Rc::new({
-            let state = state.clone();
-            move |open, window, cx| {
-                let _ = state.update(cx, |controller, cx| {
-                    controller.set_reasoning_open(open, window, cx);
-                });
-            }
-        });
-        let reasoning_picker = cx.new(|cx| {
-            let mut picker = ListState::new(
-                PickerListDelegate::new(
-                    reasoning_sections,
-                    projected_reasoning.clone(),
-                    |cx| cx.global::<I18n>().t("chat-form-effort-empty").into(),
-                    reasoning_confirm,
-                    reasoning_cancel,
-                ),
-                window,
-                cx,
-            );
-            picker.delegate_mut().set_selectable(
-                config_is_ready(cx),
-                Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
-            );
-            picker.set_selected_index(reasoning_selected_ix, window, cx);
-            picker
-        });
+        let reasoning_picker = PickerControl::new(
+            reasoning_sections,
+            projected_reasoning.clone(),
+            config_is_ready(cx),
+            false,
+            move |option, window, cx| reasoning_confirm(option, window, cx),
+            window,
+            cx,
+        );
         let token_budget_control = token_budget_bounds(
             capability
                 .as_ref()
@@ -482,8 +410,6 @@ where
             .map(|control| control.read(cx).editor().clone());
 
         let approval_sections = approval_select::approval_mode_sections(cx.global::<I18n>());
-        let approval_selected_ix =
-            PickerListDelegate::selected_index_for(&approval_sections, Some(&approval));
         let approval_writer: Rc<RefCell<Option<ApprovalWriter<M>>>> = Rc::new(RefCell::new(None));
         let approval_confirm = Rc::new({
             let state = state.clone();
@@ -492,69 +418,37 @@ where
                 if !config_is_ready(cx) {
                     return;
                 }
-                let _ = state.update(cx, |controller, cx| {
+                let _ = state.update(cx, |_controller, cx| {
                     if let Some(writer) = writer.borrow().as_ref() {
                         writer.defer_set(option.mode(), window, cx);
                     }
-                    controller.set_approval_open(false, window, cx);
+                    cx.notify();
                 });
             }
         });
-        let approval_cancel = Rc::new({
-            let state = state.clone();
-            move |window: &mut Window, cx: &mut App| {
-                let _ = state.update(cx, |controller, cx| {
-                    controller.set_approval_open(false, window, cx);
-                });
-            }
-        });
-        let approval_open_change: ControlOpenHandler = Rc::new({
-            let state = state.clone();
-            move |open, window, cx| {
-                let _ = state.update(cx, |controller, cx| {
-                    controller.set_approval_open(open, window, cx);
-                });
-            }
-        });
-        let approval_picker = cx.new(|cx| {
-            let mut picker = ListState::new(
-                PickerListDelegate::new(
-                    approval_sections,
-                    Some(approval),
-                    |_| SharedString::from(""),
-                    approval_confirm,
-                    approval_cancel,
-                ),
-                window,
-                cx,
-            );
-            picker.delegate_mut().set_selectable(
-                config_is_ready(cx),
-                Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
-            );
-            picker.set_selected_index(approval_selected_ix, window, cx);
-            picker
-        });
+        let approval_picker = PickerControl::new(
+            approval_sections,
+            Some(approval),
+            config_is_ready(cx),
+            false,
+            move |option, window, cx| approval_confirm(option, window, cx),
+            window,
+            cx,
+        );
 
         let model_state = cx.new(|_| ModelControlState {
             selected: draft.model.clone(),
             picker: model_picker,
-            open: false,
-            on_open_change: model_open_change,
         });
         let reasoning_state = cx.new(|_| ReasoningControlState {
             capability,
             selected: projected_reasoning,
             picker: reasoning_picker,
             token_budget_input,
-            open: false,
-            on_open_change: reasoning_open_change,
         });
         let approval_state = cx.new(|_| ApprovalControlState {
             selected: approval,
             picker: approval_picker,
-            open: false,
-            on_open_change: approval_open_change,
         });
         let owner = cx.entity();
         let (model_binding, writer) = field.clone().bind_control_in(
@@ -708,17 +602,13 @@ where
         };
         let model_sections =
             model_sections(model_choices.as_ref().map(Vec::as_slice).unwrap_or(&[]));
-        model_picker.update(cx, |picker, cx| {
-            picker
-                .delegate_mut()
-                .replace_projection(model_sections, selected_model);
-            picker.delegate_mut().set_selectable(
-                model_catalog_is_ready(cx),
-                Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
-            );
-            let ix = picker.delegate().selected_index();
-            picker.set_selected_index(ix, window, cx);
-        });
+        model_picker.replace_projection(
+            model_sections,
+            selected_model,
+            model_catalog_is_ready(cx),
+            window,
+            cx,
+        );
 
         let (capability, selected_reasoning, reasoning_picker) = {
             let state = self.controls.reasoning.read(cx);
@@ -730,34 +620,26 @@ where
         };
         let reasoning_sections =
             effort_select::effort_sections(capability.as_ref(), cx.global::<I18n>());
-        reasoning_picker.update(cx, |picker, cx| {
-            picker
-                .delegate_mut()
-                .replace_projection(reasoning_sections, selected_reasoning);
-            picker.delegate_mut().set_selectable(
-                config_is_ready(cx),
-                Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
-            );
-            let ix = picker.delegate().selected_index();
-            picker.set_selected_index(ix, window, cx);
-        });
+        reasoning_picker.replace_projection(
+            reasoning_sections,
+            selected_reasoning,
+            config_is_ready(cx),
+            window,
+            cx,
+        );
 
         let (selected_approval, approval_picker) = {
             let state = self.controls.approval.read(cx);
             (state.selected, state.picker.clone())
         };
         let approval_sections = approval_select::approval_mode_sections(cx.global::<I18n>());
-        approval_picker.update(cx, |picker, cx| {
-            picker
-                .delegate_mut()
-                .replace_projection(approval_sections, Some(selected_approval));
-            picker.delegate_mut().set_selectable(
-                config_is_ready(cx),
-                Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
-            );
-            let ix = picker.delegate().selected_index();
-            picker.set_selected_index(ix, window, cx);
-        });
+        approval_picker.replace_projection(
+            approval_sections,
+            Some(selected_approval),
+            config_is_ready(cx),
+            window,
+            cx,
+        );
 
         cx.notify();
     }
@@ -820,79 +702,6 @@ where
         if set_existing_custom_token_budget(&mut reasoning, value) {
             reasoning_field.set(&self.form, reasoning, cx);
         }
-    }
-
-    pub(crate) fn set_model_open(
-        &mut self,
-        open: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let picker = (open && model_catalog_is_ready(cx))
-            .then(|| self.controls.model.read(cx).picker.clone());
-        self.controls.model.update(cx, |state, _| {
-            state.open = open;
-        });
-        if let Some(picker) = picker {
-            picker.update(cx, |picker, cx| picker.focus(window, cx));
-        }
-        if open {
-            self.set_reasoning_open(false, window, cx);
-            self.set_approval_open(false, window, cx);
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn set_reasoning_open(
-        &mut self,
-        open: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let open = open && config_is_ready(cx);
-        let has_options = !self
-            .controls
-            .reasoning
-            .read(cx)
-            .capability
-            .as_ref()
-            .and_then(|capability| capability.reasoning.as_ref())
-            .map(|reasoning| reasoning_selections(Some(reasoning)).is_empty())
-            .unwrap_or(true);
-        let should_focus = open && has_options;
-        let picker = should_focus.then(|| self.controls.reasoning.read(cx).picker.clone());
-        self.controls.reasoning.update(cx, |state, _| {
-            state.open = should_focus;
-        });
-        if let Some(picker) = picker {
-            picker.update(cx, |picker, cx| picker.focus(window, cx));
-        }
-        if open {
-            self.set_model_open(false, window, cx);
-            self.set_approval_open(false, window, cx);
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn set_approval_open(
-        &mut self,
-        open: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let open = open && config_is_ready(cx);
-        let picker = open.then(|| self.controls.approval.read(cx).picker.clone());
-        self.controls.approval.update(cx, |state, _| {
-            state.open = open;
-        });
-        if let Some(picker) = picker {
-            picker.update(cx, |picker, cx| picker.focus(window, cx));
-        }
-        if open {
-            self.set_model_open(false, window, cx);
-            self.set_reasoning_open(false, window, cx);
-        }
-        cx.notify();
     }
 
     fn sync_token_budget_control(
@@ -958,15 +767,7 @@ where
             state.picker.clone()
         });
         let sections = model_sections(choices.as_ref().map(Vec::as_slice).unwrap_or(&[]));
-        picker.update(cx, |picker, cx| {
-            picker.delegate_mut().replace_projection(sections, selected);
-            picker.delegate_mut().set_selectable(
-                model_catalog_is_ready(cx),
-                Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
-            );
-            let ix = picker.delegate().selected_index();
-            picker.set_selected_index(ix, window, cx);
-        });
+        picker.replace_projection(sections, selected, model_catalog_is_ready(cx), window, cx);
     }
 
     fn sync_reasoning_picker(
@@ -989,16 +790,7 @@ where
         });
         let sections =
             effort_select::effort_sections(capability.as_ref(), cx.global::<foundation::I18n>());
-        picker.update(cx, |picker, cx| {
-            picker.delegate_mut().set_sections(sections);
-            picker.delegate_mut().set_selected_value(projected);
-            picker.delegate_mut().set_selectable(
-                config_is_ready(cx),
-                Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
-            );
-            let ix = picker.delegate().selected_index();
-            picker.set_selected_index(ix, window, cx);
-        });
+        picker.replace_projection(sections, projected, config_is_ready(cx), window, cx);
     }
 
     fn sync_approval_picker(&self, selected: ToolApprovalMode, window: &mut Window, cx: &mut App) {
@@ -1007,15 +799,8 @@ where
             cx.notify();
             state.picker.clone()
         });
-        picker.update(cx, |picker, cx| {
-            picker.delegate_mut().set_selected_value(Some(selected));
-            picker.delegate_mut().set_selectable(
-                config_is_ready(cx),
-                Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
-            );
-            let ix = picker.delegate().selected_index();
-            picker.set_selected_index(ix, window, cx);
-        });
+        let sections = approval_select::approval_mode_sections(cx.global::<I18n>());
+        picker.replace_projection(sections, Some(selected), config_is_ready(cx), window, cx);
     }
 
     fn sync_model_from_form(
@@ -1172,101 +957,52 @@ impl View for ModelSelector {
     }
 
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let state = self.state;
-        let enabled = self.enabled;
-        let state_snapshot = state.read(cx);
-        let selected = state_snapshot.selected.clone();
-        let (phase, choices, problem) = state::providers::catalog(cx).read(cx, |operation| {
-            (
-                operation.phase(),
-                operation.data().map(|data| data.enabled_models.clone()),
-                operation.problem().map(ToString::to_string),
-            )
-        });
-        let i18n = cx.global::<I18n>();
-        let label: SharedString = match choices.as_ref() {
-            Some(choices) => selected
-                .as_ref()
-                .and_then(|key| selected_model_choice_from_slice(choices, Some(key)))
-                .map(|choice| choice.display_label().into())
-                .unwrap_or_else(|| i18n.t("chat-form-model-empty").into()),
-            None if problem.is_some() => i18n.t("chat-form-model-load-failed").into(),
-            None => i18n.t("resource-status-loading").into(),
-        };
+        let snapshot = self.state.read(cx);
+        let selected = snapshot.selected.clone();
+        let picker = snapshot.picker.clone();
+        let choices = load_model_choices(cx);
+        let label = selected_model_choice(&choices, selected.as_ref())
+            .map(|choice| choice.display_label())
+            .unwrap_or_else(|| cx.global::<I18n>().t("chat-form-model-empty"));
         let resource_ready = model_catalog_is_ready(cx);
-        let open = enabled && state_snapshot.open;
-        let list = state_snapshot.picker.clone();
-        let on_open_change = state_snapshot.on_open_change.clone();
-        let trigger = crate::components::picker::picker_trigger(
-            "chat-form-model-trigger",
-            crate::foundation::assets::IconName::Sparkles,
-            label,
-            open,
-        )
-        .disabled(!enabled)
-        .when(!resource_ready, |trigger| {
-            trigger.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
-        });
-        let list_content = || {
-            List::new(&list)
-                .search_placeholder(i18n.t("chat-form-model-search-placeholder"))
-                .with_size(Size::Small)
-                .scrollbar_visible(false)
-                .max_h(rems(18.))
-                .paddings(Edges::all(px(4.)))
-                .into_any_element()
-        };
-        let content = match (phase, choices.as_ref()) {
-            (gpui_operation::refresh::Phase::Ready, Some(choices)) if choices.is_empty() => {
-                render_empty_model_catalog(cx)
-            }
-            (gpui_operation::refresh::Phase::Ready, Some(_)) => list_content(),
-            (
-                gpui_operation::refresh::Phase::Refreshing
-                | gpui_operation::refresh::Phase::Degraded
-                | gpui_operation::refresh::Phase::RefreshingDegraded,
-                Some(_),
-            ) => v_flex()
-                .child(list_content())
-                .when_some(
-                    refresh_status(
-                        "chat-form-refresh-providers",
-                        phase,
-                        problem,
-                        state::providers::request_refresh,
-                        cx,
-                    ),
-                    |this, status| this.child(div().p_2().child(status)),
-                )
-                .into_any_element(),
-            _ => div()
-                .p_2()
-                .child(
-                    refresh_status(
-                        "chat-form-refresh-providers",
-                        phase,
-                        problem,
-                        state::providers::request_refresh,
-                        cx,
-                    )
-                    .unwrap_or_else(|| render_empty_model_catalog(cx)),
-                )
-                .into_any_element(),
-        };
-        crate::components::picker::picker_content_popover(
-            cx,
-            PickerContentPopoverConfig {
-                id: "chat-form-model-popover",
-                open,
-                trigger,
-                content,
-                width: px(340.),
-                footer: None,
-                on_open_change: move |open, window, cx| {
-                    on_open_change(*open, window, cx);
-                },
-            },
-        )
+        h_flex()
+            .id("chat-form-model-selector")
+            .debug_selector(|| "chat-form-model-selector".into())
+            .when(!resource_ready, |this| {
+                this.tooltip(|window, cx| {
+                    Tooltip::new(cx.global::<I18n>().t("resource-picker-read-only"))
+                        .build(window, cx)
+                })
+            })
+            .child(
+                picker
+                    .element()
+                    .placeholder(label)
+                    .icon(crate::foundation::assets::IconName::Sparkles)
+                    .disabled(!self.enabled)
+                    .menu_width(px(340.))
+                    .menu_max_h(rems(18.))
+                    .search_placeholder(cx.global::<I18n>().t("chat-form-model-search-placeholder"))
+                    .empty(|_, cx| render_empty_model_catalog(cx))
+                    .when(!resource_ready, |this| {
+                        this.footer(|_, cx| {
+                            let (phase, problem) =
+                                state::providers::catalog(cx).read(cx, |operation| {
+                                    (
+                                        operation.phase(),
+                                        operation.problem().map(ToString::to_string),
+                                    )
+                                });
+                            div().p_2().children(refresh_status(
+                                "chat-form-refresh-providers",
+                                phase,
+                                problem,
+                                state::providers::request_refresh,
+                                cx,
+                            ))
+                        })
+                    }),
+            )
     }
 }
 
@@ -1310,59 +1046,48 @@ impl View for ReasoningSelector {
     }
 
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let state = self.state;
-        let enabled = self.enabled;
-        let resource_ready = config_is_ready(cx);
-        let (label, has_options, open, picker, capability, token_budget_input, on_open_change) = {
-            let snapshot = state.read(cx);
-            let selected = snapshot.selected.clone();
-            let label = selected
-                .as_ref()
-                .map(|selection| reasoning_selection_label(selection, cx.global::<I18n>()))
-                .unwrap_or_else(|| cx.global::<I18n>().t("chat-form-effort-select"));
-            let has_options = snapshot
-                .capability
-                .as_ref()
-                .and_then(|capability| capability.reasoning.as_ref())
-                .is_some_and(|reasoning| !reasoning_selections(Some(reasoning)).is_empty());
-            (
-                label,
-                has_options,
-                enabled && resource_ready && snapshot.open,
-                snapshot.picker.clone(),
-                snapshot.capability.clone(),
-                snapshot.token_budget_input.clone(),
-                snapshot.on_open_change.clone(),
+        let snapshot = self.state.read(cx);
+        let label = snapshot
+            .selected
+            .as_ref()
+            .map(|selection| reasoning_selection_label(selection, cx.global::<I18n>()))
+            .unwrap_or_else(|| cx.global::<I18n>().t("chat-form-effort-select"));
+        let capability = snapshot.capability.clone();
+        let token_budget_input = snapshot.token_budget_input.clone();
+        let has_options = capability
+            .as_ref()
+            .and_then(|c| c.reasoning.as_ref())
+            .is_some_and(|reasoning| !reasoning_selections(Some(reasoning)).is_empty());
+        let enabled = self.enabled && config_is_ready(cx);
+        h_flex()
+            .id("chat-form-reasoning-selector")
+            .when(!config_is_ready(cx), |this| {
+                this.tooltip(|window, cx| {
+                    Tooltip::new(cx.global::<I18n>().t("resource-picker-read-only"))
+                        .build(window, cx)
+                })
+            })
+            .child(
+                snapshot
+                    .picker
+                    .element()
+                    .placeholder(label)
+                    .icon(crate::foundation::assets::IconName::Lightbulb)
+                    .disabled(!enabled || !has_options)
+                    .menu_width(px(180.))
+                    .menu_max_h(rems(16.))
+                    .empty(|_, cx| Label::new(cx.global::<I18n>().t("chat-form-effort-empty")))
+                    .when(token_budget_input.is_some(), |this| {
+                        this.footer(move |_, cx| {
+                            div().children(token_budget_footer(
+                                capability.as_ref(),
+                                token_budget_input.clone(),
+                                enabled,
+                                cx,
+                            ))
+                        })
+                    }),
             )
-        };
-        let footer = token_budget_footer(
-            capability.as_ref(),
-            token_budget_input,
-            enabled && resource_ready,
-            cx,
-        );
-        PickerPopover::new(PickerPopoverConfig {
-            id: "chat-form-effort-popover",
-            open,
-            trigger: crate::components::picker::picker_trigger(
-                "chat-form-effort-trigger",
-                crate::foundation::assets::IconName::Lightbulb,
-                label,
-                open,
-            )
-            .disabled(!enabled || !resource_ready || !has_options)
-            .when(!resource_ready, |trigger| {
-                trigger.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
-            }),
-            list: picker,
-            width: px(180.),
-            max_height: rems(16.).into(),
-            search_placeholder: None,
-            footer,
-            on_open_change: move |open, window, cx| {
-                on_open_change(*open, window, cx);
-            },
-        })
     }
 }
 
@@ -1417,40 +1142,33 @@ impl View for ApprovalSelector {
     }
 
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let state = self.state;
-        let enabled = self.enabled;
-        let resource_ready = config_is_ready(cx);
-        let snapshot = state.read(cx);
-        let selected = snapshot.selected;
-        let on_open_change = snapshot.on_open_change.clone();
-        PickerPopover::new(PickerPopoverConfig {
-            id: "chat-form-approval-popover",
-            open: enabled && resource_ready && snapshot.open,
-            trigger: crate::components::picker::picker_trigger(
-                "chat-form-approval-trigger",
-                crate::foundation::assets::IconName::Shield,
-                approval_select::approval_mode_label(selected, cx.global::<I18n>()),
-                enabled && resource_ready && snapshot.open,
+        let snapshot = self.state.read(cx);
+        h_flex()
+            .id("chat-form-approval-selector")
+            .when(!config_is_ready(cx), |this| {
+                this.tooltip(|window, cx| {
+                    Tooltip::new(cx.global::<I18n>().t("resource-picker-read-only"))
+                        .build(window, cx)
+                })
+            })
+            .child(
+                snapshot
+                    .picker
+                    .element()
+                    .placeholder(approval_select::approval_mode_label(
+                        snapshot.selected,
+                        cx.global::<I18n>(),
+                    ))
+                    .icon(crate::foundation::assets::IconName::Shield)
+                    .disabled(!self.enabled || !config_is_ready(cx))
+                    .menu_width(px(180.))
+                    .menu_max_h(rems(12.)),
             )
-            .disabled(!enabled || !resource_ready)
-            .when(!resource_ready, |trigger| {
-                trigger.tooltip(cx.global::<I18n>().t("resource-picker-read-only"))
-            }),
-            list: snapshot.picker.clone(),
-            width: px(180.),
-            max_height: rems(12.).into(),
-            search_placeholder: None,
-            footer: None,
-            on_open_change: move |open, window, cx| {
-                on_open_change(*open, window, cx);
-            },
-        })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::rc::Rc;
 
     use super::{
         ApprovalControlState, ApprovalSelector, ModelControlState, ModelSelector,
@@ -1462,14 +1180,12 @@ mod tests {
             input::{approval_select::ApprovalModeOption, effort_select::EffortOption},
             model_picker::ModelOption,
         },
-        picker::PickerListDelegate,
+        picker::PickerControl,
     };
     use crate::state::providers::{ProviderModelChoice, ProviderModelKey};
-    use gpui::{
-        AppContext as _, Context, Entity, IntoElement, Render, TestAppContext, View as _, Window,
-        div,
+    use gpui_kit::{
+        AppContext as _, Context, IntoElement, Render, TestAppContext, View as _, Window, div,
     };
-    use gpui_component::list::ListState;
     use jaco_core::conservative_model_capabilities;
 
     struct TestRoot;
@@ -1480,70 +1196,49 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn selector_views_use_backing_identity_across_rebuilds(cx: &mut TestAppContext) {
         let (_, _) = cx.add_window_view(|window, cx| {
-            let model_picker: Entity<ListState<PickerListDelegate<ModelOption>>> = cx.new(|cx| {
-                ListState::new(
-                    PickerListDelegate::new(
-                        Vec::new(),
-                        None,
-                        |_| "Empty".into(),
-                        Rc::new(|_, _, _| {}),
-                        Rc::new(|_, _| {}),
-                    ),
-                    window,
-                    cx,
-                )
-            });
-            let reasoning_picker: Entity<ListState<PickerListDelegate<EffortOption>>> =
-                cx.new(|cx| {
-                    ListState::new(
-                        PickerListDelegate::new(
-                            Vec::new(),
-                            None,
-                            |_| "Empty".into(),
-                            Rc::new(|_, _, _| {}),
-                            Rc::new(|_, _| {}),
-                        ),
-                        window,
-                        cx,
-                    )
-                });
-            let approval_picker: Entity<ListState<PickerListDelegate<ApprovalModeOption>>> = cx
-                .new(|cx| {
-                    ListState::new(
-                        PickerListDelegate::new(
-                            Vec::new(),
-                            None,
-                            |_| "Empty".into(),
-                            Rc::new(|_, _, _| {}),
-                            Rc::new(|_, _| {}),
-                        ),
-                        window,
-                        cx,
-                    )
-                });
-
+            let model_picker = PickerControl::<ModelOption>::new(
+                vec![],
+                None,
+                true,
+                false,
+                |_, _, _| {},
+                window,
+                cx,
+            );
+            let reasoning_picker = PickerControl::<EffortOption>::new(
+                vec![],
+                None,
+                true,
+                false,
+                |_, _, _| {},
+                window,
+                cx,
+            );
+            let approval_picker = PickerControl::<ApprovalModeOption>::new(
+                vec![],
+                None,
+                true,
+                false,
+                |_, _, _| {},
+                window,
+                cx,
+            );
             let model_state = cx.new(|_| ModelControlState {
                 selected: None,
                 picker: model_picker,
-                open: false,
-                on_open_change: Rc::new(|_, _, _| {}),
             });
             let reasoning_state = cx.new(|_| ReasoningControlState {
                 capability: None,
                 selected: None,
                 picker: reasoning_picker,
                 token_budget_input: None,
-                open: false,
-                on_open_change: Rc::new(|_, _, _| {}),
             });
             let approval_state = cx.new(|_| ApprovalControlState {
                 selected: jaco_core::ToolApprovalMode::RequestApproval,
                 picker: approval_picker,
-                open: false,
-                on_open_change: Rc::new(|_, _, _| {}),
             });
 
             let model = ModelSelector::new(model_state.clone(), true);

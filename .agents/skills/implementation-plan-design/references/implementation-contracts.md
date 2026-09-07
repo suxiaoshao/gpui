@@ -111,7 +111,7 @@ Change handwritten sources first. For copied upstream component docs or skills, 
 
 For icons and assets, define exact typed icon variant, Lucide/upstream slug or SVG path, ownership, additions/deletions, runtime versus bundle placement, generator/xtask input, and fallback. Use `gpui-app-icon-usage` for GPUI apps.
 
-For every user-visible label, message, validation result, error, accessibility string, title, menu item, or formatted value, define exact Fluent key, all locale files, meaning, interpolation/plural/select variables, caller/UI state, fallback, and tests. Keep macOS bundle localization separate from runtime Fluent resources. Use `gpui-i18n`; error-specific mappings live in `error-contracts.md`.
+For every user-visible label, message, validation result, error, accessibility string, title, menu item, or formatted value, define exact Fluent key, all locale files, meaning, interpolation/plural/select variables, caller/UI state and fallback. Keep macOS bundle localization separate from runtime Fluent resources. Use `gpui-i18n`; error-specific mappings live in `error-contracts.md`.
 
 ## Security and Observability
 

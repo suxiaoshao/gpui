@@ -1,6 +1,6 @@
 use duckdb::{Connection, Error as DuckdbError, params};
-use gpui::{IntoElement, ParentElement, RenderOnce, Styled, div};
-use gpui_component::{ActiveTheme, StyledExt, label::Label};
+use gpui_kit::component::{ActiveTheme, StyledExt, label::Label};
+use gpui_kit::{IntoElement, ParentElement, RenderOnce, Styled, div};
 
 use crate::{
     errors::FeiwenResult,
@@ -24,7 +24,11 @@ pub(crate) struct Novel {
 }
 
 impl RenderOnce for Novel {
-    fn render(self, _window: &mut gpui::Window, cx: &mut gpui::App) -> impl gpui::IntoElement {
+    fn render(
+        self,
+        _window: &mut gpui_kit::Window,
+        cx: &mut gpui_kit::App,
+    ) -> impl gpui_kit::IntoElement {
         div()
             .child(Label::new(self.title.name).text_lg())
             .child(match self.author {

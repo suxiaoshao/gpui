@@ -1,8 +1,5 @@
 use crate::{
-    app::{
-        APP_NAME, menus,
-        title_bar_menu::{TitleBarAppMenuBar, title_bar_leading},
-    },
+    app::{APP_NAME, menus, title_bar_menu::title_bar_leading},
     components::resource::{
         CriticalResourceAction, CriticalResourceProblem, CriticalResourcesView,
     },
@@ -10,14 +7,15 @@ use crate::{
     foundation::{I18n, assets::IconName},
     state,
 };
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::menu::AppMenuBar;
+use gpui_kit::component::{
     Root, StyledExt, TitleBar, WindowExt as NotificationWindowExt, h_flex,
     input::{InputEvent, InputState},
     label::Label,
     notification::{Notification, NotificationType},
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use std::any::TypeId;
 use tracing::{Level, event};
 use window_ext::{NativeWindowHandle, WindowExt as SystemWindowExt};
@@ -65,7 +63,7 @@ pub(crate) struct SettingsView {
     settings_search_input: Entity<InputState>,
     config_pages: Option<ConfigSettingsPages>,
     database_pages: Option<DatabaseSettingsPages>,
-    app_menu_bar: Entity<TitleBarAppMenuBar>,
+    app_menu_bar: Entity<AppMenuBar>,
     selected_page: SettingsPageKey,
     active_page: Option<SettingsPageKey>,
     database_ready: bool,
@@ -124,7 +122,7 @@ impl SettingsView {
         let config_pages = state::config::store(cx)
             .read(cx, |operation| operation.data().is_some())
             .then(|| ConfigSettingsPages::new(window, cx));
-        let app_menu_bar = TitleBarAppMenuBar::new(cx);
+        let app_menu_bar = AppMenuBar::new(cx);
         let layout_state = cx.global::<state::LayoutStateStore>().entity();
         let database_store = crate::database::store(cx);
         let config_store = state::config::store(cx);
@@ -844,7 +842,7 @@ fn usage_lifecycle_transition(
 }
 
 fn settings_title_bar_content(
-    app_menu_bar: Entity<TitleBarAppMenuBar>,
+    app_menu_bar: Entity<AppMenuBar>,
     title: impl Into<SharedString>,
 ) -> impl IntoElement {
     h_flex()
@@ -903,9 +901,9 @@ mod tests {
         database::DatabasePhase,
         foundation::{I18n, assets::IconName},
     };
-    use gpui::Keystroke;
-    use gpui_component::TitleBar;
-    use gpui_component::kbd::Kbd;
+    use gpui_kit::Keystroke;
+    use gpui_kit::component::TitleBar;
+    use gpui_kit::component::kbd::Kbd;
 
     #[test]
     fn settings_window_uses_component_titlebar_options() {

@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use gpui::{
+use gpui_kit::{
     App, AppContext, AsyncApp, AsyncWindowContext, Context, Entity, Global, Subscription, Task,
 };
 use jaco_agent::McpOAuthStatusSnapshot;
@@ -765,7 +765,7 @@ mod tests {
     use crate::state::config::{
         self, JacoConfig, McpOAuthTomlConfig, McpServerTomlConfig, McpTransportKind,
     };
-    use gpui::TestAppContext;
+    use gpui_kit::TestAppContext;
     use url::Url;
 
     #[test]
@@ -797,7 +797,7 @@ mod tests {
         assert_ne!(first, audience_key);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn credential_cleanup_is_globally_busy_until_completion(cx: &mut TestAppContext) {
         let key =
             credentials_key_for_server("server-a", &oauth_server("https://example.com/mcp", None))
@@ -830,7 +830,7 @@ mod tests {
         assert!(completed.get());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn credential_cleanup_deletes_key_even_if_config_reintroduces_same_server(
         cx: &mut TestAppContext,
     ) {
@@ -862,7 +862,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn credential_cleanup_deduplicates_keys_within_one_submission(cx: &mut TestAppContext) {
         let key =
             credentials_key_for_server("server-a", &oauth_server("https://example.com/mcp", None))
@@ -885,7 +885,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn credential_cleanup_queues_requests_while_a_task_is_running(cx: &mut TestAppContext) {
         let key =
             credentials_key_for_server("server-a", &oauth_server("https://example.com/mcp", None))
@@ -919,7 +919,7 @@ mod tests {
         cx.update(|cx| assert!(!credential_cleanup_in_progress(cx)));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn credential_cleanup_completion_can_schedule_another_cleanup(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");

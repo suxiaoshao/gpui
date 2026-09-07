@@ -1,9 +1,9 @@
-use gpui::{
+use gpui_form::{DynamicPath, Form};
+use gpui_kit::component::{ActiveTheme as _, label::Label, v_flex};
+use gpui_kit::{
     Context, Entity, IntoElement, ParentElement as _, Render, Styled as _, Window,
     prelude::FluentBuilder as _,
 };
-use gpui_component::{ActiveTheme as _, label::Label, v_flex};
-use gpui_form::{DynamicPath, Form};
 
 use crate::{
     features::request::{
@@ -58,7 +58,7 @@ impl Render for BinaryBodyView {
     }
 }
 
-pub(super) fn file_labels(cx: &gpui::App) -> FilePathLabels {
+pub(super) fn file_labels(cx: &gpui_kit::App) -> FilePathLabels {
     let i18n = cx.global::<I18n>();
     FilePathLabels {
         select: i18n.t("button-select-file").into(),

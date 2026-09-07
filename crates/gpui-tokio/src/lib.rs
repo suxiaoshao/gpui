@@ -89,3 +89,68 @@ impl Drop for AbortOnDrop {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct SignalDrop(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for SignalDrop {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    #[gpui::test]
+    async fn spawn_preserves_panic_as_join_error(cx: &mut gpui::TestAppContext) {
+        // Tokio wakes GPUI from another executor; allow that executor to park.
+        cx.executor().allow_parking();
+        cx.update(init);
+        let task = cx.update(|cx| Tokio::spawn(cx, async { panic!("bridge panic contract") }));
+        assert!(
+            task.await
+                .expect_err("panic must become JoinError")
+                .is_panic()
+        );
+    }
+
+    #[gpui::test]
+    async fn dropping_gpui_task_aborts_a_started_tokio_future(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
+        cx.update(init);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+        let task = cx.update(|cx| {
+            Tokio::spawn(cx, async move {
+                let _signal = SignalDrop(Some(dropped_tx));
+                let _ = started_tx.send(());
+                std::future::pending::<()>().await;
+            })
+        });
+        started_rx
+            .await
+            .expect("future must start before testing cancellation");
+        drop(task);
+        dropped_rx
+            .await
+            .expect("Task drop must abort its Tokio future");
+    }
+
+    #[gpui::test]
+    async fn external_runtime_survives_bridge_teardown(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        cx.update(|cx| init_from_handle(cx, runtime.handle().clone()));
+        let task = cx.update(|cx| Tokio::spawn(cx, async { 42 }));
+        assert_eq!(task.await.unwrap(), 42);
+        cx.update(|cx| drop(cx.remove_global::<GlobalTokio>()));
+        assert_eq!(runtime.spawn(async { 43 }).await.unwrap(), 43);
+    }
+}

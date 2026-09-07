@@ -1,6 +1,6 @@
 use crate::foundation::search::field_matches_query;
-use gpui::*;
-use gpui_component::select::SelectItem;
+use gpui_kit::component::select::SelectItem;
+use gpui_kit::*;
 use jaco_core::{PromptId, ShortcutInputSource};
 use jaco_db::PromptRecord;
 

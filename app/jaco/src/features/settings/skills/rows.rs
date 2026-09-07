@@ -2,8 +2,7 @@ use crate::{
     features::skills::GlobalSkillEntry,
     foundation::{I18n, assets::IconName, search::field_matches_query},
 };
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     collapsible::Collapsible,
@@ -13,6 +12,7 @@ use gpui_component::{
     tag::Tag,
     v_flex,
 };
+use gpui_kit::*;
 use jaco_core::SkillSourceKind;
 use std::{
     path::{Path, PathBuf},

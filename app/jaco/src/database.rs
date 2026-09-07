@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use gpui::{App, AppContext, BorrowAppContext, Entity, Global};
+use gpui_kit::{App, AppContext, BorrowAppContext, Entity, Global};
 use gpui_operation::Transition;
 use gpui_store::{Select, Store};
 use jaco_agent::AgentPersistence;
@@ -641,10 +641,10 @@ fn install_database_for_test(cx: &mut App, data_dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Task, TestAppContext};
+    use gpui_kit::{Task, TestAppContext};
     use gpui_operation::Settle;
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn initial_database_open_is_settled_before_init_returns(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         cx.update(|cx| {
@@ -658,7 +658,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn chat_preferences_do_not_rebind_database(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.toml");
@@ -696,7 +696,7 @@ mod tests {
         assert_eq!(current, original);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn config_degraded_does_not_replace_database_resource_or_session(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.toml");
@@ -729,7 +729,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn database_helpers_require_only_database_ready(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         cx.update(|cx| {
@@ -742,7 +742,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn ready_data_dir_rejects_non_ready_database_without_fallback(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         cx.update(|cx| {
@@ -761,7 +761,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn failed_destructive_repair_remains_retryable_without_retained_data(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         cx.update(|cx| install_for_test(cx, dir.path()));

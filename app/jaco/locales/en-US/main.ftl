@@ -806,3 +806,5 @@ chat-form-send-provider-unavailable = Sending is unavailable until the model cat
 critical-action-cancel = Cancel
 critical-action-confirm = Continue
 sidebar-project-pin-failed = Failed to update project pin
+
+conversation-jump-to-latest = Jump to latest

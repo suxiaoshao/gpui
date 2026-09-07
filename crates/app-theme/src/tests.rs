@@ -829,9 +829,11 @@ fn generated_material_theme_uses_translucent_selection_tokens() {
 
 #[test]
 fn generated_material_non_button_colors_match_baseline() {
+    // GPUI Kit 0.6 removes accordion.hover.background; all remaining colors retain
+    // their previous values. Hashes follow the released schema field order.
     for (mode, expected_hash) in [
-        (ComponentThemeMode::Light, 0x553e7ff0d04ebdda_u64),
-        (ComponentThemeMode::Dark, 0x59fbc2224dc9c9ca_u64),
+        (ComponentThemeMode::Light, 0xe1a17fd3f320520d_u64),
+        (ComponentThemeMode::Dark, 0xe12c76f6154a1969_u64),
     ] {
         let config = generated_theme_config(TEST_THEME_COLOR, mode).expect("material theme");
         let mut value = serde_json::to_value(&config.colors).expect("serialize colors");

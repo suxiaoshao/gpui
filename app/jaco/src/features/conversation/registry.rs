@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt};
 
-use gpui::{App, AppContext, Context, Entity, Task, WeakEntity};
+use gpui_kit::{App, AppContext, Context, Entity, Task, WeakEntity};
 use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh};
 use jaco_conversation::{ConversationError, ConversationService};
 use jaco_core::{
@@ -335,7 +335,7 @@ pub(crate) fn release_active(id: &ConversationId, cx: &mut impl AppContext) {
 
 #[cfg(test)]
 mod tests {
-    use gpui::TestAppContext;
+    use gpui_kit::TestAppContext;
     use jaco_core::{
         ConversationMetadata, ConversationSettingsSnapshot, ToolApprovalMode, ToolApprovalPolicy,
         ToolPolicySnapshot,
@@ -344,7 +344,7 @@ mod tests {
 
     use super::*;
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn registry_reuses_a_live_conversation_model(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         let store =
@@ -365,7 +365,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn committed_summary_cancels_catalog_refresh_and_updates_retained_data(
         cx: &mut TestAppContext,
     ) {

@@ -9,8 +9,7 @@ use crate::{
     features::settings::{TOGGLE_SETTINGS_KEY, ToggleSettings},
     foundation::{self, assets::IconName},
 };
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Collapsible, Disableable, Side, Sizable,
     button::Button,
     h_flex,
@@ -18,6 +17,7 @@ use gpui_component::{
     sidebar::{Sidebar, SidebarGroup, SidebarItem},
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use std::time::Duration;
 
 use super::actions::{

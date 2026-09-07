@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use gpui::{App, Entity};
+use gpui_kit::{App, Entity};
 
 use super::project_control::ProjectControlState;
 

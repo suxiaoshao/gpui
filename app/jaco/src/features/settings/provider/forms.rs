@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
-use gpui::{App, AppContext as _, Context, Entity, EntityId, Window};
 use gpui_form::{
     ErrorParamValue, Form, FormRevision, FormVersion, GardeValidator, PrepareError as SubmitError,
     ValidationReport, ValidationTrigger,
 };
+use gpui_kit::{App, AppContext as _, Context, Entity, EntityId, Window};
 use jaco_core::{
     ProviderSecretRefs, ProviderSettingFieldValue, ProviderSettingValue, ProviderSettingsPayload,
 };

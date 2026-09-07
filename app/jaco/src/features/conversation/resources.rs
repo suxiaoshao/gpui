@@ -1,4 +1,4 @@
-use gpui::{App, AppContext, Entity, Global, Subscription, Task};
+use gpui_kit::{App, AppContext, Entity, Global, Subscription, Task};
 use gpui_store::Store;
 
 use crate::{

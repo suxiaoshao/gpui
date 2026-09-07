@@ -3,8 +3,7 @@ use crate::{
     foundation::{I18n, assets::IconName},
     state,
 };
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable,
     button::Button,
     h_flex,
@@ -12,6 +11,7 @@ use gpui_component::{
     label::Label,
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use gpui_store::StoreSelection;
 use jaco_core::PromptId;
 use jaco_db::PromptRecord;

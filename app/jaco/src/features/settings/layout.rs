@@ -1,6 +1,5 @@
 use crate::{foundation::assets::IconName, foundation::search::field_matches_query};
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, Sizable, StyledExt,
     group_box::{GroupBox, GroupBoxVariants},
     h_flex,
@@ -10,6 +9,7 @@ use gpui_component::{
     scroll::ScrollableElement,
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use std::rc::Rc;
 
 pub(super) const SETTINGS_SIDEBAR_DEFAULT_WIDTH: Pixels = px(280.);

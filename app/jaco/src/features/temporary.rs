@@ -19,8 +19,7 @@ use crate::{
     foundation::{I18n, assets::IconName},
     state,
 };
-use gpui::{actions, prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IndexPath, Root, Sizable, WindowExt as _,
     button::Button,
     h_flex,
@@ -31,6 +30,7 @@ use gpui_component::{
     resizable::{h_resizable, resizable_panel},
     v_flex,
 };
+use gpui_kit::{actions, prelude::FluentBuilder as _, *};
 use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition};
 use jaco_core::{ConversationId, new_id};
 use new_conversation::{TemporaryNewConversationPane, TemporaryNewConversationPaneEvent};
@@ -832,7 +832,7 @@ impl TemporaryWindow {
                             .py_2()
                             .border_b_1()
                             .border_color(cx.theme().border)
-                            .child(gpui_component::spinner::Spinner::new().small())
+                            .child(gpui_kit::component::spinner::Spinner::new().small())
                             .child(
                                 Label::new(cx.global::<I18n>().t("resource-status-loading"))
                                     .text_xs(),

@@ -2,7 +2,7 @@ mod approval;
 
 use std::{collections::HashMap, sync::Arc};
 
-use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
+use gpui_kit::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use gpui_operation::{Cancel, Complete, Load, Retry, Transition, refresh};
 use jaco_agent::{
     AgentCancellationToken, AgentPersistence, AgentRunHandle, AgentRunRequest, AgentRuntime,
@@ -1029,7 +1029,7 @@ impl ConversationRuntimeStore {
         &mut self,
         conversation_id: ConversationId,
         tool_invocation_id: ToolInvocationId,
-        _window: &mut gpui::Window,
+        _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) -> bool {
         if self.shutting_down || !matches!(self.recovery, refresh::Operation::Ready(_)) {
@@ -1680,7 +1680,7 @@ async fn run_agent_with_saved_provider(
 mod tests {
     use super::*;
     use crate::database;
-    use gpui::{Subscription, WindowHandle};
+    use gpui_kit::{Subscription, WindowHandle};
     use jaco_agent::AgentRunHandleStatus;
     use jaco_core::{
         AgentEngineKind, AgentRunInput, AgentRunStatus, AgentRunTriggerKind, AgentRuntimeSnapshot,
@@ -1778,8 +1778,8 @@ mod tests {
         }
     }
 
-    #[gpui::test]
-    fn duplicate_submit_is_ignored_and_drops_its_task(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn duplicate_submit_is_ignored_and_drops_its_task(cx: &mut gpui_kit::TestAppContext) {
         let conversation_id = "conversation-1".to_string();
         let mut active_runs = ActiveRuns::default();
         assert!((&mut active_runs).transition(SubmitAttempt {
@@ -1995,8 +1995,8 @@ mod tests {
         assert!(runtime.release_archive_fence(&current));
     }
 
-    #[gpui::test]
-    fn archive_commit_clears_session_failure_marker(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn archive_commit_clears_session_failure_marker(cx: &mut gpui_kit::TestAppContext) {
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
         let project_id = "project-1".to_string();
@@ -2057,8 +2057,8 @@ mod tests {
         assert!(!active_runs.contains_key(&conversation_id));
     }
 
-    #[gpui::test]
-    fn submission_failure_drops_the_owned_task(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn submission_failure_drops_the_owned_task(cx: &mut gpui_kit::TestAppContext) {
         let conversation_id = "conversation-1".to_string();
         let dropped = Arc::new(AtomicBool::new(false));
         let guard = DropFlag(dropped.clone());
@@ -2084,9 +2084,9 @@ mod tests {
         assert!(dropped.load(Ordering::SeqCst));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn submission_failure_sets_sidebar_marker_without_duplicate_notification(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
@@ -2115,9 +2115,9 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn publication_drain_acknowledges_after_queued_events_are_applied(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
@@ -2168,8 +2168,8 @@ mod tests {
         drop(driver);
     }
 
-    #[gpui::test]
-    fn stale_runtime_publication_cannot_mutate_a_new_attempt(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn stale_runtime_publication_cannot_mutate_a_new_attempt(cx: &mut gpui_kit::TestAppContext) {
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
 
@@ -2208,8 +2208,10 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn init_recovers_persisted_running_runs_without_sidebar_failure(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn init_recovers_persisted_running_runs_without_sidebar_failure(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
         let _dir = init_runtime_test(cx);
         let (conversation_id, agent_run_id) = cx.update(|cx| {
             let repository = test_repository(cx);
@@ -2236,9 +2238,9 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn init_recovery_removes_generated_pending_and_orphan_before_ready(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let dir = init_runtime_test(cx);
         let conversation_id =
@@ -2265,9 +2267,9 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn init_recovery_keeps_missing_generated_reference_and_becomes_ready(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let dir = init_runtime_test(cx);
         cx.update(|cx| {
@@ -2322,9 +2324,9 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn conversation_committed_publishes_generated_attachment_to_catalog_model_and_reload(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let dir = init_runtime_test(cx);
         let conversation_id =
@@ -2477,9 +2479,9 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn init_recovers_persisted_waiting_approval_runs_without_sidebar_failure(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let _dir = init_runtime_test(cx);
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
@@ -2534,8 +2536,8 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn stop_run_keeps_conversation_gated_until_cleanup_finishes(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn stop_run_keeps_conversation_gated_until_cleanup_finishes(cx: &mut gpui_kit::TestAppContext) {
         let _dir = init_runtime_test(cx);
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let recorder = cx.update(|cx| cx.new(|cx| RuntimeEventRecorder::new(store.clone(), cx)));
@@ -2600,8 +2602,8 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn finish_run_records_uncanceled_error(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn finish_run_records_uncanceled_error(cx: &mut gpui_kit::TestAppContext) {
         let _dir = init_runtime_test(cx);
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
@@ -2626,8 +2628,8 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn finish_run_removes_matching_active_run(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn finish_run_removes_matching_active_run(cx: &mut gpui_kit::TestAppContext) {
         let _dir = init_runtime_test(cx);
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
@@ -2707,8 +2709,8 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn app_owned_completion_does_not_require_window(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn app_owned_completion_does_not_require_window(cx: &mut gpui_kit::TestAppContext) {
         let _dir = init_runtime_test(cx);
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
@@ -2745,8 +2747,8 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn deny_tool_invocation_resolves_matching_pending_approval(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn deny_tool_invocation_resolves_matching_pending_approval(cx: &mut gpui_kit::TestAppContext) {
         let _dir = init_runtime_test(cx);
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
@@ -2795,8 +2797,8 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn denying_approval_does_not_create_failure_marker(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn denying_approval_does_not_create_failure_marker(cx: &mut gpui_kit::TestAppContext) {
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
         let agent_run_id = "run-1".to_string();
@@ -2833,8 +2835,8 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn approval_availability_publication_emits_the_exact_key(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn approval_availability_publication_emits_the_exact_key(cx: &mut gpui_kit::TestAppContext) {
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let recorder = cx.update(|cx| cx.new(|cx| RuntimeEventRecorder::new(store.clone(), cx)));
         let conversation_id = "conversation-1".to_string();
@@ -2931,9 +2933,9 @@ mod tests {
         ));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn denial_with_wrong_pending_conversation_preserves_authority_and_last_error(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
@@ -2968,9 +2970,9 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn denial_while_shutting_down_preserves_authority_and_last_error(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
@@ -3006,9 +3008,9 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn approve_tool_invocation_without_active_waiting_run_is_ignored(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let _dir = init_runtime_test(cx);
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
@@ -3064,8 +3066,10 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn deny_tool_invocation_without_active_waiting_run_is_ignored(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn deny_tool_invocation_without_active_waiting_run_is_ignored(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
         let _dir = init_runtime_test(cx);
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let (conversation_id, agent_run_id, approval_id) = cx.update(|cx| {
@@ -3104,9 +3108,9 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn deny_tool_invocation_ignores_stale_action_without_pending_broker(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let _dir = init_runtime_test(cx);
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
@@ -3148,8 +3152,8 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn finish_run_ignores_stale_run_key(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn finish_run_ignores_stale_run_key(cx: &mut gpui_kit::TestAppContext) {
         let store = cx.update(|cx| cx.new(|_| ConversationRuntimeStore::new_ready_for_test()));
         let conversation_id = "conversation-1".to_string();
 
@@ -3171,7 +3175,7 @@ mod tests {
         });
     }
 
-    fn init_runtime_test(cx: &mut gpui::TestAppContext) -> TempDir {
+    fn init_runtime_test(cx: &mut gpui_kit::TestAppContext) -> TempDir {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
             database::install_for_test(cx, dir.path());
@@ -3187,7 +3191,7 @@ mod tests {
         database::with_ready_repository(cx, |repository| Ok(repository.clone())).unwrap()
     }
 
-    fn open_runtime_test_window(cx: &mut gpui::TestAppContext) -> WindowHandle<TestView> {
+    fn open_runtime_test_window(cx: &mut gpui_kit::TestAppContext) -> WindowHandle<TestView> {
         cx.update(|cx| {
             cx.open_window(Default::default(), |_window, cx| cx.new(|_| TestView))
                 .expect("open runtime test window")
@@ -3196,13 +3200,13 @@ mod tests {
 
     struct TestView;
 
-    impl gpui::Render for TestView {
+    impl gpui_kit::Render for TestView {
         fn render(
             &mut self,
-            _window: &mut gpui::Window,
-            _cx: &mut gpui::Context<Self>,
-        ) -> impl gpui::IntoElement {
-            gpui::div()
+            _window: &mut gpui_kit::Window,
+            _cx: &mut gpui_kit::Context<Self>,
+        ) -> impl gpui_kit::IntoElement {
+            gpui_kit::div()
         }
     }
 

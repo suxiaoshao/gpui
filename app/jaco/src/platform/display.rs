@@ -1,4 +1,4 @@
-use gpui::{App, Bounds, Pixels, PlatformDisplay, Point, point, px};
+use gpui_kit::{App, Bounds, Pixels, PlatformDisplay, Point, point, px};
 use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,7 +66,7 @@ fn display_id_for_mouse_location(
 #[cfg(test)]
 mod tests {
     use super::{DisplaySnapshot, display_id_for_mouse_location};
-    use gpui::{Bounds, point, px, size};
+    use gpui_kit::{Bounds, point, px, size};
 
     fn snapshot(
         id: u64,

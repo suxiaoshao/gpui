@@ -177,6 +177,28 @@ let value_input = FormInput::try_new(
 在 renderer 中按 dynamic `PathKey` 保存 dynamic adapter。该 location 退休时 drop adapter。如果后续 model
 change 在相同 schema position 新建了另一个 condition，应创建新 adapter；绝不能重定向旧 adapter。
 
+## 绑定多行正文与代码
+
+`FormTextarea`、`FormEditor` 的 `new`、`try_new`、`Deref` 契约与 `FormInput` 相同，
+原生类型分别为 `TextareaState`、`EditorState`。三者都消费 `InputEvent::Change` / `Blur`，
+通过静默 `set_value` 投影；动态路径退役和绑定释放遵循上文规则。
+
+```rust,ignore
+let body = FormEditor::new(
+    &request_form,
+    RequestDraft::BODY,
+    |window, cx| EditorState::new(window, cx).language("json"),
+    window,
+    cx,
+);
+// 使用 Editor::new(&body) 渲染；正文则使用 FormTextarea、
+// TextareaState::new(window, cx) 与 Textarea::new(&body)。
+```
+
+适配器从 `gpui_form_gpui_component` 导入，原生类型从 `gpui_component::input` 导入；
+workspace 应用也可通过 `gpui_kit::component::input` 使用同一类型。
+只读响应查看器使用 `Editor::readonly(true)` 保留选择和复制能力，无须 Form 绑定。
+
 ## 绑定整数 input
 
 `FormIntegerInput` 把未完成或非法的 editor text 保留在 native state。只有合法的 typed integer 才写入 Form。

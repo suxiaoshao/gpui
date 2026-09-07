@@ -13,7 +13,7 @@ Global state in GPUI provides app-wide shared data accessible from any context.
 ### Define Global State
 
 ```rust
-use gpui::Global;
+use gpui_kit::Global;
 
 #[derive(Clone)]
 struct AppSettings {
@@ -194,3 +194,4 @@ let user_entity = cx.new(|_| UserState { ... });
 - Component-specific state
 - State that changes frequently
 - State that needs notifications
+

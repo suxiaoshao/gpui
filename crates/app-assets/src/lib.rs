@@ -5,6 +5,13 @@ extern crate self as app_assets;
 
 pub use app_assets_macros::{define_lucide_icons, define_svg_icons};
 
+/// Types used by the generated asset declarations.
+#[doc(hidden)]
+pub mod __private {
+    pub use gpui::{AssetSource, Result, SharedString};
+    pub use gpui_component::IconNamed;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SvgIconMetadata {
     pub source: &'static str,
