@@ -106,3 +106,18 @@ Cargo 另报告依赖 `block 0.1.6` 的 future-incompatibility 提示。测试�
   加上此前本轮相同运行源码的 Jaco bundle，四应用 macOS release 打包均通过；未安装。
   日志：`/tmp/gpui215-final-bundle-{http-client,feiwen,novel-download}.log`。
 - 本地最终日志：`/tmp/gpui215-final-{build,test,clippy}.log`。Windows/Linux 和远程 CI 结果由 PR 后续检查确认。
+
+## PR #216：测试遗留路径清理（2026-09-07）
+
+- Linux/Windows 的生产 build 已通过；test 编译失败于仅非 macOS 测试引用的旧 `ConfirmDialog`。
+  删除旧 action 引用，改用真实 Enter 按键；保留异步完成前不关闭、成功后关闭的断言，并让测试在 macOS 同样编译运行。
+- 对四应用生产目标及依赖使用 `--force-warn dead_code` 排查，结合调用点区分生命周期持有字段、测试设施与无生产入口的实现。
+- 删除仅被测试调用的 `model_select_groups` 旧 Select 分组适配及其专用测试，保留生产使用的 `model_sections`。
+- 删除仅被测试设置的 OpenAI `with_mode`、mode 字段及序列化分支；生产配置一直使用 None，effort/context/store 行为保留。
+  同步移除 WebSocket 测试夹具中的旧字段；保留针对实际生产映射的断言。
+- 未删除仍服务生产删除/归档流程的异步确认逻辑，也未删除用于维持订阅和控制器生命周期的持有字段。
+- 定向验证通过：`cargo test -p jaco --locked components::delete_confirm::tests`（4）、
+  `cargo test -p jaco --locked components::chat::model_picker::tests`（7）、
+  `cargo test -p jaco-agent --locked providers::openai`（18）。
+- `cargo clippy -p jaco -p jaco-agent --all-targets --all-features --locked -- -D warnings` 及变更差异检查通过。
+  Linux/Windows 运行结果仍需更新后的 PR CI 确认。

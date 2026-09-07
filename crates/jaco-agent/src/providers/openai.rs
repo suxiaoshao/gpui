@@ -1,8 +1,6 @@
 use crate::{AgentRuntimeError, Result};
 use jaco_core::{ProviderRequestContextSnapshot, ReasoningSelectionSnapshot, RunSettingsSnapshot};
-use rig::providers::openai::responses_api::{
-    Reasoning, ReasoningContext, ReasoningEffort, ReasoningMode,
-};
+use rig::providers::openai::responses_api::{Reasoning, ReasoningContext, ReasoningEffort};
 use serde_json::Value;
 
 mod websocket;
@@ -15,7 +13,6 @@ pub(crate) use websocket::{
 #[derive(Clone, Debug)]
 pub(crate) struct OpenAiReasoningPolicy {
     effort: Option<ReasoningEffort>,
-    mode: Option<ReasoningMode>,
     context: Option<ReasoningContext>,
     store: bool,
 }
@@ -39,7 +36,6 @@ impl OpenAiReasoningPolicy {
         };
         Ok(Self {
             effort,
-            mode: None,
             context: None,
             store: true,
         })
@@ -60,9 +56,6 @@ impl OpenAiReasoningPolicy {
         let mut reasoning = Reasoning::new();
         if let Some(effort) = self.effort.clone() {
             reasoning = reasoning.with_effort(effort);
-        }
-        if let Some(mode) = self.mode.clone() {
-            reasoning = reasoning.with_mode(mode);
         }
         if let Some(context) = self.context.clone() {
             reasoning = reasoning.with_context(context);
@@ -86,12 +79,6 @@ impl OpenAiReasoningPolicy {
         );
         parameters.insert("store".to_string(), Value::Bool(self.store));
         Ok(Value::Object(parameters))
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn with_mode(mut self, mode: ReasoningMode) -> Self {
-        self.mode = Some(mode);
-        self
     }
 }
 
@@ -157,18 +144,16 @@ mod tests {
     }
 
     #[test]
-    fn typed_policy_maps_gpt_5_6_effort_context_store_and_runtime_pro() {
+    fn typed_policy_maps_gpt_5_6_effort_context_and_store() {
         let policy = OpenAiReasoningPolicy::from_run_settings(&settings("max"))
             .unwrap()
-            .for_request_context(ProviderRequestContextSnapshot::PreviousResponse)
-            .with_mode(ReasoningMode::Pro);
+            .for_request_context(ProviderRequestContextSnapshot::PreviousResponse);
         let value = policy.merge_into_request_params(None).unwrap();
         assert_eq!(
             value,
             json!({
                 "reasoning": {
                     "effort": "max",
-                    "mode": "pro",
                     "context": "all_turns"
                 },
                 "store": true

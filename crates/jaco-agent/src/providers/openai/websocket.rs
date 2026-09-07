@@ -1568,7 +1568,6 @@ mod tests {
     fn continuation_request_shaping_preserves_current_fields_and_full_fallback() {
         let reasoning = OpenAiReasoningPolicy {
             effort: Some(ReasoningEffort::High),
-            mode: None,
             context: None,
             store: true,
         };

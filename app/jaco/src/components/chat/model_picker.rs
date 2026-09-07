@@ -7,11 +7,7 @@ use crate::{
     state::providers::{ProviderModelChoice, ProviderModelKey},
 };
 use gpui_kit::component::{
-    ActiveTheme, Sizable, StyledExt, h_flex,
-    label::Label,
-    select::{SearchableVec, SelectGroup, SelectItem},
-    tag::Tag,
-    v_flex,
+    ActiveTheme, Sizable, StyledExt, h_flex, label::Label, select::SelectItem, tag::Tag, v_flex,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use jaco_core::ModelCapabilitiesSnapshot;
@@ -131,18 +127,6 @@ pub(crate) fn model_sections(choices: &[ProviderModelChoice]) -> Vec<PickerSecti
         .collect()
 }
 
-#[allow(dead_code)]
-pub(crate) fn model_select_groups(
-    choices: &[ProviderModelChoice],
-) -> SearchableVec<SelectGroup<ModelOption>> {
-    SearchableVec::new(
-        grouped_model_options(choices)
-            .into_iter()
-            .map(|(provider, items)| SelectGroup::new(provider).items(items))
-            .collect::<Vec<_>>(),
-    )
-}
-
 fn grouped_model_options(choices: &[ProviderModelChoice]) -> Vec<(SharedString, Vec<ModelOption>)> {
     let mut sections = Vec::new();
     let mut provider: Option<SharedString> = None;
@@ -258,15 +242,12 @@ fn capability_search_tokens(capabilities: &ModelCapabilitiesSnapshot) -> Vec<&'s
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        capability_tag_labels, model_sections, model_select_groups,
-        provider_visual_for_model_choice,
-    };
+    use super::{capability_tag_labels, model_sections, provider_visual_for_model_choice};
     use crate::{
         foundation::{I18n, assets::ProviderLogoName},
         state::providers::ProviderModelChoice,
     };
-    use gpui_kit::component::select::{SelectDelegate, SelectItem};
+    use gpui_kit::component::select::SelectItem;
     use jaco_core::{
         CapabilitySourceSnapshot, FileInputCapabilitySnapshot, ImageInputCapabilitySnapshot,
         ModelCapabilitiesSnapshot, ReasoningCapabilitySnapshot, ReasoningControlSnapshot,
@@ -288,22 +269,6 @@ mod tests {
         assert_eq!(sections[1].items.len(), 1);
         assert_eq!(sections[0].items[0].value().model_id, "gpt-5");
         assert_eq!(sections[1].items[0].value().provider_id, "provider-2");
-    }
-
-    #[test]
-    fn model_select_groups_reuse_model_options() {
-        let choices = vec![
-            choice("provider-1", "openai", "OpenAI", "gpt-5", Some("GPT Five")),
-            choice("provider-2", "ollama", "Ollama", "llama3.2", None),
-        ];
-        let groups = model_select_groups(&choices);
-
-        assert_eq!(groups.items_count(0), 1);
-        assert_eq!(groups.items_count(1), 1);
-        assert_eq!(
-            groups.position(&choices[1].key()),
-            Some(gpui_kit::component::IndexPath::default().section(1).row(0))
-        );
     }
 
     #[test]

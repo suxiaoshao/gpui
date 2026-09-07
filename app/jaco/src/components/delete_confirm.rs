@@ -173,16 +173,13 @@ mod tests {
         rc::Rc,
     };
 
-    #[cfg(not(target_os = "macos"))]
-    use gpui_kit::component::{Root, WindowExt, dialog::ConfirmDialog};
+    use gpui_kit::component::{Root, WindowExt};
     use gpui_kit::{
         AppContext as _, ClickEvent, IntoElement, Render, TestAppContext, Window, WindowHandle, div,
     };
-    #[cfg(not(target_os = "macos"))]
-    use gpui_kit::{ParentElement as _, Task, VisualTestContext};
+    use gpui_kit::{ParentElement as _, VisualTestContext};
     use tokio::sync::oneshot;
 
-    #[cfg(not(target_os = "macos"))]
     use super::open_async_destructive_confirm_dialog;
     use super::{AsyncDestructiveConfirmState, DestructiveAction};
 
@@ -198,10 +195,8 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
     struct DialogTestView;
 
-    #[cfg(not(target_os = "macos"))]
     impl Render for DialogTestView {
         fn render(
             &mut self,
@@ -281,28 +276,33 @@ mod tests {
             .expect("inspect completed confirmation");
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[gpui_kit::test]
     fn async_destructive_confirmation_closes_only_after_success(cx: &mut TestAppContext) {
         let window = open_dialog_test_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let (sender, receiver) = oneshot::channel();
+        let receiver = Rc::new(RefCell::new(Some(receiver)));
 
         cx.update(|window, cx| {
             open_async_destructive_confirm_dialog(
                 "Delete",
                 "Delete this item?",
                 DestructiveAction::Delete,
-                |_, _| Task::ready(true),
+                move |window, cx| {
+                    let receiver = receiver.borrow_mut().take().expect("confirm once");
+                    window.spawn(cx, async move |_| receiver.await.unwrap_or(false))
+                },
                 window,
                 cx,
             );
         });
         cx.run_until_parked();
 
-        cx.update(|window, cx| {
-            window.dispatch_action(Box::new(ConfirmDialog), cx);
-            assert!(window.has_active_dialog(cx));
-        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        cx.update(|window, cx| assert!(window.has_active_dialog(cx)));
+
+        sender.send(true).expect("complete deletion");
         cx.run_until_parked();
         cx.update(|window, cx| assert!(!window.has_active_dialog(cx)));
     }
@@ -314,7 +314,6 @@ mod tests {
         })
     }
 
-    #[cfg(not(target_os = "macos"))]
     fn open_dialog_test_window(cx: &mut TestAppContext) -> WindowHandle<Root> {
         cx.update(|cx| {
             gpui_kit::init(cx);
