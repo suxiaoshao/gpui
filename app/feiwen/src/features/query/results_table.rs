@@ -1,12 +1,12 @@
 use crate::store::{service::Novel, types::Author};
-use gpui::{App, Context, IntoElement, ParentElement, Styled, Window, div};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, StyledExt,
     label::Label,
     link::Link,
     table::{Column, ColumnFixed, ColumnSort, TableDelegate, TableState},
     tag::Tag as TagComponent,
 };
+use gpui_kit::{App, Context, IntoElement, ParentElement, Styled, Window, div};
 
 const SITE_ORIGIN: &str = "https://xn--pxtr7m.com";
 

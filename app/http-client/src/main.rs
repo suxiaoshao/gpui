@@ -1,8 +1,8 @@
 use errors::HttpClientResult;
 use features::RequestView;
 use foundation::I18n;
-use gpui::*;
-use gpui_component::Root;
+use gpui_kit::component::Root;
+use gpui_kit::*;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -23,7 +23,7 @@ fn quit(_: &Quit, cx: &mut App) {
 }
 
 fn init(cx: &mut App) {
-    gpui_component::init(cx);
+    gpui_kit::init(cx);
     gpui_tokio::init(cx);
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.activate(true);
@@ -76,7 +76,7 @@ fn main() -> HttpClientResult<()> {
     let span = tracing::info_span!("init");
     let _enter = span.enter();
 
-    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
     app.run(|cx: &mut App| {
         init(cx);
         let title = cx.global::<I18n>().t("app-title");

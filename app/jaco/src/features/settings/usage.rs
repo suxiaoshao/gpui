@@ -3,9 +3,10 @@ use crate::{
     foundation::{I18n, conversation_format::format_token_count},
 };
 use fluent_bundle::FluentArgs;
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
+use gpui_heatmap::{
+    ActivityHeatmap, ActivityHeatmapLabels, ActivityHeatmapSeries, ActivityHeatmapSeriesError,
+};
+use gpui_kit::component::{
     ActiveTheme, IndexPath, Sizable, Size, StyledExt,
     alert::Alert,
     button::Button,
@@ -21,9 +22,8 @@ use gpui_component::{
     tooltip::Tooltip,
     v_flex,
 };
-use gpui_heatmap::{
-    ActivityHeatmap, ActivityHeatmapLabels, ActivityHeatmapSeries, ActivityHeatmapSeriesError,
-};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh};
 use jaco_db::{
     UsageAnalyticsAggregate, UsageAnalyticsCostDailyBucket, UsageAnalyticsFiniteRange,
@@ -1834,7 +1834,7 @@ mod tests {
         usage_query_for_offset,
     };
     use crate::{database, foundation::I18n};
-    use gpui::{AppContext as _, Task, TestAppContext, VisualTestContext, WindowHandle};
+    use gpui_kit::{AppContext as _, Task, TestAppContext, VisualTestContext, WindowHandle};
     use gpui_operation::{Load, Transition, refresh};
     use jaco_db::{
         UsageAnalyticsActivity, UsageAnalyticsAggregate, UsageAnalyticsCostDailyBucket,
@@ -2003,7 +2003,7 @@ mod tests {
         assert_eq!(active_query, None);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn entity_activation_is_single_flight_and_deactivation_cancels_it(cx: &mut TestAppContext) {
         let _dir = init_usage_settings_test(cx);
         let window = open_usage_settings_window(cx);
@@ -2033,7 +2033,7 @@ mod tests {
         assert_eq!(page.read_with(&cx, |page, _| page.active_query), None);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn entity_rejects_stale_completion_for_period_mismatch(cx: &mut TestAppContext) {
         let _dir = init_usage_settings_test(cx);
         let period_window = open_usage_settings_window(cx);
@@ -2070,7 +2070,7 @@ mod tests {
         assert_fresh_empty_result(&period_page, UsageAnalyticsPeriod::AllTime, &period_cx);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn entity_rejects_stale_completion_for_query_mismatch(cx: &mut TestAppContext) {
         let _dir = init_usage_settings_test(cx);
         let range_window = open_usage_settings_window(cx);
@@ -2105,7 +2105,7 @@ mod tests {
         assert_fresh_empty_result(&range_page, UsageAnalyticsPeriod::ThisMonth, &range_cx);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn entity_rejects_completion_when_no_query_is_running(cx: &mut TestAppContext) {
         let _dir = init_usage_settings_test(cx);
         let idle_window = open_usage_settings_window(cx);
@@ -2797,7 +2797,7 @@ mod tests {
     }
 
     fn assert_fresh_empty_result(
-        page: &gpui::Entity<UsageSettingsPage>,
+        page: &gpui_kit::Entity<UsageSettingsPage>,
         expected_period: UsageAnalyticsPeriod,
         cx: &VisualTestContext,
     ) {
@@ -2818,7 +2818,7 @@ mod tests {
     fn init_usage_settings_test(cx: &mut TestAppContext) -> TempDir {
         let dir = tempdir().expect("temporary usage settings database");
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             cx.set_global(I18n::english_for_test());
             database::install_for_test(cx, dir.path());
         });

@@ -30,8 +30,8 @@ pub(crate) type Assets = AppAssets<LucideAssets>;
 #[cfg(test)]
 mod tests {
     use super::{Assets, IconName};
-    use gpui::{AssetSource, SharedString};
-    use gpui_component::IconNamed as _;
+    use gpui_kit::component::IconNamed as _;
+    use gpui_kit::{AssetSource, SharedString};
 
     #[test]
     fn declared_lucide_icons_have_expected_paths() {

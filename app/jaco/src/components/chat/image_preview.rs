@@ -1,16 +1,16 @@
 use crate::foundation::{self, assets::IconName};
 use fluent_bundle::FluentArgs;
-use gpui::{
-    AnyElement, App, AppContext as _, Context, CursorStyle, Image, InteractiveElement as _,
-    IntoElement as _, MouseButton, ObjectFit, ParentElement as _, PinchEvent, Pixels, Point,
-    Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, Size, StatefulInteractiveElement as _,
-    Styled as _, StyledImage as _, Window, div, img, point, prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable, WindowExt as ComponentWindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
+};
+use gpui_kit::{
+    AnyElement, App, AppContext as _, Context, CursorStyle, Image, InteractiveElement as _,
+    IntoElement as _, MouseButton, ObjectFit, ParentElement as _, PinchEvent, Pixels, Point,
+    Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, Size, StatefulInteractiveElement as _,
+    Styled as _, StyledImage as _, Window, div, img, point, prelude::FluentBuilder as _, px,
 };
 use std::{path::PathBuf, sync::Arc};
 
@@ -205,7 +205,7 @@ impl ImagePreview {
         viewport_size: PreviewSize,
         zoom_percent: f32,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    ) -> gpui_kit::AnyElement {
         let natural_size = self.natural_size.unwrap_or(PreviewSize {
             width: 1.,
             height: 1.,
@@ -245,7 +245,7 @@ impl ImagePreview {
             .into_any_element()
     }
 
-    fn render_load_error(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_load_error(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let label = cx
             .global::<foundation::I18n>()
             .t("chat-form-image-preview-load-failed");
@@ -272,7 +272,7 @@ impl ImagePreview {
             .into_any_element()
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_header(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         h_flex()
             .absolute()
             .top(px(CLOSE_INSET))
@@ -295,7 +295,7 @@ impl ImagePreview {
             .into_any_element()
     }
 
-    fn render_close_button(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_close_button(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let tooltip = cx
             .global::<foundation::I18n>()
             .t("chat-form-image-preview-close");
@@ -337,7 +337,7 @@ impl ImagePreview {
         zoom_percent: f32,
         viewport_size: PreviewSize,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    ) -> gpui_kit::AnyElement {
         let fit = self
             .natural_size
             .map(|natural_size| fit_zoom_percent(natural_size, viewport_size))
@@ -435,7 +435,11 @@ impl ImagePreview {
 }
 
 impl Render for ImagePreview {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
         let viewport_size = self.preview_viewport_size(window);
         let zoom_percent = self.current_zoom_percent(viewport_size);
 
@@ -529,15 +533,15 @@ fn image_source_dimensions(source: &ImagePreviewSource) -> Result<(u32, u32), St
             use image::GenericImageView as _;
 
             let format = match image.format() {
-                gpui::ImageFormat::Png => image::ImageFormat::Png,
-                gpui::ImageFormat::Jpeg => image::ImageFormat::Jpeg,
-                gpui::ImageFormat::Webp => image::ImageFormat::WebP,
-                gpui::ImageFormat::Gif => image::ImageFormat::Gif,
-                gpui::ImageFormat::Svg
-                | gpui::ImageFormat::Bmp
-                | gpui::ImageFormat::Tiff
-                | gpui::ImageFormat::Ico
-                | gpui::ImageFormat::Pnm => image::ImageFormat::Png,
+                gpui_kit::ImageFormat::Png => image::ImageFormat::Png,
+                gpui_kit::ImageFormat::Jpeg => image::ImageFormat::Jpeg,
+                gpui_kit::ImageFormat::Webp => image::ImageFormat::WebP,
+                gpui_kit::ImageFormat::Gif => image::ImageFormat::Gif,
+                gpui_kit::ImageFormat::Svg
+                | gpui_kit::ImageFormat::Bmp
+                | gpui_kit::ImageFormat::Tiff
+                | gpui_kit::ImageFormat::Ico
+                | gpui_kit::ImageFormat::Pnm => image::ImageFormat::Png,
             };
             image::load_from_memory_with_format(image.bytes(), format)
                 .map(|image| image.dimensions())

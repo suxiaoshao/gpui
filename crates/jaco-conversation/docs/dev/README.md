@@ -1,5 +1,7 @@
 # jaco-conversation 开发计划
 
+- [Issue #215：依赖升级](issue-215/README.md)：jaco-conversation 的依赖/API 配套迁移与验证边界。
+
 这里登记 `crates/jaco-conversation` owner 的实施级计划。
 
 | Issue | 状态 | 入口 |

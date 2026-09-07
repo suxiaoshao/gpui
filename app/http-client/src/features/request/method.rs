@@ -1,8 +1,8 @@
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     IndexPath,
     select::{SelectDelegate, SelectItem},
 };
+use gpui_kit::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum HttpMethod {
@@ -78,13 +78,13 @@ impl SelectDelegate for SelectHttpMethod {
         HttpMethod::ALL.len()
     }
 
-    fn item(&self, ix: gpui_component::IndexPath) -> Option<&Self::Item> {
+    fn item(&self, ix: gpui_kit::component::IndexPath) -> Option<&Self::Item> {
         HttpMethod::ALL.get(ix.row)
     }
 
-    fn position<V>(&self, value: &V) -> Option<gpui_component::IndexPath>
+    fn position<V>(&self, value: &V) -> Option<gpui_kit::component::IndexPath>
     where
-        Self::Item: gpui_component::select::SelectItem<Value = V>,
+        Self::Item: gpui_kit::component::select::SelectItem<Value = V>,
         V: PartialEq,
     {
         HttpMethod::ALL

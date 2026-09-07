@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use crate::components::hotkey_input::string_to_keystroke;
 use global_hotkey::hotkey::HotKey;
-use gpui::Keystroke;
+use gpui_kit::Keystroke;
 use jaco_core::ShortcutId;
 use jaco_db::ShortcutRecord;
 

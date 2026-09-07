@@ -1,6 +1,6 @@
 use std::fmt;
 
-use gpui::{App, AppContext, Entity, Global, Subscription, Task};
+use gpui_kit::{App, AppContext, Entity, Global, Subscription, Task};
 use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh};
 use gpui_store::{Select, Store};
 use jaco_core::{PromptContent, PromptId};
@@ -343,9 +343,9 @@ fn apply(message: PromptMessage, cx: &mut App) {
 mod tests {
     use super::{create_prompt, delete_prompt, init, list_prompts, update_prompt};
     use crate::database;
-    use gpui::TestAppContext;
+    use gpui_kit::TestAppContext;
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn prompt_catalog_tracks_committed_database_rows(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().expect("create temp dir");
 

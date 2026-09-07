@@ -1,8 +1,6 @@
-use gpui::{
-    AnyElement, Context, Entity, IntoElement, ParentElement as _, SharedString, Styled,
-    Subscription, Window, prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_form::{DynamicPath, Form, FormEvent};
+use gpui_form_gpui_component::FormInput;
+use gpui_kit::component::{
     ActiveTheme as _, IndexPath,
     form::{field, v_form},
     h_flex,
@@ -11,8 +9,10 @@ use gpui_component::{
     select::{SelectItem, SelectState},
     v_flex,
 };
-use gpui_form::{DynamicPath, Form, FormEvent};
-use gpui_form_gpui_component::FormInput;
+use gpui_kit::{
+    AnyElement, Context, Entity, IntoElement, ParentElement as _, SharedString, Styled,
+    Subscription, Window, prelude::FluentBuilder as _, px,
+};
 
 use super::{
     controls::{FormCaseSelect, FormScalarSelect},
@@ -287,7 +287,7 @@ impl AuthView {
     }
 }
 
-fn auth_options(cx: &gpui::App) -> Vec<AuthOption> {
+fn auth_options(cx: &gpui_kit::App) -> Vec<AuthOption> {
     let i18n = cx.global::<I18n>();
     [
         (AuthKind::None, "auth-none"),
@@ -303,7 +303,7 @@ fn auth_options(cx: &gpui::App) -> Vec<AuthOption> {
     .collect()
 }
 
-fn api_key_location_options(cx: &gpui::App) -> Vec<ApiKeyLocationOption> {
+fn api_key_location_options(cx: &gpui_kit::App) -> Vec<ApiKeyLocationOption> {
     let i18n = cx.global::<I18n>();
     [
         (ApiKeyLocation::Header, "auth-location-header"),
@@ -317,7 +317,7 @@ fn api_key_location_options(cx: &gpui::App) -> Vec<ApiKeyLocationOption> {
     .collect()
 }
 
-impl gpui::Render for AuthView {
+impl gpui_kit::Render for AuthView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (name, value, username, password, token, location_label, override_hint) = {
             let i18n = cx.global::<I18n>();
@@ -435,7 +435,7 @@ fn api_key_name_issue_visible(location: ApiKeyLocation, code: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{AppContext as _, TestAppContext};
+    use gpui_kit::{AppContext as _, TestAppContext};
 
     use super::*;
     use crate::foundation::i18n::init_i18n;
@@ -456,12 +456,12 @@ mod tests {
         ));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn auth_leaf_changes_keep_native_controls_and_case_changes_rebuild_them(
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             init_i18n(cx);
         });
         let (view, cx) = cx.add_window_view(|window, cx| {

@@ -4,9 +4,9 @@ Use this reference after dependency research or whenever a verified upstream/rep
 
 ## Inventory
 
-Search the repository for local components, adapters, wrappers, state machines, protocol parsers, retry logic, serialization helpers, copied skills/docs, vendored content, and workarounds in the affected domain. Compare them with target upstream source, API docs, migration guides, stories/examples, tests, component documentation, and skills.
+Start from the local implementation or upstream change relevant to the task. Follow its consumers and semantic dependencies far enough to establish whether replacement is viable. Broader repository inventory requires a task that calls for it.
 
-Do not limit UI-library review to Markdown file additions and deletions. Source can add methods or behavior without adding a component document.
+Compare behavior, state ownership, error handling, serialization, accessibility and platform requirements where relevant. Verify source/API behavior when release notes or component-document changes do not establish it.
 
 ## Decision Table
 
@@ -35,4 +35,4 @@ Use one of these decisions:
 
 ## Deletion-first Output
 
-List removals before additions. For retained custom code/content, narrow its responsibility and name the upstream API/source it delegates to. Reference the decision's D-ID from work packages. A dependency update plan is incomplete until this table covers every affected local subsystem.
+List removals before additions. For retained custom code/content, narrow its responsibility and name the upstream API/source it delegates to. Reference the decision's D-ID from work packages. Resolve the selected candidates and their migration dependencies before their work packages become executable.

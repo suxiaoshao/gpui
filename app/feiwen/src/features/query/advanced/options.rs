@@ -7,8 +7,8 @@ use crate::{
     },
 };
 use duckdb::Connection;
-use gpui::{AnyElement, IntoElement, SharedString};
-use gpui_component::select::{SearchableVec, SelectItem};
+use gpui_kit::component::select::{SearchableVec, SelectItem};
+use gpui_kit::{AnyElement, IntoElement, SharedString};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -539,7 +539,7 @@ mod query_options_load_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_component::{IndexPath, select::SelectDelegate};
+    use gpui_kit::component::{IndexPath, select::SelectDelegate};
 
     #[test]
     fn tag_option_matches_pinyin_and_initials() {

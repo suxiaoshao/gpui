@@ -3,8 +3,7 @@ use crate::{
     foundation::{I18n, assets::IconName},
     state,
 };
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
     button::Button,
     h_flex,
@@ -12,6 +11,7 @@ use gpui_component::{
     notification::{Notification, NotificationType},
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use gpui_store::StoreSelection;
 use jaco_db::ProjectRecord;
 use std::path::PathBuf;

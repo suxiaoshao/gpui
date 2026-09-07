@@ -17,7 +17,7 @@ Actions provide declarative keyboard-driven UI interactions in GPUI.
 ### Simple Actions
 
 ```rust
-use gpui::actions;
+use gpui_kit::actions;
 
 actions!(editor, [MoveUp, MoveDown, Save, Quit]);
 
@@ -170,3 +170,4 @@ impl MyComponent {
 
 div().on_action(cx.listener(Self::on_action_save))
 ```
+

@@ -1,17 +1,12 @@
-# gpui-component Documentation Attribution
+# GPUI Kit Documentation Attribution
 
-The files in `../components/*.md` are documentation snapshots copied from the
-`longbridge/gpui-component` project.
+- Upstream repository: https://github.com/longbridge/gpui-kit
+- Documentation path: `website/docs/components/*.md`
+- Release: `v0.6.0`
+- Snapshot commit: `94a313a72a2513aee2780240cd322d552b2395f0`
+- License: Apache License, Version 2.0
+- License copy: [gpui-component-LICENSE-APACHE](gpui-component-LICENSE-APACHE)
 
-- Upstream repository: https://github.com/longbridge/gpui-component
-- Upstream documentation path: `docs/docs/components/*.md`
-- Snapshot commit: `57a9903f48160845aabc8b92a1e2f5348c80d439`
-- Upstream license: Apache License, Version 2.0
-- Upstream copyright notice: Copyright 2024 - 2025 Longbridge <https://longbridge.com>
-- License copy: `gpui-component-LICENSE-APACHE`
-
-These component documentation files are bundled so the `gpui-component-usage`
-skill can be used portably without depending on a machine-specific checkout.
-The copied component documentation content is intended to remain an upstream
-documentation snapshot. Local skill-authored index and rule files are separate
-from the copied upstream documentation.
+Official Markdown files are copied byte-for-byte from this snapshot. Local skill
+entrypoints, component index and composition rules are maintained separately.
+The component index is excluded from the official mirror.

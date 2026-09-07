@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use gpui::Task;
+use gpui_kit::Task;
 use gpui_operation::refresh;
 use jaco_agent::{SkillCatalog, SkillCatalogEntry, SkillLoader};
 use jaco_core::{ContentPart, SkillSourceKind};

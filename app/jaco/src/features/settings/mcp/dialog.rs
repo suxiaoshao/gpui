@@ -6,12 +6,11 @@ use crate::{
     state::config::{McpServerTomlConfig, McpTransportKind, is_valid_mcp_server_id},
 };
 use fluent_bundle::FluentArgs;
-use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled,
-    Subscription, Task, Window, div, prelude::FluentBuilder as _, px, relative,
+use gpui_form::{
+    DynamicPath, FormEvent, FormSchema, FormVersion, GardeValidator, ItemPath, ModelChange,
+    MutationError, ResolveError, TotalItemsPath, ValidationTrigger,
 };
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt as NotificationWindowExt,
     button::{Button, ButtonVariants, Toggle, ToggleGroup, ToggleVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
@@ -24,9 +23,10 @@ use gpui_component::{
     switch::Switch,
     v_flex,
 };
-use gpui_form::{
-    DynamicPath, FormEvent, FormSchema, FormVersion, GardeValidator, ItemPath, ModelChange,
-    MutationError, ResolveError, TotalItemsPath, ValidationTrigger,
+use gpui_kit::{
+    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled,
+    Subscription, Task, Window, div, prelude::FluentBuilder as _, px, relative,
 };
 use jaco_agent::McpOAuthStatusSnapshot;
 use std::{
@@ -1711,7 +1711,7 @@ fn confirm_mcp_server_edit_dialog(
 
 async fn delete_oauth_credentials_for_sign_out(
     request: McpOAuthSignOutRequest,
-    cx: &mut gpui::AsyncWindowContext,
+    cx: &mut gpui_kit::AsyncWindowContext,
 ) -> Result<McpOAuthSignOutRequest, String> {
     state::mcp::oauth::delete_credentials(&request.credential_key, cx).await?;
     Ok(request)
@@ -1871,7 +1871,7 @@ fn oauth_status_icon(status: &McpOAuthStatusSnapshot) -> IconName {
     }
 }
 
-fn oauth_status_color(status: &McpOAuthStatusSnapshot, cx: &App) -> gpui::Hsla {
+fn oauth_status_color(status: &McpOAuthStatusSnapshot, cx: &App) -> gpui_kit::Hsla {
     match status {
         McpOAuthStatusSnapshot::Authorized { .. } => cx.theme().success,
         McpOAuthStatusSnapshot::Failed { .. } => cx.theme().danger,
@@ -2074,8 +2074,10 @@ mod tests {
         foundation, state,
         state::config::{McpOAuthTomlConfig, McpServerTomlConfig},
     };
-    use gpui::{AppContext as _, Entity, Render, TestAppContext, VisualTestContext, WindowHandle};
-    use gpui_component::input::{InputEvent, InputState};
+    use gpui_kit::component::input::{InputEvent, InputState};
+    use gpui_kit::{
+        AppContext as _, Entity, Render, TestAppContext, VisualTestContext, WindowHandle,
+    };
     use jaco_agent::McpOAuthStatusSnapshot;
     use tempfile::{TempDir, tempdir};
 
@@ -2199,7 +2201,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn oauth_signing_in_blocks_save(cx: &mut TestAppContext) {
         let _dir = init_dialog_test(cx);
         let window = open_test_window(cx);
@@ -2235,7 +2237,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn credential_cleanup_starts_a_busy_dialog_submission(cx: &mut TestAppContext) {
         let _dir = init_dialog_test(cx);
         let window = open_test_window(cx);
@@ -2263,7 +2265,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn save_validation_errors_are_applied_to_form_fields(cx: &mut TestAppContext) {
         let _dir = init_dialog_test(cx);
         let window = open_test_window(cx);
@@ -2329,7 +2331,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn same_parent_reorder_reuses_mcp_row_control_owner(cx: &mut TestAppContext) {
         let _dir = init_dialog_test(cx);
         let window = open_test_window(cx);
@@ -2403,7 +2405,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn retired_remove_callback_cannot_remove_reinserted_row(cx: &mut TestAppContext) {
         let _dir = init_dialog_test(cx);
         let window = open_test_window(cx);
@@ -2470,7 +2472,7 @@ mod tests {
         let dir = tempdir().expect("create test config dir");
         let config_path = dir.path().join("config.toml");
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             foundation::init_i18n(cx);
             let config = state::JacoConfig::load_from_path_for_test(&config_path)
                 .expect("create test config");
@@ -2505,10 +2507,10 @@ mod tests {
     impl Render for TestView {
         fn render(
             &mut self,
-            _window: &mut gpui::Window,
-            _cx: &mut gpui::Context<Self>,
-        ) -> impl gpui::IntoElement {
-            gpui::div()
+            _window: &mut gpui_kit::Window,
+            _cx: &mut gpui_kit::Context<Self>,
+        ) -> impl gpui_kit::IntoElement {
+            gpui_kit::div()
         }
     }
 }

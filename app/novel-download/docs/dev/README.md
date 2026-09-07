@@ -1,5 +1,7 @@
 # Novel Download 开发文档
 
+- [Issue #215：依赖升级](issue-215/README.md)：novel-download 的依赖/API 配套迁移与验证边界。
+
 ## 功能与重构计划
 
 | Issue | 状态 | 入口 |

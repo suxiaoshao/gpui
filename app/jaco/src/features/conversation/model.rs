@@ -1,6 +1,6 @@
 use std::fmt;
 
-use gpui::{Context, EventEmitter, Task};
+use gpui_kit::{Context, EventEmitter, Task};
 use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh};
 use jaco_conversation::{ConversationError, ConversationService};
 use jaco_core::{Conversation, ConversationChanges, ConversationEffect, ConversationId};
@@ -163,7 +163,7 @@ impl ConversationModel {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use gpui::{AppContext, Entity, Subscription, TestAppContext};
+    use gpui_kit::{AppContext, Entity, Subscription, TestAppContext};
     use jaco_core::{
         ContentPart, ConversationEntry, ConversationEntryKind, ConversationEntryPayload,
         ConversationEntryStatus, ConversationMetadata, ConversationSettingsSnapshot,
@@ -196,7 +196,7 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn shared_model_publishes_one_precise_event_to_every_consumer(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         let store =
@@ -248,7 +248,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn committed_change_cancels_refresh_before_applying_to_ready_data(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         let store =
@@ -292,7 +292,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn committed_change_restarts_loading_instead_of_merging_partial_data(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         let store =
@@ -322,7 +322,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn committed_change_keeps_degraded_data_stale_and_restarts_refresh(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         let store =

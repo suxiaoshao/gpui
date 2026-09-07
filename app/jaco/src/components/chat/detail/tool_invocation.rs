@@ -5,17 +5,17 @@ use std::{
 };
 
 use fluent_bundle::FluentArgs;
-use gpui::{
-    AnyElement, App, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    Styled, Window, div, prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     collapsible::Collapsible,
     h_flex,
     label::Label,
     v_flex,
+};
+use gpui_kit::{
+    AnyElement, App, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
+    Styled, Window, div, prelude::FluentBuilder as _, px,
 };
 use jaco_core::{
     AgentRunId, ApprovalStatus, ContentPart, ConversationEntry, ConversationEntryId,
@@ -1974,7 +1974,9 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     use super::*;
-    use gpui::{Context, Entity, EntityId, IntoElement, Render, TestAppContext, View, Window, div};
+    use gpui_kit::{
+        Context, Entity, EntityId, IntoElement, Render, TestAppContext, View, Window, div,
+    };
     use jaco_core::{
         ApprovalDecisionPayload, ApprovalRequestPayload, ConversationEntryStatus,
         ProviderRawPayload, RunErrorPayload, StructuredOutput, ToolApprovalPolicy, ToolArguments,
@@ -2044,11 +2046,11 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn invocation_id_keyed_copy_state_survives_rebuild_and_isolated_from_sibling(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(gpui_kit::init);
         let snapshots = Rc::new(RefCell::new([None, None]));
         let (root, cx) = cx.add_window_view(|_, _| CopyStateRoot {
             revision: 0,

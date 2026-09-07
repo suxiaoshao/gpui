@@ -27,11 +27,12 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", version = "=0.2.2" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
-gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+gpui = { package = "gpui-pre", version = "=0.3.3" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.3", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-kit = "=0.6.0"
+gpui-component = "=0.6.0"
 # Optional, for default bundled assets
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", package = "gpui-component-assets" }
+gpui-component-assets = { package = "gpui-kit-assets", version = "=0.6.0" }
 gpui-heatmap = { path = "./crates/gpui-heatmap" }
 jaco-core = { path = "./crates/jaco-core" }
 jaco-db = { path = "./crates/jaco-db" }
@@ -63,10 +64,6 @@ rmcp = { version = "2.2.0", features = [
   "transport-streamable-http-client-reqwest",
 ] }
 
-[patch.crates-io]
-gpui = { git = "https://github.com/zed-industries/zed", version = "=0.2.2" }
-gpui-macros = { git = "https://github.com/zed-industries/zed", package = "gpui_macros" }
-
 [profile.dev]
 split-debuginfo = "unpacked"
 incremental = true
@@ -83,7 +80,7 @@ quote = { opt-level = 3 }
 syn = { opt-level = 3 }
 taffy = { opt-level = 3 }
 resvg = { opt-level = 3 }
-gpui = { opt-level = 3 }
+gpui-pre = { opt-level = 3 }
 gpui-component = { opt-level = 3 }
 
 [profile.release]

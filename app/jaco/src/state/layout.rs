@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use gpui::*;
+use gpui_kit::*;
 use serde::{Deserialize, Serialize};
 use tracing::{Level, event};
 
@@ -488,7 +488,7 @@ mod tests {
         clamp_sidebar_width, fallback_display_id_for_persisted_window, load_or_create_from_path,
         resolve_persisted_window_bounds, write_persisted_to_path,
     };
-    use gpui::{Bounds, WindowBounds, point, px, size};
+    use gpui_kit::{Bounds, WindowBounds, point, px, size};
 
     #[test]
     fn layout_state_toml_defaults_and_roundtrips() {

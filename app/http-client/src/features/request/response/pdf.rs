@@ -8,7 +8,7 @@ mod worker;
 
 use std::{error::Error, fmt, mem, sync::Arc};
 
-use gpui::{RenderImage, Task};
+use gpui_kit::{RenderImage, Task};
 use gpui_operation::Transition;
 
 pub(crate) use self::worker::{PdfWorkerEvent, PdfWorkerHandle};

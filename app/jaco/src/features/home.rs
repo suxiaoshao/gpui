@@ -8,7 +8,7 @@ pub(crate) mod workspace;
 pub(crate) use root::JacoRoot;
 pub(crate) use shell::HomeView;
 
-use gpui::App;
+use gpui_kit::App;
 
 pub(crate) fn init(cx: &mut App) {
     actions::init(cx);

@@ -3,8 +3,7 @@ use crate::{
     features::skills,
     foundation::{I18n, assets::IconName},
 };
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable,
     button::Button,
     h_flex,
@@ -13,6 +12,7 @@ use gpui_component::{
     scroll::ScrollableElement,
     v_flex,
 };
+use gpui_kit::*;
 use gpui_operation::{Complete, Load, Refresh, Retry, Transition};
 use std::{
     collections::BTreeSet,
@@ -334,7 +334,7 @@ impl SkillsSettingsPage {
                 .items_center()
                 .justify_center()
                 .gap_2()
-                .child(gpui_component::spinner::Spinner::new())
+                .child(gpui_kit::component::spinner::Spinner::new())
                 .child(
                     Label::new(cx.global::<I18n>().t("resource-status-loading"))
                         .text_sm()
@@ -430,7 +430,7 @@ mod tests {
         take_pending_skill_refresh,
     };
     use crate::features::{settings::skills::rows::SkillContentPanelState, skills};
-    use gpui::{ListAlignment, ListState, Task, px};
+    use gpui_kit::{ListAlignment, ListState, Task, px};
     use gpui_operation::{Complete, Load, Refresh, Transition, refresh};
     use std::{collections::BTreeSet, path::PathBuf};
 

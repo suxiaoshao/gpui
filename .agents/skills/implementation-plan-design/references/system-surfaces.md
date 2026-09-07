@@ -4,13 +4,13 @@ Use this reference only to decide what the root hub must assess. Put semantics i
 
 ## Applicability Rules
 
-Give every canonical row exactly one status:
+Record only surfaces changed by the task and material boundaries deliberately left unchanged. Keep canonical S-IDs so plans and references remain comparable.
 
-- `Applicable`: the task changes, adds, deletes, migrates, or deliberately preserves behavior that needs an explicit target contract and work package.
-- `No change`: the surface exists in the traced flow but the design intentionally leaves it unchanged; cite exact inspected evidence and the reason.
-- `N/A`: the surface is absent from the traced flow; cite enough evidence to support that conclusion.
+- Changed surfaces link current evidence to target contracts and work packages.
+- A material no-change decision names the inspected boundary and reason.
+- Unrelated surfaces need no row or separate absence investigation.
 
-Copy every row into the root hub without merging or renaming IDs. Record each negative decision once. Owner plans reference assigned S-IDs and do not copy the matrix.
+Owner/child plans reference their assigned S-IDs without copying the canonical scope table.
 
 ## Canonical Taxonomy
 

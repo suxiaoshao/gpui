@@ -1,11 +1,11 @@
 use crate::foundation::I18n;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     Disableable, WindowExt,
     button::{Button, ButtonVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
     label::Label,
 };
+use gpui_kit::*;
 use std::rc::Rc;
 
 type OnConfirm = dyn Fn(&mut Window, &mut App);
@@ -173,13 +173,13 @@ mod tests {
         rc::Rc,
     };
 
-    use gpui::{
+    #[cfg(not(target_os = "macos"))]
+    use gpui_kit::component::{Root, WindowExt, dialog::ConfirmDialog};
+    use gpui_kit::{
         AppContext as _, ClickEvent, IntoElement, Render, TestAppContext, Window, WindowHandle, div,
     };
     #[cfg(not(target_os = "macos"))]
-    use gpui::{ParentElement as _, Task, VisualTestContext};
-    #[cfg(not(target_os = "macos"))]
-    use gpui_component::{Root, WindowExt, dialog::ConfirmDialog};
+    use gpui_kit::{ParentElement as _, Task, VisualTestContext};
     use tokio::sync::oneshot;
 
     #[cfg(not(target_os = "macos"))]
@@ -192,7 +192,7 @@ mod tests {
         fn render(
             &mut self,
             _window: &mut Window,
-            _cx: &mut gpui::Context<Self>,
+            _cx: &mut gpui_kit::Context<Self>,
         ) -> impl IntoElement {
             div()
         }
@@ -206,7 +206,7 @@ mod tests {
         fn render(
             &mut self,
             window: &mut Window,
-            cx: &mut gpui::Context<Self>,
+            cx: &mut gpui_kit::Context<Self>,
         ) -> impl IntoElement {
             div().children(Root::render_dialog_layer(window, cx))
         }
@@ -228,7 +228,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn async_destructive_confirmation_owns_task_and_blocks_repeated_submit(
         cx: &mut TestAppContext,
     ) {
@@ -282,7 +282,7 @@ mod tests {
     }
 
     #[cfg(not(target_os = "macos"))]
-    #[gpui::test]
+    #[gpui_kit::test]
     fn async_destructive_confirmation_closes_only_after_success(cx: &mut TestAppContext) {
         let window = open_dialog_test_window(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -317,7 +317,7 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     fn open_dialog_test_window(cx: &mut TestAppContext) -> WindowHandle<Root> {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             crate::foundation::init_i18n(cx);
             cx.open_window(Default::default(), |window, cx| {
                 let view = cx.new(|_| DialogTestView);

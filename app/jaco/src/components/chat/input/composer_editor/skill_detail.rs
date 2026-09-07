@@ -1,11 +1,6 @@
 use std::path::PathBuf;
 
-use gpui::{
-    App, AppContext as _, ClipboardItem, Context, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Task, Window, div, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Sizable, StyledExt, WindowExt as _,
     button::Button,
     dialog::{DialogClose, DialogFooter},
@@ -15,6 +10,11 @@ use gpui_component::{
     tag::Tag,
     text::TextView,
     v_flex,
+};
+use gpui_kit::{
+    App, AppContext as _, ClipboardItem, Context, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Task, Window, div, px,
 };
 
 use crate::{
@@ -103,7 +103,7 @@ impl Render for SkillDetailDialog {
                     .child(
                         Label::new(description)
                             .text_sm()
-                            .line_height(gpui::relative(1.4))
+                            .line_height(gpui_kit::relative(1.4))
                             .text_color(cx.theme().muted_foreground),
                     )
                     .child(path_chip(path.into(), cx)),
@@ -113,7 +113,7 @@ impl Render for SkillDetailDialog {
 }
 
 impl SkillDetailDialog {
-    fn render_content(&mut self, cx: &mut App) -> gpui::AnyElement {
+    fn render_content(&mut self, cx: &mut App) -> gpui_kit::AnyElement {
         match &self.content {
             SkillDetailContent::Loading => h_flex()
                 .w_full()
@@ -122,7 +122,7 @@ impl SkillDetailDialog {
                 .justify_center()
                 .gap_2()
                 .text_color(cx.theme().muted_foreground)
-                .child(gpui_component::Icon::new(IconName::RefreshCcw).with_size(px(16.)))
+                .child(gpui_kit::component::Icon::new(IconName::RefreshCcw).with_size(px(16.)))
                 .child(Label::new(cx.global::<I18n>().t("skill-content-loading")).text_sm())
                 .into_any_element(),
             SkillDetailContent::Failed { message } => h_flex()
@@ -135,11 +135,11 @@ impl SkillDetailDialog {
                 .bg(cx.theme().tokens.danger.background.opacity(0.08))
                 .p_3()
                 .text_color(cx.theme().danger)
-                .child(gpui_component::Icon::new(IconName::CircleAlert).with_size(px(16.)))
+                .child(gpui_kit::component::Icon::new(IconName::CircleAlert).with_size(px(16.)))
                 .child(
                     Label::new(message.clone())
                         .text_sm()
-                        .line_height(gpui::relative(1.4)),
+                        .line_height(gpui_kit::relative(1.4)),
                 )
                 .into_any_element(),
             SkillDetailContent::Loaded {
@@ -234,7 +234,7 @@ fn skill_to_entry(skill: &ComposerSkill) -> GlobalSkillEntry {
     }
 }
 
-fn path_chip(path: SharedString, cx: &mut App) -> gpui::AnyElement {
+fn path_chip(path: SharedString, cx: &mut App) -> gpui_kit::AnyElement {
     h_flex()
         .max_w_full()
         .min_w_0()

@@ -1,8 +1,8 @@
 use std::ops::Deref;
 
-use gpui::{AppContext as _, Context, Entity, Subscription, Window};
-use gpui_component::input::{InputEvent, InputState};
 use gpui_form::{ControlBinding, ControlProjection, FieldDef, Form, FormSchema};
+use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::{AppContext as _, Context, Entity, Subscription, Window};
 
 use super::ProviderFormField;
 

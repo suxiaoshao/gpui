@@ -1,8 +1,8 @@
 use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
-use gpui::TestAppContext;
-use gpui_component::select::SelectEvent;
+use gpui_kit::TestAppContext;
+use gpui_kit::component::select::SelectEvent;
 use http::{HeaderMap, StatusCode, Version};
 use url::Url;
 
@@ -18,7 +18,7 @@ use crate::foundation::i18n::init_i18n;
 
 fn initialize(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        gpui_component::init(cx);
+        gpui_kit::init(cx);
         init_i18n(cx);
         gpui_tokio::init(cx);
     });
@@ -48,7 +48,7 @@ fn completed_response(bytes: &'static [u8]) -> Arc<ResponseData> {
     ))
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn page_prepare_uses_the_form_snapshot_without_rewriting_the_editor(cx: &mut TestAppContext) {
     initialize(cx);
     let (view, cx) = cx.add_window_view(RequestView::new);
@@ -69,7 +69,7 @@ fn page_prepare_uses_the_form_snapshot_without_rewriting_the_editor(cx: &mut Tes
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn page_prepare_reports_submit_errors_on_the_precise_url_path(cx: &mut TestAppContext) {
     initialize(cx);
     let (view, cx) = cx.add_window_view(RequestView::new);
@@ -86,7 +86,7 @@ fn page_prepare_reports_submit_errors_on_the_precise_url_path(cx: &mut TestAppCo
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn running_send_is_rejected_before_submit_validation_or_a_second_task(cx: &mut TestAppContext) {
     initialize(cx);
     let (view, cx) = cx.add_window_view(RequestView::new);
@@ -110,7 +110,7 @@ fn running_send_is_rejected_before_submit_validation_or_a_second_task(cx: &mut T
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn prepare_failure_preserves_the_current_terminal_response(cx: &mut TestAppContext) {
     initialize(cx);
     let (view, cx) = cx.add_window_view(RequestView::new);
@@ -130,7 +130,7 @@ fn prepare_failure_preserves_the_current_terminal_response(cx: &mut TestAppConte
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn accepted_send_clears_the_previous_response_before_worker_poll(cx: &mut TestAppContext) {
     initialize(cx);
     let (view, cx) = cx.add_window_view(RequestView::new);
@@ -164,7 +164,7 @@ fn accepted_send_clears_the_previous_response_before_worker_poll(cx: &mut TestAp
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn response_save_disables_send_until_the_save_task_finishes(cx: &mut TestAppContext) {
     initialize(cx);
     let (view, cx) = cx.add_window_view(RequestView::new);
@@ -183,7 +183,7 @@ fn response_save_disables_send_until_the_save_task_finishes(cx: &mut TestAppCont
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn clear_response_invalidates_the_current_preview(cx: &mut TestAppContext) {
     initialize(cx);
     let (view, cx) = cx.add_window_view(RequestView::new);
@@ -209,7 +209,7 @@ fn clear_response_invalidates_the_current_preview(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn response_save_picker_cancel_is_silent_and_releases_its_task(cx: &mut TestAppContext) {
     initialize(cx);
     let (view, cx) = cx.add_window_view(RequestView::new);
@@ -230,7 +230,7 @@ fn response_save_picker_cancel_is_silent_and_releases_its_task(cx: &mut TestAppC
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn response_view_mode_select_invalidates_only_the_previous_viewer_projection(
     cx: &mut TestAppContext,
 ) {

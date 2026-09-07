@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use gpui::{Entity, SharedString, Subscription};
-use gpui_component::input::InputState;
+use gpui_kit::component::input::InputState;
+use gpui_kit::{Entity, SharedString, Subscription};
 use jaco_core::{
     ModelCapabilitiesSnapshot, ProviderId, ProviderModelId, ProviderModelMetadata,
     ProviderSecretRefs, ProviderSettingValue,

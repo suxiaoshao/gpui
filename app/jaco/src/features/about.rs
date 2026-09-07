@@ -1,16 +1,14 @@
 use crate::{
-    app::{
-        APP_NAME, menus,
-        title_bar_menu::{TitleBarAppMenuBar, title_bar_leading},
-    },
+    app::{APP_NAME, menus, title_bar_menu::title_bar_leading},
     foundation::{I18n, assets::APP_ICON_ASSET_PATH},
     state,
 };
 use fluent_bundle::FluentArgs;
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::menu::AppMenuBar;
+use gpui_kit::component::{
     ActiveTheme, Root, Sizable, StyledExt, TitleBar, button::Button, h_flex, label::Label, v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use window_ext::{NativeWindowHandle, WindowExt};
 
 const ABOUT_CONTEXT: &str = "JacoAboutWindow";
@@ -143,7 +141,7 @@ fn about_metadata() -> AboutMetadata {
 
 pub(crate) struct AboutWindow {
     focus_handle: FocusHandle,
-    app_menu_bar: Entity<TitleBarAppMenuBar>,
+    app_menu_bar: Entity<AppMenuBar>,
     metadata: AboutMetadata,
     _theme_binding: state::theme::WindowThemeBinding,
 }
@@ -152,7 +150,7 @@ impl AboutWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
-        let app_menu_bar = TitleBarAppMenuBar::new(cx);
+        let app_menu_bar = AppMenuBar::new(cx);
 
         Self {
             focus_handle,
@@ -263,7 +261,7 @@ impl Render for AboutWindow {
 }
 
 fn title_bar_content(
-    app_menu_bar: Entity<TitleBarAppMenuBar>,
+    app_menu_bar: Entity<AppMenuBar>,
     title: impl Into<SharedString>,
 ) -> impl IntoElement {
     h_flex()
@@ -292,7 +290,7 @@ fn title_bar_title(title: impl Into<SharedString>) -> impl IntoElement {
 mod tests {
     use super::{about_metadata, about_titlebar_options, about_window_size, about_window_title};
     use crate::foundation::I18n;
-    use gpui::px;
+    use gpui_kit::px;
 
     #[test]
     fn about_window_uses_compact_non_resizable_window() {

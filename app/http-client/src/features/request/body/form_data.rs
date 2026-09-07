@@ -4,12 +4,12 @@ use std::{
     sync::Arc,
 };
 
-use gpui::{
-    AnyElement, App, AppContext as _, Context, ElementId, Entity, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
-    prelude::FluentBuilder as _, px,
+use gpui_form::{
+    ControlBinding, ControlProjection, DynamicItemsPath, DynamicPath, Form, FormEvent, ItemPath,
+    PathKey, ResolveError,
 };
-use gpui_component::{
+use gpui_form_gpui_component::FormInput;
+use gpui_kit::component::{
     ActiveTheme as _,
     button::Button,
     checkbox::Checkbox,
@@ -19,11 +19,11 @@ use gpui_component::{
     select::{SelectItem, SelectState},
     v_flex,
 };
-use gpui_form::{
-    ControlBinding, ControlProjection, DynamicItemsPath, DynamicPath, Form, FormEvent, ItemPath,
-    PathKey, ResolveError,
+use gpui_kit::{
+    AnyElement, App, AppContext as _, Context, ElementId, Entity, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _, px,
 };
-use gpui_form_gpui_component::FormInput;
 
 use crate::{
     features::request::{
@@ -611,8 +611,8 @@ fn child_id(scope: &'static str, key: &PathKey, role: &'static str) -> ElementId
 
 #[cfg(test)]
 mod tests {
-    use gpui::{TestAppContext, VisualTestContext, WindowHandle};
-    use gpui_component::input::InputEvent;
+    use gpui_kit::component::input::InputEvent;
+    use gpui_kit::{TestAppContext, VisualTestContext, WindowHandle};
 
     use crate::{
         features::request::{draft::RequestBodyDraft, validation::RequestValidator},
@@ -645,7 +645,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) -> (Entity<Form<RequestDraft>>, WindowHandle<FormDataView>) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             init_i18n(cx);
             let draft = RequestDraft {
                 url: "https://example.com".into(),
@@ -670,7 +670,7 @@ mod tests {
 
     fn form_data_parts(
         form: &Entity<Form<RequestDraft>>,
-        cx: &gpui::App,
+        cx: &gpui_kit::App,
     ) -> DynamicItemsPath<RequestDraft, MultipartPartDraft> {
         RequestDraft::BODY
             .case(RequestBodyDraft::FORM_DATA)
@@ -680,7 +680,7 @@ mod tests {
             .then(FormDataDraft::PARTS)
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn multipart_reorder_and_leaf_or_validation_changes_preserve_native_rows(
         cx: &mut TestAppContext,
     ) {
@@ -755,7 +755,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn multipart_remove_reinsert_and_text_file_case_retire_stale_writers(cx: &mut TestAppContext) {
         let (form, window) = open_form_data(vec![text_part("field", "keep")], cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -857,7 +857,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn deleted_multipart_part_cancels_picker_and_late_completion_is_a_noop(
         cx: &mut TestAppContext,
     ) {
@@ -924,7 +924,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn multipart_failed_binding_retries_live_key_but_not_a_retired_key(cx: &mut TestAppContext) {
         let (form, window) = open_form_data(vec![text_part("field", "value")], cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -972,7 +972,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn disabled_multipart_part_hides_previous_submit_issues(cx: &mut TestAppContext) {
         let (form, window) = open_form_data(vec![text_part("", "value")], cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);

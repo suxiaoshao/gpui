@@ -1,14 +1,14 @@
-use gpui::prelude::FluentBuilder as _;
-use gpui::{
-    App, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, RenderOnce,
-    SharedString, Styled, Window, div, point, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Sizable, StyledExt, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
     tab::{Tab, TabBar},
+};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::{
+    App, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, RenderOnce,
+    SharedString, Styled, Window, div, point, px,
 };
 use tracing::{Level, event};
 
@@ -26,7 +26,7 @@ const FEIWEN_TITLE_BAR_LEFT_PADDING: Pixels = px(86.);
 #[cfg(not(target_os = "macos"))]
 const FEIWEN_TITLE_BAR_LEFT_PADDING: Pixels = px(12.);
 
-pub(crate) fn traffic_light_position() -> gpui::Point<Pixels> {
+pub(crate) fn traffic_light_position() -> gpui_kit::Point<Pixels> {
     point(FEIWEN_TRAFFIC_LIGHT_INSET, FEIWEN_TRAFFIC_LIGHT_INSET)
 }
 

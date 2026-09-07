@@ -1,28 +1,21 @@
 ---
 name: implementation-plan-design
-description: Research, design, review, rewrite, and maintain implementation-ready development plans grounded in the current GPUI workspace and authoritative upstream APIs. Use for non-trivial features, fixes, refactors, dependency or framework upgrades, GPUI application work, cross-crate/provider/MCP contracts, error behavior, database changes, generated or synchronized artifacts, packaging, and coordinated work that needs a durable executable specification.
+description: Create or revise implementation-ready plans for substantial gpui changes requiring durable coordination; review existing plans read-only when requested. Excludes routine local fixes and ordinary code review.
 ---
 
 # Implementation Plan Design
 
-Produce a durable implementation specification before production changes. Make it executable without rediscovering the repository, inventing contracts, or choosing unresolved product or architecture decisions.
+Substantial changes need a durable specification of ownership, exact contracts, work packages and completion evidence. Routine local fixes without material contract, ownership or dependency changes do not need a plan. A plan-only request delivers the plan; a review delivers findings.
 
-## Workflow
+## Plan contract
 
-1. Read repository instructions, nearest owner README files, manifests, entrypoints, relevant source and tests, schema/migrations, generators, existing plans, and current Git status.
-2. Require a durable plan for a non-trivial change to behavior, ownership, public APIs, persistence, security, dependencies, generated artifacts, packaging, or several coordinated files. Keep a truly local behavior-preserving correction lightweight.
-3. Create the durable plan set with [documentation-layout.md](references/documentation-layout.md): one root hub at `docs/dev/<plan-id>/README.md` and one same-ID owner plan under every affected app/crate. Keep the root and owner indexes synchronized.
-4. Trace the current implementation end to end, then classify every canonical surface with [system-surfaces.md](references/system-surfaces.md).
-5. Load every conditional reference whose trigger applies. Read it completely and keep its facts in its sole plan section rather than redefining them elsewhere.
-6. Research current and upstream facts before persisting target design. Verify exact source paths, APIs, components, traits, methods, versions, features, configuration, schema behavior, and generation/synchronization entrypoints.
-7. Surface material product and architecture choices before continuing. Ask the user in the conversation when alternatives affect behavior, public API, schema, ownership, security, compatibility, dependency policy, or long-term maintenance. Do not persist unresolved questions, recommendations, or assumed answers.
-8. Instantiate the root-hub and owner-plan structures in [plan-template.md](references/plan-template.md). Name exact files, symbols, stable IDs, work packages, tests, validation evidence, deletions, and completion conditions.
-9. Re-read the plan as an implementer. Remove vague verbs, duplicate facts, speculative APIs, broad research tasks, and decisions deferred to implementation.
-10. If implementation is authorized, begin only after the root hub is `Ready`. Keep the plan set synchronized with material discoveries and record actual commits/PRs, diffs, validation, deviations, owner-document updates, unverified boundaries, and final `Done` evidence.
+- Reuse the plan that already owns the change. Revisions affect changed work packages, decisions, dependencies and indexes while preserving settled structure and evidence.
+- Use one root hub at `docs/dev/<plan-id>/README.md` and same-ID owner plans under each affected app/crate; synchronize root and owner indexes. Implementation starts when the root hub is `Ready`.
+- Identify affected surfaces with the applicability reference. Specify affected files, symbols, stable IDs, interfaces, lifecycle, dependencies, tests, deletions and acceptance criteria; keep each fact in one canonical location.
+- Separate current facts, verified upstream facts, design decisions, user decisions, release-gated assumptions and implementation evidence. Verify proposed API names, versions, feature flags, configuration and generation/migration entrypoints before marking `Ready`.
+- `Ready` means work packages can be implemented without inventing missing contracts or resolving material product/architecture choices. Material discoveries update the plan; completion records actual validation, deviations, implementation references, owner-document updates, unverified boundaries and `Done` evidence.
 
-## Conditional References
-
-Read selected references completely before using them.
+## Reference routing
 
 | Trigger | Reference | Sole responsibility |
 | --- | --- | --- |
@@ -36,14 +29,4 @@ Read selected references completely before using them.
 | Evaluating whether upstream can replace local code or copied content | [upstream-reuse-audit.md](references/upstream-reuse-audit.md) | Reuse/adapt/retain/defer and deletion-first decisions |
 | Writing, reviewing, handing off, or completing a plan | [plan-template.md](references/plan-template.md) | Representation rules, stable IDs, root-hub/owner-plan skeletons, work packages, validation, completion evidence |
 
-## Rules
-
-- Prefer cohesive, testable ownership and dependency direction over the fewest changed files.
-- Keep each fact in one canonical artifact and representation. Reference stable IDs elsewhere instead of copying definitions or progress.
-- Use annotated trees for hierarchy, language-tagged declarations for exact contracts, labeled per-ID blocks for heterogeneous ownership/lifecycle/runtime facts, pseudocode for behavioral rules, numbered steps for simple flow, Mermaid only for non-trivial topology/sequence/state, tables for homogeneous mappings, and prose for rationale or security.
-- Separate `Current fact`, `Upstream fact`, `Decision`, `User decision`, `Release-gated`, and implementation evidence.
-- Verify proposed upstream/local names and behavior before marking `Ready`. Do not leave broad upstream research to the implementer.
-- Change handwritten sources first, use verified repository generation/synchronization entrypoints, and inspect derived additions, changes, and deletions.
-- Create issues, branches, commits, pushes, or pull requests only when explicitly authorized.
-
-A plan is `Ready` only when an implementer can execute every work package without choosing architecture, selecting an unspecified GPUI/runtime primitive, inventing a contract, rediscovering a dependency migration, or guessing acceptance criteria.
+Representation and handoff consistency belong to `plan-template.md`; location, indexes and lifecycle belong to `documentation-layout.md`.

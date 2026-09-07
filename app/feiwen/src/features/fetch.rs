@@ -4,9 +4,9 @@ use crate::{
     store::database,
 };
 use async_compat::Compat;
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
+use gpui_form::Form;
+use gpui_form_gpui_component::{FormInput, FormIntegerInput, IntegerInput, IntegerInputState};
+use gpui_kit::component::{
     ActiveTheme, Icon, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
@@ -16,8 +16,8 @@ use gpui_component::{
     table::{Column, DataTable, TableDelegate, TableState},
     v_flex,
 };
-use gpui_form::Form;
-use gpui_form_gpui_component::{FormInput, FormIntegerInput, IntegerInput, IntegerInputState};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 use gpui_operation::Transition;
 use gpui_store::Store;
 use tracing::{Instrument, Level, event};

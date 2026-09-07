@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use gpui::{AsyncApp, AsyncWindowContext};
+use gpui_kit::{AsyncApp, AsyncWindowContext};
 use jaco_agent::ProviderSecretValues;
 use jaco_core::{ProviderSecretRef, ProviderSecretRefs};
 

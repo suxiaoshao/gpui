@@ -1,5 +1,7 @@
 # gpui-form-gpui-component development plans
 
+- [Issue #215：依赖升级](issue-215/README.md)：gpui-form-gpui-component 的依赖/API 配套迁移与验证边界。
+
 按目标版本或 Git hash 保存适配层实施计划；新迁移新增文件，不覆盖历史批次。
 
 ## 功能计划

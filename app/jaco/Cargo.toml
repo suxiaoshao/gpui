@@ -23,26 +23,26 @@ category = "DeveloperTool"
 [features]
 default = ["tree-sitter-languages-basic"]
 tree-sitter-languages-basic = [
-  "gpui-component/tree-sitter-bash",
-  "gpui-component/tree-sitter-c",
-  "gpui-component/tree-sitter-css",
-  "gpui-component/tree-sitter-diff",
-  "gpui-component/tree-sitter-go",
-  "gpui-component/tree-sitter-graphql",
-  "gpui-component/tree-sitter-html",
-  "gpui-component/tree-sitter-java",
-  "gpui-component/tree-sitter-javascript",
-  "gpui-component/tree-sitter-markdown",
-  "gpui-component/tree-sitter-python",
-  "gpui-component/tree-sitter-rust",
-  "gpui-component/tree-sitter-sql",
-  "gpui-component/tree-sitter-svelte",
-  "gpui-component/tree-sitter-toml",
-  "gpui-component/tree-sitter-tsx",
-  "gpui-component/tree-sitter-typescript",
-  "gpui-component/tree-sitter-yaml",
+  "gpui-kit/tree-sitter-bash",
+  "gpui-kit/tree-sitter-c",
+  "gpui-kit/tree-sitter-css",
+  "gpui-kit/tree-sitter-diff",
+  "gpui-kit/tree-sitter-go",
+  "gpui-kit/tree-sitter-graphql",
+  "gpui-kit/tree-sitter-html",
+  "gpui-kit/tree-sitter-java",
+  "gpui-kit/tree-sitter-javascript",
+  "gpui-kit/tree-sitter-markdown",
+  "gpui-kit/tree-sitter-python",
+  "gpui-kit/tree-sitter-rust",
+  "gpui-kit/tree-sitter-sql",
+  "gpui-kit/tree-sitter-svelte",
+  "gpui-kit/tree-sitter-toml",
+  "gpui-kit/tree-sitter-tsx",
+  "gpui-kit/tree-sitter-typescript",
+  "gpui-kit/tree-sitter-yaml",
 ]
-tree-sitter-languages-full = ["gpui-component/tree-sitter-languages"]
+tree-sitter-languages-full = ["gpui-kit/tree-sitter-languages"]
 
 [dependencies]
 jaco-agent.workspace = true
@@ -56,15 +56,12 @@ app-theme = { workspace = true, default-features = false, features = [
   "system-accent",
   "theme-picker",
 ] }
-gpui.workspace = true
 gpui-form.workspace = true
 gpui-form-gpui-component.workspace = true
 gpui-heatmap.workspace = true
 gpui-operation = { workspace = true, features = ["tracing"] }
 gpui-store.workspace = true
-gpui_platform.workspace = true
-gpui-component.workspace = true
-gpui-component-assets.workspace = true
+gpui-kit.workspace = true
 garde.workspace = true
 image = { version = "0.25.10", default-features = false, features = [
   "gif",
@@ -83,29 +80,29 @@ sys-locale = "0.3.2"
 pinyin = "0.11.0"
 
 # err
-thiserror = "2.0.19"
+thiserror = "2.0.20"
 
 # database
 jaco-db.workspace = true
 dirs-next = "2.0.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-time = { version = "0.3.54", features = ["formatting", "local-offset", "serde"] }
+time = { version = "0.3.55", features = ["formatting", "local-offset", "serde"] }
 
 # log
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
 
 # async runtime
-async-trait = "0.1.91"
+async-trait = "0.1.92"
 gpui-tokio.workspace = true
 smol = "2.0.2"
 tokio = { version = "1.53.1", features = ["io-util", "net", "sync", "time"] }
 notify-debouncer-full = "0.7.0"
 
 # config
-http = "1.4.2"
-toml = "1.1.4"
+http = "1.5.0"
+toml = "1.1.5"
 url = "2.5.8"
 tempfile = "3.27.0"
 
@@ -117,10 +114,10 @@ global-hotkey = { version = "0.8.0", features = ["serde", "tracing"] }
 unicode-segmentation = "1.13.3"
 
 [dev-dependencies]
-gpui = { workspace = true, features = ["test-support"] }
+gpui-kit = { workspace = true, features = ["test-support"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
-xcap = "0.9.7"
+xcap = "0.9.8"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_Storage_FileSystem"] }

@@ -1,5 +1,7 @@
 # gpui-form-macros 开发计划
 
+- [Issue #215：依赖升级](issue-215/README.md)：gpui-form-macros 的依赖/API 配套迁移与验证边界。
+
 本目录保存派生宏与代码生成的维护者计划，不定义 crate 的公开用法。使用者应阅读
 [英文指南](../guide.md) 或 [中文指南](../guide.zh-CN.md)。
 

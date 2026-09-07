@@ -5,13 +5,13 @@ use std::{
 };
 
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
-use gpui::{
-    AnyWindowHandle, App, AppContext, BorrowAppContext, Context, Entity, EntityId, Global, Image,
-    ImageFormat, SharedString, Subscription, Task,
-};
-use gpui_component::{
+use gpui_kit::component::{
     Root, WindowExt as NotificationWindowExt,
     notification::{Notification, NotificationType},
+};
+use gpui_kit::{
+    AnyWindowHandle, App, AppContext, BorrowAppContext, Context, Entity, EntityId, Global, Image,
+    ImageFormat, SharedString, Subscription, Task,
 };
 use gpui_store::Select;
 use jaco_core::{
@@ -1344,7 +1344,7 @@ mod tests {
         platform::capture::CaptureError,
     };
     use global_hotkey::hotkey::HotKey;
-    use gpui::Task;
+    use gpui_kit::Task;
     use platform_ext::{OcrError, ocr::ImageFrame};
     use std::str::FromStr;
 
@@ -1489,7 +1489,7 @@ mod tests {
         assert!(png.starts_with(&[137, 80, 78, 71]));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn screenshot_composer_attachment_uses_memory_image() {
         let image = ImageFrame {
             width: 1,

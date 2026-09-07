@@ -1,7 +1,7 @@
 use std::{collections::HashSet, fmt};
 
-use gpui::SharedString;
-use gpui::{App, Task};
+use gpui_kit::SharedString;
+use gpui_kit::{App, Task};
 use gpui_operation::refresh;
 use jaco_core::{ConversationId, ConversationSummary, ProjectId, ProjectKind};
 

@@ -1,6 +1,6 @@
 use std::mem;
 
-use gpui::{Entity, Task};
+use gpui_kit::{Entity, Task};
 use gpui_operation::Transition;
 
 use super::{DatabaseData, DatabaseProblem, DatabaseRepair, session::DatabaseSession};

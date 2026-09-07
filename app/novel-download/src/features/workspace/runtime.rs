@@ -1,5 +1,5 @@
 use futures::future::AbortHandle;
-use gpui::Task;
+use gpui_kit::Task;
 use gpui_operation::Transition;
 
 use crate::{

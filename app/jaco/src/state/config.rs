@@ -3,7 +3,7 @@ use crate::{
     errors::{JacoError, JacoResult},
     foundation::{paths, persistence},
 };
-use gpui::{App, AppContext, Context, Entity, Global, Subscription, Task};
+use gpui_kit::{App, AppContext, Context, Entity, Global, Subscription, Task};
 use gpui_operation::{Complete, Load, Refresh, Repair, Settle, Transition, repair};
 use gpui_store::{Select, Store};
 use jaco_core::{

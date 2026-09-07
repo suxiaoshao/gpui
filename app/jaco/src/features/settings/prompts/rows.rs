@@ -1,11 +1,11 @@
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
     v_flex,
 };
+use gpui_kit::*;
 use jaco_core::PromptId;
 use jaco_db::PromptRecord;
 use std::rc::Rc;

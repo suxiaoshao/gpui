@@ -10,7 +10,7 @@ use crate::{
     },
     state::GlobalHotkeyState,
 };
-use gpui::*;
+use gpui_kit::*;
 use jaco_db::ShortcutRecord;
 use tracing::{Level, event};
 use window_ext::WindowExt;
@@ -337,7 +337,7 @@ impl Render for ScreenshotOverlayView {
             .track_focus(&self.focus_handle)
             .relative()
             .size_full()
-            .bg(gpui::black().opacity(0.35))
+            .bg(gpui_kit::black().opacity(0.35))
             .cursor(CursorStyle::Crosshair)
             .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::handle_mouse_down))
@@ -354,8 +354,8 @@ impl Render for ScreenshotOverlayView {
                     .w(bounds.size.width)
                     .h(bounds.size.height)
                     .border_1()
-                    .border_color(gpui::white())
-                    .bg(gpui::white().opacity(0.08)),
+                    .border_color(gpui_kit::white())
+                    .bg(gpui_kit::white().opacity(0.08)),
             );
         }
 
@@ -496,7 +496,7 @@ fn selection_bounds(
 mod tests {
     use super::{logical_to_capture_coord, logical_to_capture_delta, selection_rect};
     use crate::platform::capture::{CaptureDisplay, CaptureRect};
-    use gpui::{point, px};
+    use gpui_kit::{point, px};
 
     fn display(origin_x: f32, origin_y: f32, height_px: u32) -> CaptureDisplay {
         CaptureDisplay {

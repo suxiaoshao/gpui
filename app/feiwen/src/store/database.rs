@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use gpui::{App, AppContext, Task};
+use gpui_kit::{App, AppContext, Task};
 use gpui_operation::Transition;
 use gpui_store::Store;
 
@@ -817,7 +817,7 @@ fn wal_path(path: &Path) -> PathBuf {
 mod tests {
     use std::collections::HashSet;
 
-    use gpui::TestAppContext;
+    use gpui_kit::TestAppContext;
 
     use super::*;
 
@@ -905,7 +905,7 @@ mod tests {
         assert_eq!(resource.phase(), DatabasePhase::Ready);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn successful_repair_completion_starts_catalog_load(cx: &mut TestAppContext) {
         let pool = establish_connection_at(Path::new(":memory:")).unwrap();
 

@@ -856,8 +856,8 @@ fn parse_i32(value: &str) -> Result<i32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{AppContext as _, TestAppContext};
     use gpui_form::{Form, ResolveError, ValidationTrigger};
+    use gpui_kit::{AppContext as _, TestAppContext};
 
     #[test]
     fn recursive_query_draft_round_trips_through_query_spec() {
@@ -916,7 +916,7 @@ mod tests {
         assert_eq!(QueryDraft::from_spec(&spec), draft);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn relation_changes_preserve_all_number_operands(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let form = cx.new(|_| {
@@ -988,7 +988,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn field_type_change_retires_the_old_payload_and_installs_empty_values(
         cx: &mut TestAppContext,
     ) {
@@ -1063,7 +1063,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn recursive_item_reorder_and_delete_preserve_runtime_identity(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let nested_children = vec![FilterNodeDraft::condition(), FilterNodeDraft::condition()];
@@ -1115,7 +1115,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn missing_relation_only_reports_the_relation_until_submit_can_validate_the_value(
         cx: &mut TestAppContext,
     ) {

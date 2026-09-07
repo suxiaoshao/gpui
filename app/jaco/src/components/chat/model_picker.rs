@@ -6,14 +6,14 @@ use crate::{
     },
     state::providers::{ProviderModelChoice, ProviderModelKey},
 };
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Sizable, StyledExt, h_flex,
     label::Label,
     select::{SearchableVec, SelectGroup, SelectItem},
     tag::Tag,
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use jaco_core::ModelCapabilitiesSnapshot;
 
 #[derive(Clone, Debug)]
@@ -266,7 +266,7 @@ mod tests {
         foundation::{I18n, assets::ProviderLogoName},
         state::providers::ProviderModelChoice,
     };
-    use gpui_component::select::{SelectDelegate, SelectItem};
+    use gpui_kit::component::select::{SelectDelegate, SelectItem};
     use jaco_core::{
         CapabilitySourceSnapshot, FileInputCapabilitySnapshot, ImageInputCapabilitySnapshot,
         ModelCapabilitiesSnapshot, ReasoningCapabilitySnapshot, ReasoningControlSnapshot,
@@ -302,7 +302,7 @@ mod tests {
         assert_eq!(groups.items_count(1), 1);
         assert_eq!(
             groups.position(&choices[1].key()),
-            Some(gpui_component::IndexPath::default().section(1).row(0))
+            Some(gpui_kit::component::IndexPath::default().section(1).row(0))
         );
     }
 

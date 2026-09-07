@@ -2,8 +2,8 @@ use crate::{
     foundation::{I18n, assets::IconName},
     state,
 };
-use gpui::{ParentElement as _, SharedString};
-use gpui_component::{Sizable, tag::Tag};
+use gpui_kit::component::{Sizable, tag::Tag};
+use gpui_kit::{ParentElement as _, SharedString};
 use jaco_agent::{
     McpOAuthStatusSnapshot, McpServerConnectionState, McpServerTransportKindSnapshot,
 };

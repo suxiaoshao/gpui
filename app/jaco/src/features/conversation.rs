@@ -7,7 +7,7 @@ pub(crate) mod runtime;
 
 use std::path::PathBuf;
 
-use gpui::{App, Task};
+use gpui_kit::{App, Task};
 use jaco_agent::{AgentRunRequest, SkillActivationRequest};
 use jaco_conversation::ConversationService;
 use jaco_core::{
@@ -420,7 +420,7 @@ pub(crate) fn archive_project_conversations(
 }
 
 fn spawn_archive_mutation<R>(
-    runtime: gpui::Entity<runtime::ConversationRuntimeStore>,
+    runtime: gpui_kit::Entity<runtime::ConversationRuntimeStore>,
     ticket: runtime::ArchiveFenceTicket,
     command: impl FnOnce(&ConversationService<'_>) -> jaco_conversation::Result<R> + Send + 'static,
     archived_ids: impl FnOnce(&R) -> Vec<ConversationId> + Send + 'static,
@@ -666,7 +666,7 @@ mod tests {
         foundation::I18n,
         state::JacoConfig,
     };
-    use gpui::TestAppContext;
+    use gpui_kit::TestAppContext;
     use jaco_core::{
         ModelCapabilitiesSnapshot, ProjectKind, ProjectMetadata, ProviderSecretRefs,
         ProviderSettingFieldValue, ProviderSettingValue, ProviderSettingsPayload,
@@ -675,7 +675,7 @@ mod tests {
     use jaco_db::{NewConversation, NewProject, NewPrompt, NewProvider, ProjectRecord};
     use tempfile::{TempDir, tempdir};
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn test_data_dir_uses_fixed_database_target(cx: &mut TestAppContext) {
         let dir = tempdir().unwrap();
         cx.update(|cx| database::install_for_test(cx, dir.path()));
@@ -699,7 +699,7 @@ mod tests {
         assert_eq!(conversation_title("  ", &i18n), "New conversation");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn send_message_does_not_depend_on_catalog_refresh(cx: &mut TestAppContext) {
         let _dir = init_conversations_test(cx);
         let (conversation_id, project_id, provider_model) = cx.update(|cx| {
@@ -744,7 +744,7 @@ mod tests {
             .expect("conversation detail send must not depend on the catalog phase");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn send_message_does_not_persist_user_item_when_attachment_copy_fails(cx: &mut TestAppContext) {
         let dir = init_conversations_test(cx);
         let (conversation_id, project_id, provider_model, initial_item_count) = cx.update(|cx| {
@@ -814,7 +814,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn create_conversation_does_not_persist_conversation_when_attachment_copy_fails(
         cx: &mut TestAppContext,
     ) {
@@ -870,7 +870,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn dropping_create_conversation_task_cancels_uncommitted_submission(cx: &mut TestAppContext) {
         let _dir = init_conversations_test(cx);
         let provider_model = cx.update(|cx| {
@@ -915,7 +915,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn send_message_reuses_conversation_prompt_snapshot(cx: &mut TestAppContext) {
         let _dir = init_conversations_test(cx);
         let (conversation_id, project_id, provider_model, expected_prompt) = cx.update(|cx| {
@@ -975,7 +975,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn send_message_falls_back_to_prompt_id_when_snapshot_is_missing(cx: &mut TestAppContext) {
         let _dir = init_conversations_test(cx);
         let (conversation_id, project_id, provider_model, expected_prompt) = cx.update(|cx| {

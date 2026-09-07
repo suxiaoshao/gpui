@@ -22,10 +22,10 @@ Use `Select` for simple single-value picking. Use `Combobox` when you need multi
 ## Import
 
 ```rust
-use gpui_component::combobox::{
+use gpui_kit::component::combobox::{
     Combobox, ComboboxState, ComboboxEvent, ComboboxTriggerCtx,
 };
-use gpui_component::searchable_list::{
+use gpui_kit::component::searchable_list::{
     SearchableListItem, SearchableVec, SearchableGroup,
 };
 ```
@@ -237,6 +237,11 @@ cx.subscribe_in(&state, window, |view, _, event, window, cx| {
 ### Mutating Programmatically
 
 Values are resolved through the current delegate. Values that cannot be found are ignored.
+
+`set_selected_values` clears the search query first, so an active search never decides which
+values can be selected. Index paths address the list as it is currently displayed, so
+`set_selected_indices`, `add_selected_index` and `remove_selected_index` act on the visible rows
+and leave the query alone.
 
 ```rust
 // Replace the entire selection by value

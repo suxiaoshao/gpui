@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use gpui::App;
+use gpui_kit::App;
 use jaco_agent::{
     McpServerConfig, McpServerRuntimeConfig, McpServerTransport, McpStdioTransport,
     McpStreamableHttpTransport,

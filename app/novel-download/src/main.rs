@@ -1,8 +1,8 @@
 use errors::{AppError, AppResult};
 use features::WorkspaceView;
 use foundation::I18n;
-use gpui::*;
-use gpui_component::Root;
+use gpui_kit::component::Root;
+use gpui_kit::*;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{
@@ -22,7 +22,7 @@ static APP_NAME: &str = "top.sushao.novel-download";
 actions!(novel_download, [Quit]);
 
 fn init(cx: &mut App) {
-    gpui_component::init(cx);
+    gpui_kit::init(cx);
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.activate(true);
     cx.on_action(quit);
@@ -73,7 +73,7 @@ fn main() -> AppResult<()> {
     let span = tracing::info_span!("init");
     let _enter = span.enter();
 
-    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
     event!(Level::INFO, "app created");
 
     app.run(move |cx| {

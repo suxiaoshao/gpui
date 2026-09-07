@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use std::fmt;
 
-use gpui::{App, AppContext, Entity, Global, Subscription, Task};
+use gpui_kit::{App, AppContext, Entity, Global, Subscription, Task};
 use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh};
 use gpui_store::{Select, Store};
 use jaco_core::{ProjectId, ProjectKind, ProjectMetadata, new_id};
@@ -295,7 +295,7 @@ fn load_task(cx: &mut App) -> Option<Task<()>> {
     }))
 }
 
-pub(crate) fn catalog(cx: &impl gpui::AppContext) -> ProjectStore {
+pub(crate) fn catalog(cx: &impl gpui_kit::AppContext) -> ProjectStore {
     ProjectStore::global(cx)
 }
 
@@ -433,11 +433,11 @@ mod tests {
         empty_project_metadata, project_display_name, project_kind_is_normal, scratch_data_dir,
     };
     use crate::database;
-    use gpui::TestAppContext;
+    use gpui_kit::TestAppContext;
     use jaco_core::ProjectKind;
     use std::path::Path;
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn scratch_test_data_dir_uses_fixed_database_target(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         cx.update(|cx| database::install_for_test(cx, dir.path()));

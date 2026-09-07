@@ -1,4 +1,4 @@
-use gpui::App;
+use gpui_kit::App;
 
 pub(crate) mod about;
 pub(crate) mod conversation;

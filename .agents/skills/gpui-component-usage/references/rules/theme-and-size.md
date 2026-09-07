@@ -23,10 +23,10 @@ Use this file when translating visual specs or building app-local controls.
 - Input editors and rendered Markdown code blocks share the installed
   `HighlightThemeStyle` content palette. Their surfaces may differ because an
   editor and an inline Markdown code block are different contexts.
-- At gpui-component `5b45bcb`, rendered `CodeBlock` still keeps a parse-time
-  highlight theme and a theme-independent style cache. Treat this as an upstream
-  lifecycle blocker: do not add app-side theme subscriptions, same-value
-  `set_text`, forced reparsing, or a second syntax palette as a workaround.
+- In 0.6.0, the base `CodeBlock` caches styles by highlighter identity; the
+  component layer installs themed text defaults. The older `5b45bcb` parse-time
+  theme limitation is historical. Consume the shared theme/defaults; do not add
+  app-side same-value `set_text`, forced reparsing, or a second syntax palette.
 
 ## Size System
 

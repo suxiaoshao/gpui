@@ -1,8 +1,9 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable,
+    attachment::{Attachment, AttachmentActions, AttachmentContent, AttachmentMedia},
+    bubble::{Bubble, BubbleVariant},
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -11,6 +12,7 @@ use gpui_component::{
     tooltip::Tooltip,
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use jaco_core::{
     AttachmentId, AttachmentKind, AttachmentSource, AttachmentStorageKind, ContentPart,
     ConversationAttachment, ConversationEntry, ConversationEntryId, ConversationEntryPayload,
@@ -30,8 +32,6 @@ use super::message::OnAttachmentAction;
 
 const USER_IMAGE_SIZE: f32 = 80.;
 const USER_IMAGE_GAP: f32 = 8.;
-const USER_IMAGE_RADIUS: f32 = 8.;
-const USER_IMAGE_INNER_RADIUS: f32 = 6.;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) enum TimelineTextKey {
@@ -463,17 +463,13 @@ fn render_message_text(
         .text_color(cx.theme().foreground)
         .child(text);
 
-    match appearance {
-        MessageContentAppearance::User => block
-            .rounded(px(8.))
-            .px_3()
-            .py_2()
-            .bg(cx.theme().tokens.primary.background.opacity(0.12))
-            .border_1()
-            .border_color(cx.theme().primary.opacity(0.18))
-            .into_any_element(),
-        MessageContentAppearance::Assistant => block.into_any_element(),
-    }
+    Bubble::new()
+        .with_variant(match appearance {
+            MessageContentAppearance::User => BubbleVariant::Tinted,
+            MessageContentAppearance::Assistant => BubbleVariant::Ghost,
+        })
+        .child(block)
+        .into_any_element()
 }
 
 fn render_attachment_card(
@@ -572,29 +568,16 @@ fn render_attachment_card(
         ),
     };
 
-    h_flex()
+    Attachment::new()
         .id(format!(
-            "conversation-attachment-card-{entry_id}-{block_index}-{}",
-            card.attachment_id,
-            block_index = card.part_index,
+            "conversation-attachment-card-{entry_id}-{}-{}",
+            card.part_index, card.attachment_id
         ))
         .w(px(360.))
         .max_w_full()
-        .min_h(px(64.))
-        .items_center()
-        .gap_2()
-        .p_2()
-        .rounded(px(8.))
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().tokens.muted.background.opacity(0.18))
-        .child(
-            Icon::new(leading_icon)
-                .size_5()
-                .text_color(cx.theme().muted_foreground),
-        )
-        .child(center)
-        .child(trailing)
+        .media(AttachmentMedia::new().child(Icon::new(leading_icon)))
+        .content(AttachmentContent::new().child(center))
+        .actions(AttachmentActions::new().child(trailing))
         .into_any_element()
 }
 
@@ -749,33 +732,21 @@ fn render_image_attachment(
     index: usize,
     attachment: PersistedImageAttachment,
     image_path: PathBuf,
-    cx: &mut App,
+    _cx: &mut App,
 ) -> AnyElement {
     let attachment_id = attachment.id.clone();
     let preview_attachment = attachment.preview_attachment(&image_path);
-    div()
+    Attachment::new()
         .id(format!(
             "conversation-message-image-{message_id}-{index}-{attachment_id}"
         ))
-        .flex_none()
         .size(px(USER_IMAGE_SIZE))
-        .rounded(px(USER_IMAGE_RADIUS))
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().tokens.muted.background.opacity(0.18))
-        .overflow_hidden()
-        .cursor(CursorStyle::PointingHand)
-        .hover(|this| this.border_color(cx.theme().primary.opacity(0.55)))
+        .p_0()
+        .media(AttachmentMedia::new().src(image_path).size_full())
         .on_click(move |_, window, cx| {
             image_preview::open_image_preview_dialog(preview_attachment.clone(), window, cx);
             cx.stop_propagation();
         })
-        .child(
-            img(image_path)
-                .size_full()
-                .rounded(px(USER_IMAGE_INNER_RADIUS))
-                .object_fit(ObjectFit::Cover),
-        )
         .into_any_element()
 }
 

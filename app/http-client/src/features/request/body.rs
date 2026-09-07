@@ -1,8 +1,5 @@
-use gpui::{
-    AnyElement, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Subscription, Window, div, px,
-};
-use gpui_component::{
+use gpui_form::{Form, FormEvent};
+use gpui_kit::component::{
     ActiveTheme as _,
     label::Label,
     scroll::ScrollableElement as _,
@@ -10,7 +7,10 @@ use gpui_component::{
     separator::Separator,
     v_flex,
 };
-use gpui_form::{Form, FormEvent};
+use gpui_kit::{
+    AnyElement, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
+    SharedString, Styled as _, Subscription, Window, div, px,
+};
 
 use crate::{
     features::request::{
@@ -195,7 +195,7 @@ fn body_for_kind(kind: BodyKind) -> RequestBodyDraft {
     }
 }
 
-fn body_options(cx: &gpui::App) -> BodyOptions {
+fn body_options(cx: &gpui_kit::App) -> BodyOptions {
     let i18n = cx.global::<I18n>();
     [
         (BodyKind::None, "body-none"),
@@ -260,9 +260,9 @@ fn build_active_body<Owner: 'static>(
 mod tests {
     use std::ops::Deref as _;
 
-    use gpui::{TestAppContext, VisualTestContext};
-    use gpui_component::select::SelectEvent;
     use gpui_form::ResolveError;
+    use gpui_kit::component::select::SelectEvent;
+    use gpui_kit::{TestAppContext, VisualTestContext};
 
     use crate::{
         features::request::{
@@ -277,7 +277,7 @@ mod tests {
 
     use super::*;
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn all_body_cases_prepare_and_case_switch_retires_old_dynamic_paths(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let draft = RequestDraft {
@@ -331,12 +331,12 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn confirming_a_new_body_kind_twice_before_self_projection_does_not_reset_its_payload(
         cx: &mut TestAppContext,
     ) {
         let (form, window) = cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             init_i18n(cx);
             let draft = RequestDraft {
                 body: RequestBodyDraft::Text(TextBodyDraft::default()),

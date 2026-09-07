@@ -7,7 +7,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use gpui::RenderImage;
+use gpui_kit::RenderImage;
 
 use super::super::PreviewToken;
 use super::{

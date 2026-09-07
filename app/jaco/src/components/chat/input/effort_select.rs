@@ -3,8 +3,8 @@ use crate::{
     components::picker::PickerSection,
     foundation,
 };
-use gpui::*;
-use gpui_component::{label::Label, select::SelectItem};
+use gpui_kit::component::{label::Label, select::SelectItem};
+use gpui_kit::*;
 use jaco_core::{ModelCapabilitiesSnapshot, ReasoningSelectionSnapshot};
 
 #[derive(Clone, Debug)]

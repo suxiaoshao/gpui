@@ -5,8 +5,7 @@ use crate::{
     foundation::{I18n, assets::IconName},
     state,
 };
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable, WindowExt as NotificationWindowExt,
     button::Button,
     h_flex,
@@ -15,6 +14,7 @@ use gpui_component::{
     notification::{Notification, NotificationType},
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use jaco_core::ShortcutId;
 use jaco_db::{PromptRecord, ProviderModelRecord, ProviderRecord, ShortcutRecord};
 

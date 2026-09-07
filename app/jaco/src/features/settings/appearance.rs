@@ -3,8 +3,7 @@ use crate::{
     foundation::{I18n, assets::IconName},
     state,
 };
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Colorize, Sizable, Size, StyledExt,
     button::{Button, ButtonVariants},
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
@@ -13,6 +12,7 @@ use gpui_component::{
     scroll::ScrollableElement,
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use jaco_core::{AppThemeMode, AppThemeSettings};
 
 use super::push_settings_error;
@@ -42,7 +42,7 @@ struct ThemeGridText {
 struct ThemeGridRenderData {
     title: SharedString,
     text: ThemeGridText,
-    mode: gpui_component::ThemeMode,
+    mode: gpui_kit::component::ThemeMode,
     selected_id: String,
     choices: Vec<app_theme::ThemeChoice>,
     deletable_material_theme_ids: Vec<String>,
@@ -154,7 +154,7 @@ impl AppearanceSettingsPage {
         &self,
         title: SharedString,
         text: ThemeGridText,
-        mode: gpui_component::ThemeMode,
+        mode: gpui_kit::component::ThemeMode,
         selected_id: &str,
         cx: &mut Context<Self>,
     ) -> ThemeGridRenderData {
@@ -166,7 +166,7 @@ impl AppearanceSettingsPage {
             .filter_map(|color| app_theme::normalize_hex_color(color))
             .filter_map(|color| app_theme::material_you_theme_id(&color))
             .collect::<Vec<_>>();
-        let registry = gpui_component::ThemeRegistry::global(cx);
+        let registry = gpui_kit::component::ThemeRegistry::global(cx);
         let choices = app_theme::theme_choices(registry, mode, &custom_theme_colors);
         let selected_id = app_theme::normalize_theme_id(selected_id);
         ThemeGridRenderData {
@@ -181,7 +181,7 @@ impl AppearanceSettingsPage {
 
     fn render_theme_tile(
         choice: app_theme::ThemeChoice,
-        mode: gpui_component::ThemeMode,
+        mode: gpui_kit::component::ThemeMode,
         selected: bool,
         selected_border: Hsla,
         can_delete_material_theme: bool,
@@ -253,10 +253,10 @@ impl AppearanceSettingsPage {
             .when(selected, |this| this.shadow_md())
             .hover(move |this| this.border_color(selected_border).shadow_xs())
             .on_click(move |_, window, cx| match mode {
-                gpui_component::ThemeMode::Light => {
+                gpui_kit::component::ThemeMode::Light => {
                     Self::set_light_theme(select_id.clone(), window, cx)
                 }
-                gpui_component::ThemeMode::Dark => {
+                gpui_kit::component::ThemeMode::Dark => {
                     Self::set_dark_theme(select_id.clone(), window, cx)
                 }
             })
@@ -461,14 +461,14 @@ impl Render for AppearanceSettingsPage {
         let light_grid = self.theme_grid_data(
             light_title.into(),
             theme_grid_text.clone(),
-            gpui_component::ThemeMode::Light,
+            gpui_kit::component::ThemeMode::Light,
             &light_theme_id,
             cx,
         );
         let dark_grid = self.theme_grid_data(
             dark_title.into(),
             theme_grid_text,
-            gpui_component::ThemeMode::Dark,
+            gpui_kit::component::ThemeMode::Dark,
             &dark_theme_id,
             cx,
         );

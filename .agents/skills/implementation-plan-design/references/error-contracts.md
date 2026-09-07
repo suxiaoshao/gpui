@@ -12,13 +12,7 @@ Give every materially distinct failure one stable ERR-ID in the plan:
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `ERR-01` | `<class>` | `<testable semantics>` | `<L-ID/type/None>` | `<policy>` | `<action>` | `<policy>` |
 
-For each ERR-ID define:
-
-- exact typed producer variant or stable public code when one exists;
-- meaning and testable trigger;
-- user-safe details and unknown-field policy;
-- retryability, idempotency, cancellation distinction, and default recovery;
-- compatibility when variants/codes/details change.
+Name the exact typed producer variant or stable public code. Preserve cancellation distinctions and the safe-details unknown-field policy.
 
 Provide Rust declarations for changed error enums, details types, `From`/mapping functions, parser/encoder functions, and recovery classification. The catalog owns meaning and safe details; operations, adapters, notifications, and tests reference ERR-IDs.
 
@@ -127,15 +121,4 @@ Compilation alone does not verify an error contract.
 
 ## Synchronization Order
 
-When an error changes:
-
-1. Update the canonical ERR catalog and compatibility decision.
-2. Update owner-local variants and exhaustive producer mappings.
-3. Update affected C-ID adapters.
-4. Update persistence, partial-output, and rollback behavior.
-5. Update Operation/runtime transitions and recovery ownership.
-6. Update Fluent keys, GPUI presentation, actions, accessibility, and diagnostics.
-7. Add focused and cross-layer tests.
-8. Remove stale variants, aliases, mappings, translations, fallbacks, and consumers.
-
-A plan is incomplete if implementation must invent an error, infer safe details or UI behavior, match strings, or discover an undocumented producer-to-user conversion.
+Order affected WPs from canonical error identity through producer normalization, boundary encoding and consumer recovery. Include stale code/alias/translation removal when applicable. Use the contracts above as the field definitions and the plan's validation table for sufficient regression evidence; do not recreate the same inventory as a handoff checklist.

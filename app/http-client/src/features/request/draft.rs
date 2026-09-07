@@ -288,12 +288,12 @@ impl HttpClientTransportSettings {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{AppContext as _, TestAppContext};
     use gpui_form::Form;
+    use gpui_kit::{AppContext as _, TestAppContext};
 
     use super::*;
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn request_defaults_expose_the_complete_initial_topology(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let form = cx.new(|_| Form::new(RequestDraft::default()));

@@ -334,8 +334,8 @@ fn validate_api_key<'a>(
 
 #[cfg(test)]
 mod tests {
-    use gpui::{AppContext as _, TestAppContext};
     use gpui_form::{Form, PrepareError, ValidationTrigger};
+    use gpui_kit::{AppContext as _, TestAppContext};
 
     use super::*;
     use crate::features::request::draft::{
@@ -346,7 +346,7 @@ mod tests {
         FileCheckError, RequestCompileError, RequestFileField, compile_request,
     };
 
-    fn form(draft: RequestDraft, cx: &mut gpui::App) -> gpui::Entity<Form<RequestDraft>> {
+    fn form(draft: RequestDraft, cx: &mut gpui_kit::App) -> gpui_kit::Entity<Form<RequestDraft>> {
         cx.new(|_| Form::new(draft).with_validator(RequestValidator))
     }
 
@@ -361,7 +361,7 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn business_validation_runs_only_on_submit(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let form = form(valid_draft(), cx);
@@ -383,7 +383,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn blank_url_uses_only_the_schema_required_issue(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let mut draft = valid_draft();
@@ -397,7 +397,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn disabled_headers_are_skipped_and_enabled_errors_are_precise(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let mut draft = valid_draft();
@@ -451,7 +451,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn inactive_cases_do_not_publish_file_or_auth_issues(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let valid_form = form(valid_draft(), cx);
@@ -469,7 +469,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn multipart_issues_are_attached_to_active_dynamic_fields(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let directory = tempfile::tempdir().unwrap();
@@ -575,7 +575,7 @@ mod tests {
         assert!(validate_disposition_text("safe-name.bin").is_ok());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn active_binary_and_auth_issues_are_precise(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let mut binary_draft = valid_draft();
@@ -691,7 +691,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn compiler_rechecks_a_file_after_form_validation(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let directory = tempfile::tempdir().unwrap();
@@ -735,7 +735,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn auth_compile_does_not_rewrite_form_and_settings_are_frozen(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let mut draft = valid_draft();

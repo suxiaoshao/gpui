@@ -1,5 +1,9 @@
 # Workspace development plans
 
+## Dependency upgrade plans
+
+- [Issue #215：GPUI Kit 与依赖升级](issue-215/README.md)：发布包替代 Git 来源、应用与共享 crate 迁移、skill/文档同步的实施计划与待审阅问题。
+
 ## Feature plans
 
 | Issue | 状态 | 入口 |

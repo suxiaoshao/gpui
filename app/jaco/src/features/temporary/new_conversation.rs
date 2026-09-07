@@ -4,8 +4,8 @@ use crate::components::chat::input::{
     ChatInputSubmit,
 };
 use crate::components::chat::runtime_status::ConversationRuntimeStatus;
-use gpui::*;
-use gpui_component::v_flex;
+use gpui_kit::component::v_flex;
+use gpui_kit::*;
 use std::rc::Rc;
 
 #[allow(clippy::enum_variant_names)]

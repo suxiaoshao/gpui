@@ -1,4 +1,4 @@
-use gpui::{App, KeyBinding, actions};
+use gpui_kit::{App, KeyBinding, actions};
 
 use super::shell::KEY_CONTEXT;
 
@@ -25,8 +25,8 @@ pub(crate) fn init(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{OPEN_CONVERSATION_SEARCH_KEY, OPEN_NEW_CONVERSATION_KEY};
-    use gpui::Keystroke;
-    use gpui_component::kbd::Kbd;
+    use gpui_kit::Keystroke;
+    use gpui_kit::component::kbd::Kbd;
 
     #[test]
     fn home_shortcut_keys_use_secondary_modifier() {

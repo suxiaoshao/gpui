@@ -10,17 +10,11 @@ use std::{sync::Arc, time::Duration};
 
 use fluent_bundle::FluentArgs;
 use futures_util::{FutureExt as _, future::Either, future::select};
-use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ObjectFit, ParentElement as _, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    Styled as _, StyledImage as _, Subscription, Task, Window, div, img,
-    prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
     alert::Alert,
     button::Button,
-    input::{Input, InputState},
+    input::{Editor, EditorState},
     label::Label,
     progress::Progress,
     scroll::ScrollableElement as _,
@@ -29,6 +23,12 @@ use gpui_component::{
     tab::{Tab, TabBar},
     table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
     v_flex,
+};
+use gpui_kit::{
+    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    ObjectFit, ParentElement as _, ScrollHandle, SharedString, StatefulInteractiveElement as _,
+    Styled as _, StyledImage as _, Subscription, Task, Window, div, img,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_operation::Transition as _;
 
@@ -126,7 +126,7 @@ pub(super) struct ResponsePane {
     mode: ViewerMode,
     pub(super) mode_state: Entity<SelectState<ViewerModeItems>>,
     projection: Option<ResponseProjection>,
-    text_editor: Option<Entity<InputState>>,
+    text_editor: Option<Entity<EditorState>>,
     preview_task: Option<Task<()>>,
     preview_generation: u64,
     preview_token: Option<PreviewToken>,
@@ -150,7 +150,7 @@ impl ResponsePane {
         let mode_state = cx.new(|cx| {
             SelectState::new(
                 items,
-                Some(gpui_component::IndexPath::default().row(0)),
+                Some(gpui_kit::component::IndexPath::default().row(0)),
                 window,
                 cx,
             )
@@ -314,8 +314,8 @@ impl ResponsePane {
                 let source = source.clone();
                 let language = language.editor_language();
                 Some(cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .code_editor(language)
+                    EditorState::new(window, cx)
+                        .language(language)
                         .line_number(true)
                         .searchable(true)
                         .replaceable(false)
@@ -862,8 +862,8 @@ impl ResponsePane {
                         .overflow_hidden()
                         .bg(cx.theme().input_background())
                         .child(
-                            Input::new(editor)
-                                .disabled(true)
+                            Editor::new(editor)
+                                .readonly(true)
                                 .appearance(false)
                                 .size_full()
                                 .font_family(cx.theme().mono_font_family.clone()),
@@ -1406,7 +1406,7 @@ mod pane_tests {
     };
 
     use bytes::Bytes;
-    use gpui::TestAppContext;
+    use gpui_kit::TestAppContext;
     use http::{HeaderMap, StatusCode, Version};
     use url::Url;
 
@@ -1438,7 +1438,7 @@ mod pane_tests {
 
     fn initialize(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             init_i18n(cx);
             gpui_tokio::init(cx);
         });
@@ -1487,7 +1487,7 @@ mod pane_tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn text_projection_uses_a_selectable_read_only_editor_and_teardown_releases_it(
         cx: &mut TestAppContext,
     ) {
@@ -1523,7 +1523,7 @@ mod pane_tests {
         cx.update(|window, cx| {
             editor.update(cx, |editor, cx| {
                 editor.set_selected_range(0..source.len(), cx);
-                gpui::EntityInputHandler::replace_text_in_range(
+                gpui_kit::EntityInputHandler::replace_text_in_range(
                     editor, None, "changed", window, cx,
                 );
             });
@@ -1539,7 +1539,7 @@ mod pane_tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn unexpected_media_event_route_close_becomes_a_terminal_internal_problem(
         cx: &mut TestAppContext,
     ) {
@@ -1593,7 +1593,7 @@ mod pane_tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn media_and_pdf_preview_teardown_reject_stale_work_without_autoplay(cx: &mut TestAppContext) {
         initialize(cx);
         let (view, cx) = cx.add_window_view(RequestView::new);

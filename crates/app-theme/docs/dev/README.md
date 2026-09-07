@@ -1,5 +1,7 @@
 # app-theme 开发计划
 
+- [Issue #215：依赖升级](issue-215/README.md)：app-theme 的依赖/API 配套迁移与验证边界。
+
 按目标版本或 Git hash 保存 `app-theme` 的实施计划；新迁移新增文件，不覆盖历史批次。
 
 | 迁移批次 | 状态 | 入口 |

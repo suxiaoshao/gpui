@@ -98,7 +98,8 @@ self.form.update(cx, |form, cx| {
 
 ## 选择合适的 adapter
 
-- `FormInput` 绑定 `String`。
+- `FormInput`、`FormTextarea`、`FormEditor` 分别通过 `InputState`、`TextareaState`、
+  `EditorState` 绑定 `String`；单行使用 `Input`，多行正文使用 `Textarea`，代码使用 `Editor`。
 - `FormIntegerInput` 绑定整数 primitive，同时将未完成 text 保留在 native editor 内。
 - `FormSelect` 绑定 `Option<D::Item::Value>`。
 - `FormCombobox` 绑定 `Vec<D::Item::Value>`。

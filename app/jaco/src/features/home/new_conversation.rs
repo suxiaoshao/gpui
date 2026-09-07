@@ -4,14 +4,13 @@ use std::{
     rc::Rc,
 };
 
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, StyledExt, WindowExt as NotificationWindowExt,
     label::Label,
-    list::ListState,
     notification::{Notification, NotificationType},
     v_flex,
 };
+use gpui_kit::*;
 use gpui_store::StoreSelection;
 use jaco_core::{ConversationId, ProjectId, new_id};
 use jaco_db::ProjectRecord;
@@ -29,7 +28,7 @@ use crate::{
             ChatInputSubmit,
         },
         chat::runtime_status::ConversationRuntimeStatus,
-        picker::PickerListDelegate,
+        picker::PickerControl,
     },
     features::conversation,
     foundation::I18n,
@@ -99,7 +98,6 @@ impl NewConversationPage {
         let sections = projects
             .read(|projects| project_sections(projects.as_deref().unwrap_or_default(), none_label));
         let selected_value = project_picker_value(selected_project_id.as_ref());
-        let selected_ix = PickerListDelegate::selected_index_for(&sections, Some(&selected_value));
         let confirm = Rc::new({
             let state = state.clone();
             move |option: ProjectPickerOption, window: &mut Window, cx: &mut App| {
@@ -108,40 +106,16 @@ impl NewConversationPage {
                 });
             }
         });
-        let cancel = Rc::new({
-            let state = state.clone();
-            move |window: &mut Window, cx: &mut App| {
-                let _ = state.update(cx, |page, cx| {
-                    page.set_project_picker_open(false, window, cx);
-                });
-            }
-        });
-        let project_picker = cx.new(|cx| {
-            let mut picker = ListState::new(
-                PickerListDelegate::new(
-                    sections,
-                    Some(selected_value),
-                    |cx| {
-                        cx.global::<I18n>()
-                            .t("new-conversation-project-empty")
-                            .into()
-                    },
-                    confirm,
-                    cancel,
-                ),
-                window,
-                cx,
-            )
-            .searchable(true);
-            picker.delegate_mut().set_selectable(
-                project_catalog_is_ready(cx),
-                Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
-            );
-            picker.set_selected_index(selected_ix, window, cx);
-            picker
-        });
+        let project_picker = PickerControl::new(
+            sections,
+            Some(selected_value),
+            project_catalog_is_ready(cx),
+            true,
+            move |option, window, cx| confirm(option, window, cx),
+            window,
+            cx,
+        );
         let project = cx.new(|_| ProjectControlState {
-            open: false,
             picker: project_picker,
         });
         let status_conversation_id = Rc::new(RefCell::new(None));
@@ -221,12 +195,6 @@ impl NewConversationPage {
     }
 
     pub(crate) fn focus_primary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.project.read(cx).open {
-            let picker = self.project.read(cx).picker.clone();
-            picker.update(cx, |picker, cx| picker.focus(window, cx));
-            return;
-        }
-
         self.chat_form
             .update(cx, |chat_form, cx| chat_form.focus_composer(window, cx));
     }
@@ -291,10 +259,6 @@ impl NewConversationPage {
                         chat_form.refresh_skill_catalog(Some(Path::new(&selected.path)), cx);
                     });
                     self.sync_project_picker(window, cx);
-                    self.project.update(cx, |project, cx| {
-                        project.open = false;
-                        cx.notify();
-                    });
                 }
                 Err(err) => {
                     event!(Level::ERROR, error = ?err, "save sidebar selected project failed");
@@ -337,19 +301,6 @@ impl NewConversationPage {
         });
     }
 
-    fn set_project_picker_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.project.update(cx, |project, cx| {
-            project.open = open;
-            cx.notify();
-        });
-        if open {
-            self.sync_project_picker(window, cx);
-            let picker = self.project.read(cx).picker.clone();
-            picker.update(cx, |picker, cx| picker.focus(window, cx));
-        }
-        cx.notify();
-    }
-
     fn select_project_option(
         &mut self,
         option: ProjectPickerOption,
@@ -384,7 +335,6 @@ impl NewConversationPage {
                     chat_form.refresh_skill_catalog(None, cx);
                 });
                 self.sync_project_picker(window, cx);
-                self.set_project_picker_open(false, window, cx);
             }
             Err(err) => {
                 let title = cx.global::<I18n>().t("notify-save-settings-failed");
@@ -418,7 +368,6 @@ impl NewConversationPage {
                     chat_form.refresh_skill_catalog(Some(Path::new(&project.path)), cx);
                 });
                 self.sync_project_picker(window, cx);
-                self.set_project_picker_open(false, window, cx);
             }
             Err(err) => {
                 let title = cx.global::<I18n>().t("notify-save-settings-failed");
@@ -435,7 +384,6 @@ impl NewConversationPage {
     }
 
     fn open_add_project_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_project_picker_open(false, window, cx);
         let title = cx.global::<I18n>().t("button-add-project");
         let failed_title = cx.global::<I18n>().t("notify-add-project-failed");
         let path_prompt = cx.prompt_for_paths(PathPromptOptions {
@@ -650,18 +598,13 @@ impl NewConversationPage {
         let selected_value = project_picker_value(self.selected_project_id.as_ref());
 
         let picker = self.project.read(cx).picker.clone();
-        picker.update(cx, |picker, cx| {
-            picker.delegate_mut().set_sections(sections);
-            picker
-                .delegate_mut()
-                .set_selected_value(Some(selected_value));
-            picker.delegate_mut().set_selectable(
-                project_catalog_is_ready(cx),
-                Some(cx.global::<I18n>().t("resource-picker-read-only").into()),
-            );
-            let selected_ix = picker.delegate().selected_index();
-            picker.set_selected_index(selected_ix, window, cx);
-        });
+        picker.replace_projection(
+            sections,
+            Some(selected_value),
+            project_catalog_is_ready(cx),
+            window,
+            cx,
+        );
 
         cx.notify();
     }

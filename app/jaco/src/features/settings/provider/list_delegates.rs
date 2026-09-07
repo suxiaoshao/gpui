@@ -1,5 +1,4 @@
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, IndexPath, Selectable, Sizable, StyledExt, h_flex,
     label::Label,
     list::{ListDelegate, ListEvent, ListState},
@@ -7,6 +6,7 @@ use gpui_component::{
     tag::Tag,
     v_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use jaco_core::ModelCapabilitiesSnapshot;
 
 use crate::foundation::{

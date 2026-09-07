@@ -1,6 +1,6 @@
 use app_assets::{define_lucide_icons, define_svg_icons};
-use gpui::{AssetSource, SharedString};
-use gpui_component::Icon;
+use gpui_kit::component::Icon;
+use gpui_kit::{AssetSource, SharedString};
 use rust_embed::RustEmbed;
 use std::{borrow::Cow, collections::BTreeSet};
 
@@ -202,7 +202,7 @@ struct AssetsInner;
 struct BuildAssets;
 
 impl AssetSource for AssetsInner {
-    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+    fn load(&self, path: &str) -> gpui_kit::Result<Option<Cow<'static, [u8]>>> {
         if path.is_empty() {
             return Ok(None);
         }
@@ -210,7 +210,7 @@ impl AssetSource for AssetsInner {
         Ok(Self::get(path).map(|file| file.data))
     }
 
-    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+    fn list(&self, path: &str) -> gpui_kit::Result<Vec<SharedString>> {
         Ok(Self::iter()
             .filter_map(|item| {
                 let item = item.into_owned();
@@ -221,7 +221,7 @@ impl AssetSource for AssetsInner {
 }
 
 impl AssetSource for BuildAssets {
-    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+    fn load(&self, path: &str) -> gpui_kit::Result<Option<Cow<'static, [u8]>>> {
         if path.is_empty() {
             return Ok(None);
         }
@@ -229,7 +229,7 @@ impl AssetSource for BuildAssets {
         Ok(Self::get(path).map(|file| file.data))
     }
 
-    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+    fn list(&self, path: &str) -> gpui_kit::Result<Vec<SharedString>> {
         Ok(Self::iter()
             .filter_map(|item| {
                 let item = item.into_owned();
@@ -244,7 +244,7 @@ pub(crate) struct Assets {
     build_assets: BuildAssets,
     provider_logo_assets: ProviderLogoAssets,
     lucide_assets: LucideAssets,
-    component_assets: gpui_component_assets::Assets,
+    component_assets: gpui_kit::assets::Assets,
 }
 
 pub(crate) fn bundled_theme_sets() -> Vec<String> {
@@ -267,13 +267,13 @@ impl Default for Assets {
             build_assets: BuildAssets,
             provider_logo_assets: ProviderLogoAssets,
             lucide_assets: LucideAssets,
-            component_assets: gpui_component_assets::Assets,
+            component_assets: gpui_kit::assets::Assets,
         }
     }
 }
 
 impl AssetSource for Assets {
-    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+    fn load(&self, path: &str) -> gpui_kit::Result<Option<Cow<'static, [u8]>>> {
         if path.is_empty() {
             return Ok(None);
         }
@@ -292,7 +292,7 @@ impl AssetSource for Assets {
         self.component_assets.load(path)
     }
 
-    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+    fn list(&self, path: &str) -> gpui_kit::Result<Vec<SharedString>> {
         let mut names = BTreeSet::new();
 
         names.extend(self.assets.list(path)?);
@@ -311,8 +311,8 @@ mod tests {
         APP_ICON_ASSET_PATH, Assets, AssetsInner, IconName, ProviderLogoName, bundled_theme_sets,
     };
     use app_assets::{SvgIconMetadata, SvgIconNamed};
-    use gpui::{AssetSource, SharedString};
-    use gpui_component::{IconNamed, ThemeRegistry, ThemeSet};
+    use gpui_kit::component::{IconNamed, ThemeRegistry, ThemeSet};
+    use gpui_kit::{AssetSource, SharedString};
     use std::collections::BTreeSet;
 
     const EXPECTED_THEME_FILES: [&str; 22] = [

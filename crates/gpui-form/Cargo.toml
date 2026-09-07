@@ -17,4 +17,4 @@ gpui-operation = { workspace = true }
 gpui = { workspace = true, features = ["test-support"] }
 gpui-component = { workspace = true }
 gpui-form-gpui-component = { workspace = true }
-trybuild = "1.0.118"
+trybuild = "1.0.120"

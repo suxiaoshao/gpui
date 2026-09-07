@@ -1,8 +1,8 @@
 use std::{rc::Rc, time::Duration};
 
 use crate::{app::APP_NAME, features::temporary::TemporaryWindow};
-use gpui::*;
-use gpui_component::Root;
+use gpui_kit::component::Root;
+use gpui_kit::*;
 #[cfg(target_os = "macos")]
 use platform_ext::app::{
     NSRunningApplication, Retained, record_frontmost_app, restore_frontmost_app,
@@ -487,7 +487,7 @@ mod tests {
         display_id_for_mouse_location, preserve_or_fallback_size,
         should_hide_for_window_activation,
     };
-    use gpui::{Bounds, point, px, size};
+    use gpui_kit::{Bounds, point, px, size};
     use window_ext::WindowLevel;
 
     fn display(

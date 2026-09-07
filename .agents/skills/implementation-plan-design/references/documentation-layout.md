@@ -51,7 +51,7 @@ The entrypoint is always `README.md`; do not place durable plans as flat Markdow
 Let the root hub own:
 
 - status, scope, non-goals, compatibility/rebuild policy, and release gates;
-- the complete applicability matrix and shared evidence/decisions;
+- affected surfaces, material no-change decisions, and shared evidence/decisions;
 - cross-owner integration and error contracts;
 - the owner-plan map, cross-owner sequencing, aggregate validation, and completion evidence.
 
@@ -61,7 +61,7 @@ Let each app/crate owner plan own only:
 - exact owner-local files, symbols, local contracts, state/data flow, tests, and validation;
 - owner-local work packages and deviations that require root-hub synchronization.
 
-The root hub owns all S/C/ERR IDs plus shared/cross-owner E/D/R/T/WP IDs. An owner plan owns its local E/D/F/L/DB/G/ST/R/T/WP IDs; it consumes root-owned C/ERR IDs and defines only its local implementation of those contracts. An owner plan must not define a sibling app/crate's implementation. Reference shared and cross-owner facts by their root-hub IDs instead of copying them. Do not duplicate the root goal, status, applicability matrix, shared evidence, decisions, contracts, aggregate progress, or completion evidence. Link every owner plan from the hub and every owner plan back to the hub.
+The root hub owns all S/C/ERR IDs plus shared/cross-owner E/D/R/T/WP IDs. An owner plan owns its local E/D/F/L/DB/G/ST/R/T/WP IDs; it consumes root-owned C/ERR IDs and defines only its local implementation of those contracts. Assign non-overlapping ranges when several owners author the same ID family. An owner plan must not define a sibling app/crate's implementation. Reference shared and cross-owner facts by their root-hub IDs instead of copying them. Do not duplicate the root goal, status, applicability matrix, shared evidence, decisions, contracts, aggregate progress, or completion evidence. Link every owner plan from the hub and every owner plan back to the hub.
 
 ## Maintain Indexes and Links
 
@@ -93,18 +93,7 @@ Keep completed plans at their original paths. When replacing one, mark it `Super
 
 ## Synchronize Completion
 
-Before `Done`, record in the root hub:
-
-- actual commits and PR;
-- actual added, modified, moved, deleted, generated, synchronized, and vendored files;
-- delivered stable contract/DB/error/dependency/requirement IDs;
-- commands and results actually run;
-- manual, packaged-app, or real-API scenarios actually exercised;
-- accepted deviations from target design;
-- unverified boundaries and reason;
-- owner README, index, and ADR synchronization.
-
-Update stale root/owner indexes and plan headers when status changes. Do not leave a discovery index saying work is unimplemented after the root hub records completion.
+Fill the root hub's [completion evidence](plan-template.md#completion-evidence) from actual implementation and validation. Synchronize affected owner documentation and discovery links; indexes remain discovery lists rather than progress ledgers.
 
 ## Promote Durable Decisions to ADRs
 

@@ -2,17 +2,17 @@ use crate::{
     foundation::{I18n, assets::IconName},
     state,
 };
-use gpui::{
-    App, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
-    StatefulInteractiveElement as _, Styled as _, Window, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
     switch::Switch,
     v_flex,
+};
+use gpui_kit::{
+    App, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
+    StatefulInteractiveElement as _, Styled as _, Window, px,
 };
 use jaco_agent::McpServerConnectionState;
 

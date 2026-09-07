@@ -1,6 +1,6 @@
 use std::fmt;
 
-use gpui::{App, AppContext, Entity, Global, Subscription, Task};
+use gpui_kit::{App, AppContext, Entity, Global, Subscription, Task};
 use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh};
 use gpui_store::{Select, Store};
 use jaco_core::{
@@ -206,7 +206,7 @@ fn load_task(cx: &mut App) -> Option<Task<()>> {
     }))
 }
 
-pub(crate) fn catalog(cx: &impl gpui::AppContext) -> ShortcutStore {
+pub(crate) fn catalog(cx: &impl gpui_kit::AppContext) -> ShortcutStore {
     ShortcutStore::global(cx)
 }
 

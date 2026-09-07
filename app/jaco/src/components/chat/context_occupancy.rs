@@ -1,13 +1,13 @@
 use std::num::NonZeroU64;
 
 use fluent_bundle::FluentArgs;
-use gpui::{
-    App, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Icon, Sizable as _, StyledExt as _, h_flex, hover_card::HoverCard,
     label::Label, v_flex,
+};
+use gpui_kit::{
+    App, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 use jaco_core::{
     ConversationContextRequestUsage, ProviderId, ProviderModelId, ProviderUsageCoverage,
@@ -297,7 +297,7 @@ impl RenderOnce for ContextOccupancyDisclosure {
 
         div().mr(px(5.)).flex_shrink_0().child(
             HoverCard::new(self.hover_card_id)
-                .anchor(gpui::Anchor::BottomRight)
+                .anchor(gpui_kit::Anchor::BottomRight)
                 .trigger(trigger)
                 .child(content),
         )
@@ -307,7 +307,7 @@ impl RenderOnce for ContextOccupancyDisclosure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Context, Modifiers, Render, TestAppContext, point, px};
+    use gpui_kit::{Context, Modifiers, Render, TestAppContext, point, px};
     use jaco_core::{
         CapabilitySourceSnapshot, ContextWindowCapabilitySnapshot, ProviderUsageSnapshot,
         conservative_model_capabilities,
@@ -566,9 +566,9 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn context_occupancy_cluster_uses_native_hover_card_delays(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui_kit::init);
         cx.update(crate::foundation::init_i18n);
         let (_, cx) = cx.add_window_view(|_, _| ContextOccupancyHarness);
         let trigger_center = cx

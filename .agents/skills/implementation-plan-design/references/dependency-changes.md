@@ -13,15 +13,7 @@ Include one row for every changed direct dependency and material transitive depe
 | Dependency | Scope/kind | Current declaration/resolution | Target source/version | Authoritative evidence | Local uses/coupled artifacts | Runtime/platform constraints | Classification/migration |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 
-Define:
-
-- direct/transitive and runtime/dev/build/proc-macro/generator/framework/toolchain kind;
-- exact manifest plus resolved registry/Git/path/submodule source;
-- exact target complete version, pin/range policy, tag, or full Git SHA;
-- authoritative evidence across the complete crossed interval;
-- exact imports, APIs, features, config, generators, skills/docs, CI/packaging, submodules, and vendored consumers;
-- duplicate-major/`links`, MSRV/runtime, platform, native, TLS, serialization, and feature constraints;
-- compatibility class and exact migration, pin, rejection, or release-gate action.
+Record complete versions or full Git SHAs and the crossed interval. Constraints include applicable features, duplicate majors, MSRV/runtime, native/platform, TLS and serialization requirements.
 
 Use Cargo/Git/managing tools to update lockfiles and submodule state. Never hand-edit a lockfile or invent a recorded SHA.
 
@@ -92,9 +84,7 @@ If a managing tool fails after retrieval, use manual synchronization only when s
 
 ## Upstream Reuse
 
-After selecting a target, use `upstream-reuse-audit.md` for every affected wrapper, adapter, custom component, state projection, parser, retry helper, workaround, copied subsystem, and compatibility layer.
-
-A dependency plan is not `Ready` until each affected subsystem has `Reuse directly`, `Adapt`, `Retain`, or `Defer`, with removals listed before additions.
+Use [upstream-reuse-audit.md](upstream-reuse-audit.md) when a verified upstream change can replace a local implementation or invalidates its assumptions. Assess those candidates and their consumers; a dependency update alone does not require a subsystem-wide reuse inventory. Unrelated cleanup remains outside the migration.
 
 ## Stop Conditions and Completion Evidence
 
@@ -108,7 +98,7 @@ Completion evidence must show:
 - upstream-change rows map to exact code/config edits, deletions, and tests;
 - deprecated imports/config/features/APIs/workarounds were searched;
 - coupled skills, docs, generated output, submodules, and vendored content were synchronized or evidenced unchanged;
-- upstream-reuse decisions were executed;
+- selected in-scope reuse decisions were executed;
 - pins, rejections, release gates, and stop conditions remain accurate.
 
 Keep aggregate commands, implementation references, owner-doc updates, deviations, and final status in the root hub's validation/completion sections.

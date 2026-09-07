@@ -3,8 +3,8 @@ use std::{
     rc::Rc,
 };
 
-use gpui::{App, Entity, Window};
-use gpui_component::text::TextViewState;
+use gpui_kit::component::text::TextViewState;
+use gpui_kit::{App, Entity, Window};
 use jaco_core::{
     AgentMessageRequestUsage, AgentRun, AgentRunId, AttachmentId, Conversation,
     ConversationAttachment, ConversationEntry, ConversationEntryId, ToolInvocation,
@@ -443,6 +443,7 @@ fn agent_turn_row(
         .collect();
 
     AgentTurnRow {
+        is_active_run: false,
         run_id,
         run,
         request_usage,

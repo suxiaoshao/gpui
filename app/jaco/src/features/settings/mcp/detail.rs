@@ -2,11 +2,11 @@ use crate::{
     foundation::{I18n, assets::IconName},
     state,
 };
-use gpui::{
-    AnyElement, App, IntoElement, ParentElement as _, SharedString, Styled as _, div, px, relative,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, Sizable, StyledExt, h_flex, label::Label, tag::Tag, v_flex,
+};
+use gpui_kit::{
+    AnyElement, App, IntoElement, ParentElement as _, SharedString, Styled as _, div, px, relative,
 };
 
 use super::tags::{enabled_label, transport_label};

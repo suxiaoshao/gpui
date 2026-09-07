@@ -26,7 +26,7 @@ Verify exact APIs in the focused skill and current source before writing type pa
 
 - Give every mutable fact one authoritative owner. Do not mirror business state, operation phase, loading flags, tasks, selected values, or derived labels without an explicit projection and invalidation rule.
 - Do not force every state into `Entity`, `Store`, or `Global`; every visual type into an Entity; or every async request into an operation. Record the selected primitive and the rejected primitive only when the distinction is material.
-- Expand only canonical S-IDs marked `Applicable`. Keep `No change` and `N/A` evidence in the canonical applicability matrix; do not create a competing GPUI matrix.
+- Expand affected canonical S-IDs; record material no-change decisions in the root scope table without a second GPUI matrix.
 - Assign L-IDs to exact GPUI type/method contracts, ST-IDs to authority and lifecycle flows, ERR-IDs to failures, and R/T IDs to requirements and tests.
 
 ## State and Ownership Contract
@@ -51,7 +51,7 @@ Classify the owner precisely:
 - `Entity<T>` for independently updated GPUI-owned state or views;
 - `Store<S>` for shared authoritative in-memory business state;
 - typed `Global` only for genuinely app-wide services or state;
-- generated form store for typed editable values and validation;
+- `Entity<Form<M>>` for one typed editing and validation session;
 - native control Entity for focus, IME, selection, popup, and incomplete editor state;
 - operation for fallible resource acquisition and recovery phase;
 - page/controller/service for commands, persistence tasks, notifications, and product policy;
@@ -151,21 +151,16 @@ Treat `Ready(empty)` as a successful empty state, not as `Unavailable`. Distingu
 
 ## Form and Bound-control Contract
 
-Separate four ownership channels:
+Use the current [Form guide](../../../../crates/gpui-form/docs/guide.md) and [binding guide](../../../../crates/gpui-form-gpui-component/docs/guide.md) for exact APIs. Record four owners:
 
-1. typed value, baseline/revision, validation, and submit transformation in the form;
-2. focus, IME, selection, popup, and incomplete editor state in the bound native control;
-3. options/catalog/capabilities, disabled state, placeholder, and non-blocking hints in the app store or controller;
-4. save task, loading/retry, persistence, notification, and navigation in the page/controller/service.
+1. `Entity<Form<M>>`: draft, baseline, validation and editing-session lifetime;
+2. native control: focus, IME, selection, popup and incomplete editor state;
+3. application Store/controller: options, catalogs, capabilities and presentation policy;
+4. page/service: business conversion, save task, persistence, notification and navigation.
 
-Specify the L-IDs for generated form/input types, fields, validation triggers, submit transformation, subscriptions, and bound controls. Give the value/control/catalog/save flow an ST-ID. For dynamic options, define the ordered flow:
+Specify model/descriptor/path and binding L-IDs, validation triggers, and the value/control/catalog/save ST flow. A catalog change updates options and requests `ValidationTrigger::External` only when product rules require it; it does not silently rewrite, rebase or persist the selected value.
 
-1. update the authoritative catalog;
-2. update native control options;
-3. reproject the existing typed form value;
-4. run dynamic validation.
-
-Retain an unavailable typed value for correction. Do not silently choose a fallback, rebase, or persist because options changed. For submission, specify preparation, persistence, and revision-safe rebase behavior when edits occur while save is in flight.
+Submission prepares an accepted `Prepared<M>` snapshot with its session-bound `FormVersion`. Business conversion stays at the application boundary (`Prepared::map` preserves that version); persistence returns the saved model to `rebase_if_current`. Specify how the page handles stale saves without overwriting subsequent edits. Do not use a bare revision as the save token.
 
 ## Task, Context, Reentrancy, and Window Contract
 
@@ -214,12 +209,4 @@ Persist R/T IDs, proposed test names, fixtures, trigger sequence, state/phase as
 
 ## GPUI Handoff Audit
 
-Before finalizing a GPUI plan, verify:
-
-- every mutable fact has one authoritative owner;
-- every changed data source has an explicit operation-family or no-operation decision;
-- every operation phase maps to UI, actions, i18n, and tests;
-- every Entity, Store, form, control, task, and subscription has a lifetime owner;
-- every action/event/focus/window path names its handler and state transition;
-- every custom component or low-level Element has a verified upstream gap;
-- no implementation work package asks the executor to choose among GPUI runtime primitives.
+At the plan handoff, check that ownership, interaction flows, runtime transitions and UI projections agree across the applicable contracts. Use [the shared handoff check](plan-template.md#execution-handoff-audit); do not duplicate the field inventory.

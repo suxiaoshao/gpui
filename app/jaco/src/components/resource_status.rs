@@ -1,8 +1,8 @@
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Sizable, StyledExt, button::Button, h_flex, label::Label,
     spinner::Spinner, v_flex,
 };
+use gpui_kit::*;
 use gpui_operation::refresh::Phase;
 
 use crate::foundation::I18n;

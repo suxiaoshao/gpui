@@ -1,5 +1,5 @@
-use gpui::{App, AppContext, Entity, Global, Subscription, Window, WindowAppearance};
-use gpui_component::{Theme, ThemeMode as ComponentThemeMode, ThemeRegistry};
+use gpui_kit::component::{Theme, ThemeMode as ComponentThemeMode, ThemeRegistry};
+use gpui_kit::{App, AppContext, Entity, Global, Subscription, Window, WindowAppearance};
 use gpui_store::Select;
 use jaco_core::{AppThemeMode, AppThemeSettings};
 use tracing::{Level, event};
@@ -203,8 +203,8 @@ fn append_custom_theme_color(colors: &mut Vec<String>, color: String) {
 #[cfg(test)]
 mod tests {
     use super::{normalized_custom_theme_colors, resolved_component_theme_mode};
-    use gpui::WindowAppearance;
-    use gpui_component::ThemeMode as ComponentThemeMode;
+    use gpui_kit::WindowAppearance;
+    use gpui_kit::component::ThemeMode as ComponentThemeMode;
     use jaco_core::{AppThemeMode, AppThemeSettings};
 
     #[test]

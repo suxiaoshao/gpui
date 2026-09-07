@@ -4,21 +4,21 @@ use crate::{
     state,
 };
 use fluent_bundle::FluentArgs;
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_form::{Form, FormVersion, GardeValidator, PrepareError as SubmitError};
+use gpui_form_gpui_component::{FormInput, FormTextarea};
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, StyledExt, WindowExt as NotificationWindowExt,
     button::{Button, ButtonVariants},
     dialog::{DialogAction, DialogClose, DialogFooter},
     form::field as component_form_field,
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputState, Textarea, TextareaState},
     label::Label,
     notification::{Notification, NotificationType},
     scroll::ScrollableElement,
     v_flex,
 };
-use gpui_form::{Form, FormVersion, GardeValidator, PrepareError as SubmitError};
-use gpui_form_gpui_component::FormInput;
+use gpui_kit::{prelude::FluentBuilder as _, *};
 use jaco_core::PromptId;
 use jaco_db::PromptRecord;
 
@@ -50,7 +50,7 @@ pub(super) struct PromptEditDialogState {
     prompt_id: Option<PromptId>,
     form: Entity<Form<PromptEditFormInput>>,
     name_input: FormInput,
-    content_input: FormInput,
+    content_input: FormTextarea,
     save_task: Option<Task<()>>,
 }
 
@@ -91,12 +91,11 @@ impl PromptEditDialogState {
             window,
             cx,
         );
-        let content_input = FormInput::new(
+        let content_input = FormTextarea::new(
             &form,
             PromptEditFormInput::CONTENT,
             |window, cx| {
-                InputState::new(window, cx)
-                    .multi_line(true)
+                TextareaState::new(window, cx)
                     .placeholder(cx.global::<I18n>().t("prompt-placeholder-content"))
             },
             window,
@@ -252,7 +251,7 @@ impl Render for PromptEditDialogState {
             ))
             .child(form_field(
                 cx.global::<I18n>().t("prompt-field-content"),
-                Input::new(&self.content_input)
+                Textarea::new(&self.content_input)
                     .w_full()
                     .min_w_0()
                     .h(px(220.)),
@@ -562,12 +561,14 @@ mod tests {
         PromptEditDialogState, PromptEditMode, confirm_prompt_edit_dialog, validation_message,
     };
     use crate::{database, foundation, state};
-    use gpui::{AppContext as _, Entity, Render, TestAppContext, VisualTestContext, WindowHandle};
-    use gpui_component::input::{InputEvent, InputState};
+    use gpui_kit::component::input::{InputEvent, InputState};
+    use gpui_kit::{
+        AppContext as _, Entity, Render, TestAppContext, VisualTestContext, WindowHandle,
+    };
     use tempfile::{TempDir, tempdir};
     use tokio::sync::oneshot;
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn invalid_create_confirm_keeps_prompt_dialog_open(cx: &mut TestAppContext) {
         let _dir = init_prompt_dialog_test(cx);
         let window = open_test_window(cx);
@@ -594,7 +595,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn stale_save_completion_keeps_newer_prompt_edit(cx: &mut TestAppContext) {
         let _dir = init_prompt_dialog_test(cx);
         let window = open_test_window(cx);
@@ -632,7 +633,7 @@ mod tests {
         assert!(dialog.read_with(&cx, |dialog, cx| dialog.form.read(cx).is_dirty()));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn duplicate_name_confirm_keeps_prompt_dialog_open(cx: &mut TestAppContext) {
         let _dir = init_prompt_dialog_test(cx);
         cx.update(|cx| cx.set_global(foundation::I18n::for_locale_tag("en-US")));
@@ -659,7 +660,12 @@ mod tests {
             )
         });
         set_input_value(name_input, "Existing Prompt", &mut cx);
-        set_input_value(content_input, "New content", &mut cx);
+        cx.update(|window, cx| {
+            content_input.update(cx, |input, cx| {
+                input.set_value("New content", window, cx);
+                cx.emit(InputEvent::Change);
+            });
+        });
 
         let saved = cx.update(|window, cx| confirm_prompt_edit_dialog(&form, window, cx));
         assert!(!saved);
@@ -717,7 +723,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn pending_save_rejects_repeated_prompt_confirm(cx: &mut TestAppContext) {
         let _dir = init_prompt_dialog_test(cx);
         let window = open_test_window(cx);
@@ -743,7 +749,7 @@ mod tests {
     fn init_prompt_dialog_test(cx: &mut TestAppContext) -> TempDir {
         let dir = tempdir().unwrap();
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             database::install_for_test(cx, dir.path());
             foundation::init_i18n(cx);
             state::hotkey::set_test_hotkey_state(cx);
@@ -778,10 +784,10 @@ mod tests {
     impl Render for TestView {
         fn render(
             &mut self,
-            _window: &mut gpui::Window,
-            _cx: &mut gpui::Context<Self>,
-        ) -> impl gpui::IntoElement {
-            gpui::div()
+            _window: &mut gpui_kit::Window,
+            _cx: &mut gpui_kit::Context<Self>,
+        ) -> impl gpui_kit::IntoElement {
+            gpui_kit::div()
         }
     }
 }

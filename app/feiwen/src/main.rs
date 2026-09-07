@@ -2,8 +2,8 @@ use crate::errors::FeiwenError;
 use app::{WorkspaceView, titlebar};
 use errors::FeiwenResult;
 use foundation::I18n;
-use gpui::*;
-use gpui_component::Root;
+use gpui_kit::component::{Root, TitleBar};
+use gpui_kit::*;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -26,7 +26,7 @@ fn quit(_: &Quit, cx: &mut App) {
 
 fn init(cx: &mut App) {
     event!(Level::INFO, "initializing feiwen app");
-    gpui_component::init(cx);
+    gpui_kit::init(cx);
     app_theme::init_system_accent_theme(cx);
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.activate(true);
@@ -92,7 +92,7 @@ fn main() -> FeiwenResult<()> {
 
     let span = tracing::info_span!("init");
     let _enter = span.enter();
-    let app = gpui_platform::application().with_assets(foundation::Assets::default());
+    let app = gpui_kit::application().with_assets(foundation::Assets::default());
     event!(Level::INFO, "app created");
 
     app.run(|cx: &mut App| {
@@ -121,9 +121,8 @@ fn main_titlebar_options(title: impl Into<SharedString>) -> TitlebarOptions {
 fn main_window_options(title: impl Into<SharedString>) -> WindowOptions {
     WindowOptions {
         titlebar: Some(main_titlebar_options(title)),
-        app_owns_titlebar_drag: true,
         window_background: WindowBackgroundAppearance::Blurred,
-        ..Default::default()
+        ..TitleBar::window_options()
     }
 }
 
@@ -131,7 +130,7 @@ fn main_window_options(title: impl Into<SharedString>) -> WindowOptions {
 mod tests {
     use super::{main_titlebar_options, main_window_options};
     use crate::app::titlebar;
-    use gpui::WindowBackgroundAppearance;
+    use gpui_kit::WindowBackgroundAppearance;
 
     #[test]
     fn main_window_uses_custom_titlebar_options() {

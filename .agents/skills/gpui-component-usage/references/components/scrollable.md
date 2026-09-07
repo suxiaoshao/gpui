@@ -10,8 +10,8 @@ A comprehensive scrollable container component that provides custom scrollbars, 
 ## Import
 
 ```rust
-use gpui_component::{
-    scroll::{ScrollableElement, ScrollbarAxis, ScrollbarShow},
+use gpui_kit::component::{
+    scroll::{ScrollableElement, ScrollbarAxis, ScrollbarMode},
     StyledExt as _,
 };
 ```
@@ -29,8 +29,8 @@ This method is almost like the `overflow_scroll()` method, but it adds scrollbar
 - `overflow_y_scrollbar()` - Adds vertical scrollbar as needed.
 
 ```rust
-use gpui::{div, Axis};
-use gpui_component::ScrollableElement;
+use gpui_kit::{div, Axis};
+use gpui_kit::component::ScrollableElement;
 
 div()
     .id("scrollable-container")
@@ -97,7 +97,7 @@ div()
 For more control, you can create scrollbars manually:
 
 ```rust
-use gpui_component::scroll::{ScrollableElement};
+use gpui_kit::component::scroll::{ScrollableElement};
 
 pub struct ScrollableView {
     scroll_handle: ScrollHandle,
@@ -128,7 +128,7 @@ impl Render for ScrollableView {
 For rendering large lists efficiently, use `VirtualList`:
 
 ```rust
-use gpui_component::{VirtualList, VirtualListScrollHandle};
+use gpui_kit::component::{VirtualList, VirtualListScrollHandle};
 
 pub struct LargeListView {
     items: Vec<String>,
@@ -218,12 +218,12 @@ Customize scrollbar appearance through theme configuration:
 Control when scrollbars are visible:
 
 ```rust
-use gpui_component::scroll::ScrollbarShow;
+use gpui_kit::component::{Theme, scroll::ScrollbarMode};
 
 // In theme initialization
-theme.scrollbar_show = ScrollbarShow::Scrolling;  // Show only when scrolling
-theme.scrollbar_show = ScrollbarShow::Hover;      // Show on hover
-theme.scrollbar_show = ScrollbarShow::Always;     // Always visible
+Theme::set_scrollbar_mode(ScrollbarMode::Scrolling, cx); // Only while scrolling
+Theme::set_scrollbar_mode(ScrollbarMode::Hover, cx);     // On hover
+Theme::set_scrollbar_mode(ScrollbarMode::Always, cx);    // Always visible
 ```
 
 ### System Integration

@@ -9,7 +9,7 @@ use std::{
 };
 
 use async_channel::{Receiver, RecvError};
-use gpui::Task;
+use gpui_kit::Task;
 use gpui_operation::Transition;
 
 use super::PreviewToken;
@@ -736,7 +736,7 @@ mod tests {
     };
 
     use bytes::Bytes;
-    use gpui::{App, TestAppContext};
+    use gpui_kit::{App, TestAppContext};
     use http::{HeaderMap, StatusCode, Version};
     use url::Url;
 
@@ -1026,7 +1026,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn stopping_preparation_cancels_its_owner_task_and_becomes_idle(cx: &mut TestAppContext) {
         let control = std::rc::Rc::new(PendingTaskControl::default());
         let task = cx.update(|cx: &mut App| {

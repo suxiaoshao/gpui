@@ -1,24 +1,10 @@
-use crate::foundation::assets::IconName;
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
-    ActiveTheme, Icon, IndexPath, Selectable, Sizable, Size, StyledExt,
-    button::{Button, ButtonVariants},
-    h_flex,
-    label::Label,
-    list::{List, ListDelegate, ListItem, ListState},
-    popover::Popover,
+use gpui_kit::component::{
+    combobox::{Combobox, ComboboxEvent, ComboboxState},
+    searchable_list::{SearchableGroup, SearchableListItem, SearchableVec},
     select::SelectItem,
-    v_flex,
 };
-use std::rc::Rc;
-
-const PICKER_TRIGGER_SIZE: f32 = 28.;
-const PICKER_TRIGGER_RADIUS: f32 = 999.;
-
-type OnCancel = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
-type OnConfirm<T> = Rc<dyn Fn(T, &mut Window, &mut App) + 'static>;
-type IsSelectable<T> = Rc<dyn Fn(&T) -> bool + 'static>;
-type EmptyLabel = Rc<dyn Fn(&App) -> SharedString + 'static>;
+use gpui_kit::*;
+use std::{ops::Deref, rc::Rc};
 
 #[derive(Clone, Debug)]
 pub(crate) struct PickerSection<T> {
@@ -27,14 +13,6 @@ pub(crate) struct PickerSection<T> {
 }
 
 impl<T> PickerSection<T> {
-    #[cfg(test)]
-    pub(super) fn flat(items: impl IntoIterator<Item = T>) -> Vec<Self> {
-        vec![Self {
-            title: None,
-            items: items.into_iter().map(Rc::new).collect(),
-        }]
-    }
-
     pub(crate) fn untitled(items: impl IntoIterator<Item = T>) -> Self {
         Self {
             title: None,
@@ -53,932 +31,233 @@ impl<T> PickerSection<T> {
     }
 }
 
-pub(crate) struct PickerListDelegate<T>
-where
-    T: SelectItem + Clone + 'static,
-{
-    ix: Option<IndexPath>,
-    all_sections: Vec<PickerSection<T>>,
+/// Domain options carry availability; the component owns filtering and selection.
+#[derive(Clone)]
+pub(crate) struct PickerItem<T: SelectItem + Clone> {
+    option: Rc<T>,
+    selectable: bool,
+}
+
+impl<T: SelectItem + Clone> SearchableListItem for PickerItem<T> {
+    type Value = T::Value;
+
+    fn title(&self) -> SharedString {
+        self.option.title()
+    }
+    fn display_title(&self) -> Option<AnyElement> {
+        self.option.display_title()
+    }
+    fn value(&self) -> &Self::Value {
+        self.option.value()
+    }
+    fn matches(&self, query: &str) -> bool {
+        self.option.matches(query)
+    }
+    fn disabled(&self) -> bool {
+        !self.selectable || self.option.disabled()
+    }
+    fn render(&self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        self.option.render(window, cx)
+    }
+}
+
+type PickerItems<T> = SearchableVec<SearchableGroup<PickerItem<T>>>;
+
+fn picker_items<T: SelectItem + Clone>(
     sections: Vec<PickerSection<T>>,
-    last_query: String,
-    selected_value: Option<T::Value>,
-    empty_label: EmptyLabel,
     selectable: bool,
-    read_only_reason: Option<SharedString>,
-    is_item_selectable: IsSelectable<T>,
-    on_confirm: OnConfirm<T>,
-    on_cancel: OnCancel,
+) -> PickerItems<T> {
+    SearchableVec::new(
+        sections
+            .into_iter()
+            .map(|section| {
+                SearchableGroup::new(section.title.unwrap_or_default()).items(
+                    section
+                        .items
+                        .into_iter()
+                        .map(|option| PickerItem { option, selectable }),
+                )
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
-#[derive(IntoElement, Clone)]
-pub(crate) struct PickerListItem<T>
-where
-    T: SelectItem + Clone + 'static,
-{
-    id: SharedString,
-    item: Rc<T>,
-    is_selected: bool,
-    selectable: bool,
+/// Connects component value changes to the domain callback and retains its subscription.
+#[derive(Clone)]
+pub(crate) struct PickerControl<T: SelectItem + Clone + 'static> {
+    state: Entity<ComboboxState<PickerItems<T>>>,
+    _subscription: Rc<Subscription>,
 }
 
-impl<T> PickerListItem<T>
-where
-    T: SelectItem + Clone + 'static,
-{
-    fn new(id: SharedString, item: Rc<T>, selectable: bool) -> Self {
-        Self {
-            id,
-            item,
-            is_selected: false,
-            selectable,
-        }
-    }
-}
-
-impl<T> Selectable for PickerListItem<T>
-where
-    T: SelectItem + Clone + 'static,
-{
-    fn selected(mut self, selected: bool) -> Self {
-        self.is_selected = selected;
-        self
-    }
-
-    fn is_selected(&self) -> bool {
-        self.is_selected
-    }
-}
-
-impl<T> RenderOnce for PickerListItem<T>
-where
-    T: SelectItem + Clone + 'static,
-{
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        ListItem::new(self.id)
-            .w_full()
-            .min_h(px(28.))
-            .px_3()
-            .py_1()
-            .rounded(cx.theme().radius)
-            .selected(self.is_selected)
-            .disabled(!self.selectable)
-            .child(
-                h_flex()
-                    .relative()
-                    .w_full()
-                    .items_center()
-                    .justify_between()
-                    .gap_x_1()
-                    .child(div().w_full().min_w_0().child(self.item.render(window, cx))),
-            )
-    }
-}
-
-impl<T> PickerListDelegate<T>
-where
-    T: SelectItem + Clone + 'static,
-{
-    pub(crate) fn new(
+impl<T: SelectItem + Clone + 'static> PickerControl<T> {
+    pub(crate) fn new<Owner: 'static>(
         sections: Vec<PickerSection<T>>,
-        selected_value: Option<T::Value>,
-        empty_label: impl Fn(&App) -> SharedString + 'static,
-        on_confirm: OnConfirm<T>,
-        on_cancel: OnCancel,
-    ) -> Self {
-        Self {
-            ix: None,
-            all_sections: sections.clone(),
-            sections,
-            last_query: String::new(),
-            selected_value,
-            empty_label: Rc::new(empty_label),
-            selectable: true,
-            read_only_reason: None,
-            is_item_selectable: Rc::new(|_| true),
-            on_confirm,
-            on_cancel,
-        }
-    }
-
-    pub(crate) fn set_sections(&mut self, sections: Vec<PickerSection<T>>) {
-        self.all_sections = sections;
-        self.apply_query();
-    }
-
-    pub(crate) fn set_selected_value(&mut self, selected_value: Option<T::Value>) {
-        self.selected_value = selected_value;
-    }
-
-    pub(crate) fn set_selectable(
-        &mut self,
+        selected: Option<T::Value>,
         selectable: bool,
-        read_only_reason: Option<SharedString>,
-    ) {
-        self.selectable = selectable;
-        self.read_only_reason = (!selectable).then_some(read_only_reason).flatten();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_item_selectable(&mut self, is_selectable: impl Fn(&T) -> bool + 'static) {
-        self.is_item_selectable = Rc::new(is_selectable);
+        searchable: bool,
+        on_change: impl Fn(T, &mut Window, &mut App) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Owner>,
+    ) -> Self {
+        let state = cx.new(|cx| {
+            let mut state =
+                ComboboxState::new(picker_items(sections, selectable), vec![], window, cx)
+                    .searchable(searchable);
+            state.set_selected_values(&selected.into_iter().collect::<Vec<_>>(), window, cx);
+            state
+        });
+        let on_change = Rc::new(on_change);
+        let subscription = cx.subscribe_in(&state, window, move |_, state, event, window, cx| {
+            // Confirm is also emitted when cancelling/closing without changing a value.
+            let ComboboxEvent::Change(values) = event else {
+                return;
+            };
+            let item = state
+                .read(cx)
+                .selection()
+                .iter()
+                .find(|(_, item)| values.first() == Some(item.value()))
+                .map(|(_, item)| item.clone());
+            if let Some(item) = item.filter(|item| !item.disabled()) {
+                let on_change = on_change.clone();
+                window.defer(cx, move |window, cx| {
+                    on_change((*item.option).clone(), window, cx)
+                });
+            }
+        });
+        Self {
+            state,
+            _subscription: Rc::new(subscription),
+        }
     }
 
     pub(crate) fn replace_projection(
-        &mut self,
+        &self,
         sections: Vec<PickerSection<T>>,
-        selected_value: Option<T::Value>,
-    ) {
-        self.all_sections = sections;
-        self.selected_value = selected_value;
-        self.apply_query();
-    }
-
-    pub(crate) fn selected_item(&self) -> Option<Rc<T>> {
-        let selected_value = self.selected_value.as_ref()?;
-        self.all_sections
-            .iter()
-            .flat_map(|section| section.items.iter())
-            .find(|item| item.value() == selected_value)
-            .cloned()
-    }
-
-    pub(crate) fn selected_index(&self) -> Option<IndexPath> {
-        Self::selected_index_for(&self.sections, self.selected_value.as_ref())
-    }
-
-    pub(crate) fn selected_index_for(
-        sections: &[PickerSection<T>],
-        selected_value: Option<&T::Value>,
-    ) -> Option<IndexPath> {
-        let selected_value = selected_value?;
-        sections
-            .iter()
-            .enumerate()
-            .find_map(|(section_ix, section)| {
-                section
-                    .items
-                    .iter()
-                    .position(|item| item.value() == selected_value)
-                    .map(|row_ix| IndexPath::default().section(section_ix).row(row_ix))
-            })
-    }
-
-    fn apply_query(&mut self) {
-        let query = self.last_query.trim().to_lowercase();
-        if query.is_empty() {
-            self.sections = self.all_sections.clone();
-            return;
-        }
-
-        self.sections = self
-            .all_sections
-            .iter()
-            .filter_map(|section| {
-                let items = section
-                    .items
-                    .iter()
-                    .filter(|item| item.matches(&query))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                (!items.is_empty()).then(|| PickerSection {
-                    title: section.title.clone(),
-                    items,
-                })
-            })
-            .collect();
-    }
-}
-
-impl<T> ListDelegate for PickerListDelegate<T>
-where
-    T: SelectItem + Clone + 'static,
-{
-    type Item = PickerListItem<T>;
-
-    fn perform_search(
-        &mut self,
-        query: &str,
-        _window: &mut Window,
-        _cx: &mut Context<ListState<Self>>,
-    ) -> Task<()> {
-        self.last_query = query.to_string();
-        self.apply_query();
-        Task::ready(())
-    }
-
-    fn sections_count(&self, _cx: &App) -> usize {
-        self.sections.len()
-    }
-
-    fn items_count(&self, section: usize, _cx: &App) -> usize {
-        self.sections
-            .get(section)
-            .map_or(0, |section| section.items.len())
-    }
-
-    fn render_section_header(
-        &mut self,
-        section: usize,
-        _window: &mut Window,
-        cx: &mut Context<ListState<Self>>,
-    ) -> Option<impl IntoElement> {
-        let title = self.sections.get(section)?.title.clone()?;
-        Some(
-            Label::new(title)
-                .text_xs()
-                .px_2()
-                .pt_2()
-                .pb_1()
-                .text_color(cx.theme().muted_foreground),
-        )
-    }
-
-    fn render_item(
-        &mut self,
-        ix: IndexPath,
-        _window: &mut Window,
-        _cx: &mut Context<ListState<Self>>,
-    ) -> Option<Self::Item> {
-        self.sections
-            .get(ix.section)
-            .and_then(|section| section.items.get(ix.row))
-            .cloned()
-            .map(|item| {
-                let selectable = self.selectable && (self.is_item_selectable)(&item);
-                PickerListItem::new(
-                    format!("picker-item-{}-{}", ix.section, ix.row).into(),
-                    item,
-                    selectable,
-                )
-            })
-    }
-
-    fn render_section_footer(
-        &mut self,
-        section: usize,
-        _window: &mut Window,
-        cx: &mut Context<ListState<Self>>,
-    ) -> Option<impl IntoElement> {
-        if section + 1 != self.sections.len() {
-            return None;
-        }
-        self.read_only_reason.clone().map(|reason| {
-            Label::new(reason)
-                .text_xs()
-                .px_2()
-                .pt_1()
-                .pb_2()
-                .text_color(cx.theme().warning)
-        })
-    }
-
-    fn render_empty(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<ListState<Self>>,
-    ) -> impl IntoElement {
-        let empty_label = (self.empty_label)(cx);
-        h_flex()
-            .justify_center()
-            .py_6()
-            .text_color(cx.theme().muted_foreground)
-            .child(Label::new(empty_label).text_sm())
-            .into_any_element()
-    }
-
-    fn set_selected_index(
-        &mut self,
-        ix: Option<IndexPath>,
-        _window: &mut Window,
-        _cx: &mut Context<ListState<Self>>,
-    ) {
-        self.ix = ix;
-    }
-
-    fn confirm(
-        &mut self,
-        _secondary: bool,
+        selected: Option<T::Value>,
+        selectable: bool,
         window: &mut Window,
-        cx: &mut Context<ListState<Self>>,
+        cx: &mut App,
     ) {
-        if !self.selectable {
-            return;
-        }
-        let Some(ix) = self.ix else {
-            return;
-        };
-        let Some(item) = self
-            .sections
-            .get(ix.section)
-            .and_then(|section| section.items.get(ix.row))
-            .cloned()
-        else {
-            return;
-        };
-        if !(self.is_item_selectable)(&item) {
-            return;
-        }
-
-        self.selected_value = Some(item.value().clone());
-        let on_confirm = self.on_confirm.clone();
-        let item = item.as_ref().clone();
-        // `confirm` is called while `ListState` is locked by its action
-        // handler. The callback is allowed to update the picker owner (and
-        // often the picker itself), so it must run at the app/window
-        // boundary after this list update has completed. `Context::defer_in`
-        // would re-lock this same `ListState` and reproduce the panic.
-        window.defer(cx, move |window, cx| {
-            (on_confirm)(item, window, cx);
+        self.state.update(cx, |state, cx| {
+            let query = state.query(cx);
+            state.set_items(picker_items(sections, selectable), window, cx);
+            // Resolve the domain value in the full catalog, then restore the search view.
+            state.set_selected_values(&selected.into_iter().collect::<Vec<_>>(), window, cx);
+            state.set_query(query, window, cx);
+            cx.notify();
         });
     }
 
-    fn cancel(&mut self, window: &mut Window, cx: &mut Context<ListState<Self>>) {
-        let on_cancel = self.on_cancel.clone();
-        // See `confirm`: cancellation can close/reconcile the owning
-        // control, so dispatch it after the list update has released its
-        // entity lock.
-        window.defer(cx, move |window, cx| {
-            (on_cancel)(window, cx);
-        });
+    pub(crate) fn selected_item(&self, cx: &App) -> Option<Rc<T>> {
+        self.state
+            .read(cx)
+            .selection()
+            .first()
+            .map(|(_, item)| item.option.clone())
+    }
+
+    pub(crate) fn element(&self) -> Combobox<PickerItems<T>> {
+        Combobox::new(&self.state)
     }
 }
 
-pub(crate) fn picker_trigger(
-    id: &'static str,
-    icon: IconName,
-    label: impl Into<SharedString>,
-    open: bool,
-) -> Button {
-    picker_trigger_with_icon(id, Icon::new(icon).size_4().into_any_element(), label, open)
-}
-
-pub(crate) fn picker_trigger_with_icon(
-    id: &'static str,
-    icon: AnyElement,
-    label: impl Into<SharedString>,
-    open: bool,
-) -> Button {
-    Button::new(id)
-        .ghost()
-        .selected(open)
-        .with_size(px(PICKER_TRIGGER_SIZE))
-        .h(px(PICKER_TRIGGER_SIZE))
-        .px(px(8.))
-        .py(px(0.))
-        .rounded(px(PICKER_TRIGGER_RADIUS))
-        .child(
-            h_flex()
-                .flex_none()
-                .items_center()
-                .gap_1p5()
-                .child(icon)
-                .child(
-                    div()
-                        .debug_selector(move || format!("picker-trigger-label:{id}"))
-                        .flex_none()
-                        .child(
-                            Label::new(label.into())
-                                .text_sm()
-                                .font_medium()
-                                .whitespace_nowrap(),
-                        ),
-                )
-                .child(
-                    Icon::new(if open {
-                        IconName::ChevronUp
-                    } else {
-                        IconName::ChevronDown
-                    })
-                    .size_3(),
-                ),
-        )
-}
-
-pub(crate) struct PickerPopoverConfig<D, F>
-where
-    D: ListDelegate + 'static,
-    F: Fn(&bool, &mut Window, &mut App) + 'static,
-{
-    pub(crate) id: &'static str,
-    pub(crate) open: bool,
-    pub(crate) trigger: Button,
-    pub(crate) list: Entity<ListState<D>>,
-    pub(crate) width: Pixels,
-    pub(crate) max_height: Length,
-    pub(crate) search_placeholder: Option<SharedString>,
-    pub(crate) footer: Option<AnyElement>,
-    pub(crate) on_open_change: F,
-}
-
-#[derive(IntoElement)]
-pub(crate) struct PickerPopover<D, F>
-where
-    D: ListDelegate + 'static,
-    F: Fn(&bool, &mut Window, &mut App) + 'static,
-{
-    config: PickerPopoverConfig<D, F>,
-}
-
-impl<D, F> PickerPopover<D, F>
-where
-    D: ListDelegate + 'static,
-    F: Fn(&bool, &mut Window, &mut App) + 'static,
-{
-    pub(crate) fn new(config: PickerPopoverConfig<D, F>) -> Self {
-        Self { config }
+impl<T: SelectItem + Clone + 'static> Deref for PickerControl<T> {
+    type Target = Entity<ComboboxState<PickerItems<T>>>;
+    fn deref(&self) -> &Self::Target {
+        &self.state
     }
-}
-
-impl<D, F> View for PickerPopover<D, F>
-where
-    D: ListDelegate + 'static,
-    F: Fn(&bool, &mut Window, &mut App) + 'static,
-{
-    fn entity_id(&self) -> Option<EntityId> {
-        Some(self.config.list.entity_id())
-    }
-
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let content = List::new(&self.config.list)
-            .when_some(self.config.search_placeholder, |this, placeholder| {
-                this.search_placeholder(placeholder)
-            })
-            .with_size(Size::Small)
-            .scrollbar_visible(false)
-            .max_h(self.config.max_height)
-            .paddings(Edges::all(px(4.)))
-            .into_any_element();
-
-        picker_content_popover(
-            cx,
-            PickerContentPopoverConfig {
-                id: self.config.id,
-                open: self.config.open,
-                trigger: self.config.trigger,
-                content,
-                width: self.config.width,
-                footer: self.config.footer,
-                on_open_change: self.config.on_open_change,
-            },
-        )
-    }
-}
-
-pub(crate) struct PickerContentPopoverConfig<F>
-where
-    F: Fn(&bool, &mut Window, &mut App) + 'static,
-{
-    pub(crate) id: &'static str,
-    pub(crate) open: bool,
-    pub(crate) trigger: Button,
-    pub(crate) content: AnyElement,
-    pub(crate) width: Pixels,
-    pub(crate) footer: Option<AnyElement>,
-    pub(crate) on_open_change: F,
-}
-
-pub(crate) fn picker_content_popover<F>(
-    cx: &App,
-    config: PickerContentPopoverConfig<F>,
-) -> impl IntoElement
-where
-    F: Fn(&bool, &mut Window, &mut App) + 'static,
-{
-    div().flex_none().child(
-        Popover::new(config.id)
-            .anchor(Anchor::BottomLeft)
-            .appearance(false)
-            .open(config.open)
-            .on_open_change(config.on_open_change)
-            .trigger(config.trigger)
-            .child(
-                v_flex()
-                    .w(config.width)
-                    .occlude()
-                    .mb_1p5()
-                    .rounded(px(12.))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.popover.background)
-                    .shadow_lg()
-                    .child(config.content)
-                    .when_some(config.footer, |this, footer| this.child(footer)),
-            ),
-    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PickerListDelegate, PickerPopover, PickerPopoverConfig, PickerSection};
-    use gpui::{
-        App, AppContext, Context, Entity, IntoElement, Render, SharedString, TestAppContext, View,
-        Window, div, px,
+    use super::{PickerControl, PickerSection};
+    use gpui_kit::component::{combobox::ComboboxEvent, searchable_list::SearchableListItem};
+    use gpui_kit::{
+        AppContext as _, Context, IntoElement, Render, TestAppContext, VisualTestContext, Window,
+        div,
     };
-    use gpui_component::select::SelectItem;
-    use gpui_component::{
-        IndexPath,
-        button::Button,
-        list::{ListDelegate, ListState},
-    };
-    use std::{
-        cell::{Cell, RefCell},
-        rc::Rc,
-    };
+    use std::{cell::Cell, rc::Rc};
 
-    #[derive(Clone, Debug)]
-    struct TestItem {
-        title: &'static str,
-        value: i32,
-        description: &'static str,
+    struct Root {
+        picker: PickerControl<String>,
     }
-
-    impl SelectItem for TestItem {
-        type Value = i32;
-
-        fn title(&self) -> SharedString {
-            self.title.into()
-        }
-
-        fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
-            self.title.into_any_element()
-        }
-
-        fn value(&self) -> &Self::Value {
-            &self.value
-        }
-
-        fn matches(&self, query: &str) -> bool {
-            self.title.contains(query) || self.description.contains(query)
-        }
-    }
-
-    #[test]
-    fn selected_index_for_returns_none_when_missing() {
-        let sections = PickerSection::flat([TestItem {
-            title: "one",
-            value: 1,
-            description: "first",
-        }]);
-
-        assert_eq!(
-            PickerListDelegate::selected_index_for(&sections, Some(&2)),
-            None
-        );
-    }
-
-    #[test]
-    fn selected_index_for_resolves_grouped_items() {
-        let sections = vec![
-            PickerSection::section(
-                "A",
-                [TestItem {
-                    title: "one",
-                    value: 1,
-                    description: "first",
-                }],
-            ),
-            PickerSection::section(
-                "B",
-                [TestItem {
-                    title: "two",
-                    value: 2,
-                    description: "second",
-                }],
-            ),
-        ];
-
-        assert_eq!(
-            PickerListDelegate::selected_index_for(&sections, Some(&2)),
-            Some(IndexPath::default().section(1).row(0))
-        );
-    }
-
-    #[test]
-    fn selected_item_uses_full_catalog_after_filtering() {
-        let mut delegate = PickerListDelegate::new(
-            PickerSection::flat([
-                TestItem {
-                    title: "one",
-                    value: 1,
-                    description: "first",
-                },
-                TestItem {
-                    title: "two",
-                    value: 2,
-                    description: "second",
-                },
-            ]),
-            Some(1),
-            |_| "Empty".into(),
-            Rc::new(|_, _, _| {}),
-            Rc::new(|_, _| {}),
-        );
-
-        delegate.last_query = "second".to_string();
-        delegate.apply_query();
-
-        assert_eq!(delegate.selected_item().expect("selected item").value, 1);
-    }
-
-    #[test]
-    fn apply_query_filters_on_custom_matches() {
-        let mut delegate = PickerListDelegate::new(
-            PickerSection::flat([
-                TestItem {
-                    title: "one",
-                    value: 1,
-                    description: "alpha",
-                },
-                TestItem {
-                    title: "two",
-                    value: 2,
-                    description: "beta",
-                },
-            ]),
-            None,
-            |_| "Empty".into(),
-            Rc::new(|_, _, _| {}),
-            Rc::new(|_, _| {}),
-        );
-
-        delegate.last_query = "beta".to_string();
-        delegate.apply_query();
-
-        assert_eq!(delegate.sections[0].items.len(), 1);
-        assert_eq!(delegate.sections[0].items[0].value(), &2);
-    }
-
-    #[test]
-    fn replace_projection_preserves_query_and_reprojects_selection() {
-        let mut delegate = PickerListDelegate::new(
-            PickerSection::flat([
-                TestItem {
-                    title: "one",
-                    value: 1,
-                    description: "alpha",
-                },
-                TestItem {
-                    title: "two",
-                    value: 2,
-                    description: "beta",
-                },
-            ]),
-            Some(1),
-            |_| "Empty".into(),
-            Rc::new(|_, _, _| {}),
-            Rc::new(|_, _| {}),
-        );
-        delegate.last_query = "beta".to_string();
-        delegate.apply_query();
-
-        delegate.replace_projection(
-            PickerSection::flat([
-                TestItem {
-                    title: "uno",
-                    value: 1,
-                    description: "alpha",
-                },
-                TestItem {
-                    title: "dos",
-                    value: 2,
-                    description: "beta",
-                },
-            ]),
-            Some(2),
-        );
-
-        assert_eq!(delegate.last_query, "beta");
-        assert_eq!(delegate.sections[0].items.len(), 1);
-        assert_eq!(delegate.sections[0].items[0].value(), &2);
-        assert_eq!(delegate.selected_index(), Some(IndexPath::default()));
-    }
-
-    struct TestRoot;
-
-    impl Render for TestRoot {
-        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    impl Render for Root {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div()
         }
     }
 
-    #[gpui::test]
-    fn picker_popover_uses_list_identity_across_rebuilds(cx: &mut TestAppContext) {
-        let (_, _) = cx.add_window_view(|window, cx| {
-            let list = cx.new(|cx| {
-                ListState::new(
-                    PickerListDelegate::<TestItem>::new(
-                        Vec::new(),
-                        None,
-                        |_| "Empty".into(),
-                        Rc::new(|_, _, _| {}),
-                        Rc::new(|_, _| {}),
-                    ),
-                    window,
-                    cx,
-                )
-            });
-
-            let first = PickerPopover::new(PickerPopoverConfig {
-                id: "first-picker",
-                open: false,
-                trigger: Button::new("first-trigger"),
-                list: list.clone(),
-                width: px(180.),
-                max_height: px(240.).into(),
-                search_placeholder: None,
-                footer: None,
-                on_open_change: |_, _, _| {},
-            });
-            let refreshed = PickerPopover::new(PickerPopoverConfig {
-                id: "refreshed-picker",
-                open: true,
-                trigger: Button::new("refreshed-trigger"),
-                list: list.clone(),
-                width: px(320.),
-                max_height: px(360.).into(),
-                search_placeholder: Some("Search".into()),
-                footer: Some(div().into_any_element()),
-                on_open_change: |_, _, _| {},
-            });
-            assert_eq!(first.entity_id(), Some(list.entity_id()));
-            assert_eq!(refreshed.entity_id(), first.entity_id());
-            TestRoot
-        });
-    }
-
-    #[gpui::test]
-    fn empty_label_is_resolved_from_current_state(cx: &mut TestAppContext) {
-        let label = Rc::new(RefCell::new("Loading"));
-        let (_, _) = cx.add_window_view(move |_window, cx| {
-            let label_for_resolver = label.clone();
-            let delegate = PickerListDelegate::<TestItem>::new(
-                Vec::new(),
-                None,
-                move |_| SharedString::from(*label_for_resolver.borrow()),
-                Rc::new(|_, _, _| {}),
-                Rc::new(|_, _| {}),
+    #[gpui_kit::test]
+    fn projection_preserves_value_and_query_without_writing_and_readonly_cannot_write(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let writes = Rc::new(Cell::new(0));
+        let counter = writes.clone();
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), |window, cx| {
+                    cx.new(|cx| Root {
+                        picker: PickerControl::new(
+                            vec![PickerSection::untitled([
+                                "alpha".to_string(),
+                                "beta".to_string(),
+                            ])],
+                            Some("beta".into()),
+                            true,
+                            true,
+                            move |_, _, _| counter.set(counter.get() + 1),
+                            window,
+                            cx,
+                        ),
+                    })
+                })
+            })
+            .unwrap();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let root = window.root(&mut cx).unwrap();
+        let picker = root.read_with(&cx, |root, _| root.picker.clone());
+        let identity = picker.entity_id();
+        cx.update(|window, cx| {
+            picker.update(cx, |state, cx| state.set_query("alpha", window, cx));
+            picker.replace_projection(
+                vec![PickerSection::untitled(["beta".into(), "alpha".into()])],
+                Some("beta".into()),
+                false,
+                window,
+                cx,
             );
-
-            assert_eq!((delegate.empty_label)(cx).as_ref(), "Loading");
-            *label.borrow_mut() = "No models";
-            assert_eq!((delegate.empty_label)(cx).as_ref(), "No models");
-            TestRoot
         });
-    }
-
-    #[gpui::test]
-    fn confirm_callback_runs_after_list_update_finishes(cx: &mut TestAppContext) {
-        let list_slot = Rc::new(RefCell::new(
-            None::<Entity<ListState<PickerListDelegate<TestItem>>>>,
-        ));
-        let callback_ran = Rc::new(Cell::new(false));
-        let on_confirm = Rc::new({
-            let list_slot = list_slot.clone();
-            let callback_ran = callback_ran.clone();
-            move |_item: TestItem, _window: &mut Window, cx: &mut App| {
-                let list = list_slot
-                    .borrow()
-                    .as_ref()
-                    .cloned()
-                    .expect("picker list should be initialized");
-                list.update(cx, |_, _| callback_ran.set(true));
-            }
-        });
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            let list = cx.new(|cx| {
-                let mut list = ListState::new(
-                    PickerListDelegate::new(
-                        PickerSection::flat([TestItem {
-                            title: "one",
-                            value: 1,
-                            description: "first",
-                        }]),
-                        None,
-                        |_| "Empty".into(),
-                        on_confirm,
-                        Rc::new(|_, _| {}),
-                    ),
-                    window,
-                    cx,
-                );
-                list.delegate_mut()
-                    .set_selected_index(Some(IndexPath::default()), window, cx);
-                list
-            });
-            *list_slot.borrow_mut() = Some(list);
-            TestRoot
-        });
-        let list = list_slot
-            .borrow()
-            .as_ref()
-            .cloned()
-            .expect("picker list should be initialized");
-
-        cx.update(|window, cx| {
-            list.update(cx, |list, cx| {
-                list.delegate_mut().confirm(false, window, cx);
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert_eq!(picker.entity_id(), identity);
+            assert_eq!(picker.read(cx).query(cx).as_ref(), "alpha");
+            assert_eq!(
+                picker.selected_item(cx).as_deref().map(String::as_str),
+                Some("beta")
+            );
+            assert!(picker.read(cx).selection()[0].1.disabled());
+            picker.update(cx, |_, cx| {
+                cx.emit(ComboboxEvent::Confirm(vec!["beta".into()]));
+                cx.emit(ComboboxEvent::Change(vec!["beta".into()]));
             });
         });
         cx.run_until_parked();
-
-        assert!(callback_ran.get());
-    }
-
-    #[gpui::test]
-    fn read_only_picker_does_not_confirm(cx: &mut TestAppContext) {
-        let callback_ran = Rc::new(Cell::new(false));
-        let list_slot = Rc::new(RefCell::new(
-            None::<Entity<ListState<PickerListDelegate<TestItem>>>>,
-        ));
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            let callback_ran = callback_ran.clone();
-            let list = cx.new(|cx| {
-                let mut list = ListState::new(
-                    PickerListDelegate::new(
-                        PickerSection::flat([TestItem {
-                            title: "one",
-                            value: 1,
-                            description: "first",
-                        }]),
-                        None,
-                        |_| "Empty".into(),
-                        Rc::new(move |_, _, _| callback_ran.set(true)),
-                        Rc::new(|_, _| {}),
-                    ),
-                    window,
-                    cx,
-                );
-                list.delegate_mut()
-                    .set_selectable(false, Some("Refreshing".into()));
-                list.delegate_mut()
-                    .set_selected_index(Some(IndexPath::default()), window, cx);
-                list
-            });
-            *list_slot.borrow_mut() = Some(list);
-            TestRoot
-        });
-        let list = list_slot.borrow().as_ref().cloned().expect("picker list");
-
+        assert_eq!(writes.get(), 0);
         cx.update(|window, cx| {
-            list.update(cx, |list, cx| {
-                list.delegate_mut().confirm(false, window, cx);
+            picker.replace_projection(
+                vec![PickerSection::untitled(["alpha".into()])],
+                Some("alpha".into()),
+                true,
+                window,
+                cx,
+            );
+            picker.update(cx, |_, cx| {
+                cx.emit(ComboboxEvent::Change(vec!["alpha".into()]))
             });
         });
         cx.run_until_parked();
-
-        assert!(!callback_ran.get());
-        assert!(
-            list.read_with(cx, |list, _| list.delegate().selected_item())
-                .is_none()
-        );
-    }
-
-    #[gpui::test]
-    fn disabled_item_does_not_confirm(cx: &mut TestAppContext) {
-        let callback_ran = Rc::new(Cell::new(false));
-        let list_slot = Rc::new(RefCell::new(
-            None::<Entity<ListState<PickerListDelegate<TestItem>>>>,
-        ));
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            let callback_ran = callback_ran.clone();
-            let list = cx.new(|cx| {
-                let mut list = ListState::new(
-                    PickerListDelegate::new(
-                        PickerSection::flat([TestItem {
-                            title: "one",
-                            value: 1,
-                            description: "first",
-                        }]),
-                        None,
-                        |_| "Empty".into(),
-                        Rc::new(move |_, _, _| callback_ran.set(true)),
-                        Rc::new(|_, _| {}),
-                    ),
-                    window,
-                    cx,
-                );
-                list.delegate_mut()
-                    .set_item_selectable(|item| item.value != 1);
-                list.delegate_mut()
-                    .set_selected_index(Some(IndexPath::default()), window, cx);
-                list
-            });
-            *list_slot.borrow_mut() = Some(list);
-            TestRoot
-        });
-        let list = list_slot.borrow().as_ref().cloned().expect("picker list");
-
-        cx.update(|window, cx| {
-            list.update(cx, |list, cx| {
-                list.delegate_mut().confirm(false, window, cx);
-            });
-        });
-        cx.run_until_parked();
-
-        assert!(!callback_ran.get());
-        assert!(
-            list.read_with(cx, |list, _| list.delegate().selected_item())
-                .is_none()
-        );
+        assert_eq!(writes.get(), 1);
     }
 }

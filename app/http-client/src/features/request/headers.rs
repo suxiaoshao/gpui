@@ -3,12 +3,9 @@ use std::{
     sync::Arc,
 };
 
-use gpui::{
-    AnyElement, App, Context, ElementId, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
-    prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_form::{Form, FormEvent, ItemPath, PathKey, TotalItemsPath};
+use gpui_form_gpui_component::FormInput;
+use gpui_kit::component::{
     ActiveTheme as _,
     button::Button,
     checkbox::Checkbox,
@@ -17,8 +14,11 @@ use gpui_component::{
     label::Label,
     v_flex,
 };
-use gpui_form::{Form, FormEvent, ItemPath, PathKey, TotalItemsPath};
-use gpui_form_gpui_component::FormInput;
+use gpui_kit::{
+    AnyElement, App, Context, ElementId, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _, px,
+};
 
 use crate::{
     features::request::draft::{
@@ -373,8 +373,8 @@ fn headers_path() -> TotalItemsPath<RequestDraft, HeaderDraft> {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{AppContext as _, TestAppContext, VisualTestContext, WindowHandle};
-    use gpui_component::input::InputEvent;
+    use gpui_kit::component::input::InputEvent;
+    use gpui_kit::{AppContext as _, TestAppContext, VisualTestContext, WindowHandle};
 
     use crate::features::request::draft::ApiKeyAuthDraft;
     use crate::features::request::validation::RequestValidator;
@@ -386,7 +386,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) -> (Entity<Form<RequestDraft>>, WindowHandle<HttpHeadersView>) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             init_i18n(cx);
             let draft = RequestDraft {
                 headers: vec![
@@ -414,7 +414,7 @@ mod tests {
         })
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn failed_live_binding_retries_once_and_never_reinstalls_a_retired_key(
         cx: &mut TestAppContext,
     ) {
@@ -470,7 +470,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn disabled_header_hides_a_previous_submit_issue(cx: &mut TestAppContext) {
         let (form, window) = open_headers(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -494,7 +494,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn reorder_preserves_rows_and_removed_input_cannot_write_reinserted_value(
         cx: &mut TestAppContext,
     ) {

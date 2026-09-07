@@ -8,49 +8,43 @@ pub(super) struct EditorState {
     pub(super) tokens: Vec<ComposerToken>,
 }
 
+#[derive(Clone, Debug)]
+struct Edit {
+    before: EditorState,
+    after: EditorState,
+}
+
 #[derive(Debug)]
 pub(super) struct EditorHistory {
-    undo: Vec<EditorState>,
-    redo: Vec<EditorState>,
-    max_entries: usize,
+    transactions: gpui_kit::component::history::UndoHistory<Edit>,
 }
 
 impl Default for EditorHistory {
     fn default() -> Self {
         Self {
-            undo: Vec::new(),
-            redo: Vec::new(),
-            max_entries: 200,
+            transactions: gpui_kit::component::history::UndoHistory::new().max_undos(200),
         }
     }
 }
 
 impl EditorHistory {
-    pub(super) fn record_before(&mut self, state: EditorState) {
-        if self.undo.last() == Some(&state) {
-            return;
+    pub(super) fn record(&mut self, before: EditorState, after: EditorState) {
+        if before != after {
+            self.transactions.push(Edit { before, after });
         }
-
-        self.undo.push(state);
-        if self.undo.len() > self.max_entries {
-            self.undo.remove(0);
-        }
-        self.redo.clear();
     }
 
-    pub(super) fn undo(&mut self, current: EditorState) -> Option<EditorState> {
-        let previous = self.undo.pop()?;
-        self.redo.push(current);
-        Some(previous)
+    pub(super) fn undo(&mut self) -> Option<EditorState> {
+        self.transactions
+            .undo()?
+            .last()
+            .map(|edit| edit.before.clone())
     }
 
-    pub(super) fn redo(&mut self, current: EditorState) -> Option<EditorState> {
-        let next = self.redo.pop()?;
-        self.undo.push(current);
-        Some(next)
-    }
-
-    pub(super) fn clear_redo(&mut self) {
-        self.redo.clear();
+    pub(super) fn redo(&mut self) -> Option<EditorState> {
+        self.transactions
+            .redo()?
+            .last()
+            .map(|edit| edit.after.clone())
     }
 }

@@ -1,12 +1,12 @@
 use fluent_bundle::FluentArgs;
-use gpui::{
+use gpui_kit::component::{
+    ActiveTheme as _, Icon, Sizable as _, StyledExt as _, description_list::DescriptionList,
+    h_flex, hover_card::HoverCard, label::Label, v_flex,
+};
+use gpui_kit::{
     App, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce, Role,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
     prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
-    ActiveTheme as _, Icon, Sizable as _, StyledExt as _, description_list::DescriptionList,
-    h_flex, hover_card::HoverCard, label::Label, v_flex,
 };
 use jaco_core::{AgentMessageRequestUsage, ProviderUsageCoverage};
 
@@ -81,7 +81,8 @@ impl RenderOnce for RequestUsageDisclosure {
                     .bordered(false)
                     .small()
                     .children(fields.into_iter().map(|(label, value)| {
-                        gpui_component::description_list::DescriptionItem::new(label).value(value)
+                        gpui_kit::component::description_list::DescriptionItem::new(label)
+                            .value(value)
                     }))
                     .into_any_element(),
             });
@@ -114,7 +115,7 @@ impl RenderOnce for RequestUsageDisclosure {
             .gap_1()
             .child(
                 HoverCard::new(hover_card_id)
-                    .anchor(gpui::Anchor::BottomLeft)
+                    .anchor(gpui_kit::Anchor::BottomLeft)
                     .trigger(trigger)
                     .child(content),
             )
@@ -228,7 +229,7 @@ fn format_rate(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Context, Modifiers, Render, TestAppContext, point, px};
+    use gpui_kit::{Context, Modifiers, Render, TestAppContext, point, px};
     use jaco_core::{ProviderRawPayload, ProviderUsageSnapshot};
     use std::time::Duration;
     use time::OffsetDateTime;
@@ -445,9 +446,9 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn request_usage_hover_card_uses_only_the_icon_and_component_delays(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
+        cx.update(gpui_kit::init);
         cx.update(crate::foundation::init_i18n);
         let (_, cx) = cx.add_window_view(|_, _| RequestUsageHarness);
 

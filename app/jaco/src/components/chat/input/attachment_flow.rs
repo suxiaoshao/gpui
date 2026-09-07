@@ -7,11 +7,11 @@ use crate::{
     },
     foundation,
 };
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     WindowExt as _,
     notification::{Notification, NotificationType},
 };
+use gpui_kit::*;
 use std::path::PathBuf;
 use tracing::{Level, event};
 

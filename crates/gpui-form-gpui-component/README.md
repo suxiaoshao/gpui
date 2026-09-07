@@ -103,7 +103,9 @@ self.form.update(cx, |form, cx| {
 
 ## Choose the right adapter
 
-- `FormInput` binds `String`.
+- `FormInput`, `FormTextarea`, and `FormEditor` bind `String` through `InputState`,
+  `TextareaState`, and `EditorState`, respectively. Use `Input` for single lines,
+  `Textarea` for multiline prose, and `Editor` for code.
 - `FormIntegerInput` binds integer primitives while keeping incomplete text in
   the native editor.
 - `FormSelect` binds `Option<D::Item::Value>`.

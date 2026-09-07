@@ -1,15 +1,15 @@
-use gpui::{App, AppContext as _, Context, Entity, Subscription, Window};
-use gpui_component::{
-    combobox::ComboboxState,
-    input::InputState,
-    searchable_list::SearchableListDelegate,
-    select::{SearchableVec, SelectEvent, SelectState},
-};
 use gpui_form::{
     ControlBinding, ControlProjection, DynamicItemsPath, DynamicPath, Form, ItemPath,
     MutationError, PathKey, PrepareError, Prepared, ResolveError, TotalItemsPath, TotalPath,
 };
 use gpui_form_gpui_component::{FormCombobox, FormInput, FormSelect};
+use gpui_kit::component::{
+    combobox::ComboboxState,
+    input::InputState,
+    searchable_list::SearchableListDelegate,
+    select::{SearchableVec, SelectEvent, SelectState},
+};
+use gpui_kit::{App, AppContext as _, Context, Entity, Subscription, Window};
 
 use super::options::{
     AuthorOption, AuthorRelation, BoolRelation, FieldSelectItems, GroupRelation, NumberRelation,
@@ -1319,7 +1319,7 @@ fn log_resolve_error(action: &'static str, error: ResolveError) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{IntoElement, Render, TestAppContext, VisualTestContext, WindowHandle, div};
+    use gpui_kit::{IntoElement, Render, TestAppContext, VisualTestContext, WindowHandle, div};
 
     use super::super::options::FieldKind;
 
@@ -1379,7 +1379,7 @@ mod tests {
         condition
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn unrelated_leaf_and_validation_changes_keep_condition_row(cx: &mut TestAppContext) {
         let window = open_harness(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -1422,7 +1422,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn sort_reorder_preserves_row_identity_by_path_key(cx: &mut TestAppContext) {
         let window = open_harness(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -1513,7 +1513,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn removed_condition_writer_cannot_mutate_reinserted_row(cx: &mut TestAppContext) {
         let window = open_harness(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
@@ -1564,7 +1564,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn external_values_project_to_condition_and_sort_selectors(cx: &mut TestAppContext) {
         let window = open_harness(cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);

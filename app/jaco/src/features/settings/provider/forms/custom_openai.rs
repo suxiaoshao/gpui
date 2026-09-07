@@ -1,5 +1,5 @@
-use gpui::{IntoElement as _, SharedString};
-use gpui_component::select::SelectItem;
+use gpui_kit::component::select::SelectItem;
+use gpui_kit::{IntoElement as _, SharedString};
 
 use crate::foundation::I18n;
 
@@ -48,7 +48,7 @@ impl SelectItem for ApiModeChoice {
         self.label.clone()
     }
 
-    fn display_title(&self) -> Option<gpui::AnyElement> {
+    fn display_title(&self) -> Option<gpui_kit::AnyElement> {
         Some(self.label.clone().into_any_element())
     }
 

@@ -48,17 +48,20 @@ impl TryFrom<Prepared<DownloadRequest>> for PreparedDownloadRequest {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{AppContext as _, TestAppContext};
     use gpui_form::{Form, PrepareError, ValidationTrigger};
+    use gpui_kit::{AppContext as _, TestAppContext};
 
     use super::*;
 
-    fn form(source: impl Into<String>, cx: &mut gpui::App) -> gpui::Entity<Form<DownloadRequest>> {
+    fn form(
+        source: impl Into<String>,
+        cx: &mut gpui_kit::App,
+    ) -> gpui_kit::Entity<Form<DownloadRequest>> {
         let source = source.into();
         cx.new(|_| Form::new(DownloadRequest { source }).with_validator(DownloadRequestValidator))
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn source_validation_is_submit_only(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let form = form(String::new(), cx);
@@ -73,7 +76,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn prepare_reports_only_required_for_blank_source(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let form = form("   ", cx);
@@ -89,7 +92,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn prepare_reports_unsupported_source_at_the_source_field(cx: &mut TestAppContext) {
         cx.update(|cx| {
             let form = form("https://example.com/info_otew/", cx);
@@ -105,7 +108,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn prepare_converts_each_supported_source_form(cx: &mut TestAppContext) {
         cx.update(|cx| {
             for source in [

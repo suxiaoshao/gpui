@@ -6,7 +6,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use gpui::RenderImage;
+use gpui_kit::RenderImage;
 use image::{AnimationDecoder as _, ImageDecoder as _, ImageFormat, Limits};
 
 use super::{
