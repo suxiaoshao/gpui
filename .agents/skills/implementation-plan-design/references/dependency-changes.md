@@ -95,7 +95,7 @@ Completion evidence must show:
 - manifests, Git/submodule pointers, and lockfile resolution match decisions;
 - direct/material-transitive inventories and release evidence are complete;
 - features, duplicates, MSRV/runtime, platform, native, and TLS constraints are resolved;
-- upstream-change rows map to exact code/config edits, deletions, and tests;
+- upstream-change rows map to exact code/config edits, deletions, and sufficient verification evidence;
 - deprecated imports/config/features/APIs/workarounds were searched;
 - coupled skills, docs, generated output, submodules, and vendored content were synchronized or evidenced unchanged;
 - selected in-scope reuse decisions were executed;

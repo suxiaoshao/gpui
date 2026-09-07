@@ -2,7 +2,7 @@
 
 Use this reference whenever a plan adds, removes, renames, remaps, or changes handling of a validation, domain, database, provider, transport, MCP/tool, GPUI, cancellation, or shutdown failure. Treat error identity and recovery as an end-to-end contract independent of one crate or UI component.
 
-**Contents:** [Canonical model](#canonical-model-and-ownership) · [End-to-end chain](#end-to-end-chain) · [Producer mapping](#producer-normalization) · [Boundary mapping](#boundary-adapters) · [GPUI recovery](#gpui-classification-and-recovery) · [Failure classes](#failure-classes-and-partial-success) · [Security](#compatibility-security-and-observability) · [Tests](#required-tests) · [Order](#synchronization-order)
+**Contents:** [Canonical model](#canonical-model-and-ownership) · [End-to-end chain](#end-to-end-chain) · [Producer mapping](#producer-normalization) · [Boundary mapping](#boundary-adapters) · [GPUI recovery](#gpui-classification-and-recovery) · [Failure classes](#failure-classes-and-partial-success) · [Security](#compatibility-security-and-observability) · [Validation](#validation) · [Order](#synchronization-order)
 
 ## Canonical Model and Ownership
 
@@ -108,14 +108,14 @@ Never expose database query text, environment contents, transport debug output, 
 
 Define public field allowlists, protected-resource disclosure, unknown/internal fallback, log location, correlation identifier, severity, and redaction.
 
-## Required Tests
+## Validation
 
-Map applicable layers:
+Map changed error-contract risks to sufficient existing or missing evidence:
 
 | R-ID | Layer | Scenario | Fixture/producer | Expected ERR-ID/encoding | State/security/UI assertions |
 | --- | --- | --- | --- | --- | --- |
 
-Cover producer normalization and exhaustiveness, cross-boundary mapping, database/transaction consequences, Operation/runtime transition, known/unknown classification, exactly-once recovery, i18n variables, UI actions/focus, redaction, cancellation, partial output, and compatibility.
+Select checks for the affected failure, recovery or security contract. One scenario may cover several boundaries; this table is not a quota of tests per layer.
 
 Compilation alone does not verify an error contract.
 

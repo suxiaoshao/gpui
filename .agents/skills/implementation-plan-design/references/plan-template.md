@@ -149,9 +149,9 @@ Order WPs by dependency. Give each one owner and one observable outcome. Keep re
 
 Reference shared IDs, then describe only WP-specific atomicity, partial progress, cancellation, retry/repair, rollback, reentrancy, window close, or shutdown.
 
-**Tests (reference existing R/T entries when sufficient)**
+**Verification (reuse existing R/T entries)**
 
-| R-ID | T-ID/file | Proposed scenario | Fixture/mock | Assertions |
+| R-ID | Existing evidence or gap | Selected check | Fixture if needed | Expected result |
 | --- | --- | --- | --- | --- |
 
 **Focused validation (commands may reference the shared validation table)**

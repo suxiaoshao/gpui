@@ -30,6 +30,8 @@
 
 - Issue、PR 等内容遵循 `.github/` 中适用的模板与 workflow；PR 模板为 `.github/pull_request_template.md`，标题和描述须标明应用或 crate。
 - PR 描述覆盖当前分支相对远程最新 `main` 的整体差异；默认创建普通 PR，用户明确要求草稿时才创建 draft。
-- 行为变更验证关键不变量，优先复用已有覆盖。构建、测试和严格 Clippy 按受影响 crate、契约、平台或发布范围选择；适用 CI 与 hooks 仍须通过，合入 `main` 以 `.github/workflows/ci.yml` 为准。
+- 验证以生产行为和关键契约为准，优先运行或调整已有测试；仅为具体回归风险及未覆盖的不变量新增测试，不按文件、方法、字段或分层数量配测试。
+- 应用测试覆盖自身业务接入，避免重复验证上游实现或机械复述代码、固定文案。删除无生产用途的实现时同步清理专用测试，不为测试保留无用接口。
+- 构建、测试和严格 Clippy 按受影响 crate、契约、平台或发布范围选择；适用 CI 与 hooks 仍须通过，合入 `main` 以 `.github/workflows/ci.yml` 为准。
 - Linux 系统依赖统一维护在 `script/bootstrap` 和 `script/install-linux.sh`，避免在 workflow 重复安装逻辑。
 - 文档与指令改动仅检查相关结构、链接和差异；汇报实际验证命令，以及未完成的适用检查和原因。

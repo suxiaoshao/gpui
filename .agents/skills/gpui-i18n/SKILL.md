@@ -16,4 +16,4 @@ description: Implement or review user-visible text, Fluent locales, language set
 
 - Bundle strings live under `app/{name}/locales/macos/{en-US,zh-Hans}.lproj/InfoPlist.strings`.
 - `crates/xtask/src/bundle/settings.rs` maps these resources; `bundle/macos.rs` sets `CFBundleAllowMixedLocalizations` and `CFBundleLocalizations`. New apps need both runtime and bundle locale files.
-- Changed text needs key/variable parity and affected localization coverage. Changes to bundle localization logic need xtask coverage; text-only edits do not require bundling.
+- Text-only edits use key/variable parity checks. Bundle localization logic changes use affected xtask coverage; text-only edits do not require bundling.

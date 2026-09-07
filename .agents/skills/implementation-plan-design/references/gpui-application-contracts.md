@@ -205,7 +205,7 @@ Choose the narrowest correct test surface:
 - use a visual/window test when layout, rendering, focus routing, overlays, or window behavior requires it;
 - use desktop interaction validation when runtime window behavior cannot be established by focused tests.
 
-Persist R/T IDs, proposed test names, fixtures, trigger sequence, state/phase assertions, cancellation behavior, focus/action assertions, and cleanup. For desktop validation, name the built app artifact, isolated test data, exact interaction sequence, and observable result; screenshots are supporting evidence, not the sole acceptance criterion.
+For selected checks, record the existing coverage or concrete gap, reproducible trigger and observable result. Desktop checks also identify the built artifact and isolated data; screenshots alone do not establish interaction correctness.
 
 ## GPUI Handoff Audit
 
