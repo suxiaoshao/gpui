@@ -1,62 +1,15 @@
-# State and Interaction Rules
+# State and Interaction
 
-Use this file when building custom interactions or wiring component state.
+Use component selection, disabled and loading builders, existing focus behavior, and the window/root overlay components. Title-bar behavior varies by platform; app-owned `start_window_move` requires `WindowOptions::app_owns_titlebar_drag = true`. Interactive children must handle propagation intentionally.
 
-## Common State Builders
+Prefer the component's delegate interfaces for lists and selectors. Never synchronously update `ListState` from its own delegate callback; defer owner mutations that can re-enter it.
 
-- Use `Selectable::selected(...)` for selected, checked, or active item state when the component implements it.
-- Use `Disableable::disabled(...)` for disabled controls.
-- Use component-specific loading APIs, such as `Button::loading(...)`, before rendering custom spinners around controls.
-- Keep state names aligned with component semantics: selected, disabled, loading, checked, collapsed, active.
+A component entity can contain three distinct channels:
 
-## Focus and Keyboard Behavior
+- Form/domain owns the business value.
+- App/catalog owns options and capabilities.
+- Native component owns focus, query, scroll, IME and popup state.
 
-- Preserve `FocusHandle`, `Focusable`, focus traps, and existing key bindings when composing inputs, dialogs, popovers, and menus.
-- Use `FocusTrap` for modal or trapped-focus surfaces before writing custom escape/tab handling.
-- Do not make a visual port that breaks keyboard navigation.
+Submit and validate the domain value. Replacing options must not become user input or choose a business fallback. When replacing a Combobox delegate leaves its cached selection stale, project the authoritative value with `ComboboxState::set_selected_values` after replacing the options.
 
-## Pointer and Window Behavior
-
-- Buttons and desktop controls normally keep desktop cursor behavior unless the component is link-like.
-- For titlebar or draggable regions, inspect `TitleBar` behavior first: drag area, double-click zoom, platform system buttons, and Linux window menu are platform-specific.
-- In interactive child regions inside draggable areas, stop propagation intentionally so clicks do not start window drag.
-- A window whose app-owned titlebar calls `start_window_move` must set
-  `WindowOptions::app_owns_titlebar_drag = true`.
-
-## Overlays and Menus
-
-- Use `Dialog`, `AlertDialog`, `Sheet`, `Popover`, `HoverCard`, `Tooltip`, and menu components before manually positioning floating content.
-- Use `DropdownMenu` and `ContextMenuExt` for menu-like interactions.
-- If overlay positioning or animation depends on bounds, use `ElementExt::on_prepaint()` rather than ad hoc state updates.
-
-## Delegated Data Controls
-
-- For select/list-like controls, prefer `SelectDelegate`, `SelectItem`, or `ListDelegate`.
-- Keep filtering, selection, disabled state, and rendering in the delegate shape when possible; avoid creating a second app-local list framework.
-- Never synchronously update a `ListState` entity from inside one of its own
-  delegate callbacks. Defer mutations of the owner that can flow back into the
-  same list until the delegate update has returned.
-- `ComboboxState::set_selected_values` resolves values through the current
-  delegate. Use it after catalog replacement when the authoritative selection
-  must be projected against the new options; it does not represent user input.
-
-## Form And Dynamic Configuration Boundaries
-
-Component state is often a physical container for three semantically different
-kinds of state: a mirrored user value, external configuration such as
-items/options/capabilities, and interaction state such as focus/query/scroll.
-Do not treat the whole entity as one business owner.
-
-- Form draft/value is owned by the form or calling domain controller.
-- Items/options/capabilities/disabled policy are owned by the app/catalog.
-- Focus/open/query/highlight/scroll/IME/tasks are owned by the component entity.
-- Updating items/options must not be reported as user input and must not mutate
-  the form merely because the component internally changes an index.
-- If replacing items leaves a component's cached selected item/label stale, use
-  a component-specific projection command such as
-  `ComboboxState::set_selected_values` to reapply the authoritative form value
-  against the current delegate; do not select a business fallback.
-- Submit and validation must read the form/domain value, never a component cache.
-- When an adapter mirrors values in both directions, use an explicit direction
-  guard so a component user event cannot synchronously update the same component
-  again through a form observer.
+Use gpui-form bindings for their built-in source suppression and deferred writes. Custom integrations must prevent synchronous feedback loops without duplicating the Form adapter's routing.
