@@ -76,6 +76,13 @@ target/<target-triple>/release/bundle/msi/
 
 打包前 `xtask` 会从每个 app 的 `build-assets/icon/app-icon.png` 派生 iconset 和 `.ico`。macOS 下如果 app 提供唯一的 `.icon` asset catalog，`xtask` 会在打包完成后自动尝试注入 Liquid Glass 图标（`.icon -> Assets.car`，并写入 `CFBundleIconName`）。如果系统未安装可用的 `actool`/`xcrun`，或 `.icon` 注入失败，会自动降级为普通图标，不影响打包成功。
 
+### 资源与图标
+
+- `app/{app}/assets/` 保存运行时资源；`build-assets/` 保存打包资源，不嵌入运行时资源集合。Jaco 使用 `rust-embed` 嵌入运行时资源。
+- 图标源文件为 `build-assets/icon/app-icon.png`，派生产物见上述打包流程。
+- 各应用 `Cargo.toml` 的 `[package.metadata.bundle].icon` 配置打包图标路径；Windows MSI 复用其中的 `.ico`。
+- Jaco 的 Windows 编译期图标配置见 `app/jaco/build.rs`；macOS 图标处理由 `crates/xtask/src/bundle/` 管理。
+
 ## 数据与日志位置
 
 - **macOS**
@@ -96,14 +103,3 @@ target/<target-triple>/release/bundle/msi/
 ## 许可
 
 未指定。
-
-## Runtime vs Build Assets
-
-- `app/jaco/assets/`: runtime assets only (embedded by `rust-embed`).
-- `app/{app}/build-assets/`: build/package-time assets only (not embedded for runtime).
-- Icon base assets live in `app/{app}/build-assets/icon/app-icon.png`.
-- `xtask bundle <app>` derives `app-icon.iconset` and `app-icon.ico` from the base PNG before bundling.
-- Windows icon default for `jaco`: `app/jaco/build-assets/icon/app-icon.ico` (see `app/jaco/build.rs`).
-- Package icon paths are configured in each app `Cargo.toml` under `[package.metadata.bundle].icon` and use `build-assets/icon/...`.
-- Windows MSI bundling in `xtask` uses `tauri-bundler` and reuses the `.ico` path from `[package.metadata.bundle].icon`.
-- macOS bundle icon paths are managed by `crates/xtask/src/bundle/` and use `build-assets/icon/...`.

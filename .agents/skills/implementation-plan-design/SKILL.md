@@ -10,7 +10,7 @@ Substantial changes need a durable specification of ownership, exact contracts, 
 ## Plan contract
 
 - Reuse the plan that already owns the change. Revisions affect changed work packages, decisions, dependencies and indexes while preserving settled structure and evidence.
-- Use one root hub at `docs/dev/<plan-id>/README.md` and same-ID owner plans under each affected app/crate; synchronize root and owner indexes. Implementation starts when the root hub is `Ready`.
+- Start with one plan at the nearest owner: app/crate for single-owner work, workspace root for cross-owner work. Split child plans only for independent design, sequencing or validation needs; follow the layout reference. Implementation starts when the main plan is `Ready`.
 - Identify affected surfaces with the applicability reference. Specify affected files, symbols, stable IDs, interfaces, lifecycle, dependencies, verification evidence, deletions and acceptance criteria; keep each fact in one canonical location.
 - Separate current facts, verified upstream facts, design decisions, user decisions, release-gated assumptions and implementation evidence. Verify proposed API names, versions, feature flags, configuration and generation/migration entrypoints before marking `Ready`.
 - `Ready` means work packages can be implemented without inventing missing contracts or resolving material product/architecture choices. Material discoveries update the plan; completion records actual validation, deviations, implementation references, owner-document updates, unverified boundaries and `Done` evidence.

@@ -22,24 +22,15 @@ Do not turn a plan into a second permanent runtime specification. When implement
 
 ## Create the Root Hub and Owner Plans
 
-First decide whether the task is non-trivial enough to require a durable plan under the skill workflow. A truly local behavior-preserving correction does not create a plan set. Once a durable plan is required, always create its root hub:
+Use a durable plan only when the skill workflow requires one. Place a single-owner plan under that app/crate's `docs/dev/<plan-id>/README.md`; place a cross-owner or workspace plan under root `docs/dev/<plan-id>/README.md`.
 
-```text
-docs/dev/<plan-id>/README.md
-```
+Start with one document. Split out a same-ID owner plan only when independent design, implementation sequencing, or validation boundaries benefit from a separate document. A dependency or manifest change alone does not require a child plan. Keep brief owner-specific changes in the main plan.
 
-Inventory every affected app, crate, shared module, root configuration, database, generated source, and packaging boundary. For every affected app or crate, create a same-ID owner plan:
-
-```text
-app/<name>/docs/dev/<plan-id>/README.md
-crates/<name>/docs/dev/<plan-id>/README.md
-```
-
-This topology also applies to a single-app or single-crate durable task. Do not create owner plans for untouched apps/crates. Root-owned workspace configuration, CI, packaging, or repository-wide tooling may stay in the root hub when no app/crate owns it.
+Preserve existing plan paths and links when revising a plan; this rule does not require reorganizing historical documents.
 
 ## Name the Plan Set
 
-Choose one `plan-id` and use it unchanged at the root and under every affected owner:
+Choose one `plan-id` and reuse it in any child plans:
 
 - when a tracking issue exists, use `issue-<number>`;
 - otherwise use a concise kebab-case task slug that describes the observable outcome.
@@ -48,31 +39,31 @@ The entrypoint is always `README.md`; do not place durable plans as flat Markdow
 
 ## Separate Hub and Owner Responsibilities
 
-Let the root hub own:
+The main plan (root hub for cross-owner work) owns:
 
 - status, scope, non-goals, compatibility/rebuild policy, and release gates;
 - affected surfaces, material no-change decisions, and shared evidence/decisions;
 - cross-owner integration and error contracts;
 - the owner-plan map, cross-owner sequencing, aggregate validation, and completion evidence.
 
-Let each app/crate owner plan own only:
+When split out, each child owner plan owns only:
 
-- its root-hub link, owner directory, root-owned IDs it consumes, owner-local ID ranges/work packages, and explicit boundary;
+- its main-plan link, owner directory, shared IDs it consumes, local work packages, and explicit boundary;
 - exact owner-local files, symbols, local contracts, state/data flow, tests, and validation;
 - owner-local work packages and deviations that require root-hub synchronization.
 
-The root hub owns all S/C/ERR IDs plus shared/cross-owner E/D/R/T/WP IDs. An owner plan owns its local E/D/F/L/DB/G/ST/R/T/WP IDs; it consumes root-owned C/ERR IDs and defines only its local implementation of those contracts. Assign non-overlapping ranges when several owners author the same ID family. An owner plan must not define a sibling app/crate's implementation. Reference shared and cross-owner facts by their root-hub IDs instead of copying them. Do not duplicate the root goal, status, applicability matrix, shared evidence, decisions, contracts, aggregate progress, or completion evidence. Link every owner plan from the hub and every owner plan back to the hub.
+The main plan owns shared IDs and any unsplit owner detail. When child plans are needed, the root hub owns S/C/ERR IDs plus shared/cross-owner E/D/R/T/WP IDs. An owner plan owns its local E/D/F/L/DB/G/ST/R/T/WP IDs; it consumes root-owned C/ERR IDs and defines only its local implementation of those contracts. Assign non-overlapping ranges when several owners author the same ID family. An owner plan must not define a sibling app/crate's implementation. Reference shared and cross-owner facts by their root-hub IDs instead of copying them. Do not duplicate the root goal, status, applicability matrix, shared evidence, decisions, contracts, aggregate progress, or completion evidence. Link every owner plan from the hub and every owner plan back to the hub.
 
 ## Maintain Indexes and Links
 
 Use these index scopes:
 
-- root `docs/dev/README.md` discovers every durable root plan hub;
+- root `docs/dev/README.md` discovers workspace plans and relevant single-owner plan entrypoints;
 - app/crate `docs/dev/README.md` discovers only that owner's plans;
 - each root hub maps every affected owner plan;
 - a plan index contains links and one-sentence purpose, not a second status/progress ledger.
 
-Create or update the root index and each affected owner index as part of the plan set. Use repository-relative Markdown links. Do not copy owner-local implementation details into an index or list an owner plan under an unrelated app/crate.
+Update indexes needed to discover the plan; do not create per-owner indexes when no owner plan exists. Use repository-relative Markdown links. Do not copy owner-local implementation details into an index or list an owner plan under an unrelated app/crate.
 
 ## Manage Lifecycle
 
@@ -93,7 +84,7 @@ Keep completed plans at their original paths. When replacing one, mark it `Super
 
 ## Synchronize Completion
 
-Fill the root hub's [completion evidence](plan-template.md#completion-evidence) from actual implementation and validation. Synchronize affected owner documentation and discovery links; indexes remain discovery lists rather than progress ledgers.
+Fill the main plan's [completion evidence](plan-template.md#completion-evidence) from actual implementation and validation. Synchronize affected owner documentation and discovery links; indexes remain discovery lists rather than progress ledgers.
 
 ## Promote Durable Decisions to ADRs
 

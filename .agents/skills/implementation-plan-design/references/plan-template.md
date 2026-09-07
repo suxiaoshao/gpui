@@ -1,6 +1,6 @@
 # Implementation-ready Plan Template
 
-Use the [layout reference](documentation-layout.md) for placement, ownership, indexes and lifecycle. Instantiate the relevant skeleton and remove instructional text and inapplicable sections. Shared facts have one canonical owner.
+Use the [layout reference](documentation-layout.md) for placement, ownership, indexes and lifecycle. Use the main-plan skeleton for either a single owner or a root hub; use the child-owner skeleton only when splitting helps. Remove instructional text and inapplicable sections. Shared facts have one canonical owner.
 
 ## Representation Rules
 
@@ -40,6 +40,8 @@ Enable only families needed by the applicable surfaces. Once assigned, do not re
 ID ownership and non-overlapping owner ranges follow [documentation-layout.md](documentation-layout.md#separate-hub-and-owner-responsibilities).
 
 ## Root Hub Template
+
+For a single-owner plan, keep its local design and full work packages here; omit the child-plan map and cross-owner-only sections.
 
 # <Issue or outcome>: <Observable result>
 
@@ -121,7 +123,7 @@ Record cross-owner compatibility, data/rebuild/rollback, dependency gates, secur
 
 ## Work Packages
 
-In the root hub, keep the cross-owner WP dependency/sequence map and define shared or root-owned WPs in full. For an app/crate-owned WP, record only its ID, owner, observable outcome, dependencies, and owner-plan link here; keep its implementation steps and focused done condition in that owner plan.
+In the root hub, keep the cross-owner WP dependency/sequence map and define shared or root-owned WPs in full. For a WP with a child plan, record only its ID, owner, observable outcome, dependencies, and link here; keep its full steps and done condition in the child. Keep unsplit owner WPs in full in the main plan.
 
 Order WPs by dependency. Give each one owner and one observable outcome. Keep research and architecture decisions out of implementation steps. Reuse the following shape for full root-owned WPs and for assigned WPs inside owner plans.
 
