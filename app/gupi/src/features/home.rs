@@ -1,6 +1,7 @@
-use crate::{foundation::i18n::t, pi::PiProbeData};
+use crate::foundation::i18n::t;
 use gpui_kit::component::{ActiveTheme, v_flex};
 use gpui_kit::*;
+use pi_rpc::probe::PiProbeData;
 pub(crate) fn home(data: &PiProbeData, cx: &App) -> Div {
     v_flex()
         .gap_4()

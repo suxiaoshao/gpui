@@ -16,6 +16,7 @@ long_description = "Gupi provides a native desktop environment for Pi."
 category = "DeveloperTool"
 
 [dependencies]
+pi-rpc.workspace = true
 gpui-kit.workspace = true
 gpui-form.workspace = true
 gpui-operation.workspace = true
@@ -29,7 +30,6 @@ toml = "1.1.5"
 thiserror = "2.0.20"
 smol = "2.0.2"
 tokio = { version = "1.53.1", features = ["process", "io-util", "time", "macros", "sync"] }
-which = "8.0.2"
 tempfile = "3.27.0"
 dirs-next = "2.0.0"
 fluent-bundle = "0.16.0"

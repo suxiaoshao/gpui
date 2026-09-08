@@ -1,4 +1,5 @@
 use super::{home, settings::SettingsView};
+use crate::pi::ProbeFailureKey;
 use crate::{
     app::menus,
     components::recovery::recovery,
@@ -113,6 +114,8 @@ impl StartupView {
         self.config.update(cx, |owner, _| owner.draining = true);
         self.applied_pi.update(cx, |pi, _| pi.stop());
         self.draft_pi.update(cx, |pi, _| pi.stop());
+        let pi = crate::state::pi::global(cx);
+        let close_pi = pi.update(cx, |state, cx| state.close_all(cx));
         let placement = layout::capture(window);
         self.quit_task = Some(cx.spawn(async move |owner, cx| {
             loop {
@@ -139,6 +142,7 @@ impl StartupView {
             if let Err(error) = result {
                 tracing::error!(%error, "layout save failed");
             }
+            let _ = close_pi.await;
             tracing::info!("managed quit completed");
             cx.update(|cx| cx.quit());
         }));

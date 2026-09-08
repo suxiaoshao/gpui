@@ -6422,6 +6422,7 @@ dependencies = [
  "gpui-operation",
  "gpui-store",
  "gpui-tokio",
+ "pi-rpc",
  "serde",
  "smol",
  "sys-locale",
@@ -6431,7 +6432,6 @@ dependencies = [
  "toml 1.1.5+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
- "which 8.0.6",
  "window-ext",
 ]
 
@@ -10988,6 +10988,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e57fef6bc5981e38c2ce2d63bfa546861309f875b8a75f092d1d54ae2d64f266"
 dependencies = [
  "siphasher",
+]
+
+[[package]]
+name = "pi-rpc"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "which 8.0.6",
 ]
 
 [[package]]

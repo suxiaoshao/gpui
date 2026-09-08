@@ -1,4 +1,5 @@
 use super::*;
+use crate::pi::ProbeFailureKey;
 use crate::state::theme;
 use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::{
