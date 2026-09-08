@@ -75,22 +75,23 @@ Degraded(Missing) 仍无可用配置，初次保存失败可能落到此状态�
 pub(crate) struct PiProbeData {
     command: PathBuf,
     version: String,
+    checked_at: SystemTime,
 }
 pub(crate) type PiOperation =
-    refresh::Operation<PiProbeData, StartupProblem, Task<()>>;
+    refresh::Operation<PiProbeData, ProbeFailure, Task<()>>;
 ```
 
-Pi owner 输入为已应用命令。首次检查使用 Load，Ready 使用 Refresh，Unavailable 使用 Retry，Degraded 使用 Refresh。同一输入重复点击只在已结算状态准入。命令变化先取消并回收旧探测，再为新输入从 Idle 开始；不得将旧命令版本作为新命令的有效 Data 保留。
+根视图分别持有已应用命令和设置草稿的两个 Pi owner；每个 owner 独立持有完整 Operation、任务、取消信号和错误。启动及重试只使用已应用 owner，设置页的检测只使用草稿 owner；草稿检测不会替换启动状态或使恢复设置页消失。首次检查使用 Load，Ready 使用 Refresh，Unavailable 使用 Retry，Degraded 使用 Refresh。同一输入重复点击只在已结算状态准入。命令变化先取消并回收旧探测，再为新输入从 Idle 开始；不得将旧命令版本作为新命令的有效 Data 保留。
 
 正常 owner-aware Task 取消会切断完成回调，不另加 generation；若最终进程适配使用独立于 Task 的完成生产者，必须在 P-03 明确其理由与结果归属。界面不直接启动子进程。Pi 检查的成功条件仅为命令/版本契约，实际 RPC 兼容性由 #219 验证。
 
-features/startup.rs 的根视图持有已有页面 Entity 并订阅配置、布局、Pi；正常业务外壳归 features/home.rs，共用恢复布局归 components/recovery.rs。每次 render 从这些权威数据决定内容；不维护可修改的 StartupRoute。对 Configured 的读取成功与布局可恢复条件满足后，才允许 Pi 结果放行主界面；运行中配置重读失败保留已应用界面及设置问题提示。
+features/startup.rs 的根视图持有已有页面 Entity 并订阅配置、布局、Pi；正常业务外壳归 features/home.rs，共用恢复布局归 components/recovery.rs。每次 render 从这些权威数据决定内容；不维护可修改的 StartupRoute。对 Configured 的读取成功与布局可恢复条件满足后，仅当已应用 owner 的成功结果对应当前已应用命令且无运行任务或错误时，才放行主界面；运行中配置重读失败保留已应用界面及设置问题提示。
 
 ## L-113 / ST-113：受控退出
 
 采用应用级 Running/Draining 退出阶段，它仅表达应用退出，不复制配置 Operation。Quit 将阶段置为 Draining，拒绝新配置/Pi 操作，显示退出进度；重复 Quit 只激活现有窗口。
 
-已有配置写入继续保留在其 Operation 中直至 Complete，禁止通过 Cancel 或销毁 owner 中断。读取与版本探测可取消，但必须完成进程回收。然后保存布局，最后调用 cx.quit。退出协调者观察运行操作是否结束，不将同一个 Task 从 Operation 取出并复制到其他 owner。
+已有配置写入继续保留在其 Operation 中直至 Complete，禁止通过 Cancel 或销毁 owner 中断。已应用与草稿两种版本探测同时发送停止信号，等待各自进程回收及 Operation 完成。布局恢复任务也需结算，然后保存布局，最后调用 cx.quit。退出协调任务由根视图的 quit_task 持有，布局恢复任务由 layout_task 持有；协调者观察运行操作是否结束，不将同一个 Task 从 Operation 取出并复制到其他 owner。应用不使用 detach 维持业务任务。
 
 布局保存失败只写日志，静默允许退出，不弹通知或要求确认。用户主动提交的配置保存失败在设置页保留错误和草稿；用户随后明确退出时正常退出，不因该错误拦截，不弹二次确认、不自动重试、不额外持久化草稿。写入未返回时按 L-114 保持运行所有权，不伪造回滚。系统强制终止不在普通 Quit 的完成保证内。
 

@@ -137,21 +137,18 @@ impl SettingsView {
         .into_any_element()
     }
     pub(super) fn probe_matches(&self, cx: &App) -> bool {
-        let command = AppConfig::PI_COMMAND
-            .get(&self.form, cx)
-            .unwrap_or_else(|| "pi".into());
-        let pi = self.pi.read(cx);
-        pi.requested.as_deref() == Some(command.trim())
+        let command = AppConfig::PI_COMMAND.get(&self.form, cx);
+        self.draft_pi.read(cx).matches_command(command.as_deref())
     }
     pub(super) fn probe_ready(&self, cx: &App) -> bool {
-        let pi = self.pi.read(cx);
-        self.probe_matches(cx)
-            && !pi.operation.is_running()
-            && pi.operation.problem().is_none()
-            && pi.operation.data().is_some()
+        let command = AppConfig::PI_COMMAND.get(&self.form, cx);
+        self.draft_pi
+            .read(cx)
+            .ready_for(command.as_deref())
+            .is_some()
     }
     pub(super) fn render_pi(&self, cx: &Context<Self>) -> AnyElement {
-        let pi = self.pi.read(cx);
+        let pi = self.draft_pi.read(cx);
         let matching = self.probe_matches(cx);
         let busy = self.controller.read(cx).busy(cx);
         let mut view = v_flex().gap_4().child(
@@ -178,7 +175,7 @@ impl SettingsView {
                     match AppConfig::ROOT.get(&this.form, cx).normalized() {
                         Ok(config) => {
                             this.error = None;
-                            this.pi
+                            this.draft_pi
                                 .update(cx, |pi, cx| pi.request(config.pi_command, true, cx));
                         }
                         Err(error) => this.error = Some(error),

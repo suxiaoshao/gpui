@@ -20,7 +20,8 @@ use gpui_kit::*;
 pub(crate) struct StartupView {
     focus_handle: FocusHandle,
     pub config: Entity<ConfigController>,
-    pub pi: Entity<PiProbeController>,
+    applied_pi: Entity<PiProbeController>,
+    draft_pi: Entity<PiProbeController>,
     settings: Entity<SettingsView>,
     pub show_settings: bool,
     pub layout_problem: Option<String>,
@@ -43,12 +44,13 @@ impl StartupView {
         let focus_handle = cx.focus_handle();
         let form = cx.new(|_| Form::new(AppConfig::default()));
         let config = cx.new(|cx| ConfigController::new(&form, cx));
-        let pi = cx.new(|_| PiProbeController::new());
+        let applied_pi = cx.new(|_| PiProbeController::new());
+        let draft_pi = cx.new(|_| PiProbeController::new());
         let settings = cx.new(|cx| {
             SettingsView::new(
                 form.clone(),
                 config.clone(),
-                pi.clone(),
+                draft_pi.clone(),
                 focus_handle.clone(),
                 window,
                 cx,
@@ -61,14 +63,14 @@ impl StartupView {
                 if let Some(value) = &value
                     && this.layout_problem.is_none()
                 {
-                    this.pi
+                    this.applied_pi
                         .update(cx, |pi, cx| pi.request(value.pi_command.clone(), false, cx));
                 }
                 this.applied = value;
             }
             cx.notify();
         });
-        let pi_sub = cx.observe(&pi, |_, _, cx| cx.notify());
+        let pi_sub = cx.observe(&applied_pi, |_, _, cx| cx.notify());
         let preview_form = form.clone();
         let form_sub = cx.observe_in(&form, window, move |_, form, window, cx| {
             let draft = crate::state::config::AppConfig::ROOT.get(&form, cx);
@@ -98,7 +100,8 @@ impl StartupView {
         Self {
             focus_handle,
             config,
-            pi,
+            applied_pi,
+            draft_pi,
             settings,
             show_settings: false,
             layout_problem,
@@ -119,7 +122,8 @@ impl StartupView {
         tracing::info!("managed quit started");
         self.draining = true;
         self.config.update(cx, |owner, _| owner.draining = true);
-        self.pi.update(cx, |pi, _| pi.stop());
+        self.applied_pi.update(cx, |pi, _| pi.stop());
+        self.draft_pi.update(cx, |pi, _| pi.stop());
         let placement = layout::capture(window);
         let save_layout = self.layout_problem.is_none();
         self.quit_task = Some(cx.spawn(async move |owner, cx| {
@@ -127,7 +131,8 @@ impl StartupView {
                 let busy = owner
                     .read_with(cx, |owner, cx| {
                         owner.config.read(cx).store.read(cx, |op| op.is_running())
-                            || owner.pi.read(cx).operation.is_running()
+                            || owner.applied_pi.read(cx).operation.is_running()
+                            || owner.draft_pi.read(cx).operation.is_running()
                             || owner.layout_task.is_some()
                     })
                     .unwrap_or(false);
@@ -278,7 +283,7 @@ impl Render for StartupView {
                                         if this.layout_problem.is_none()
                                             && let Some(config) = &this.applied
                                         {
-                                            this.pi.update(cx, |pi, cx| {
+                                            this.applied_pi.update(cx, |pi, cx| {
                                                 pi.request(config.pi_command.clone(), false, cx)
                                             });
                                         }
@@ -297,15 +302,15 @@ impl Render for StartupView {
                     );
             }
         } else {
-            let pi = self.pi.read(cx);
+            let pi = self.applied_pi.read(cx);
             if self.show_settings {
                 content = content.child(self.settings.clone());
             } else if pi.operation.is_running() {
                 content = content.child(t(cx, "startup-checking"));
-            } else if let Some(data) = pi
-                .operation
-                .data()
-                .filter(|_| pi.operation.problem().is_none())
+            } else if let Some(data) = self
+                .applied
+                .as_ref()
+                .and_then(|config| pi.ready_for(config.pi_command.as_deref()))
             {
                 content = content.child(home::home(data, cx));
             } else {
@@ -317,7 +322,7 @@ impl Render for StartupView {
                     ))
                     .child(self.settings.clone());
             }
-            let pi = self.pi.read(cx);
+            let pi = self.applied_pi.read(cx);
             if let Some(problem) = pi.operation.problem() {
                 content = content.child(div().text_sm().child(t(cx, problem.key())));
             }
@@ -327,7 +332,8 @@ impl Render for StartupView {
                     .disabled(pi.operation.is_running())
                     .on_click(cx.listener(|this, _, _, cx| {
                         let command = this.applied.as_ref().and_then(|c| c.pi_command.clone());
-                        this.pi.update(cx, |pi, cx| pi.request(command, true, cx));
+                        this.applied_pi
+                            .update(cx, |pi, cx| pi.request(command, true, cx));
                     })),
             );
         }
@@ -381,6 +387,7 @@ impl Render for StartupView {
                     .when(!onboarding, |view| view.px_8())
                     .flex()
                     .justify_center()
+                    .when(configured, |view| view.items_start())
                     .child(content),
             )
     }

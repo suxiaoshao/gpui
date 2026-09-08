@@ -112,7 +112,7 @@ async fn probe(
 }
 pub(crate) struct PiProbeController {
     pub operation: PiOperation,
-    pub requested: Option<String>,
+    requested: Option<String>,
     cancel: Option<oneshot::Sender<()>>,
     pub draining: bool,
 }
@@ -125,11 +125,21 @@ impl PiProbeController {
             draining: false,
         }
     }
+    pub fn matches_command(&self, command: Option<&str>) -> bool {
+        self.requested.as_deref() == Some(command_key(command))
+    }
+    pub fn ready_for(&self, command: Option<&str>) -> Option<&PiProbeData> {
+        self.operation.data().filter(|_| {
+            self.matches_command(command)
+                && !self.operation.is_running()
+                && self.operation.problem().is_none()
+        })
+    }
     pub fn request(&mut self, command: Option<String>, retry: bool, cx: &mut Context<Self>) {
         if self.draining {
             return;
         }
-        let command = command.unwrap_or_else(|| "pi".into());
+        let command = command_key(command.as_deref()).to_owned();
         if self.requested.as_ref() == Some(&command) && (!retry || self.operation.is_running()) {
             return;
         }
@@ -188,6 +198,46 @@ impl PiProbeController {
         cx.notify();
     }
 }
+fn command_key(command: Option<&str>) -> &str {
+    command
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("pi")
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::{PiProbeController, PiProbeData, ProbeFailure};
+    use gpui_kit::Task;
+    use gpui_operation::{Complete, Refresh, Settle, Transition};
+    use std::time::SystemTime;
+
+    #[test]
+    fn readiness_requires_the_committed_command_and_a_completed_success() {
+        let mut probe = PiProbeController::new();
+        probe.requested = Some("replacement-pi".into());
+        probe.operation.transition(Settle(Ok(PiProbeData {
+            command: "resolved/replacement-pi".into(),
+            version: "0.85.1".into(),
+            checked_at: SystemTime::now(),
+        })));
+        // A successful draft check cannot authorize the previously applied command.
+        assert!(probe.ready_for(Some("invalid-pi")).is_none());
+        assert!(probe.ready_for(None).is_none());
+        assert!(probe.ready_for(Some("replacement-pi")).is_some());
+        assert!(probe.ready_for(Some("  replacement-pi  ")).is_some());
+
+        // Retained data cannot authorize startup during or after a failed refresh.
+        probe.operation.transition(Refresh(Task::ready(())));
+        assert!(probe.ready_for(Some("replacement-pi")).is_none());
+        probe
+            .operation
+            .transition(Complete(Err(ProbeFailure::InvalidVersion)));
+        assert!(probe.operation.data().is_some());
+        assert!(probe.ready_for(Some("replacement-pi")).is_none());
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::{Duration, PiProbeData, ProbeFailure, oneshot, probe};

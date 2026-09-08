@@ -28,13 +28,15 @@ language = "system" # system / english / chinese
 默认窗口为 960×740，最小为 800×600；旧的小尺寸记录恢复时扩至新下限，并按屏幕范围约束。窗口布局损坏须明确备份并重置，退出时的布局保存错误只记录日志。
 
 Pi 检查仅执行指定程序的 `--version`，5 秒超时，stdout/stderr 各限制 16 KiB；不启动交互式 shell，不安装 Pi/Node，不调用模型。
-macOS/Windows 关闭窗口隐藏，重新唤起恢复；显式退出等待已开始的配置提交和探测收尾。
+已应用命令的启动检查与设置草稿检查各自持有独立的 Operation/Task；主页仅接受与当前已应用命令匹配的成功结果。草稿检测期间及成功后保留恢复设置页，保存成功后才根据新配置进入主页。
+macOS/Windows 关闭窗口隐藏，重新唤起恢复；显式退出等待已开始的配置提交、布局恢复及两种 Pi 探测收尾。所有业务 Task 均由对应 Operation 或根视图字段持有。
 
 ## 开发期边界与验证
 
 - 使用用户指定的 Pi 官方开发期图标；来源与许可状态见 [图标记录](build-assets/icon/README.md)。
 - 使用根 manifest 锁定的 GPUI Kit 0.6.0；锁文件仅新增 Gupi 包条目。
-- 已通过 `cargo build -p gupi --offline`、`cargo test -p gupi -p xtask --locked --offline`（Gupi 7 项、xtask 13 项）和 `cargo clippy -p gupi -p xtask --all-targets --all-features --locked --offline -- -D warnings`。
+- Gupi 已通过 `cargo build -p gupi --locked --offline`、`cargo test -p gupi --locked --offline`（8 项）和 `cargo clippy -p gupi --all-targets --all-features --locked --offline -- -D warnings`；打包接入的 xtask 已通过 13 项测试及同等 Clippy 检查。
 - macOS 当前开发构建已验证启动引导、语言/浅暗主题切换、分组吸顶、前进/返回及滚动位置保持、最小窗口与旧尺寸恢复、完整名称提示，以及临时 Pi fixture 的检测和完成设置；未调用模型。
+- 配置错误恢复页已验证：草稿检测成功保留表单与原磁盘配置，保存后进入主页；设置页底部操作及主题列表最后一行均可滚动到达。
 - Windows npm shim、Linux 实机行为、当前 release bundle 与完整发行矩阵尚未验证。
 - [第一阶段计划](docs/dev/issue-218/README.md)及[运行时契约](docs/dev/issue-218/runtime.md)。

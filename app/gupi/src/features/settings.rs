@@ -32,7 +32,7 @@ pub(crate) struct SettingsView {
     _subscriptions: Vec<Subscription>,
     error: Option<String>,
     confirmation: Option<ConfigRepair>,
-    pi: Entity<PiProbeController>,
+    draft_pi: Entity<PiProbeController>,
     step: usize,
     transition: Option<onboarding::PageTransition>,
     transition_serial: u64,
@@ -45,7 +45,7 @@ impl SettingsView {
     pub fn new(
         form: Entity<Form<AppConfig>>,
         controller: Entity<ConfigController>,
-        pi: Entity<PiProbeController>,
+        draft_pi: Entity<PiProbeController>,
         focus_handle: FocusHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -112,7 +112,7 @@ impl SettingsView {
                 });
                 cx.notify();
             });
-        let pi_sub = cx.observe(&pi, |_, _, cx| cx.notify());
+        let pi_sub = cx.observe(&draft_pi, |_, _, cx| cx.notify());
         let form_sub = cx.observe(&form, |_, _, cx| cx.notify());
         let store = controller.read(cx).store.clone();
         let store_sub = store.observe(cx, |_, _, cx| cx.notify());
@@ -130,7 +130,7 @@ impl SettingsView {
                 locale_sub,
                 pi_sub,
             ],
-            pi,
+            draft_pi,
             step: 0,
             transition: None,
             transition_serial: 0,
