@@ -11,10 +11,5 @@ pub(crate) fn home(data: &PiProbeData, cx: &App) -> Div {
             data.version,
             data.command.display()
         )))
-        .child(div().text_sm().child(format!(
-            "{}: {}",
-            t(cx, "home-checked"),
-            data.checked_at.elapsed().unwrap_or_default().as_secs()
-        )))
         .child(t(cx, "home-description"))
 }

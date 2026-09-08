@@ -258,14 +258,8 @@ impl SettingsView {
             );
         let store = self.controller.read(cx).store.clone();
         let problem = store.read(cx, |op| {
-            op.problem().map(|problem| {
-                (
-                    problem.key,
-                    problem.conflict,
-                    problem.reconcile,
-                    problem.pending.is_some(),
-                )
-            })
+            op.problem()
+                .map(|problem| (problem.key, problem.conflict, problem.reconcile))
         });
         if let Some(key) = self.error.as_deref().or(problem.map(|p| p.0)) {
             view = view.child(
@@ -276,7 +270,7 @@ impl SettingsView {
             );
         }
         // Preserve explicit recovery choices if a file appeared or saving failed during setup.
-        if let Some((_, conflict, reconcile, retry)) = problem {
+        if let Some((_, conflict, reconcile)) = problem {
             view =
                 view.child(
                     h_flex()
@@ -299,17 +293,6 @@ impl SettingsView {
                                         this.request(ConfigRepair::BackupAndWrite, cx)
                                     })),
                             )
-                        })
-                        .when(retry && !conflict && !reconcile, |view| {
-                            view.child(
-                                Button::new("setup-retry")
-                                    .icon(IconName::RotateCw)
-                                    .label(t(cx, "action-retry"))
-                                    .disabled(busy)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.request(ConfigRepair::RetryWrite, cx)
-                                    })),
-                            )
                         }),
                 );
         }
@@ -323,9 +306,10 @@ impl SettingsView {
                                 .label(t(cx, "action-confirm"))
                                 .disabled(busy)
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    if let Some(action) = this.confirmation.take() {
-                                        this.controller
-                                            .update(cx, |owner, cx| owner.repair(action, cx));
+                                    if !this.controller.read(cx).busy(cx)
+                                        && let Some(action) = this.confirmation.take()
+                                    {
+                                        this.apply_repair(action, cx);
                                     }
                                     cx.notify();
                                 })),

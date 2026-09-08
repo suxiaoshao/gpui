@@ -24,15 +24,15 @@ pub(crate) struct ConfigData {
     source_bytes: Option<Vec<u8>>,
 }
 pub(crate) type ConfigOperation =
-    repair::Operation<ConfigData, StartupProblem, ConfigRepair, Task<()>>;
+    repair::Operation<ConfigData, ConfigProblem, ConfigRepair, Task<()>>;
 pub(crate) type ConfigStore = Store<ConfigOperation>;
 
 pub(crate) enum ConfigRepair {
     Reload,
-    RetryWrite,
+    SaveDraft,
+    WriteCommitted,
     BackupAndReset,
     BackupAndWrite,
-    SubmitReplacement(Arc<PendingConfig>),
 }
 ```
 
@@ -40,7 +40,7 @@ Missing 必须对应 source_bytes=None；Configured 对应成功读入或写入�
 
 ConfigController 是唯一命令入口，持有 ConfigStore 及设置表单弱引用；根组件/主题持有订阅。Store 按应用寿命存活，完成回调更新同一个 Store，不由 Task 强引用 Store 形成环。features/settings.rs 的 SettingsView 只拥有编辑 Form；关闭窗口不销毁配置任务。
 
-ConfigRepair 不持有任务；失败提交快照由错误上下文持有，重新设置的已校验输入由 SubmitReplacement 携带。具体定义和准入见 L-114。
+ConfigRepair 只记录操作意图；提交快照由运行任务持有，失败后释放。错误上下文保留写入来源、冲突及备份结果，不保存可重放的旧草稿。具体定义和准入见 L-114。
 
 ## L-111：操作准入、转移与表单结果
 
@@ -67,7 +67,7 @@ Degraded(Missing) 仍无可用配置，初次保存失败可能落到此状态�
 | 当前内存写回 | 草稿和值/基线都保留 | 保留草稿 |
 | 备份重置 | 明确确认后以新配置 rebase | 保留草稿，显示已完成的备份等部分结果 |
 
-“重新设置”入口在问题态可编辑修复表单，但提交仍走支持的 Repair；不能向 Degraded 发送 Refresh。携带新表单快照的修复使用 SubmitReplacement，按 L-114 检查冲突与备份要求。
+保存失败后继续编辑，使用同一个保存入口提交当前表单。问题态的保存使用 Repair { repair: SaveDraft, task }，不能向 Degraded 发送 Refresh；按 L-114 检查冲突与备份要求。
 
 ## L-112 / ST-112：Pi 数据与页面投影
 
@@ -75,7 +75,6 @@ Degraded(Missing) 仍无可用配置，初次保存失败可能落到此状态�
 pub(crate) struct PiProbeData {
     command: PathBuf,
     version: String,
-    checked_at: SystemTime,
 }
 pub(crate) type PiOperation =
     refresh::Operation<PiProbeData, ProbeFailure, Task<()>>;
@@ -106,27 +105,27 @@ features/startup.rs 的根视图持有已有页面 Entity 并订阅配置、布�
 
 上述测试补充应用计划 T-100 段已有场景，实施时合并相同覆盖，不重复建立平行测试集。
 
-## L-114：从现有应用复用错误与修复结构
-
-已核对 Jaco `state/config.rs` 的 PendingConfig、ConfigProblem::{ExternalChange,Write,Backup,WriteAfterBackup}、supports 与 request_repair；参考其错误携带提交与备份结果、按支持的动作构造 Repair 的模式。不会复制自动文件观察器、MCP 凭据逻辑。
+## L-114：写入失败后的再次保存
 
 ```rust
-pub(crate) struct PendingConfig {
+pub(crate) enum ConfigWriteSource { Draft, Committed }
+struct PendingConfig {
     value: AppConfig,
     bytes: Vec<u8>,
     expected_source: Option<Vec<u8>>,
+    source: ConfigWriteSource,
 }
 ```
 
-PendingConfig 位于 state/config.rs，表示校验通过的不可变提交。第一次保存时从表单创建；失败后 ERR-03/04 通过 Arc 持有同一快照。RetryWrite 使用该快照，重新检查磁盘版本。新编辑必须重新校验生成新快照，不原地改动错误所持有的内容。
+PendingConfig 位于 state/config.rs，只表示本次运行任务的不可变输入。每次保存都重新 prepare、校验并捕获当前草稿；失败后保留表单，不提供独立的重试写入按钮。错误只记录 Draft/Committed 来源与备份结果。发生冲突后，备份覆盖在用户确认时重新捕获当前来源：Draft 使用当前表单，Committed 使用已应用配置并保留草稿；不能恢复失败前的旧表单快照。
 
 | 问题 | 可用动作 | 约束 |
 | --- | --- | --- |
 | 配置读取/解析失败 | Reload；明确的重新设置/备份重置 | 原文件存在时替换前备份；目录/权限不满足则停止 |
-| 写入前失败，outcome=Unchanged | Reload、RetryWrite、重新设置 | 原有数据仍有效；重试仍比较 expected_source |
+| 写入前失败，outcome=Unchanged | 保存当前草稿、写回已应用配置、Reload | 原有数据仍有效；每次写入重新取值并比较 expected_source |
 | 外部版本冲突 | Reload、明确 BackupAndWrite | 不提供绕过版本检查的普通重试 |
-| 备份成功后写入失败 | Reload、RetryWrite | 保留并展示已有备份结果；再次核对磁盘，不虚报整个操作未产生效果 |
-| outcome=NeedsReconcile | Reload | 禁用直接重试/覆盖；先核对当前磁盘，结果明确后再开放提交 |
+| 备份成功后写入失败 | 保存当前草稿、写回已应用配置、Reload | 保留并展示已有备份结果；再次核对磁盘，不虚报整个操作未产生效果 |
+| outcome=NeedsReconcile | Reload | 禁用保存/覆盖；先核对当前磁盘，结果明确后再开放提交 |
 
 未返回的写入继续处于 Refreshing 或 Repairing…，Task 和旧数据由 Operation 持有，控件禁用。不能因 UI 等待超时直接发 Complete(Err) 后放开重试，留下后台旧写入继续竞争。提交返回但结果需核对时，Complete(Err(NeedsReconcile)) 转为问题态；下一步用户选 Reload 经 Repair 收敛实际磁盘结果。
 

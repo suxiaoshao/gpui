@@ -1,11 +1,7 @@
 use gpui_kit::*;
 use gpui_operation::{Complete, Load, Refresh, Retry, Transition, refresh};
 use gpui_tokio::Tokio;
-use std::{
-    path::PathBuf,
-    process::Stdio,
-    time::{Duration, SystemTime},
-};
+use std::{path::PathBuf, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     process::Command,
@@ -43,7 +39,6 @@ impl ProbeFailure {
 pub(crate) struct PiProbeData {
     pub command: PathBuf,
     pub version: String,
-    pub checked_at: SystemTime,
 }
 type PiOperation = refresh::Operation<PiProbeData, ProbeFailure, Task<()>>;
 async fn bounded(reader: impl AsyncRead + Unpin) -> Result<Vec<u8>, ProbeFailure> {
@@ -96,7 +91,6 @@ async fn probe(
             Ok(PiProbeData {
                 command: path,
                 version: version.to_owned(),
-                checked_at: SystemTime::now(),
             })
         };
         tokio::select! {
@@ -210,7 +204,6 @@ mod readiness_tests {
     use super::{PiProbeController, PiProbeData, ProbeFailure};
     use gpui_kit::Task;
     use gpui_operation::{Complete, Refresh, Settle, Transition};
-    use std::time::SystemTime;
 
     #[test]
     fn readiness_requires_the_committed_command_and_a_completed_success() {
@@ -219,7 +212,6 @@ mod readiness_tests {
         probe.operation.transition(Settle(Ok(PiProbeData {
             command: "resolved/replacement-pi".into(),
             version: "0.85.1".into(),
-            checked_at: SystemTime::now(),
         })));
         // A successful draft check cannot authorize the previously applied command.
         assert!(probe.ready_for(Some("invalid-pi")).is_none());

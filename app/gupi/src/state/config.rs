@@ -7,7 +7,7 @@ use gpui_kit::*;
 use gpui_operation::{Complete, Load, Refresh, Repair, Transition, repair};
 use gpui_store::Store;
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -72,19 +72,23 @@ impl ConfigData {
         }
     }
 }
-#[derive(Clone, Debug)]
-pub(crate) struct PendingConfig {
-    pub value: AppConfig,
-    pub bytes: Vec<u8>,
-    pub expected_source: Option<Vec<u8>>,
-    pub rebase_on_success: bool,
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ConfigWriteSource {
+    Draft,
+    Committed,
+}
+struct PendingConfig {
+    value: AppConfig,
+    bytes: Vec<u8>,
+    expected_source: Option<Vec<u8>>,
+    source: ConfigWriteSource,
 }
 #[derive(Debug, thiserror::Error)]
 #[error("{key}: {detail}")]
 pub(crate) struct ConfigProblem {
     pub key: &'static str,
     pub detail: String,
-    pub pending: Option<Arc<PendingConfig>>,
+    pub write_source: Option<ConfigWriteSource>,
     pub backup: Option<PathBuf>,
     pub reconcile: bool,
     pub conflict: bool,
@@ -94,7 +98,7 @@ impl ConfigProblem {
         Self {
             key,
             detail: detail.to_string(),
-            pending: None,
+            write_source: None,
             backup: None,
             reconcile: false,
             conflict: false,
@@ -104,10 +108,10 @@ impl ConfigProblem {
 #[derive(Clone, Debug)]
 pub(crate) enum ConfigRepair {
     Reload,
-    RetryWrite,
+    SaveDraft,
+    WriteCommitted,
     BackupAndReset,
     BackupAndWrite,
-    SubmitReplacement(Arc<PendingConfig>),
 }
 pub(crate) type ConfigOperation =
     repair::Operation<ConfigData, ConfigProblem, ConfigRepair, Task<()>>;
@@ -145,7 +149,7 @@ pub(crate) fn read_config(
 }
 fn write_config(
     path: PathBuf,
-    mut pending: Arc<PendingConfig>,
+    pending: PendingConfig,
     overwrite: bool,
     mut backup: Option<PathBuf>,
 ) -> Result<ConfigData, ConfigProblem> {
@@ -156,10 +160,6 @@ fn write_config(
             if let Some(bytes) = &current {
                 backup = Some(persistence::backup(&path, bytes)?);
             }
-            pending = Arc::new(PendingConfig {
-                expected_source: current.clone(),
-                ..(*pending).clone()
-            });
             current.as_deref()
         } else {
             pending.expected_source.as_deref()
@@ -175,13 +175,13 @@ fn write_config(
         detail: e.to_string(),
         reconcile: matches!(e, Failure::NeedsReconcile(_)),
         conflict: matches!(e, Failure::Conflict),
-        pending: Some(pending.clone()),
+        write_source: Some(pending.source),
         backup: backup.clone(),
     })?;
     Ok(ConfigData {
         path,
-        contents: ConfigContents::Configured(pending.value.clone()),
-        source_bytes: Some(pending.bytes.clone()),
+        contents: ConfigContents::Configured(pending.value),
+        source_bytes: Some(pending.bytes),
         backup,
     })
 }
@@ -220,30 +220,44 @@ impl ConfigController {
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.start(ConfigRepair::Reload, None, false, true, cx);
     }
-    pub fn submit(&mut self, value: AppConfig, cx: &mut Context<Self>) -> Result<(), String> {
+    pub fn submit_draft(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
         if self.busy(cx) {
             return Ok(());
         }
+        let value = self.draft(cx)?;
+        self.submit(value, cx)
+    }
+    fn draft(&self, cx: &mut Context<Self>) -> Result<AppConfig, String> {
+        self.form
+            .update(cx, |form, cx| form.prepare(cx))
+            .map_err(|_| "error-config-validation".to_owned())?
+            .map(|prepared| prepared.into_parts().1)
+            .map_err(|_| "error-config-validation".to_owned())
+    }
+    fn pending(
+        &self,
+        value: AppConfig,
+        source: ConfigWriteSource,
+        cx: &App,
+    ) -> Result<PendingConfig, String> {
         let value = value.normalized()?;
-        let bytes = toml::to_string_pretty(&value)
-            .map_err(|e| e.to_string())?
-            .into_bytes();
-        let expected_source = self
-            .store
-            .read(cx, |op| op.data().and_then(|d| d.source_bytes.clone()));
-        let pending = Arc::new(PendingConfig {
+        Ok(PendingConfig {
+            bytes: toml::to_string_pretty(&value)
+                .map_err(|e| e.to_string())?
+                .into_bytes(),
             value,
-            bytes,
-            expected_source,
-            rebase_on_success: true,
-        });
-        self.start(
-            ConfigRepair::SubmitReplacement(pending.clone()),
-            Some(pending),
-            false,
-            true,
-            cx,
-        );
+            expected_source: self
+                .store
+                .read(cx, |op| op.data().and_then(|d| d.source_bytes.clone())),
+            source,
+        })
+    }
+    fn submit(&mut self, value: AppConfig, cx: &mut Context<Self>) -> Result<(), String> {
+        if self.busy(cx) {
+            return Ok(());
+        }
+        let pending = self.pending(value, ConfigWriteSource::Draft, cx)?;
+        self.start(ConfigRepair::SaveDraft, Some(pending), false, true, cx);
         Ok(())
     }
     pub fn write_committed(&mut self, cx: &mut Context<Self>) {
@@ -253,16 +267,16 @@ impl ConfigController {
         let pending = self.store.read(cx, |op| {
             let d = op.data()?;
             let value = d.configured()?.clone();
-            Some(Arc::new(PendingConfig {
+            Some(PendingConfig {
                 bytes: toml::to_string_pretty(&value).ok()?.into_bytes(),
                 value,
                 expected_source: d.source_bytes.clone(),
-                rebase_on_success: false,
-            }))
+                source: ConfigWriteSource::Committed,
+            })
         });
         if let Some(pending) = pending {
             self.start(
-                ConfigRepair::SubmitReplacement(pending.clone()),
+                ConfigRepair::WriteCommitted,
                 Some(pending),
                 false,
                 false,
@@ -270,39 +284,45 @@ impl ConfigController {
             );
         }
     }
-    pub fn repair(&mut self, action: ConfigRepair, cx: &mut Context<Self>) {
-        let pending = self
-            .store
-            .read(cx, |op| op.problem().and_then(|p| p.pending.clone()));
+    pub fn repair(&mut self, action: ConfigRepair, cx: &mut Context<Self>) -> Result<(), String> {
+        if self.busy(cx) {
+            return Ok(());
+        }
         match action {
             ConfigRepair::Reload => self.reload(cx),
-            ConfigRepair::RetryWrite => self.start(action, pending, false, true, cx),
-            ConfigRepair::BackupAndWrite => self.start(action, pending, true, true, cx),
-            ConfigRepair::BackupAndReset => {
-                let value = AppConfig::default();
-                let pending = Arc::new(PendingConfig {
-                    bytes: toml::to_string_pretty(&value)
-                        .expect("config serialization")
-                        .into_bytes(),
-                    value,
-                    expected_source: None,
-                    rebase_on_success: true,
+            ConfigRepair::SaveDraft => return self.submit_draft(cx),
+            ConfigRepair::WriteCommitted => self.write_committed(cx),
+            ConfigRepair::BackupAndWrite => {
+                let source = self.store.read(cx, |op| {
+                    op.problem()
+                        .filter(|p| p.conflict && !p.reconcile)
+                        .and_then(|p| p.write_source)
                 });
+                let Some(source) = source else { return Ok(()) };
+                let value = match source {
+                    ConfigWriteSource::Draft => self.draft(cx)?,
+                    ConfigWriteSource::Committed => {
+                        let value = self.store.read(cx, |op| {
+                            op.data().and_then(|data| data.configured().cloned())
+                        });
+                        let Some(value) = value else { return Ok(()) };
+                        value
+                    }
+                };
+                let pending = self.pending(value, source, cx)?;
                 self.start(action, Some(pending), true, true, cx);
             }
-            ConfigRepair::SubmitReplacement(pending) => self.start(
-                ConfigRepair::SubmitReplacement(pending.clone()),
-                Some(pending),
-                false,
-                true,
-                cx,
-            ),
+            ConfigRepair::BackupAndReset => {
+                let pending = self.pending(AppConfig::default(), ConfigWriteSource::Draft, cx)?;
+                self.start(action, Some(pending), true, true, cx);
+            }
         }
+        Ok(())
     }
     fn start(
         &mut self,
         action: ConfigRepair,
-        pending: Option<Arc<PendingConfig>>,
+        pending: Option<PendingConfig>,
         overwrite: bool,
         rebase: bool,
         cx: &mut Context<Self>,
@@ -318,9 +338,7 @@ impl ConfigController {
             Some(_) => !matches!(action, ConfigRepair::BackupAndWrite),
             None => !matches!(
                 action,
-                ConfigRepair::RetryWrite
-                    | ConfigRepair::BackupAndWrite
-                    | ConfigRepair::BackupAndReset
+                ConfigRepair::BackupAndWrite | ConfigRepair::BackupAndReset
             ),
         });
         if !allowed {
@@ -328,7 +346,7 @@ impl ConfigController {
         }
         let rebase = pending
             .as_ref()
-            .map(|p| p.rebase_on_success)
+            .map(|p| matches!(p.source, ConfigWriteSource::Draft))
             .unwrap_or(rebase);
         let backup = self
             .store
@@ -464,9 +482,9 @@ mod tests {
         settled(&owner, cx).await;
         owner.update(cx, |owner, cx| {
             assert!(owner.store.read(cx, |op| op.problem().unwrap().conflict));
-            owner.repair(ConfigRepair::RetryWrite, cx);
+            owner.submit_draft(cx).unwrap();
             assert!(!owner.store.read(cx, |op| op.is_running()));
-            owner.repair(ConfigRepair::BackupAndWrite, cx);
+            owner.repair(ConfigRepair::BackupAndWrite, cx).unwrap();
         });
         settled(&owner, cx).await;
         assert!(form.read_with(cx, |form, _| form.is_dirty()));
@@ -533,12 +551,107 @@ mod tests {
             });
             owner.submit(AppConfig::default(), cx).unwrap();
             owner.write_committed(cx);
-            owner.repair(ConfigRepair::BackupAndReset, cx);
+            owner.repair(ConfigRepair::BackupAndReset, cx).unwrap();
             assert!(
                 owner
                     .store
                     .read(cx, |op| matches!(op, ConfigOperation::Degraded(_)))
             );
         });
+    }
+
+    #[gpui::test]
+    async fn saving_after_failure_uses_the_current_draft(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("config");
+        let path = parent.join("config.toml");
+        let form = cx.new(|_| Form::new(AppConfig::default()));
+        let owner = cx.new(|cx| ConfigController::at_path(&form, Ok(path.clone()), cx));
+        owner.update(cx, |owner, cx| owner.reload(cx));
+        settled(&owner, cx).await;
+
+        // A file in place of the directory causes a real pre-commit write failure.
+        std::fs::write(&parent, "blocked").unwrap();
+        cx.update(|cx| AppConfig::THEME.set(&form, ThemeMode::Light, cx));
+        owner.update(cx, |owner, cx| owner.submit_draft(cx).unwrap());
+        settled(&owner, cx).await;
+        assert!(owner.read_with(cx, |owner, cx| {
+            owner.store.read(cx, |op| {
+                op.problem().is_some_and(|p| !p.conflict && !p.reconcile)
+            })
+        }));
+        assert_eq!(
+            cx.update(|cx| AppConfig::THEME.get(&form, cx)),
+            ThemeMode::Light
+        );
+
+        cx.update(|cx| AppConfig::THEME.set(&form, ThemeMode::Dark, cx));
+        std::fs::remove_file(&parent).unwrap();
+        owner.update(cx, |owner, cx| owner.submit_draft(cx).unwrap());
+        settled(&owner, cx).await;
+        assert_eq!(
+            read_config(path, true).unwrap().configured().unwrap().theme,
+            ThemeMode::Dark
+        );
+        assert_eq!(
+            cx.update(|cx| AppConfig::THEME.get(&form, cx)),
+            ThemeMode::Dark
+        );
+        assert!(!form.read_with(cx, |form, _| form.is_dirty()));
+    }
+
+    #[gpui::test]
+    async fn conflict_overwrite_validates_and_saves_the_current_draft(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = 'system'\n").unwrap();
+        let form = cx.new(|_| Form::new(AppConfig::default()));
+        let owner = cx.new(|cx| ConfigController::at_path(&form, Ok(path.clone()), cx));
+        owner.update(cx, |owner, cx| owner.reload(cx));
+        settled(&owner, cx).await;
+
+        let external = "theme = 'dark'\n";
+        std::fs::write(&path, external).unwrap();
+        cx.update(|cx| AppConfig::THEME.set(&form, ThemeMode::Light, cx));
+        owner.update(cx, |owner, cx| owner.submit_draft(cx).unwrap());
+        settled(&owner, cx).await;
+        assert!(owner.read_with(cx, |owner, cx| {
+            owner
+                .store
+                .read(cx, |op| op.problem().is_some_and(|p| p.conflict))
+        }));
+
+        cx.update(|cx| {
+            AppConfig::THEME.set(&form, ThemeMode::Dark, cx);
+            AppConfig::PI_COMMAND.set(&form, Some("invalid command".into()), cx);
+        });
+        let error = owner.update(cx, |owner, cx| {
+            owner.repair(ConfigRepair::BackupAndWrite, cx)
+        });
+        assert_eq!(error.unwrap_err(), "error-config-validation");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), external);
+
+        cx.update(|cx| AppConfig::PI_COMMAND.set(&form, None, cx));
+        owner.update(cx, |owner, cx| {
+            owner.repair(ConfigRepair::BackupAndWrite, cx).unwrap()
+        });
+        settled(&owner, cx).await;
+        assert_eq!(
+            read_config(path, true).unwrap().configured().unwrap().theme,
+            ThemeMode::Dark
+        );
+        assert_eq!(
+            cx.update(|cx| AppConfig::THEME.get(&form, cx)),
+            ThemeMode::Dark
+        );
+        assert!(!form.read_with(cx, |form, _| form.is_dirty()));
+        let backup = owner.read_with(cx, |owner, cx| {
+            owner
+                .store
+                .read(cx, |op| op.data().unwrap().backup.clone().unwrap())
+        });
+        assert_eq!(std::fs::read_to_string(backup).unwrap(), external);
     }
 }

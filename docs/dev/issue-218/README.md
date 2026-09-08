@@ -157,9 +157,9 @@ Jaco 在 Linux 分支允许窗口实际关闭，不能仅凭该回调推断进�
 pub(crate) enum StartupProblem {
     ConfigRead { path: PathBuf, kind: std::io::ErrorKind }, // ERR-01
     ConfigInvalid { path: PathBuf, detail: String },       // ERR-02
-    ConfigConflict { path: PathBuf, pending: Arc<PendingConfig> }, // ERR-03
+    ConfigConflict { path: PathBuf, write_source: ConfigWriteSource }, // ERR-03
     ConfigWrite { path: PathBuf, outcome: WriteOutcome,
-        stage: ConfigWriteStage, pending: Arc<PendingConfig>,
+        stage: ConfigWriteStage, write_source: ConfigWriteSource,
         backup_path: Option<PathBuf>, kind: std::io::ErrorKind }, // ERR-04
     PiProbe { kind: ProbeFailure },                       // ERR-05
     Layout { path: PathBuf, detail: String },              // ERR-06
@@ -176,7 +176,7 @@ pub(crate) enum ProbeFailure {
 | ERR-01 | 文件读取失败 → config owner | 无有效配置进配置恢复；已有值在设置页定位文件/重试 | 保留内存和草稿；日志只含路径、错误码 |
 | ERR-02 | TOML/字段校验 → config owner | 修正后重读、重新设置或明确备份重置 | 原文件不动；detail 必须清理配置内容和控制字符 |
 | ERR-03 | 写入前磁盘快照不符 → config owner | 重读或明确备份覆盖 | 本次未写入；不循环自动重试 |
-| ERR-04 | 写入/备份/提交失败 → config owner | 修正文件系统条件、核对结果后重试 | 提交前失败保留旧值；提交后结果不明先重读协调，禁止假报成功 |
+| ERR-04 | 写入/备份/提交失败 → config owner | 修正文件系统条件后，用原保存入口提交当前草稿 | 提交前失败保留旧值；提交后结果不明先重读协调，禁止假报成功；不重放旧草稿 |
 | ERR-05 | 命令解析/进程/版本检查 → Pi owner | Pi 环境设置页修正命令并重试 | 回收探测进程；受限诊断，无凭据/环境全量日志 |
 | ERR-06 | 布局读取/解析 → startup owner | 布局恢复页定位、重试、明确恢复默认 | 不重置用户配置、不自动覆盖损坏布局 |
 

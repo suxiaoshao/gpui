@@ -144,13 +144,8 @@ impl SettingsView {
     }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self
-            .form
-            .update(cx, |form, cx| form.prepare(cx))
-            .map_err(|_| "error-config-validation".to_owned())
-            .and_then(|prepared| {
-                self.controller
-                    .update(cx, |owner, cx| owner.submit(prepared.into_parts().1, cx))
-            });
+            .controller
+            .update(cx, |owner, cx| owner.submit_draft(cx));
         self.error = result.err();
         if self.error.is_some() {
             self.input.focus_handle(cx).focus(window, cx);
@@ -170,26 +165,33 @@ impl SettingsView {
             cx.notify();
             return;
         }
-        self.controller
-            .update(cx, |owner, cx| owner.repair(action, cx));
+        self.apply_repair(action, cx);
+    }
+    fn apply_repair(&mut self, action: ConfigRepair, cx: &mut Context<Self>) {
+        self.error = self
+            .controller
+            .update(cx, |owner, cx| owner.repair(action, cx))
+            .err();
+        cx.notify();
     }
 }
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.controller.read(cx).busy(cx);
         let store = self.controller.read(cx).store.clone();
-        let (problem, can_write, conflict, reconcile, retry, backup) = store.read(cx, |op| {
-            (
-                op.problem().map(|p| p.key),
-                op.data().and_then(|d| d.configured()).is_some(),
-                op.problem().is_some_and(|p| p.conflict),
-                op.problem().is_some_and(|p| p.reconcile),
-                op.problem().is_some_and(|p| p.pending.is_some()),
-                op.problem()
-                    .and_then(|p| p.backup.clone())
-                    .or_else(|| op.data().and_then(|d| d.backup.clone())),
-            )
-        });
+        let (problem, can_write, conflict, reconcile, write_failed, backup) =
+            store.read(cx, |op| {
+                (
+                    op.problem().map(|p| p.key),
+                    op.data().and_then(|d| d.configured()).is_some(),
+                    op.problem().is_some_and(|p| p.conflict),
+                    op.problem().is_some_and(|p| p.reconcile),
+                    op.problem().is_some_and(|p| p.write_source.is_some()),
+                    op.problem()
+                        .and_then(|p| p.backup.clone())
+                        .or_else(|| op.data().and_then(|d| d.backup.clone())),
+                )
+            });
         let onboarding = store.read(cx, |op| {
             op.data().is_some_and(|data| data.configured().is_none())
         });
@@ -257,7 +259,7 @@ impl Render for SettingsView {
                     })),
             );
         }
-        if let Some(key) = problem.or(self.error.as_deref()) {
+        if let Some(key) = self.error.as_deref().or(problem) {
             view = view.child(div().text_color(cx.theme().danger).child(t(cx, key)));
             if !reconcile {
                 let mut repairs = h_flex().gap_2();
@@ -270,17 +272,7 @@ impl Render for SettingsView {
                                 this.request(ConfigRepair::BackupAndWrite, cx)
                             })),
                     );
-                } else if retry {
-                    repairs = repairs.child(
-                        Button::new("retry-write")
-                            .icon(IconName::RotateCw)
-                            .label(t(cx, "action-retry"))
-                            .disabled(busy)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.request(ConfigRepair::RetryWrite, cx)
-                            })),
-                    );
-                } else {
+                } else if !write_failed {
                     repairs = repairs.child(
                         Button::new("reset")
                             .label(t(cx, "action-reset"))
@@ -313,8 +305,7 @@ impl Render for SettingsView {
                                     if !this.controller.read(cx).busy(cx)
                                         && let Some(action) = this.confirmation.take()
                                     {
-                                        this.controller
-                                            .update(cx, |owner, cx| owner.repair(action, cx));
+                                        this.apply_repair(action, cx);
                                     }
                                 })),
                         )

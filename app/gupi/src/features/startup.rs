@@ -225,7 +225,11 @@ impl Render for StartupView {
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.config_confirm = false;
                                     this.config.update(cx, |owner, cx| {
-                                        owner.repair(ConfigRepair::BackupAndReset, cx)
+                                        if let Err(error) =
+                                            owner.repair(ConfigRepair::BackupAndReset, cx)
+                                        {
+                                            tracing::error!(%error, "prepare config reset failed");
+                                        }
                                     });
                                 })),
                         )

@@ -77,7 +77,7 @@ pub(crate) struct LayoutState {
 
 配置 owner 统一协调读取、保存、重读和修复，以 gpui-operation 的完整 Operation 为权威状态；Data 持有配置读取结果与磁盘快照，运行态持有任务。持久化状态由界面读取，外观从同一 Form 草稿即时投影，不再复制一份可修改的 Store<AppConfig>。数据明确区分 Missing 与 Configured(AppConfig)：初次读取 NotFound 可成功得到 Missing；它允许呈现初始设置，但不能作为已应用配置启动 Pi。运行中已有 Configured 后重读失败或文件消失保留有效数据。
 
-配置读取/重读与用户选择的修复采用 `repair::Operation`：首次失败对应 Unavailable，保留已应用值的重读失败对应 Degraded。SettingsView 持有单个 Form<AppConfig> 编辑草稿；控件是其绑定投影，不另存一份 settings 值。Form::prepare 生成提交快照。配置操作运行期间禁止修改表单及再次保存、重读、写回和重置；UI 禁用与事件入口状态检查同时生效。保存草稿成功后更新表单基线；明确确认的重读成功后替换表单；内存写回成功只更新磁盘快照，保留操作开始前已有的草稿。失败保留草稿。
+配置读取/重读与用户选择的修复采用 `repair::Operation`：首次失败对应 Unavailable，保留已应用值的重读失败对应 Degraded。SettingsView 持有单个 Form<AppConfig> 编辑草稿；控件是其绑定投影，不另存一份 settings 值。每次保存由 controller 调用 Form::prepare 生成当前提交快照。配置操作运行期间禁止修改表单及再次保存、重读、写回和重置；UI 禁用与事件入口状态检查同时生效。保存草稿成功后更新表单基线；明确确认的重读成功后替换表单；内存写回成功只更新磁盘快照，保留操作开始前已有的草稿。失败保留草稿，通过原保存按钮再次提交当前内容，不提供独立重试写入入口；冲突覆盖也在确认时重新取值。
 
 目标 controller 入口：`load`、`reload`、`save_draft`、`write_committed`、`reset_with_backup`。持久化返回完整成功结果后才发布已应用配置与磁盘快照，按操作类型处理表单。重读成功与保存成功共用配置发布入口，语言/主题订阅由应用 owner 持有，设置页关闭不会丢失它们。
 
@@ -102,7 +102,7 @@ rename 已成功但后续 durability 操作失败时，返回“提交结果待�
 
 ## L-103 / ST-101：Pi 环境探测
 
-单独 `Entity<PiProbeController>` 持有 `refresh::Operation`；精确转移和任务归属见运行时 L-112。输入为正常启动的已应用 pi_command 或设置页显式检测的草稿命令；输出为解析后的命令路径、版本字符串与检测时间。配置路径变化立即使旧结果失效，取消并回收旧探测后重新检测；主题/语言变化不触发探测。
+已应用配置与设置草稿各自的 `Entity<PiProbeController>` 持有 `refresh::Operation`；精确转移和任务归属见运行时 L-112。输入为正常启动的已应用 pi_command 或设置页显式检测的草稿命令；输出为解析后的命令路径与版本字符串。配置路径变化立即使旧结果失效，取消并回收旧探测后重新检测；主题/语言变化不触发探测。
 
 调用契约见根 C-01。目标探测超时 5 秒，stdout/stderr 分别限 16 KiB；超限、非零退出、空版本或不合法版本返回 ERR-05。stdin 置空，不弹终端窗口。UI 保持可交互，重复重试先结束旧任务；超时/取消需要终止并回收持有的子进程，收尾完成后才启动下一次。只报告命令/版本可用，不宣布 RPC 兼容或登录成功。
 

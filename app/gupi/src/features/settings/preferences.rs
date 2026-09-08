@@ -92,9 +92,13 @@ impl SettingsView {
             .selected_index(modes.iter().position(|mode| *mode == draft.theme))
             .disabled(busy)
             .on_click(cx.listener(move |this, index, _, cx| {
+                if this.controller.read(cx).busy(cx) {
+                    return;
+                }
                 AppConfig::THEME.set(&this.form, modes[*index], cx);
             }));
         let form = self.form.clone();
+        let controller = self.controller.clone();
         let light = app_theme::theme_choices(ThemeRegistry::global(cx), Mode::Light, &[]);
         let dark = app_theme::theme_choices(ThemeRegistry::global(cx), Mode::Dark, &[]);
         let controls = v_form().child(field().label(t(cx, "setup-color-mode")).child(mode_control));
@@ -118,6 +122,7 @@ impl SettingsView {
                             ("light-themes", Mode::Light, light),
                             &draft,
                             &form,
+                            &controller,
                             columns,
                             busy,
                             cx,
@@ -126,6 +131,7 @@ impl SettingsView {
                             ("dark-themes", Mode::Dark, dark),
                             &draft,
                             &form,
+                            &controller,
                             columns,
                             busy,
                             cx,
@@ -234,6 +240,7 @@ fn theme_grid(
     group: (&'static str, Mode, Vec<app_theme::ThemeChoice>),
     draft: &AppConfig,
     form: &Entity<Form<AppConfig>>,
+    controller: &Entity<ConfigController>,
     columns: u16,
     busy: bool,
     cx: &App,
@@ -260,6 +267,8 @@ fn theme_grid(
         let form = form.clone();
         let theme_id = choice.id.clone();
         let key_form = form.clone();
+        let key_controller = controller.clone();
+        let change_controller = controller.clone();
         let key_id = theme_id.clone();
         let tooltip_name = name.clone();
         grid = grid.child(
@@ -283,7 +292,9 @@ fn theme_grid(
                 .overflow_hidden()
                 .focus(|style| style.border_color(selected_border))
                 .on_key_down(move |event, _, cx| {
-                    if !busy && matches!(event.keystroke.key.as_str(), "space" | "enter") {
+                    if !key_controller.read(cx).busy(cx)
+                        && matches!(event.keystroke.key.as_str(), "space" | "enter")
+                    {
                         match mode {
                             Mode::Light => {
                                 AppConfig::LIGHT_THEME.set(&key_form, Some(key_id.clone()), cx)
@@ -296,6 +307,9 @@ fn theme_grid(
                     }
                 })
                 .on_change(move |_, _, _, cx| {
+                    if change_controller.read(cx).busy(cx) {
+                        return;
+                    }
                     match mode {
                         Mode::Light => {
                             AppConfig::LIGHT_THEME.set(&form, Some(theme_id.clone()), cx)
