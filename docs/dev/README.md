@@ -4,6 +4,11 @@
 
 - [Issue #215：GPUI Kit 与依赖升级](issue-215/README.md)：发布包替代 Git 来源、应用与共享 crate 迁移、skill/文档同步的实施计划。
 
+## Discussion drafts
+
+- [Gupi 总览与阶段关系](issue-217/README.md) — 父 issue 导航。
+- [Gupi 第一阶段：应用骨架、启动引导与恢复入口](issue-218/README.md) — 保存产品决定、应用/打包设计及 Ready 阻断项。
+
 ## Feature plans
 
 | Issue | 入口 |

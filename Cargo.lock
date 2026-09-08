@@ -6410,6 +6410,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "gupi"
+version = "0.1.0"
+dependencies = [
+ "app-assets",
+ "app-theme",
+ "dirs-next",
+ "fluent-bundle",
+ "gpui-form",
+ "gpui-kit",
+ "gpui-operation",
+ "gpui-store",
+ "gpui-tokio",
+ "serde",
+ "smol",
+ "sys-locale",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml 1.1.5+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "which 8.0.6",
+ "window-ext",
+]
+
+[[package]]
 name = "h2"
 version = "0.3.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
