@@ -69,9 +69,9 @@ pub(crate) struct LayoutState {
 
 实际读取 config 并区分 NotFound、读取失败与解析/校验失败，不用 exists() 推断读取结果。NotFound 是正常的“尚未设置”数据，展示欢迎、语言、外观、Pi 配置四页引导；首次明确保存成功前不自动创建配置文件。引导末页先显式检测草稿 Pi，成功且命令仍匹配时才允许完成并保存；下次从有效配置与 Pi 检查继续。损坏或权限错误进入配置恢复，不能当作首次缺失。
 
-不保存 onboarding_completed，也不判断用户是否曾经使用过应用。用户手动放入有效配置时直接采用；启动时配置被删除则重新进入设置。运行中重读发现文件被删除，仍保留已应用配置和草稿，按配置恢复处理，不清空当前工作。state.toml 不存在只代表没有窗口布局，损坏只触发布局恢复，不决定 welcome 是否显示。
+不保存 onboarding_completed，也不判断用户是否曾经使用过应用。用户手动放入有效配置时直接采用；启动时配置被删除则重新进入设置。运行中重读发现文件被删除，仍保留已应用配置和草稿，按配置恢复处理，不清空当前工作。state.toml 不存在只代表没有窗口布局；读取、解析或校验失败时记录日志并尝试删除失效文件，使用默认窗口继续启动，不决定 welcome 是否显示。
 
-布局只保存位置、尺寸和最大化。默认尺寸为 960×740，最小尺寸为 800×600。恢复时校验有限坐标与正尺寸，将旧的小尺寸扩至新下限，并限制在当前屏幕范围；完全离屏时居中到当前屏幕，部分越界约束到可用区域。类型或格式错误需明确恢复默认，不能与正常的显示器变动混为一类。
+布局只保存位置、尺寸和最大化。默认尺寸为 960×740，最小尺寸为 800×600。恢复时校验有限坐标与正尺寸，将旧的小尺寸扩至新下限，并限制在当前屏幕范围；完全离屏时居中到当前屏幕，部分越界约束到可用区域。类型或格式错误自动丢弃，不提供布局恢复页。退出时直接用当前窗口数据原子替换 state.toml，不依赖读取旧文件，不备份或做外部修改冲突确认；删除、保存失败只记录日志。
 
 ## L-101 / ST-100：配置 owner 与发布
 
@@ -110,24 +110,23 @@ rename 已成功但后续 durability 操作失败时，返回“提交结果待�
 
 ## L-104 / ST-102：启动状态、窗口与界面
 
-启动 owner 持有配置与 Pi Operation 的读取入口、布局结果、主窗口弱句柄和订阅。根组件从数据与 phase 呈现页面，不持久化启动路由或第二套健康状态；页面 Entity 与表单由长寿命 owner 保留，重新渲染不重复创建。
+启动 owner 持有配置与 Pi Operation 的读取入口、主窗口弱句柄和订阅。根组件从数据与 phase 呈现页面，不持久化启动路由或第二套健康状态；页面 Entity 与表单由长寿命 owner 保留，重新渲染不重复创建。
 
 ```text
 配置读取中 -> 加载页
 配置读取失败且无有效数据 -> 配置恢复页
 配置读取结果 Missing -> welcome / 初始设置
-配置读取结果 Configured -> 检查布局与 Pi
-  布局损坏 -> 布局恢复页
+配置读取结果 Configured -> 检查 Pi
   Pi 检查中 -> 检查页
   Pi 不可用 -> Pi 环境设置页
   必要条件全部满足 -> 主窗口外壳
 ```
 
-Missing 的引导共用一个 Form；主题和语言即时预览，最后检测草稿 Pi，通过后完成保存并变为 Configured。多项问题按配置、布局、Pi 的依赖顺序呈现；布局恢复只处理窗口信息，不创建、删除或重置用户配置。参考 JacoRoot 从资源状态呈现内容的方式，正常启动仍由数据状态决定；Missing 内部以 Stepper 管理设置步骤。
+Missing 的引导共用一个 Form；主题和语言即时预览，最后检测草稿 Pi，通过后完成保存并变为 Configured。多项问题按配置、Pi 的依赖顺序呈现；布局不可用不阻塞启动，只丢弃窗口状态，不创建、删除或重置用户配置。参考 JacoRoot 从资源状态呈现内容的方式，正常启动仍由数据状态决定；Missing 内部以 Stepper 管理设置步骤。
 
 已有主界面运行期间的配置重读失败通过设置页反馈，保留当前内容；Pi 命令变化则暂停进入依赖 Pi 的入口。第一阶段外壳仅有应用标题、环境状态和设置入口，不做可输入却无法提交的假对话框。
 
-分类页面 ConfigRecoveryView、LayoutRecoveryView、PiSetupView 归 features/startup.rs；SettingsView 归 features/settings.rs。共享 RecoveryLayout 归 components/recovery.rs，只负责标题、说明、诊断和按钮排版。恢复按钮由各页提供，不能把所有业务错误转换为一个万能 reset。Config 页使用基础主题/语言渲染，不能依赖加载成功的配置 Store。
+分类页面 ConfigRecoveryView、PiSetupView 归 features/startup.rs；SettingsView 归 features/settings.rs。共享 RecoveryLayout 归 components/recovery.rs，只负责标题、说明、诊断和按钮排版。恢复按钮由各页提供，不能把所有业务错误转换为一个万能 reset。Config 页使用基础主题/语言渲染，不能依赖加载成功的配置 Store。
 
 组件采用 component 的 Button、Input、Select、Indicator 和现有对话框容器。保存、重读、写回与重置分别呈现；保存进行中显示忙碌并禁用重复提交。焦点进入恢复页时落到标题或首个可操作控件；对话框取消返回触发按钮，表单校验失败聚焦首个无效字段。键盘 Tab 顺序与视觉顺序一致，错误文字不能只靠颜色表达。
 
@@ -137,7 +136,7 @@ ShowSettings、ShowMainWindow、Quit actions 在 app 层注册；macOS/Windows �
 
 复用 app-theme 的系统外观能力；语言检测与菜单刷新参考 Jaco 的 foundation/i18n.rs。仅应用本地配置类型，所有用户文字从 Fluent 获取；zh 系统语言选中文，其余英文，手动选择覆盖系统检测。语言切换同时更新页面、菜单、校验与后续错误消息，错误值保存语义和参数，不保存翻译后的字符串。
 
-Fluent 两份文件同步维护以下键组：`app-title`；`menu-{settings,show-main,quit}`；`startup-{checking,welcome,continue}`；`settings-{pi-command,theme,language,save,reload,write-current}`；`recovery-{config,layout,pi}-title`；`action-{retry,locate,reset,cancel,confirm}`；`error-{config-read,config-parse,config-validation,config-conflict,config-write,layout,pi-probe}`。错误参数只包含已筛选的路径、状态或版本，不嵌入整份配置和 stderr。界面采用 Form 布局、Stepper、可搜索语言 Combobox 与真实主题预览网格；Input 和语言控件通过 Form 的 typed control binding 连接。主题和语言草稿立即投影到整个窗口和菜单，亮暗主题独立保存，系统外观与强调色变化重新应用当前草稿。Fluent 完整键位于应用 locales。
+Fluent 两份文件同步维护以下键组：`app-title`；`menu-{settings,show-main,quit}`；`startup-{checking,welcome,continue}`；`settings-{pi-command,theme,language,save,reload,write-current}`；`recovery-{config,pi}-title`；`action-{retry,locate,reset,cancel,confirm}`；`error-{config-read,config-parse,config-validation,config-conflict,config-write,pi-probe}`。错误参数只包含已筛选的路径、状态或版本，不嵌入整份配置和 stderr。界面采用 Form 布局、Stepper、可搜索语言 Combobox 与真实主题预览网格；Input 和语言控件通过 Form 的 typed control binding 连接。主题和语言草稿立即投影到整个窗口和菜单，亮暗主题独立保存，系统外观与强调色变化重新应用当前草稿。Fluent 完整键位于应用 locales。
 
 日志记录操作种类、耗时、结果分类和操作系统错误码；不记录配置原文、环境变量全表或 Pi 认证。用户可主动展开有限诊断，控制字符清理后显示。日志初始化失败保留 stderr 诊断与界面提示，不连带使设置不可访问。
 
@@ -157,7 +156,7 @@ Fluent 两份文件同步维护以下键组：`app-title`；`menu-{settings,show
 | R-100 失败不丢数据 | T-100，config/persistence 单元测试 | 缺失、损坏、权限失败、冲突、备份失败；原文件与草稿保留，不发布假成功 |
 | R-101 提交版本一致 | T-101，config controller 测试 | 保存期间编辑与其他配置操作均被拒绝；重读失败保留草稿；内存写回不 rebase 已有草稿 |
 | R-102 内存写回来源明确 | T-102，设置交互 | 草稿与已应用值不同；写回写入已应用值；无有效内存时按钮不存在 |
-| R-103 布局恢复可控 | T-103，布局测试与手工 | 损坏不自动覆盖；显示器移除后可见；布局恢复不改变配置、不重新触发 welcome |
+| R-103 布局失效不阻塞 | T-103，布局测试与手工 | 无效状态自动丢弃；退出写入当前窗口数据；删除/写入失败只记日志；显示器移除后可见；用户配置不受影响 |
 | R-104 探测有界 | T-104，临时可执行 fixture | 成功、非零、空输出、超限、查找/启动超时与取消；子进程终止，迟到结果无效，后台启动数量受限 |
 | R-105 数据决定界面 | T-105，启动 controller 测试 | config 缺失进入 welcome 且保存前不创建文件；手动提供有效配置跳过 welcome；保存后退出重启继续 Pi 检查；损坏/权限失败进入恢复；启动时删除配置重新设置；多项失败按依赖顺序处理，Pi 失败能打开设置但不能进入主界面 |
 | R-106 主题语言一致 | T-106，macOS 手工 | 保存与重读均更新页面及菜单；系统外观变化生效，重启恢复设置 |

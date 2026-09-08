@@ -48,11 +48,13 @@ pub(crate) fn run() {
         cx.on_action(|_: &menus::Quit, cx| cx.defer(quit));
         let layout = paths::config_dir()
             .map_err(|e| e.to_string())
-            .and_then(|dir| layout::load(&dir.join("state.toml")));
+            .map(|dir| layout::load(&dir.join("state.toml")))
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "layout directory unavailable; using default layout");
+                layout::LayoutState::default()
+            });
         let bounds = layout
-            .as_ref()
-            .ok()
-            .and_then(|l| l.main_window)
+            .main_window
             .map(|p| p.restored(cx))
             .unwrap_or_else(|| {
                 WindowBounds::Windowed(Bounds::centered(None, layout::default_window_size(), cx))
@@ -85,7 +87,7 @@ pub(crate) fn run() {
                 }
                 false
             });
-            let view = cx.new(|cx| StartupView::new(layout.err(), log_warning, window, cx));
+            let view = cx.new(|cx| StartupView::new(log_warning, window, cx));
             let root = cx.new(|cx| Root::new(view.clone(), window, cx));
             cx.set_global(MainWindow {
                 window: window

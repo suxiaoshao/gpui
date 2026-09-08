@@ -86,13 +86,13 @@ Operation 的 Cancel 恢复之前的稳定态并丢弃 Task，GPUI/Tokio 的 abo
 
 查找与创建进程通过 spawn_blocking 执行；应用级 Semaphore 最多放行两项，名额由实际阻塞任务持有至结束。15 秒 deadline 从 controller 提交时建立，覆盖名额排队、查找、启动及读输出。接收通道由探测 future 持有：取消或超时会关闭接收端；后台任务在查找前后检查取消与 deadline，取消后不再启动，无法交接或已超时的 Child 通过 kill_on_drop 终止。阻塞任务不直接回调 owner。已交接 Child 的失败路径显式 kill/wait，收尾额外限制 2 秒，失败写日志并 Drop 兜底。取消只保证停止等待并触发终止，不保证同步系统调用立即返回或操作系统已回收全部资源。界面不直接启动子进程。Pi 检查的成功条件仅为命令/版本契约，实际 RPC 兼容性由 #219 验证。
 
-features/startup.rs 的根视图持有已有页面 Entity 并订阅配置、布局、Pi；正常业务外壳归 features/home.rs，共用恢复布局归 components/recovery.rs。每次 render 从这些权威数据决定内容；不维护可修改的 StartupRoute。对 Configured 的读取成功与布局可恢复条件满足后，仅当已应用 owner 的成功结果对应当前已应用命令且无运行任务或错误时，才放行主界面；运行中配置重读失败保留已应用界面及设置问题提示。
+features/startup.rs 的根视图持有已有页面 Entity 并订阅配置、Pi；正常业务外壳归 features/home.rs，共用恢复布局归 components/recovery.rs。每次 render 从这些权威数据决定内容；不维护可修改的 StartupRoute。对 Configured 的读取成功后，仅当已应用 owner 的成功结果对应当前已应用命令且无运行任务或错误时，才放行主界面；运行中配置重读失败保留已应用界面及设置问题提示。
 
 ## L-113 / ST-113：受控退出
 
 采用应用级 Running/Draining 退出阶段，它仅表达应用退出，不复制配置 Operation。Quit 将阶段置为 Draining，拒绝新配置/Pi 操作，显示退出进度；重复 Quit 只激活现有窗口。
 
-已有配置写入继续保留在其 Operation 中直至 Complete，禁止通过 Cancel 或销毁 owner 中断。已应用与草稿两种版本探测同时执行 Cancel；退出不等同步阻塞返回，也不等待取消后的 Complete。已持有或晚交接的子进程沿 Drop 链触发终止。布局恢复任务也需结算，然后保存布局，最后调用 cx.quit。退出协调任务由根视图的 quit_task 持有，布局恢复任务由 layout_task 持有；协调者观察运行操作是否结束，不将同一个 Task 从 Operation 取出并复制到其他 owner。应用不使用 detach 维持业务任务。
+已有配置写入继续保留在其 Operation 中直至 Complete，禁止通过 Cancel 或销毁 owner 中断。已应用与草稿两种版本探测同时执行 Cancel；退出不等同步阻塞返回，也不等待取消后的 Complete。已持有或晚交接的子进程沿 Drop 链触发终止。已有配置提交结算后保存当前窗口布局，最后调用 cx.quit。退出协调任务由根视图的 quit_task 持有；协调者观察运行操作是否结束，不将同一个 Task 从 Operation 取出并复制到其他 owner。应用不使用 detach 维持业务任务。
 
 布局保存失败只写日志，静默允许退出，不弹通知或要求确认。用户主动提交的配置保存失败在设置页保留错误和草稿；用户随后明确退出时正常退出，不因该错误拦截，不弹二次确认、不自动重试、不额外持久化草稿。写入未返回时按 L-114 保持运行所有权，不伪造回滚。系统强制终止不在普通 Quit 的完成保证内。
 
