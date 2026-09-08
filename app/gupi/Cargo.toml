@@ -1,0 +1,41 @@
+[package]
+name = "gupi"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A GPUI desktop host for Pi"
+authors = ["suxiaoshao <48886207+suxiaoshao@users.noreply.github.com>"]
+repository = "https://github.com/suxiaoshao/gpui"
+
+[package.metadata.bundle]
+name = "Gupi"
+identifier = "top.sushao.gupi"
+publisher = "CN=Sushao"
+short_description = "A GPUI desktop host for Pi"
+long_description = "Gupi provides a native desktop environment for Pi."
+category = "DeveloperTool"
+
+[dependencies]
+gpui-kit.workspace = true
+gpui-form.workspace = true
+gpui-operation.workspace = true
+gpui-store.workspace = true
+gpui-tokio.workspace = true
+app-assets.workspace = true
+app-theme = { workspace = true, features = ["system-accent"] }
+window-ext.workspace = true
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "1.1.5"
+thiserror = "2.0.20"
+smol = "2.0.2"
+tokio = { version = "1.53.1", features = ["process", "io-util", "time", "macros", "sync"] }
+which = "8.0.2"
+tempfile = "3.27.0"
+dirs-next = "2.0.0"
+fluent-bundle = "0.16.0"
+sys-locale = "0.3.2"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }

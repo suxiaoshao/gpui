@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "app/jaco",
+  "app/gupi",
   "app/feiwen",
   "app/http-client",
   "app/novel-download",
