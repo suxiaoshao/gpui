@@ -35,6 +35,7 @@ pub(crate) fn run() {
     app.run(move |cx| {
         gpui_kit::init(cx);
         gpui_tokio::init(cx);
+        crate::state::pi::init(cx);
         app_theme::init(cx);
         crate::state::theme::init(cx);
         i18n::apply(Default::default(), cx);

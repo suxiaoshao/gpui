@@ -21,6 +21,7 @@ members = [
   "crates/gpui-tokio",
   "crates/http-client-test-server",
   "crates/platform-ext",
+  "crates/pi-rpc",
   "crates/window-ext",
   "crates/xtask",
 ]
@@ -28,6 +29,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
+pi-rpc = { path = "./crates/pi-rpc" }
 gpui = { package = "gpui-pre", version = "=0.3.3" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.3", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
 gpui-kit = "=0.6.0"

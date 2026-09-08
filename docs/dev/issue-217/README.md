@@ -10,7 +10,7 @@ Gupi 是独立 GPUI 桌面应用，通过用户本机 Pi 的 RPC 能力提供原
 | 顺序 | Issue | 交付边界 | 本地计划 |
 | --- | --- | --- | --- |
 | 1 | [#218](https://github.com/suxiaoshao/gpui/issues/218) | 应用骨架、启动引导、分类恢复、设置、主题、本地化与基础打包 | [第一阶段](../issue-218/README.md) |
-| 2 | [#219](https://github.com/suxiaoshao/gpui/issues/219) | Pi RPC 与进程生命周期 | 到该阶段再建立 |
+| 2 | [#219](https://github.com/suxiaoshao/gpui/issues/219) | Pi RPC 与进程生命周期 | [第二阶段](../issue-219/README.md) |
 | 3 | [#220](https://github.com/suxiaoshao/gpui/issues/220) | 主窗口基础对话闭环 | 到该阶段再建立 |
 | 4 | [#221](https://github.com/suxiaoshao/gpui/issues/221) | 临时窗口与全局快捷翻译 | 到该阶段再建立 |
 | 5 | [#222](https://github.com/suxiaoshao/gpui/issues/222) | 历史会话与完整 RPC 交互 | 到该阶段再建立 |

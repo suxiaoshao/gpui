@@ -13,6 +13,7 @@
 
 | Issue | 入口 |
 | --- | --- |
+| [#219](https://github.com/suxiaoshao/gpui/issues/219) Gupi Pi RPC 与进程生命周期 | [issue-219/README.md](issue-219/README.md) |
 | [#200](https://github.com/suxiaoshao/gpui/issues/200) HTTP Client Response 音频迁移与 GStreamer 删除 | [issue-200/README.md](issue-200/README.md) |
 | [#199](https://github.com/suxiaoshao/gpui/issues/199) form owner、app store/form/operation 与 Transition 重构 | [issue-199/README.md](issue-199/README.md) |
 | [#196](https://github.com/suxiaoshao/gpui/issues/196) Jaco provider 生成图片持久化与展示 | [issue-196/README.md](issue-196/README.md) |
