@@ -80,9 +80,11 @@ pub(crate) type PiOperation =
     refresh::Operation<PiProbeData, ProbeFailure, Task<()>>;
 ```
 
-根视图分别持有已应用命令和设置草稿的两个 Pi owner；每个 owner 独立持有完整 Operation、任务、取消信号和错误。启动及重试只使用已应用 owner，设置页的检测只使用草稿 owner；草稿检测不会替换启动状态或使恢复设置页消失。首次检查使用 Load，Ready 使用 Refresh，Unavailable 使用 Retry，Degraded 使用 Refresh。同一输入重复点击只在已结算状态准入。命令变化先取消并回收旧探测，再为新输入从 Idle 开始；不得将旧命令版本作为新命令的有效 Data 保留。
+根视图分别持有已应用命令和设置草稿的两个 Pi owner；每个 owner 独立持有完整 Operation、任务和错误。启动及重试只使用已应用 owner，设置页的检测只使用草稿 owner；草稿检测不会替换启动状态或使恢复设置页消失。首次检查使用 Load，Ready 使用 Refresh，Unavailable 使用 Retry，Degraded 使用 Refresh。同一输入重复点击只在已结算状态准入。命令变化通过 Cancel 丢弃旧 Task，立即为新输入从 Idle 开始；不得将旧命令版本作为新命令的有效 Data 保留。
 
-正常 owner-aware Task 取消会切断完成回调，不另加 generation；若最终进程适配使用独立于 Task 的完成生产者，必须在 P-03 明确其理由与结果归属。界面不直接启动子进程。Pi 检查的成功条件仅为命令/版本契约，实际 RPC 兼容性由 #219 验证。
+Operation 的 Cancel 恢复之前的稳定态并丢弃 Task，GPUI/Tokio 的 abort-on-drop 链切断旧完成回调，不另加 generation 或取消错误。检查开始即显示 loading。
+
+查找与创建进程通过 spawn_blocking 执行；应用级 Semaphore 最多放行两项，名额由实际阻塞任务持有至结束。15 秒 deadline 从 controller 提交时建立，覆盖名额排队、查找、启动及读输出。接收通道由探测 future 持有：取消或超时会关闭接收端；后台任务在查找前后检查取消与 deadline，取消后不再启动，无法交接或已超时的 Child 通过 kill_on_drop 终止。阻塞任务不直接回调 owner。已交接 Child 的失败路径显式 kill/wait，收尾额外限制 2 秒，失败写日志并 Drop 兜底。取消只保证停止等待并触发终止，不保证同步系统调用立即返回或操作系统已回收全部资源。界面不直接启动子进程。Pi 检查的成功条件仅为命令/版本契约，实际 RPC 兼容性由 #219 验证。
 
 features/startup.rs 的根视图持有已有页面 Entity 并订阅配置、布局、Pi；正常业务外壳归 features/home.rs，共用恢复布局归 components/recovery.rs。每次 render 从这些权威数据决定内容；不维护可修改的 StartupRoute。对 Configured 的读取成功与布局可恢复条件满足后，仅当已应用 owner 的成功结果对应当前已应用命令且无运行任务或错误时，才放行主界面；运行中配置重读失败保留已应用界面及设置问题提示。
 
@@ -90,7 +92,7 @@ features/startup.rs 的根视图持有已有页面 Entity 并订阅配置、布�
 
 采用应用级 Running/Draining 退出阶段，它仅表达应用退出，不复制配置 Operation。Quit 将阶段置为 Draining，拒绝新配置/Pi 操作，显示退出进度；重复 Quit 只激活现有窗口。
 
-已有配置写入继续保留在其 Operation 中直至 Complete，禁止通过 Cancel 或销毁 owner 中断。已应用与草稿两种版本探测同时发送停止信号，等待各自进程回收及 Operation 完成。布局恢复任务也需结算，然后保存布局，最后调用 cx.quit。退出协调任务由根视图的 quit_task 持有，布局恢复任务由 layout_task 持有；协调者观察运行操作是否结束，不将同一个 Task 从 Operation 取出并复制到其他 owner。应用不使用 detach 维持业务任务。
+已有配置写入继续保留在其 Operation 中直至 Complete，禁止通过 Cancel 或销毁 owner 中断。已应用与草稿两种版本探测同时执行 Cancel；退出不等同步阻塞返回，也不等待取消后的 Complete。已持有或晚交接的子进程沿 Drop 链触发终止。布局恢复任务也需结算，然后保存布局，最后调用 cx.quit。退出协调任务由根视图的 quit_task 持有，布局恢复任务由 layout_task 持有；协调者观察运行操作是否结束，不将同一个 Task 从 Operation 取出并复制到其他 owner。应用不使用 detach 维持业务任务。
 
 布局保存失败只写日志，静默允许退出，不弹通知或要求确认。用户主动提交的配置保存失败在设置页保留错误和草稿；用户随后明确退出时正常退出，不因该错误拦截，不弹二次确认、不自动重试、不额外持久化草稿。写入未返回时按 L-114 保持运行所有权，不伪造回滚。系统强制终止不在普通 Quit 的完成保证内。
 
@@ -100,7 +102,7 @@ features/startup.rs 的根视图持有已有页面 Entity 并订阅配置、布�
 | --- | --- | --- |
 | R-110 Missing 与可用配置区分 | T-110，配置/启动状态测试 | Ready(Missing)、Degraded(Missing) 均不启动 Pi、不进入主界面；Configured 才提供设置投影 |
 | R-111 准入与数据完整 | T-111，配置 controller 测试 | 运行期间所有竞争操作被拒绝；失败保留数据；修复使用合法消息；内存写回不清空 dirty 草稿 |
-| R-112 Pi 输入归属 | T-112，fixture 进程测试 | 命令 A 改 B 后 A 不得放行 B；旧进程回收后启动 B；取消不产生错误提示 |
+| R-112 Pi 输入归属 | T-112，fixture 进程测试 | 命令 A 改 B 后 A 不得放行 B；取消 A 后 B 进入检查；A 的迟到结果不得覆盖 B；后台启动不超过两项；取消不产生错误提示 |
 | R-113 退出时所有权 | T-113，应用级测试/手工 | 写入中 Quit 不丢 Task；重复 Quit 不产生第二条退出链；已有提交任务结算及布局保存尝试结束后退出；保存失败不拦截或弹二次确认 |
 
 上述测试补充应用计划 T-100 段已有场景，实施时合并相同覆盖，不重复建立平行测试集。
@@ -133,7 +135,7 @@ Jaco `database/operation.rs` 的 Retiring 是专门的数据库会话退役阶�
 
 ## L-115：超时先于执行建立
 
-参考 HTTP Client `features/request/transport.rs` 的 timeout 包裹 attempt 并映射 RequestProblem::timeout 模式。Pi 探测在创建/启动任务前确定 5 秒预算，以同一次探测的 deadline 约束启动后等待和输出读取，不在每收到输出时重新计时。到期生成 ProbeFailure::Timeout；先完成 child 终止与 wait，再向 PiOperation 发送 Complete(Err)。清理失败保留独立诊断，不能报告成功取消或成功回收。
+Pi 探测在创建任务前确定 15 秒 deadline，统一约束排队、查找、创建进程和读输出，不在步骤切换或每次收到输出时重新计时。到期生成 ProbeFailure::Timeout；按 L-112 对已交接 Child 进行最多 2 秒的 kill/wait，再向 PiOperation 发送 Complete(Err)。清理失败保留日志诊断并 Drop 兜底，不虚报成功回收。
 
 超时错误使首次探测成为 Unavailable；同一命令已有成功值时成为 Degraded。界面明确呈现超时并提供合法 Retry/Refresh。运行中重复触发仍被拒绝。该策略仅用于可终止的版本探测，不套用于不可撤销的文件提交。
 

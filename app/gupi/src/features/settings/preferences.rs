@@ -168,6 +168,7 @@ impl SettingsView {
         view = view.child(
             Button::new("check-draft-pi")
                 .icon(IconName::RotateCw)
+                .loading(pi.operation.is_running())
                 .label(t(
                     cx,
                     if pi.operation.is_running() {

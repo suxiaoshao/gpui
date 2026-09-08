@@ -13,7 +13,9 @@ use crate::{
     },
 };
 use gpui_form::Form;
-use gpui_kit::component::{ActiveTheme, Disableable, TitleBar, button::Button, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme, Disableable, TitleBar, button::Button, h_flex, spinner::Spinner, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -310,7 +312,12 @@ impl Render for StartupView {
             if self.show_settings {
                 content = content.child(self.settings.clone());
             } else if pi.operation.is_running() {
-                content = content.child(t(cx, "startup-checking"));
+                content = content.child(
+                    h_flex()
+                        .gap_2()
+                        .child(Spinner::new())
+                        .child(t(cx, "startup-checking")),
+                );
             } else if let Some(data) = self
                 .applied
                 .as_ref()
