@@ -1,5 +1,5 @@
 {
-  "$schema": "https://github.com/longbridge/gpui-component/raw/refs/heads/main/.theme-schema.json",
+  "$schema": "https://github.com/longbridge/gpui-kit/raw/refs/heads/main/.theme-schema.json",
   "name": "Catppuccin",
   "author": "Catppuccino",
   "url": "https://github.com/catppuccin/catppuccin",
@@ -575,9 +575,7 @@
         "base.blue": "#8aadf4",
         "base.magenta": "#f5bde6",
         "base.magenta.light": "#f5bde666",
-        "base.cyan": "#8bd5ca",
-        "tab.active.background": "#1E2030",
-        "tab.active.foreground": "#cad3f5"
+        "base.cyan": "#8bd5ca"
       },
       "highlight": {
         "editor.foreground": "#cad3f5",
@@ -726,9 +724,7 @@
         "base.blue": "#89b4fa",
         "base.magenta": "#f5c2e7",
         "base.magenta.light": "#f38ba866",
-        "base.cyan": "#94e2d5",
-        "tab.active.background": "#181825",
-        "tab.active.foreground": "#cdd6f4"
+        "base.cyan": "#94e2d5"
       },
       "highlight": {
         "editor.foreground": "#cdd6f4",

@@ -10,11 +10,6 @@ fn response(id: &str, command: &str, data: &str) {
 }
 fn main() {
     let mode = std::env::var("FIXTURE_MODE").unwrap_or_default();
-    #[cfg(unix)]
-    if mode == "ignore_term" {
-        unsafe extern "C" { fn signal(number: i32, handler: usize) -> usize; }
-        unsafe { signal(15, 1); }
-    }
     let start = Instant::now();
     let log = std::env::var_os("FIXTURE_LOG");
     let record = |event: &str| {
@@ -81,10 +76,12 @@ fn main() {
             }
             response(&id, &command, "{\"steering\":[\"one\"],\"followUp\":[],\"future\":true}");
         } else if command == "abort" {
-            // Deliberately no response: shutdown must not await this command.
+            if mode == "slow_abort" { std::thread::sleep(Duration::from_millis(80)); }
+            record("abort_done");
+            response(&id, &command, "null");
         }
         io::stdout().flush().unwrap();
     }
     record("eof");
-    if mode == "linger" || mode == "ignore_term" { loop { std::thread::sleep(Duration::from_secs(1)); } }
+    if mode == "linger" { loop { std::thread::sleep(Duration::from_secs(1)); } }
 }

@@ -1,5 +1,5 @@
 use crate::state::config::AppLanguage;
-use fluent_bundle::{FluentBundle, FluentResource};
+use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
 use gpui_kit::{App, Global};
 pub(crate) struct I18n {
     bundle: FluentBundle<FluentResource>,
@@ -24,11 +24,18 @@ pub(crate) fn apply(language: AppLanguage, cx: &mut App) {
     gpui_kit::component::set_locale(if chinese { "zh-CN" } else { "en" });
 }
 pub(crate) fn t(cx: &App, key: &str) -> String {
+    t_with_args(cx, key, &FluentArgs::new())
+}
+pub(crate) fn t_with_args(cx: &App, key: &str, args: &FluentArgs<'_>) -> String {
     let bundle = &cx.global::<I18n>().bundle;
     bundle
         .get_message(key)
         .and_then(|m| m.value())
-        .map(|v| bundle.format_pattern(v, None, &mut vec![]).into_owned())
+        .map(|v| {
+            bundle
+                .format_pattern(v, Some(args), &mut vec![])
+                .into_owned()
+        })
         .unwrap_or_else(|| key.into())
 }
 

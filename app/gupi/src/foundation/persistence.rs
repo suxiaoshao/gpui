@@ -22,6 +22,21 @@ pub(crate) fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
     }
 }
 
+/// Atomically replace application-owned disposable state. Callers serialize writes.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("missing parent"))?;
+    fs::create_dir_all(parent)?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(bytes)?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|e| e.error)?;
+    #[cfg(unix)]
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
 /// A backup is retained even if a later commit fails.
 pub(crate) fn backup(path: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
     let mut file = tempfile::Builder::new()

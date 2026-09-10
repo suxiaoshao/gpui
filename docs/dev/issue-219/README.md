@@ -48,18 +48,13 @@ RPC 启动预算与模型执行时长分开。状态查询可有限等待；prom
 
 ### 关闭顺序
 
-采用已确认的 pi-desktop 顺序，每个 client：
+每个 client 在正常关闭时拒绝新业务请求并结算等待者，发送带保留 ID 的 abort；收到成功回应后停止 writer 并释放 stdin，让 Pi 执行 session_shutdown。继续读取结束事件并观察退出，整个优雅关闭共用 2 秒上限，完成即返回。
 
-1. 拒绝新业务请求，尝试发送 `{"type":"abort"}`，不等待其响应，不发送 clear_queue。
-2. 等待 **500 ms**，关闭 stdin。
-3. 再等待 **500 ms**，在 Unix 上向仍属于本 client 的存活 Child 发送 SIGTERM。
-4. 清理通信任务，结算挂起请求，记录直接 Child 的实际退出与回收结果。
+通信错误、启动失败或优雅关闭超时后，取消并等待自己的 pipe 任务结束，再释放 Child；kill_on_drop 与 Tokio 的后台回收负责进程资源。不额外发送 SIGTERM，不追加强杀/回收等待。探测 --version 的错误路径同样使用 Drop，不追加 2 秒清理等待。退出等待用于给 Pi 业务退出逻辑机会，不承担证明 RAII 有效性的职责。
 
-应用逐个关闭 client；不改为并行关闭，不把两段固定等待改为另一套总预算。信号前通过持有的 Child 核对状态，避免向已经退出后留下的旧 PID 发送信号。stdin writer 必须可停止并释放实际管道，不能只丢弃 sender 就宣称 EOF 已送达。
+应用仍逐个关闭 client。终态为 ConnectionState::Closed(CloseReport)，表示连接和 I/O 资源已释放；status 仅在实际观察到退出时存在，reason 记录原始连接错误或 ShutdownTimeout。删除 forced/cleanup_error，不把释放 Child 说成已同步回收。关闭控制独立于普通写入队列；阻塞或半帧写入导致 abort 无法完成时由同一个截止时间结束等待。
 
-关闭控制应独立于普通写入队列；abort 写入失败或队列堵塞不得阻止后续关闭步骤。保留 Child 所有者来观察回收，不能把取消 wait 任务当作成功。SIGTERM 后最多等待 2 秒观察回收；超时进入强制终止及最多 2 秒回收兜底，同时保留 forced 与 cleanup_error，不能把异常终止包装为正常成功。这一分支已有忽略 SIGTERM 的受控进程回归。
-
-Windows 沿用两段等待和逐个关闭的流程，最后使用平台支持的 Child 终止调用；不把 Unix SIGTERM 接口当作跨平台能力。npm/pnpm `.cmd`/`.bat` shim 使用 Rust Command 的平台启动与转义，不拼接 shell 命令；已有 Windows 专用受控 shim 测试，本机 macOS 未运行该测试。直接 Child 终止不保证 shim 后代回收。
+Windows 使用相同协议与 Child Drop 行为，无独立 SIGTERM 路径；npm/pnpm shim 的结构化参数处理不变。直接 Child 的释放不承诺任意扩展或 shim 后代退出。
 
 ### 应用退出接入
 
@@ -73,13 +68,13 @@ PiState 停止接受新建连接，按上述顺序关闭已有实例并结束各
 | --- | --- | --- | --- |
 | 1. crate 与探测迁移 | 无 | 注册 pi-rpc；迁移纯探测数据、错误、命令定位、执行与测试；应用保留 controller 和错误文案映射。清理重复实现与无用依赖 | 新 crate 无 GPUI 依赖；探测成功、失败、超时、取消与迟到 Child 覆盖保持通过；Gupi 构建通过 |
 | 2. 协议与单连接通信 | 1 | 实现 LF JSONL、命令/事件信封、请求 ID、启动 get_state、事件接收端、stderr 与容量限制；确保启动中可分发扩展消息 | 可控子进程证明乱序响应、事件交错、本地取消、启动失败、I/O/协议失败和容量边界；实际容量与错误行为写入 crate README |
-| 3. 生命周期与平台调用 | 2 | 唯一 Child owner、既定关闭顺序、实际 stdin 释放、退出观察、Drop 兜底；处理启动中关闭和自然退出竞态；核对 Windows shim 与终止调用 | 可控进程记录 abort/EOF/信号顺序；正常退出可确认回收，阻塞写入、提前退出和关闭失败不挂住请求；无多 owner 或旧 PID 信号路径 |
+| 3. 生命周期与平台调用 | 2 | 唯一 Child owner、协议关闭、实际 stdin 释放、退出观察与 Child Drop；处理启动中关闭和自然退出竞态；核对 Windows shim 与终止调用 | 可控进程记录 abort 回应后 EOF；正常退出可观察状态，阻塞写入、提前退出和关闭失败不挂住请求；无多 owner 或旧 PID 信号路径 |
 | 4. Gupi 多实例接入 | 3 | 初始化 PiState；提供内部创建/查询/关闭入口，接入事件投影和应用退出；设置页继续使用迁移后的探测 controller | 两个实例互不影响；移除一个不取消另一个；统一退出逐个关闭后再 cx.quit；现有探测与配置退出行为保持 |
 | 5. 真实 Pi 与交付验证 | 2、3、4 | 加入隔离安装版 Pi 测试和最小扩展 fixture，完成受影响构建、关键回归及必要启动检查，补稳定使用文档 | Pi 0.85.1 的就绪、命令关联、标准扩展 UI、双实例和关闭通过；Gupi 可启动；记录平台及未验证边界 |
 
 测试随对应工作包实现，不将全部验证推迟到最后。工作包 5 汇总真实 Pi 与应用接入结果，修复只复测受影响部分。
 
-依赖优先采用仓库已有 Tokio、Serde、serde_json、thiserror、tracing、which 和 tempfile 版本。pi-rpc 自身声明所需 Tokio features，不依赖 Gupi 的 feature 合并才能编译；纯 crate 测试可自行提供 runtime。Unix 信号或 Windows 调用需要额外平台依赖时按目标平台限定，写完整版本号，只更新必要锁文件项。普通私有模块划分、容量数值与库调用由实施时判断，不另建多 crate 或通用进程框架。
+依赖优先采用仓库已有 Tokio、Serde、serde_json、thiserror、tracing、which 和 tempfile 版本。pi-rpc 自身声明所需 Tokio features，不依赖 Gupi 的 feature 合并才能编译；纯 crate 测试可自行提供 runtime。普通私有模块划分、容量数值与库调用由实施时判断，不另建多 crate 或通用进程框架。
 
 ## 必要验证与交付条件
 
@@ -91,7 +86,7 @@ PiState 停止接受新建连接，按上述顺序关闭已有实例并结束各
 - 请求 ID 能处理响应乱序、事件交错和迟到响应；本地取消不发送 abort；连接失败只结算每个等待者一次。
 - 标准扩展 UI 请求可以在启动期间被消费，回复不进入普通请求等待表；Ready 前退出即使 code 为 0 也不能算成功。
 - 慢消费者、满队列或 stderr 大量输出不造成无限内存增长，也不堵住关闭。采用小容量 fixture 验证边界，不要求靠大规模压力测试证明。
-- 既定关闭步骤、自然退出与启动中关闭正确收尾；两个 client 独立，关闭一个后另一个仍能响应。关闭测试观察实际消息、管道和退出状态，不能仅睡眠后断言成功。
+- 协议关闭步骤、自然退出与启动中关闭正确收尾；两个 client 独立，关闭一个后另一个仍能响应。关闭测试观察实际消息、管道和退出状态，不能仅睡眠后断言成功。
 - Gupi 统一退出持有收尾任务直到完成；探测取消不恢复为等待 15 秒探测结束的行为。
 
 ### 实际安装 Pi 的集成测试
@@ -137,9 +132,16 @@ cargo clippy -p pi-rpc -p gupi --all-targets --all-features --locked -- -D warni
 - `cargo test -p pi-rpc -p gupi --locked`：Gupi 13 项、pi-rpc 单元测试 11 项、受控进程集成测试 9 项，共 33 项回归通过；README 使用示例的 1 项编译测试通过。默认跳过安装版 Pi 测试。
 - 显式安装版测试通过：Pi 0.85.1，两个独立进程、get_state/get_commands、未知命令失败关联、select/confirm/input/editor 往返、关闭一个后另一个仍可查询及最终回收。临时目录、无 provider 凭据、无模型请求。
 - 原生启动检查使用当前 target/debug/gupi 与临时 app/config/log 目录：主页显示 Pi 0.85.1 就绪，设置入口正常，Cmd+Q 退出；日志包含 managed quit started/completed，进程已结束，配置内容未变，布局已保存。临时 app 与目录已清理。多连接退出由 Gupi 状态测试覆盖，原生检查未创建对话或 RPC 控件。
-- Unix 忽略 SIGTERM 的受控进程会进入显式记录的强制清理，直接 Child 已回收；没有把它计为普通优雅关闭成功。
+- 关闭逻辑已于 2026-09-09 精简：取消固定等待和 SIGTERM/强杀/显式回收阶段，正常关闭等待 abort 回应后发送 EOF；异常路径使用 Child Drop，报告连接关闭与已观察到的退出状态。新增验证结果见下文。
 
 Windows 专用 shim 测试已加入默认测试目标，但本机未运行；Linux/Windows 实机、模型对话、完整 UI 与发行包不在本轮验证结果内。已有依赖 block 0.1.6 的 Rust future-incompatibility 提示仍存在，受影响构建与 Clippy 未因此失败。
+
+### 2026-09-09 收尾精简验证
+
+- pi-rpc 20 项默认回归及 README 编译示例通过；Gupi 12 项原有回归通过，删除固定耗时断言后的多实例关闭回归复测通过。
+- 隔离真实 Pi 0.85.1 集成通过：两个进程、扩展 UI 与正常关闭，无 provider 凭据或模型请求。
+- Gupi/pi-rpc 构建与 all-targets/all-features Clippy 通过；移除不再使用的 pi-rpc 直接 libc 依赖。
+- 超时只验证连接完成关闭且没有伪造退出状态；不增加一套测试来替代 Tokio 的进程回收契约。Linux/Windows 未在本轮实机验证。
 
 ## 实现依据与已知限制
 
@@ -150,7 +152,7 @@ Windows 专用 shim 测试已加入默认测试目标，但本机未运行；Lin
 - [Pi RPC 官方文档](https://pi.dev/docs/latest/rpc)、[扩展文档](https://pi.dev/docs/latest/extensions)：能力说明；latest 可变化，以下固定版本源码为本次依据。
 - [rpc-types.ts](https://github.com/earendil-works/pi/blob/da840b6216578c2a571d0374ac6a2091a83f9d91/packages/coding-agent/src/modes/rpc/rpc-types.ts)、[rpc-mode.ts](https://github.com/earendil-works/pi/blob/da840b6216578c2a571d0374ac6a2091a83f9d91/packages/coding-agent/src/modes/rpc/rpc-mode.ts)、[jsonl.ts](https://github.com/earendil-works/pi/blob/da840b6216578c2a571d0374ac6a2091a83f9d91/packages/coding-agent/src/modes/rpc/jsonl.ts)：自定义 JSONL 信封、并发命令分发、启动与扩展 UI。协议不套 JSON-RPC 2.0。
 - [agent-session.ts](https://github.com/earendil-works/pi/blob/da840b6216578c2a571d0374ac6a2091a83f9d91/packages/coding-agent/src/core/agent-session.ts)、[agent-session-runtime.ts](https://github.com/earendil-works/pi/blob/da840b6216578c2a571d0374ac6a2091a83f9d91/packages/coding-agent/src/core/agent-session-runtime.ts)：单进程一个当前会话、abort/idle、会话替换和收尾语义。
-- [pi-desktop process_manager.rs](https://github.com/StarkInternationalAI/pi-desktop/blob/7ffbc1606475a22bfbcec4252ab0577b821305ff/src-tauri/src/process_manager.rs#L409)、[退出入口](https://github.com/StarkInternationalAI/pi-desktop/blob/7ffbc1606475a22bfbcec4252ab0577b821305ff/src-tauri/src/lib.rs#L153)：已确认采用的退出时序；本地克隆 `/tmp/gupi-reference-pi-desktop-20260907`，只读源码，未运行退出测试。参考实现直接取消 wait 任务，不能据此证明回收完成。
+- [pi-desktop process_manager.rs](https://github.com/StarkInternationalAI/pi-desktop/blob/7ffbc1606475a22bfbcec4252ab0577b821305ff/src-tauri/src/process_manager.rs#L409)、[退出入口](https://github.com/StarkInternationalAI/pi-desktop/blob/7ffbc1606475a22bfbcec4252ab0577b821305ff/src-tauri/src/lib.rs#L153)：早期参考的退出时序；当前实现已按上文精简，不沿用固定等待。本地克隆 `/tmp/gupi-reference-pi-desktop-20260907`，只读源码，未运行退出测试。参考实现直接取消 wait 任务，不能据此证明回收完成。
 - [第一阶段进程证据](../../../app/gupi/docs/dev/issue-218/pi-evidence.md)：已实现探测与长期 RPC 的边界。
 
 ### 启动扩展对话
@@ -185,4 +187,4 @@ Fixture 核心为在 `pi.on("session_start", ...)` 中 `await ctx.ui.confirm(...
 
 Pi 的 EOF/SIGTERM 清理可能执行扩展 shutdown；内置 shell 在 Unix 使用 detached 子进程，并在 abort 路径清理进程树。只终止直接 Child 或 Pi 所在进程组不能保证全部工具后代、任意扩展自建进程都已回收。
 
-受控测试已覆盖执行中关闭、阻塞写入、事件容量及忽略 SIGTERM 的异常收尾。Windows shim 测试已加入但未在本机运行；Linux/Windows 实机、真实模型执行与任意扩展后代清理未验证。
+受控测试覆盖 abort 回应与 EOF 顺序、阻塞写入、事件容量及优雅退出超时后的连接关闭。Windows shim 测试已加入但未在本机运行；Linux/Windows 实机、真实模型执行与任意扩展后代清理未验证。

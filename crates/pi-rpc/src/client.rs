@@ -20,8 +20,7 @@ use tokio::{
     time::{Instant, sleep_until, timeout},
 };
 
-const CLOSE_STEP: Duration = Duration::from_millis(500);
-const REAP_TIMEOUT: Duration = Duration::from_secs(2);
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Limits count encoded JSON bytes; decoded allocations also depend on JSON shape.
 #[derive(Clone, Debug)]
@@ -92,20 +91,19 @@ impl LaunchOptions {
 }
 
 #[derive(Clone, Debug)]
-pub struct ExitReport {
+pub struct CloseReport {
+    /// Present only when the owner observed exit before releasing the Child.
     pub status: Option<ExitStatus>,
+    /// Connection failure or failure to complete graceful shutdown.
     pub reason: Option<Error>,
-    pub cleanup_error: Option<String>,
-    /// SIGTERM did not finish within the bounded reap wait, so a kill was needed.
-    pub forced: bool,
     pub stderr: String,
 }
 #[derive(Clone, Debug)]
 pub enum ConnectionState {
     Starting,
-    Ready(SessionState),
+    Ready(Box<SessionState>),
     Closing,
-    Exited(ExitReport),
+    Closed(CloseReport),
 }
 
 struct Pending {
@@ -250,8 +248,8 @@ impl Client {
         let mut state = self.subscribe();
         loop {
             match state.borrow_and_update().clone() {
-                ConnectionState::Ready(value) => return Ok(value),
-                ConnectionState::Exited(report) => {
+                ConnectionState::Ready(value) => return Ok(*value),
+                ConnectionState::Closed(report) => {
                     return Err(report.reason.unwrap_or(Error::NotReady));
                 }
                 ConnectionState::Closing => {}
@@ -316,6 +314,33 @@ impl Client {
     pub async fn get_commands(&self) -> Result<Commands, Error> {
         self.data(Command::GetCommands).await
     }
+    pub async fn get_entries(&self) -> Result<Entries, Error> {
+        self.data(Command::GetEntries).await
+    }
+    pub async fn get_fork_messages(&self) -> Result<ForkMessages, Error> {
+        self.data(Command::GetForkMessages).await
+    }
+    pub async fn fork(&self, entry_id: String) -> Result<ForkResult, Error> {
+        self.data(Command::Fork { entry_id }).await
+    }
+    pub async fn set_session_name(&self, name: String) -> Result<Response, Error> {
+        self.request(Command::SetSessionName { name }).await
+    }
+    pub async fn get_available_models(&self) -> Result<Models, Error> {
+        self.data(Command::GetAvailableModels).await
+    }
+    pub async fn set_model(&self, provider: String, model_id: String) -> Result<Model, Error> {
+        self.data(Command::SetModel { provider, model_id }).await
+    }
+    pub async fn get_available_thinking_levels(&self) -> Result<ThinkingLevels, Error> {
+        self.data(Command::GetAvailableThinkingLevels).await
+    }
+    pub async fn set_thinking_level(&self, level: String) -> Result<Response, Error> {
+        self.request(Command::SetThinkingLevel { level }).await
+    }
+    pub async fn get_session_stats(&self) -> Result<SessionStats, Error> {
+        self.data(Command::GetSessionStats).await
+    }
     pub async fn clear_queue(&self) -> Result<ClearedQueue, Error> {
         self.data(Command::ClearQueue).await
     }
@@ -360,21 +385,19 @@ impl Client {
             })
     }
     /// Idempotent; cancellation of this wait does not cancel the owner's cleanup.
-    pub fn close(&self) -> impl std::future::Future<Output = ExitReport> + Send + 'static {
+    pub fn close(&self) -> impl std::future::Future<Output = CloseReport> + Send + 'static {
         self.inner.shared.requests.lock().unwrap().accepting = false;
         let _ = self.inner.close.send(true);
         let mut state = self.subscribe();
         async move {
             loop {
-                if let ConnectionState::Exited(report) = state.borrow_and_update().clone() {
+                if let ConnectionState::Closed(report) = state.borrow_and_update().clone() {
                     return report;
                 }
                 if state.changed().await.is_err() {
-                    return ExitReport {
+                    return CloseReport {
                         status: None,
                         reason: Some(Error::Closed),
-                        cleanup_error: Some("process owner ended without a report".into()),
-                        forced: false,
                         stderr: String::new(),
                     };
                 }
@@ -472,7 +495,7 @@ async fn writer(
                 tokio::select! {
                     biased;
                     _ = control.changed() => {},
-                    result = stdin.write_all(b"{\"type\":\"abort\"}\n") => { result?; }
+                    result = stdin.write_all(b"{\"id\":\"close\",\"type\":\"abort\"}\n") => { result?; }
                 }
                 while *control.borrow_and_update() != WriterControl::Closed {
                     if control.changed().await.is_err() {
@@ -565,7 +588,7 @@ impl Owner {
                             status = Some(value);
                             // Drain bytes already written before exit, but do not wait forever
                             // for an extension descendant holding stdout open.
-                            drain_deadline = Some(Instant::now() + REAP_TIMEOUT);
+                            drain_deadline = Some(Instant::now() + SHUTDOWN_TIMEOUT);
                         }
                         Err(error) => break Some(error.into()),
                     }
@@ -583,74 +606,89 @@ impl Owner {
         let requested = *self.close.borrow();
         self.settle(reason.clone().unwrap_or(Error::Closed));
         self.state.send_replace(ConnectionState::Closing);
-        let mut cleanup_error = None;
-        let mut forced = false;
-        if requested || status.is_none() {
-            let start = Instant::now();
-            let _ = self.writer_control.send(WriterControl::Abort);
-            sleep_until(start + CLOSE_STEP).await;
-            let _ = self.writer_control.send(WriterControl::Closed);
-            if !writer_finished {
-                // Closed cancels an in-flight write; abort is the last-resort task guard.
-                self.writer_task.abort();
-                let _ = (&mut self.writer_task).await;
-                writer_finished = true;
-            }
-            sleep_until(start + CLOSE_STEP + CLOSE_STEP).await;
+        let mut reason = match (reason, requested) {
+            (Some(Error::Closed), true) => None,
+            (reason, _) => reason,
+        };
+        if status.is_none() && reason.is_none() {
+            let result = timeout(SHUTDOWN_TIMEOUT, async {
+                if requested {
+                    self.shutdown(&mut status, &mut writer_finished).await
+                } else {
+                    // stdout EOF on an otherwise healthy connection: observe exit.
+                    status = Some(self.child.wait().await?);
+                    Ok(())
+                }
+            })
+            .await;
+            reason = match result {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error),
+                Err(_) => Some(Error::ShutdownTimeout),
+            };
         }
-        let _ = self.writer_control.send(WriterControl::Closed);
+        // Tokio JoinHandle drop detaches tasks. Cancel them explicitly so their
+        // pipe handles are released; Child drop handles process termination/reaping.
         if !writer_finished {
             self.writer_task.abort();
             let _ = (&mut self.writer_task).await;
         }
-        if status.is_none() {
-            match self.child.try_wait() {
-                Ok(value) => status = value,
-                Err(error) => cleanup_error = Some(error.to_string()),
-            }
-        }
-        if status.is_none() {
-            if let Err(error) = terminate(&mut self.child) {
-                cleanup_error = Some(error.to_string());
-            }
-            match timeout(REAP_TIMEOUT, self.child.wait()).await {
-                Ok(Ok(value)) => status = Some(value),
-                result => {
-                    cleanup_error.get_or_insert_with(|| match result {
-                        Ok(Err(error)) => error.to_string(),
-                        _ => "Pi did not exit after termination".into(),
-                    });
-                    // Exception recovery after the agreed abort/EOF/SIGTERM sequence.
-                    // Report it explicitly, while still reaping the owned direct Child.
-                    forced = true;
-                    match timeout(REAP_TIMEOUT, self.child.kill()).await {
-                        Ok(Ok(())) => status = self.child.try_wait().ok().flatten(),
-                        Ok(Err(error)) => cleanup_error = Some(error.to_string()),
-                        Err(_) => cleanup_error = Some("forced Pi cleanup timed out".into()),
+        self.stderr_task.abort();
+        let _ = (&mut self.stderr_task).await;
+        drop(self.child);
+        drop(self.stdout);
+        drop(self.events);
+        let stderr = String::from_utf8_lossy(&self.tail.lock().unwrap()).into_owned();
+        self.state
+            .send_replace(ConnectionState::Closed(CloseReport {
+                status,
+                reason,
+                stderr,
+            }));
+    }
+    async fn shutdown(
+        &mut self,
+        status: &mut Option<ExitStatus>,
+        writer_finished: &mut bool,
+    ) -> Result<(), Error> {
+        let _ = self.writer_control.send(WriterControl::Abort);
+        let mut stdout_open = true;
+        // Read final events while abort settles. The reserved response confirms
+        // that Pi is idle; only then close stdin to run its session_shutdown hooks.
+        while stdout_open || status.is_none() {
+            tokio::select! {
+                line = self.stdout.next(), if stdout_open => {
+                    if let Some(line) = line? {
+                        let raw: Value = serde_json::from_slice(&line)?;
+                        if raw.get("type").and_then(Value::as_str) == Some("response")
+                            && raw.get("id").and_then(Value::as_str) == Some("close")
+                        {
+                            let response: Response = serde_json::from_value(raw)?;
+                            if response.command != "abort" {
+                                return Err(Error::Protocol("shutdown command mismatch".into()));
+                            }
+                            if !response.success {
+                                return Err(rejection(&response));
+                            }
+                            let _ = self.writer_control.send(WriterControl::Closed);
+                        } else {
+                            // A late startup response must not restore Ready while closing.
+                            self.dispatch(&line, &mut true)?;
+                        }
+                    } else {
+                        stdout_open = false;
                     }
+                }
+                result = self.child.wait(), if status.is_none() => {
+                    *status = Some(result?);
+                }
+                result = &mut self.writer_task, if !*writer_finished => {
+                    *writer_finished = true;
+                    result.map_err(|error| Error::Io(error.to_string()))??;
                 }
             }
         }
-        // stderr normally reaches EOF with the child; a detached descendant may hold it.
-        if timeout(Duration::from_millis(100), &mut self.stderr_task)
-            .await
-            .is_err()
-        {
-            self.stderr_task.abort();
-            let _ = (&mut self.stderr_task).await;
-        }
-        let stderr = String::from_utf8_lossy(&self.tail.lock().unwrap()).into_owned();
-        self.state.send_replace(ConnectionState::Exited(ExitReport {
-            status,
-            reason: if requested {
-                None
-            } else {
-                reason.or(Some(Error::Closed))
-            },
-            cleanup_error,
-            forced,
-            stderr,
-        }));
+        Ok(())
     }
     fn settle(&self, error: Error) {
         let mut requests = self.shared.requests.lock().unwrap();
@@ -679,7 +717,8 @@ impl Owner {
                 }
                 let state = serde_json::from_value(response.data)?;
                 *ready = true;
-                self.state.send_replace(ConnectionState::Ready(state));
+                self.state
+                    .send_replace(ConnectionState::Ready(Box::new(state)));
             } else if let Some(id) = &response.id {
                 let pending = self.shared.requests.lock().unwrap().pending.remove(id);
                 if let Some(pending) = pending {
@@ -729,24 +768,5 @@ fn rejection(response: &Response) -> Error {
     Error::Rejected {
         command: response.command.clone(),
         message: response.error.clone().unwrap_or_default(),
-    }
-}
-fn terminate(child: &mut Child) -> Result<(), Error> {
-    #[cfg(unix)]
-    {
-        if let Some(pid) = child.id() {
-            // This owner retains Child, and try_wait was checked before calling us.
-            if unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } != 0 {
-                let error = std::io::Error::last_os_error();
-                if error.raw_os_error() != Some(libc::ESRCH) {
-                    return Err(error.into());
-                }
-            }
-        }
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        child.start_kill().map_err(Into::into)
     }
 }

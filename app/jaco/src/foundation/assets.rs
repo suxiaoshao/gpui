@@ -315,7 +315,7 @@ mod tests {
     use gpui_kit::{AssetSource, SharedString};
     use std::collections::BTreeSet;
 
-    const EXPECTED_THEME_FILES: [&str; 22] = [
+    const EXPECTED_THEME_FILES: [&str; 21] = [
         "adventure.json",
         "alduin.json",
         "asciinema.json",
@@ -331,7 +331,6 @@ mod tests {
         "jellybeans.json",
         "kibble.json",
         "macos-classic.json",
-        "matrix.json",
         "mellifluous.json",
         "molokai.json",
         "solarized.json",
@@ -339,27 +338,6 @@ mod tests {
         "tokyonight.json",
         "twilight.json",
     ];
-    const HISTORICAL_TAB_OVERLAY_VARIANTS: [&str; 11] = [
-        "Ayu Dark",
-        "Catppuccin Macchiato",
-        "Catppuccin Mocha",
-        "Fahrenheit",
-        "macOS Classic Dark",
-        "Molokai Light",
-        "Molokai Dark",
-        "Spaceduck",
-        "Tokyo Night",
-        "Tokyo Storm",
-        "Tokyo Moon",
-    ];
-    const TAB_COLOR_KEYS: [&str; 5] = [
-        "tab.active.background",
-        "tab.active.foreground",
-        "tab.background",
-        "tab.foreground",
-        "tab_bar.background",
-    ];
-
     #[test]
     fn declared_icons_have_lucide_paths() {
         assert_eq!(
@@ -555,33 +533,6 @@ mod tests {
         for name in ["Ayu Light", "Aurora Light"] {
             assert!(registry.themes().contains_key(name), "missing theme {name}");
         }
-    }
-
-    #[test]
-    fn historical_tab_overlay_variants_keep_complete_token_groups() {
-        let expected = HISTORICAL_TAB_OVERLAY_VARIANTS
-            .into_iter()
-            .map(ToOwned::to_owned)
-            .collect::<BTreeSet<_>>();
-        let mut actual = BTreeSet::new();
-
-        for theme_set in bundled_theme_sets() {
-            let value: serde_json::Value =
-                serde_json::from_str(&theme_set).expect("bundled theme set is valid JSON");
-            for theme in value["themes"].as_array().expect("theme variants") {
-                let name = theme["name"].as_str().expect("theme name");
-                if expected.contains(name) {
-                    let colors = theme["colors"].as_object().expect("theme colors");
-                    assert!(
-                        TAB_COLOR_KEYS.iter().all(|key| colors.contains_key(*key)),
-                        "historical tab overlay for {name} must remain an atomic five-token group"
-                    );
-                    actual.insert(name.to_owned());
-                }
-            }
-        }
-
-        assert_eq!(actual, expected);
     }
 
     #[test]

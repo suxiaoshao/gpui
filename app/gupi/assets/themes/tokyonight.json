@@ -2,7 +2,7 @@
   "name": "Tokyo",
   "author": "Folke Lemaitre",
   "url": "https://github.com/folke/tokyonight.nvim",
-  "$schema": "https://github.com/longbridge/gpui-component/raw/refs/heads/main/.theme-schema.json",
+  "$schema": "https://github.com/longbridge/gpui-kit/raw/refs/heads/main/.theme-schema.json",
   "themes": [
     {
       "name": "Tokyo Night",
@@ -42,12 +42,7 @@
         "base.yellow": "#e0af68",
         "base.blue": "#7aa2f7",
         "base.magenta": "#565f89",
-        "base.cyan": "#7dcfff",
-        "tab.active.background": "#1a1b26",
-        "tab.active.foreground": "#c0caf5",
-        "tab.background": "#2C304500",
-        "tab.foreground": "#565f89",
-        "tab_bar.background": "#2C3045"
+        "base.cyan": "#7dcfff"
       },
       "highlight": {
         "editor.foreground": "#c0caf5",
@@ -186,12 +181,7 @@
         "base.yellow": "#e0af68",
         "base.blue": "#7aa2f7",
         "base.magenta": "#b283f8",
-        "base.cyan": "#7dcfff",
-        "tab.active.background": "#24283b",
-        "tab.active.foreground": "#c0caf5",
-        "tab.background": "#41486800",
-        "tab.foreground": "#565f89",
-        "tab_bar.background": "#414868"
+        "base.cyan": "#7dcfff"
       },
       "highlight": {
         "editor.foreground": "#B0B9E2",
@@ -326,12 +316,7 @@
         "base.yellow": "#ffc777",
         "base.blue": "#82aaff",
         "base.magenta": "#6e738d",
-        "base.cyan": "#86e1fc",
-        "tab.active.background": "#222436",
-        "tab.active.foreground": "#c0caf5",
-        "tab.background": "#32364E00",
-        "tab.foreground": "#6e738d",
-        "tab_bar.background": "#32364E"
+        "base.cyan": "#86e1fc"
       },
       "highlight": {
         "editor.foreground": "#c0caf5",

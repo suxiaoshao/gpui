@@ -10,6 +10,8 @@ pub enum Error {
     Closed,
     #[error("Pi startup did not become ready before its deadline")]
     StartupTimeout,
+    #[error("Pi did not finish graceful shutdown before its deadline")]
+    ShutdownTimeout,
     #[error("Pi exited before startup became ready")]
     NotReady,
     #[error("Pi {0} capacity exceeded")]

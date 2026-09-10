@@ -84,7 +84,7 @@ pub(crate) type PiOperation =
 
 Operation 的 Cancel 恢复之前的稳定态并丢弃 Task，GPUI/Tokio 的 abort-on-drop 链切断旧完成回调，不另加 generation 或取消错误。检查开始即显示 loading。
 
-查找与创建进程通过 spawn_blocking 执行；应用级 Semaphore 最多放行两项，名额由实际阻塞任务持有至结束。15 秒 deadline 从 controller 提交时建立，覆盖名额排队、查找、启动及读输出。接收通道由探测 future 持有：取消或超时会关闭接收端；后台任务在查找前后检查取消与 deadline，取消后不再启动，无法交接或已超时的 Child 通过 kill_on_drop 终止。阻塞任务不直接回调 owner。已交接 Child 的失败路径显式 kill/wait，收尾额外限制 2 秒，失败写日志并 Drop 兜底。取消只保证停止等待并触发终止，不保证同步系统调用立即返回或操作系统已回收全部资源。界面不直接启动子进程。Pi 检查的成功条件仅为命令/版本契约，实际 RPC 兼容性由 #219 验证。
+查找与创建进程通过 spawn_blocking 执行；应用级 Semaphore 最多放行两项，名额由实际阻塞任务持有至结束。15 秒 deadline 从 controller 提交时建立，覆盖名额排队、查找、启动及读输出。接收通道由探测 future 持有：取消或超时会关闭接收端；后台任务在查找前后检查取消与 deadline，取消后不再启动，无法交接或已超时的 Child 通过 kill_on_drop 终止。阻塞任务不直接回调 owner。已交接 Child 的失败路径同样释放 Child，由 kill_on_drop 与 Tokio 后台回收处理，不追加清理等待。取消只保证停止等待并触发终止，不保证同步系统调用立即返回或操作系统已回收全部资源。界面不直接启动子进程。Pi 检查的成功条件仅为命令/版本契约，实际 RPC 兼容性由 #219 验证。
 
 features/startup.rs 的根视图持有已有页面 Entity 并订阅配置、Pi；正常业务外壳归 features/home.rs，共用恢复布局归 components/recovery.rs。每次 render 从这些权威数据决定内容；不维护可修改的 StartupRoute。对 Configured 的读取成功后，仅当已应用 owner 的成功结果对应当前已应用命令且无运行任务或错误时，才放行主界面；运行中配置重读失败保留已应用界面及设置问题提示。
 
@@ -135,10 +135,10 @@ Jaco `database/operation.rs` 的 Retiring 是专门的数据库会话退役阶�
 
 ## L-115：超时先于执行建立
 
-Pi 探测在创建任务前确定 15 秒 deadline，统一约束排队、查找、创建进程和读输出，不在步骤切换或每次收到输出时重新计时。到期生成 ProbeFailure::Timeout；按 L-112 对已交接 Child 进行最多 2 秒的 kill/wait，再向 PiOperation 发送 Complete(Err)。清理失败保留日志诊断并 Drop 兜底，不虚报成功回收。
+Pi 探测在创建任务前确定 15 秒 deadline，统一约束排队、查找、创建进程和读输出，不在步骤切换或每次收到输出时重新计时。到期生成 ProbeFailure::Timeout，释放 Child 并向 PiOperation 发送 Complete(Err)，不等待操作系统回收；Child 的终止与后台回收由 Tokio 处理。
 
 超时错误使首次探测成为 Unavailable；同一命令已有成功值时成为 Degraded。界面明确呈现超时并提供合法 Retry/Refresh。运行中重复触发仍被拒绝。该策略仅用于可终止的版本探测，不套用于不可撤销的文件提交。
 
 后续 Pi RPC 自身返回的模型/工具错误按原意展示，宿主探测超时、进程退出和通信中断保持独立来源；“还在执行”本身不等于 Pi 已报错。本轮不实现第二阶段行为。
 
-验证补充：T-111 覆盖冲突无普通重试、NeedsReconcile 只允许核对、备份成功后的失败保留结果；T-112 覆盖先建立 deadline、超时清理完成后发布错误；T-113 覆盖布局保存失败静默退出。合并到原测试场景，不增加重复门禁。
+验证补充：T-111 覆盖冲突无普通重试、NeedsReconcile 只允许核对、备份成功后的失败保留结果；T-112 覆盖先建立 deadline、超时释放资源并发布错误；T-113 覆盖布局保存失败静默退出。合并到原测试场景，不增加重复门禁。

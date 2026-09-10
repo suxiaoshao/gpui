@@ -2,7 +2,7 @@
 use gpui_kit::*;
 use gpui_tokio::Tokio;
 use pi_rpc::{
-    Client, ConnectionState, Error, EventStream, ExitReport, LaunchOptions, protocol::Event,
+    Client, CloseReport, ConnectionState, Error, EventStream, LaunchOptions, protocol::Event,
 };
 use std::collections::BTreeMap;
 
@@ -19,7 +19,6 @@ enum Instance {
 }
 
 /// Emitted without storing a second transcript or an unbounded event history.
-#[expect(dead_code, reason = "Consumed by the subsequent conversation UI stage")]
 pub(crate) struct PiEvent {
     pub instance: InstanceId,
     pub event: Event,
@@ -46,13 +45,6 @@ pub(crate) fn global(cx: &App) -> Entity<PiState> {
 }
 
 impl PiState {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Internal connection entrypoint for the subsequent conversation stage"
-        )
-    )]
     pub fn start(
         &mut self,
         options: LaunchOptions,
@@ -110,7 +102,7 @@ impl PiState {
                     }
                     changed = status.changed() => {
                         if changed.is_err() { break; }
-                        let exited = matches!(*status.borrow_and_update(), ConnectionState::Exited(_));
+                        let exited = matches!(*status.borrow_and_update(), ConnectionState::Closed(_));
                         if owner.update(cx, |_, cx| cx.notify()).is_err() { break; }
                         if exited {
                             // Drain any events queued before the exit report.
@@ -124,13 +116,6 @@ impl PiState {
             }
         })
     }
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Request access for the subsequent conversation stage"
-        )
-    )]
     pub fn client(&self, id: InstanceId) -> Result<Option<Client>, Error> {
         match self.instances.get(&id) {
             Some(Instance::Connected(connection)) => Ok(Some(connection.client.clone())),
@@ -139,14 +124,7 @@ impl PiState {
             None => Err(Error::Closed),
         }
     }
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Individual session close entrypoint for the subsequent conversation stage"
-        )
-    )]
-    pub fn close(&mut self, id: InstanceId, cx: &mut Context<Self>) -> Task<Option<ExitReport>> {
+    pub fn close(&mut self, id: InstanceId, cx: &mut Context<Self>) -> Task<Option<CloseReport>> {
         let instance = self.instances.remove(&id);
         let closing = match &instance {
             Some(Instance::Connected(connection)) => Some(connection.client.close()),
@@ -165,7 +143,7 @@ impl PiState {
             }
         })
     }
-    pub fn close_all(&mut self, cx: &mut Context<Self>) -> Task<Vec<ExitReport>> {
+    pub fn close_all(&mut self, cx: &mut Context<Self>) -> Task<Vec<CloseReport>> {
         self.draining = true;
         let mut connections = Vec::new();
         for (_, instance) in std::mem::take(&mut self.instances) {
@@ -180,8 +158,8 @@ impl PiState {
             let mut reports = Vec::new();
             for connection in connections {
                 let report = connection.client.close().await;
-                if report.cleanup_error.is_some() {
-                    tracing::warn!(error = ?report.cleanup_error, forced = report.forced, "Pi cleanup failed");
+                if let Some(error) = &report.reason {
+                    tracing::warn!(%error, "Pi connection closed with an error");
                 }
                 reports.push(report);
                 drop(connection);
@@ -258,7 +236,6 @@ mod tests {
         .await;
         let third_client = owner.read_with(cx, |state, _| state.client(third).unwrap().unwrap());
         third_client.ready().await.unwrap();
-        let started = std::time::Instant::now();
         let draining = owner.update(cx, |state, cx| state.close_all(cx));
         assert!(
             owner
@@ -271,10 +248,9 @@ mod tests {
         assert!(
             reports
                 .iter()
-                .all(|report| report.status.is_some() && report.cleanup_error.is_none())
+                .all(|report| report.status.is_some() && report.reason.is_none())
         );
-        assert!(started.elapsed() >= std::time::Duration::from_secs(2));
-        assert!(matches!(second_client.state(), ConnectionState::Exited(_)));
-        assert!(matches!(third_client.state(), ConnectionState::Exited(_)));
+        assert!(matches!(second_client.state(), ConnectionState::Closed(_)));
+        assert!(matches!(third_client.state(), ConnectionState::Closed(_)));
     }
 }

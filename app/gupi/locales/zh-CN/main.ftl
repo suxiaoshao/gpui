@@ -61,3 +61,179 @@ setup-finish = 完成设置
 setup-saving = 正在保存…
 light-themes = 浅色主题
 dark-themes = 深色主题
+
+# Conversation workspace
+conversation-new = 新建会话
+conversation-sidebar = 会话侧边栏
+conversation-history = 会话历史
+conversation-scanning = 正在加载会话…
+conversation-project = 选择工作目录
+conversation-untitled = 未命名会话
+conversation-idle = 空闲
+conversation-loading = 正在打开
+conversation-running = 正在运行
+conversation-failed = 需要处理错误
+conversation-waiting = 等待输入
+conversation-search = 搜索会话
+conversation-refresh = 刷新会话目录
+conversation-scan-warning = 部分会话无法读取
+conversation-search-placeholder = 搜索名称、消息或项目路径
+conversation-search-empty = 没有匹配的会话
+conversation-rename = 重命名…
+conversation-copy-path = 复制路径
+conversation-stop = 停止生成
+conversation-close-run = 结束运行
+conversation-show-less = 收起
+conversation-show-more = 查看更多…
+conversation-fork = 从这里另开会话
+conversation-preview = 正在预览其他分支
+conversation-return-current = 返回当前分支
+conversation-welcome = 开始一段对话
+conversation-welcome-hint = 选择工作目录，输入你的消息。
+conversation-bottom = 返回底部
+conversation-copy = 复制
+conversation-compaction = 上下文压缩摘要
+conversation-branch-summary = 分支摘要
+conversation-archive = 压缩前的历史
+conversation-working = 正在处理…
+conversation-process = 查看处理过程
+conversation-details = 展开或收起细节
+conversation-role-user = 用户消息
+conversation-role-assistant = 助手消息
+conversation-role-tool = 工具结果
+conversation-event = 会话事件
+conversation-close-history = 收起会话历史
+conversation-source = 查看来源会话文件
+conversation-reconnect = 重新连接
+conversation-save-error = 草稿保存失败
+conversation-recover-draft = 恢复未发送的输入
+conversation-interrupted = 本次运行已停止；已保留现有内容。
+conversation-no = 否
+conversation-submit = 提交
+conversation-input = 输入消息
+conversation-model = 模型
+conversation-load-options = 连接 Pi 以加载可用模型
+conversation-thinking = 思考强度
+conversation-unknown = 暂不可用
+conversation-context = 当前执行分支上下文
+conversation-auto-compaction = 自动压缩
+conversation-on = 已开启
+conversation-off = 已关闭
+conversation-tokens = 累计输入 / 输出
+conversation-cache = 累计缓存读取 / 写入
+conversation-cache-hit = 最近缓存命中率
+conversation-cost = Pi 统计费用
+conversation-statistics = 用量统计
+conversation-send = 发送（Enter）；Alt+Enter 等待本轮结束后发送
+conversation-queued = 已排队，等待 Pi 执行
+conversation-accepted = Pi 已接受
+conversation-graph-current = 当前执行
+conversation-graph-preview = 预览
+conversation-graph-left = 查看左侧轨道（也可横向滚动）
+conversation-graph-right = 查看右侧轨道（也可横向滚动）
+conversation-graph-reveal = 定位选中
+conversation-graph-column = 分支
+conversation-graph-message = 消息
+conversation-refreshing = 正在刷新会话…
+conversation-catalog-empty = 暂无会话
+
+conversation-thinking-content = 思考过程
+conversation-tool-group = 工具调用（{ $count }）
+conversation-tool-group-running = 正在处理 { $count } 项工具调用
+conversation-tool-group-read = 读取文件（{ $count }）
+conversation-tool-group-bash = 运行命令（{ $count }）
+conversation-tool-group-search = 查找内容（{ $count }）
+conversation-tool-group-edit = 修改文件（{ $count }）
+conversation-tool-line = { $action } { $summary }
+conversation-tool-action-read =
+    { $state ->
+        [running] 正在读取
+        [complete] 已读取
+        [failed] 读取失败
+        *[unfinished] 未完成读取
+    }
+conversation-tool-action-write =
+    { $state ->
+        [running] 正在写入
+        [complete] 已写入
+        [failed] 写入失败
+        *[unfinished] 未完成写入
+    }
+conversation-tool-action-edit =
+    { $state ->
+        [running] 正在编辑
+        [complete] 已编辑
+        [failed] 编辑失败
+        *[unfinished] 未完成编辑
+    }
+conversation-tool-action-bash =
+    { $state ->
+        [running] 正在运行
+        [complete] 已运行
+        [failed] 运行失败
+        *[unfinished] 未完成运行
+    }
+conversation-tool-action-search =
+    { $state ->
+        [running] 正在查找
+        [complete] 已查找
+        [failed] 查找失败
+        *[unfinished] 未完成查找
+    }
+conversation-tool-action-other =
+    { $state ->
+        [running] 正在调用 { $name }
+        [complete] 已调用 { $name }
+        [failed] 调用失败 { $name }
+        *[unfinished] 未完成调用 { $name }
+    }
+conversation-tool-group-explore = 查找并读取文件
+conversation-tool-group-explore-commands = 读取文件并运行命令
+
+conversation-processed = 已处理 { $duration }
+conversation-processed-failed = 处理失败 { $duration }
+conversation-processed-stopped = 已停止 { $duration }
+conversation-copied = 已复制
+conversation-copy-failed = 复制失败，请重试
+conversation-usage-title = 本次请求用量
+conversation-usage-model = 模型
+conversation-usage-provider = 服务商
+conversation-usage-input = 输入 Token
+conversation-usage-output = 输出 Token
+conversation-usage-cache-read = 缓存读取 Token
+conversation-usage-cache-write = 缓存写入 Token
+conversation-usage-total = 总 Token
+conversation-usage-cost = 费用
+
+composer-context-used = 已占用 Token
+composer-context-limit = 上下文容量
+composer-context-percent = 占用比例
+composer-token-input = 累计输入 Token
+composer-token-output = 累计输出 Token
+composer-token-cache-read = 累计缓存读取 Token
+composer-token-cache-write = 累计缓存写入 Token
+composer-token-usage = 会话 Token 用量
+
+conversation-model-search = 搜索模型…
+conversation-model-empty = 没有匹配的模型
+conversation-model-settings-error = 无法读取模型配置
+conversation-thinking-off = 关闭
+conversation-thinking-minimal = 最小
+conversation-thinking-low = 低
+conversation-thinking-medium = 中
+conversation-thinking-high = 高
+conversation-thinking-xhigh = 超高
+conversation-thinking-max = 最大
+
+conversation-model-reasoning = 推理
+conversation-model-vision = 视觉
+
+conversation-history-reply = 助手回复
+conversation-history-brief = 简略：用户和助手消息
+conversation-history-detailed = 详细：消息、工具和摘要
+conversation-history-progress = 助手过程
+conversation-history-thinking = 思考
+conversation-history-calls = 工具调用
+conversation-history-failed = 执行失败
+conversation-history-stopped = 已中断
+conversation-history-empty = 无正文回复

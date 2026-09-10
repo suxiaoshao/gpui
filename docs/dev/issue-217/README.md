@@ -11,9 +11,9 @@ Gupi 是独立 GPUI 桌面应用，通过用户本机 Pi 的 RPC 能力提供原
 | --- | --- | --- | --- |
 | 1 | [#218](https://github.com/suxiaoshao/gpui/issues/218) | 应用骨架、启动引导、分类恢复、设置、主题、本地化与基础打包 | [第一阶段](../issue-218/README.md) |
 | 2 | [#219](https://github.com/suxiaoshao/gpui/issues/219) | Pi RPC 与进程生命周期 | [第二阶段](../issue-219/README.md) |
-| 3 | [#220](https://github.com/suxiaoshao/gpui/issues/220) | 主窗口基础对话闭环 | 到该阶段再建立 |
+| 3 | [#220](https://github.com/suxiaoshao/gpui/issues/220) | 会话目录、恢复、主对话、只读树与时间线、原生 fork | [第三阶段开发计划](../issue-220/README.md) |
 | 4 | [#221](https://github.com/suxiaoshao/gpui/issues/221) | 临时窗口与全局快捷翻译 | 到该阶段再建立 |
-| 5 | [#222](https://github.com/suxiaoshao/gpui/issues/222) | 历史会话与完整 RPC 交互 | 到该阶段再建立 |
+| 5 | [#222](https://github.com/suxiaoshao/gpui/issues/222) | 完整队列、工具详情与更完整的扩展 UI；基础历史与 fork 已归入阶段 3 | 到该阶段再建立 |
 | 6 | [#223](https://github.com/suxiaoshao/gpui/issues/223) | 原生体验、完整打包与发行验收 | 到该阶段再建立 |
 
 按表中顺序推进，阶段分支通过 PR 汇入总 Issue 分支 `codex/217-gupi-pi-rpc-client`，后续阶段从更新后的总 Issue 分支开始。第一阶段的基础打包用于验证桌面启动链路，第六阶段承担完整发行验收。开发期 logo 的使用决定与许可状态见第一阶段 D-04。

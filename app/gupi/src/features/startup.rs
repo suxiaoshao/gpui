@@ -15,7 +15,7 @@ use crate::{
 };
 use gpui_form::Form;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, TitleBar, button::Button, h_flex, spinner::Spinner, v_flex,
+    ActiveTheme, Disableable, Root, TitleBar, button::Button, h_flex, spinner::Spinner, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -26,6 +26,7 @@ pub(crate) struct StartupView {
     applied_pi: Entity<PiProbeController>,
     draft_pi: Entity<PiProbeController>,
     settings: Entity<SettingsView>,
+    home: Option<Entity<home::HomeView>>,
     pub show_settings: bool,
     config_confirm: bool,
     log_warning: bool,
@@ -96,6 +97,7 @@ impl StartupView {
             applied_pi,
             draft_pi,
             settings,
+            home: None,
             show_settings: false,
             config_confirm: false,
             log_warning,
@@ -116,7 +118,11 @@ impl StartupView {
         self.draft_pi.update(cx, |pi, _| pi.stop());
         let pi = crate::state::pi::global(cx);
         let close_pi = pi.update(cx, |state, cx| state.close_all(cx));
-        let placement = layout::capture(window);
+        let flush_home = self
+            .home
+            .as_ref()
+            .map(|home| home.update(cx, |home, cx| home.flush(cx)));
+        let placement = layout::capture(window, cx.global::<layout::LayoutState>());
         self.quit_task = Some(cx.spawn(async move |owner, cx| {
             loop {
                 let busy = owner
@@ -132,6 +138,9 @@ impl StartupView {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(20))
                     .await;
+            }
+            if let Some(flush) = flush_home {
+                flush.await;
             }
             let result = smol::unblock(move || {
                 paths::config_dir()
@@ -150,7 +159,7 @@ impl StartupView {
     }
 }
 impl Render for StartupView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let store = self.config.read(cx).store.clone();
         let (configured, missing, config_busy, problem) = store.read(cx, |op| {
             (
@@ -160,6 +169,26 @@ impl Render for StartupView {
                 op.problem().map(|p| p.key),
             )
         });
+        let ready = self
+            .applied
+            .as_ref()
+            .and_then(|config| {
+                self.applied_pi
+                    .read(cx)
+                    .ready_for(config.pi_command.as_deref())
+            })
+            .map(|data| data.command.clone());
+        let main = configured && !self.show_settings && !self.draining && ready.is_some();
+        if let Some(command) = ready {
+            if let Some(home) = &self.home {
+                home.read(cx)
+                    .state
+                    .clone()
+                    .update(cx, |state, _| state.set_command(command));
+            } else {
+                self.home = Some(cx.new(|cx| home::HomeView::new(command, window, cx)));
+            }
+        }
         let onboarding = !configured && missing && !self.draining;
         let mut content = v_flex()
             .gap_5()
@@ -250,7 +279,7 @@ impl Render for StartupView {
                 .as_ref()
                 .and_then(|config| pi.ready_for(config.pi_command.as_deref()))
             {
-                content = content.child(home::home(data, cx));
+                let _ = data;
             } else {
                 content = content
                     .child(recovery(
@@ -319,14 +348,20 @@ impl Render for StartupView {
                     .id("content")
                     .flex_1()
                     .min_h_0()
-                    .when(configured, |view| view.overflow_y_scroll())
-                    .when(!configured, |view| view.overflow_hidden())
-                    .py_8()
-                    .when(!onboarding, |view| view.px_8())
+                    .when(configured && !main, |view| view.overflow_y_scroll())
+                    .when(!configured || main, |view| view.overflow_hidden())
+                    .when(!main, |view| view.py_8())
+                    .when(!onboarding && !main, |view| view.px_8())
                     .flex()
                     .justify_center()
                     .when(configured, |view| view.items_start())
-                    .child(content),
+                    .child(if main {
+                        self.home.clone().unwrap().into_any_element()
+                    } else {
+                        content.into_any_element()
+                    }),
             )
+            .children(Root::render_dialog_layer(window, cx))
+            .children(Root::render_notification_layer(window, cx))
     }
 }

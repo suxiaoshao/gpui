@@ -11,10 +11,38 @@ pub(crate) fn default_window_size() -> Size<Pixels> {
     size(px(960.), px(740.))
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LayoutState {
     pub main_window: Option<WindowPlacement>,
+    #[serde(default = "default_sidebar_width", deserialize_with = "read_width")]
+    pub sidebar_width: f32,
+    #[serde(default = "default_history_width", deserialize_with = "read_width")]
+    pub history_width: f32,
+}
+impl Global for LayoutState {}
+impl Default for LayoutState {
+    fn default() -> Self {
+        Self {
+            main_window: None,
+            sidebar_width: default_sidebar_width(),
+            history_width: default_history_width(),
+        }
+    }
+}
+fn default_sidebar_width() -> f32 {
+    220.
+}
+fn default_history_width() -> f32 {
+    300.
+}
+fn read_width<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f32, D::Error> {
+    let value = toml::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_float()
+        .or_else(|| value.as_integer().map(|n| n as f64))
+        .map(|n| n as f32)
+        .unwrap_or(f32::NAN))
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -104,17 +132,23 @@ pub(crate) fn load(path: &Path) -> LayoutState {
 
 fn read(path: &Path) -> Result<LayoutState, String> {
     let Some(bytes) = persistence::read(path).map_err(|e| e.to_string())? else {
-        return Ok(LayoutState { main_window: None });
+        return Ok(LayoutState::default());
     };
-    let value: LayoutState =
+    let mut value: LayoutState =
         toml::from_str(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)
             .map_err(|_| "invalid window state".to_owned())?;
     if let Some(placement) = value.main_window {
         placement.validate()?;
     }
+    if !value.sidebar_width.is_finite() || !(160. ..=480.).contains(&value.sidebar_width) {
+        value.sidebar_width = default_sidebar_width();
+    }
+    if !value.history_width.is_finite() || !(240. ..=520.).contains(&value.history_width) {
+        value.history_width = default_history_width();
+    }
     Ok(value)
 }
-pub(crate) fn capture(window: &Window) -> LayoutState {
+pub(crate) fn capture(window: &Window, previous: &LayoutState) -> LayoutState {
     let (bounds, maximized) = match window.window_bounds() {
         WindowBounds::Windowed(b) => (b, false),
         WindowBounds::Maximized(b) | WindowBounds::Fullscreen(b) => (b, true),
@@ -127,6 +161,8 @@ pub(crate) fn capture(window: &Window) -> LayoutState {
             height: bounds.size.height.into(),
             maximized,
         }),
+        sidebar_width: previous.sidebar_width,
+        history_width: previous.history_width,
     }
 }
 pub(crate) fn save(path: &Path, value: &LayoutState) -> Result<(), String> {
@@ -149,6 +185,16 @@ pub(crate) fn save(path: &Path, value: &LayoutState) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn invalid_panel_width_preserves_valid_window_placement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+        std::fs::write(&path, "sidebar_width = 'broken'\nhistory_width = -1\n[main_window]\nx = 10\ny = 20\nwidth = 960\nheight = 740\nmaximized = false\n").unwrap();
+        let state = super::read(&path).unwrap();
+        assert_eq!(state.sidebar_width, 220.);
+        assert_eq!(state.history_width, 300.);
+        assert_eq!(state.main_window.unwrap().x, 10.);
+    }
     use super::{LayoutState, WindowPlacement, load, save};
     use std::fs;
 
@@ -161,6 +207,7 @@ mod tests {
                 height: 740.,
                 maximized: true,
             }),
+            ..LayoutState::default()
         }
     }
 

@@ -36,7 +36,7 @@ let accepted = client.prompt(Prompt::new("Explain this project")).await?;
 let _ = (initial, commands, accepted);
 let report = client.close().await;
 consumer.await?;
-assert!(report.status.is_some(), "direct child was not reaped: {report:?}");
+assert!(report.reason.is_none(), "connection close failed: {report:?}");
 # Ok(())
 # }
 ```
@@ -45,7 +45,7 @@ The example sends a model request when run with a configured Pi; tests below do 
 
 `probe::probe(command, deadline)` locates a command and checks `--version`. Its existing 15-second application budget, bounded output and cancellation behavior are independent of a long-running RPC request. `LaunchOptions` accepts an executable, cwd, extra argument vector, environment overrides and startup timeout; use the resolved probe path when available. Arguments are passed through `Command::args`, not concatenated into a shell string. On Windows the Rust standard library handles `.cmd`/`.bat` launching and quoting ([Rust process documentation](https://doc.rust-lang.org/stable/std/process/index.html#windows-argument-splitting)); the host still supplies the actual shim path.
 
-Typed commands cover state, command discovery, prompt, abort and clear_queue. `request_raw` is an escape hatch for other Pi commands: it owns the request ID and applies the same limits and response association. `reply` uses the extension UI envelope and ID, without adding a command-response waiter. Dropping a request future removes only the local waiter; it does not abort Pi or replay the request.
+Typed commands cover state, command discovery, prompt, abort, clear_queue, entries, fork messages/fork, session names, available models/model selection, thinking levels and session statistics. `get_entries` returns Pi parent links and the execution leaf; `fork` switches that client to an independent session and returns draft text, so the host must update its session binding after success. `request_raw` is an escape hatch for other Pi commands: it owns the request ID and applies the same limits and response association. `reply` uses the extension UI envelope and ID, without adding a command-response waiter. Dropping a request future removes only the local waiter; it does not abort Pi or replay the request.
 
 ## Limits and failure behavior
 
@@ -64,22 +64,19 @@ The byte budgets measure JSON wire bytes, not total allocator usage; parsed JSON
 
 LF is the only separator; CRLF and a valid final JSON fragment without LF are accepted. UTF-8 is buffered across reads, and U+2028/U+2029 inside JSON strings do not split frames. Malformed/oversized input, event overload or I/O failure closes the connection and settles all pending requests. Full outgoing queues or pending-request capacity reject that submission. Unknown or cancelled-request responses are not turned into events. Dropping the event stream closes the connection, so a forgotten consumer cannot silently discard an active session.
 
-A failed command returns `Error::Rejected`; other typed errors distinguish startup, protocol, I/O, capacity and closed-connection failures. A failed startup preserves its cause through cleanup. `ExitReport` includes the direct child's status, connection reason, cleanup failure and bounded stderr tail; the library does not automatically log message content or environment values.
+A failed command returns `Error::Rejected`; other typed errors distinguish startup, protocol, I/O, capacity and closed-connection failures. A failed startup preserves its cause. `CloseReport` includes an observed exit status when available, the connection/shutdown error and the captured bounded stderr tail; the library does not automatically log message content or environment values.
 
 ## Shutdown and ownership
 
 `close()` starts closing immediately and returns an awaitable result. Repeated calls share the outcome; cancelling the wait does not cancel cleanup. The last client drop requests the same cleanup while the Tokio runtime is alive. Keep the runtime alive and explicitly await close before exiting the host.
 
-Normal close follows the agreed sequence:
+Normal close rejects new requests and settles pending waiters, then sends abort with a reserved request ID. Pi's successful abort response confirms the current execution has settled. The writer then releases stdin so Pi can execute its EOF/session-shutdown path. The client continues reading final events and observing process exit. This entire graceful phase has one 2-second deadline and finishes immediately when stdout closes and the process exits; there are no fixed sleeps or additional SIGTERM/reap phases.
 
-1. Reject new requests and attempt abort, without awaiting its response.
-2. After 500 ms, stop the writer and release actual stdin.
-3. After another 500 ms, send SIGTERM on Unix if the owned child is still alive; use the child termination API on Windows.
-4. Observe exit, settle waiters and finish pipe tasks.
+On communication failure or shutdown timeout, the owner cancels and joins its pipe tasks, releases the Child with `kill_on_drop(true)`, and publishes `ConnectionState::Closed`. Tokio handles termination and background reaping. Dropping a Tokio JoinHandle alone would detach its task, so cancelling the pipe tasks remains necessary. No extra OS-process wait is added on error paths, including failed startup and failed version probes.
 
-The host closes multiple clients sequentially. The two fixed delays belong to each connection. Abort bypasses the normal write queue; a blocked or partially written normal request can prevent abort from being a valid complete line, but it cannot hold up stdin closure or termination.
+`Closed` means the connection and its owned I/O resources have been released. `CloseReport.status` is `Some` only when exit was observed, and can be `None` after a failure or timeout. `reason` preserves the failure or reports `ShutdownTimeout`; it does not claim graceful completion or synchronous OS reaping. The host closes clients sequentially and keeps its runtime alive while awaiting these connection results.
 
-The owner retains the Child for reaping. If termination does not complete within a 2-second reap wait, exception recovery attempts a kill and a further bounded reap. `forced` and `cleanup_error` report this path even if the direct child is eventually reaped. Drop also retains `kill_on_drop` as a last fallback, which alone does not prove reaping. Detached tool processes, extension-created descendants and Windows shim descendants are not guaranteed to be reaped by a direct-child termination; Windows runtime validation remains platform-specific.
+Abort bypasses the normal write queue. A blocked or partially written normal request can prevent a valid abort exchange; the same graceful deadline bounds this case. Forced Child termination does not promise that arbitrary extension-created descendants or Windows shim descendants have exited. Windows runtime validation remains platform-specific.
 
 ## Tests
 

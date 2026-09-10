@@ -54,6 +54,7 @@ pub(crate) fn run() {
                 tracing::warn!(%error, "layout directory unavailable; using default layout");
                 layout::LayoutState::default()
             });
+        cx.set_global(layout.clone());
         let bounds = layout
             .main_window
             .map(|p| p.restored(cx))

@@ -1,4 +1,4 @@
-use gpui_kit::component::{Theme, ThemeMode as ComponentThemeMode, ThemeRegistry};
+use gpui_kit::component::{ThemeMode as ComponentThemeMode, ThemeRegistry};
 use gpui_kit::{App, AppContext, Entity, Global, Subscription, Window, WindowAppearance};
 use gpui_store::Select;
 use jaco_core::{AppThemeMode, AppThemeSettings};
@@ -112,7 +112,7 @@ impl ThemeRuntime {
             let registry = ThemeRegistry::global(cx);
             app_theme::resolve_theme_config(registry, mode, &theme_id, &custom_theme_colors)
         };
-        Theme::global_mut(cx).apply_config(&config);
+        app_theme::apply_theme_config(&config, cx);
         self.resolved = Some(key);
         cx.refresh_windows();
     }
