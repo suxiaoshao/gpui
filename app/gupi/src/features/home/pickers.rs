@@ -1,283 +1,505 @@
+mod models;
+#[cfg(test)]
+mod tests;
 use super::*;
 use crate::state::conversation::Session;
 use gpui_kit::component::{
-    StyledExt,
-    combobox::{Combobox, ComboboxEvent, ComboboxState},
-    label::Label,
-    searchable_list::{SearchableGroup, SearchableListItem, SearchableVec},
-    tag::Tag,
+    Icon, StyledExt,
+    list::List,
+    popover::Popover,
+    slider::{Slider, SliderEvent, SliderState},
+    tooltip::Tooltip,
 };
+use gpui_kit::prelude::FluentBuilder;
+use models::{ModelKey, ModelList, ModelOption};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum Choice {
-    Model { provider: String, id: String },
+#[derive(Clone)]
+pub(super) enum PickerEvent {
+    Model(ModelKey),
     Thinking(String),
+    Load,
+    Refresh,
 }
-#[derive(Clone, PartialEq, Eq)]
-pub(super) struct OptionItem {
-    value: Choice,
-    title: SharedString,
-    search: String,
-    disabled: bool,
-    provider: Option<String>,
-    reasoning: bool,
-    vision: bool,
-}
-impl SearchableListItem for OptionItem {
-    type Value = Choice;
-    fn title(&self) -> SharedString {
-        self.title.clone()
-    }
-    fn display_title(&self) -> Option<AnyElement> {
-        self.provider.as_ref().map(|provider| {
-            h_flex()
-                .min_w_0()
-                .gap_2()
-                .child(
-                    crate::foundation::assets::provider_icon(provider)
-                        .size_4()
-                        .flex_none(),
-                )
-                .child(
-                    Label::new(self.title())
-                        .text_sm()
-                        .whitespace_nowrap()
-                        .truncate(),
-                )
-                .into_any_element()
-        })
-    }
-    fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        if let Some(provider) = &self.provider {
-            let mut details = v_flex()
-                .min_w_0()
-                .gap_0p5()
-                .child(Label::new(self.title()).text_sm().font_medium());
-            if self.reasoning || self.vision {
-                let mut tags = h_flex().gap_1().flex_wrap();
-                if self.reasoning {
-                    tags = tags.child(
-                        Tag::secondary()
-                            .small()
-                            .outline()
-                            .child(t(cx, "conversation-model-reasoning")),
-                    );
-                }
-                if self.vision {
-                    tags = tags.child(
-                        Tag::secondary()
-                            .small()
-                            .outline()
-                            .child(t(cx, "conversation-model-vision")),
-                    );
-                }
-                details = details.child(tags);
-            }
-            h_flex()
-                .min_w_0()
-                .items_start()
-                .gap_2()
-                .child(
-                    crate::foundation::assets::provider_icon(provider)
-                        .size_4()
-                        .flex_none()
-                        .mt(px(1.))
-                        .text_color(cx.theme().muted_foreground),
-                )
-                .child(details)
-                .into_any_element()
-        } else {
-            Label::new(self.title()).truncate().into_any_element()
-        }
-    }
-    fn value(&self) -> &Choice {
-        &self.value
-    }
-    fn matches(&self, query: &str) -> bool {
-        self.search.contains(&query.to_lowercase())
-    }
-    fn disabled(&self) -> bool {
-        self.disabled
-    }
-}
-type Items = SearchableVec<SearchableGroup<OptionItem>>;
 
 #[derive(Default, PartialEq, Eq)]
 pub(super) struct Projection {
-    groups: Vec<(String, Vec<OptionItem>)>,
-    selected: Option<Choice>,
+    models: Vec<ModelOption>,
+    selected: Option<ModelKey>,
+    name: String,
+    reasoning: bool,
+    levels: Vec<String>,
+    level: String,
+    disabled: bool,
+    unloaded: bool,
+    model_error: Option<String>,
 }
-pub(super) struct Picker {
-    state: Entity<ComboboxState<Items>>,
-    projection: Projection,
-    _subscription: Subscription,
-}
-impl Picker {
-    pub(super) fn new(
-        key: String,
-        searchable: bool,
-        window: &mut Window,
-        cx: &mut Context<HomeView>,
-    ) -> Self {
-        let owner = cx.weak_entity();
-        Self::with_handler(
-            searchable,
-            move |value, cx| {
-                let Ok(state) = owner.read_with(cx, |owner, _| owner.state.clone()) else {
-                    return;
-                };
-                state.update(cx, |state, cx| match value {
-                    Choice::Model { provider, id } => {
-                        let model = state
-                            .sessions
-                            .get(&key)
-                            .and_then(|s| {
-                                s.models
-                                    .iter()
-                                    .find(|m| m.provider == provider && m.id == id)
-                            })
-                            .cloned();
-                        if let Some(model) = model {
-                            state.set_model(&key, model, cx);
-                        }
-                    }
-                    Choice::Thinking(level) => state.set_thinking(&key, level, cx),
-                });
-            },
-            window,
-            cx,
-        )
-    }
-    fn with_handler<Owner: 'static>(
-        searchable: bool,
-        on_change: impl Fn(Choice, &mut App) + 'static,
-        window: &mut Window,
-        cx: &mut Context<Owner>,
-    ) -> Self {
-        let state = cx.new(|cx| {
-            ComboboxState::new(
-                SearchableVec::new(Vec::<SearchableGroup<OptionItem>>::new()),
-                vec![],
-                window,
-                cx,
-            )
-            .searchable(searchable)
-        });
-        let on_change = Rc::new(on_change);
-        let subscription = cx.subscribe_in(&state, window, move |_, state, event, window, cx| {
-            // Closing or cancelling emits Confirm too; only an actual Change writes to Pi.
-            let ComboboxEvent::Change(values) = event else {
-                return;
-            };
-            let value = state
-                .read(cx)
-                .selection()
-                .iter()
-                .find(|(_, item)| !item.disabled && values.first() == Some(item.value()))
-                .map(|(_, item)| item.value.clone());
-            if let Some(value) = value {
-                let on_change = on_change.clone();
-                window.defer(cx, move |_, cx| on_change(value, cx));
-            }
-        });
+impl Projection {
+    pub fn from_session(session: &Session) -> Self {
+        let model = session.state.as_ref().and_then(|s| s.model.as_ref());
         Self {
-            state,
-            projection: Projection::default(),
-            _subscription: subscription,
+            models: session.models.iter().map(ModelOption::from).collect(),
+            selected: model.map(ModelKey::from),
+            name: model.map(|m| m.name.clone()).unwrap_or_default(),
+            reasoning: model.is_some_and(|m| m.reasoning),
+            levels: session.thinking_levels.clone(),
+            level: session
+                .state
+                .as_ref()
+                .map(|s| s.thinking_level.clone())
+                .unwrap_or_default(),
+            // Keep old model capabilities inert until the post-command snapshot arrives.
+            disabled: session.busy()
+                || session.operation.is_some()
+                || session.refresh.is_some()
+                || !session.pending_ui.is_empty(),
+            unloaded: session.state.is_none(),
+            model_error: session.model_error.clone(),
         }
-    }
-    pub(super) fn sync(&mut self, projection: Projection, window: &mut Window, cx: &mut App) {
-        if self.projection == projection {
-            return;
-        }
-        let items = SearchableVec::new(
-            projection
-                .groups
-                .iter()
-                .map(|(title, items)| SearchableGroup::new(title.clone()).items(items.clone()))
-                .collect::<Vec<_>>(),
-        );
-        self.state.update(cx, |state, cx| {
-            let query = state.query(cx);
-            state.set_items(items, window, cx);
-            state.set_selected_values(
-                &projection.selected.clone().into_iter().collect::<Vec<_>>(),
-                window,
-                cx,
-            );
-            state.set_query(query, window, cx);
-        });
-        self.projection = projection;
-    }
-    pub(super) fn element(&self) -> Combobox<Items> {
-        Combobox::new(&self.state)
     }
 }
 
-pub(super) fn project(session: &Session, cx: &App) -> (Projection, Projection) {
-    let disabled = session.busy() || session.operation.is_some() || !session.pending_ui.is_empty();
-    let mut groups = BTreeMap::<String, Vec<OptionItem>>::new();
-    for item in &session.models {
-        groups
-            .entry(item.provider.clone())
-            .or_default()
-            .push(OptionItem {
-                value: Choice::Model {
-                    provider: item.provider.clone(),
-                    id: item.id.clone(),
-                },
-                title: item.name.clone().into(),
-                search: format!("{} {} {}", item.provider, item.id, item.name).to_lowercase(),
-                disabled,
-                provider: Some(item.provider.clone()),
-                reasoning: item.reasoning,
-                vision: item
-                    .extra
-                    .get("input")
-                    .and_then(|v| v.as_array())
-                    .is_some_and(|values| values.iter().any(|v| v == "image")),
-            });
-    }
-    for items in groups.values_mut() {
-        items.sort_by(|a, b| a.title.cmp(&b.title));
-    }
-    let models = Projection {
-        groups: groups.into_iter().collect(),
-        selected: session
-            .state
-            .as_ref()
-            .and_then(|s| s.model.as_ref())
-            .map(|m| Choice::Model {
-                provider: m.provider.clone(),
-                id: m.id.clone(),
-            }),
-    };
-    let thinking = Projection {
-        groups: vec![(
-            String::new(),
-            session
-                .thinking_levels
-                .iter()
-                .map(|level| {
-                    let title = thinking_label(level, cx);
-                    OptionItem {
-                        value: Choice::Thinking(level.clone()),
-                        search: title.to_lowercase(),
-                        title: title.into(),
-                        disabled,
-                        provider: None,
-                        reasoning: false,
-                        vision: false,
+pub(super) struct Picker {
+    data: Projection,
+    list: Entity<ListState<ModelList>>,
+    slider: Entity<SliderState>,
+    focus: FocusHandle,
+    open: bool,
+    models_page: bool,
+    draft_level: Option<String>,
+    _subscriptions: Vec<Subscription>,
+}
+impl EventEmitter<PickerEvent> for Picker {}
+impl Picker {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let list = cx.new(|cx| ListState::new(ModelList::default(), window, cx).searchable(true));
+        let slider = cx.new(|_| SliderState::new().min(0.).max(1.).step(1.));
+        let subscriptions = vec![
+            cx.observe(&list, |_, _, cx| cx.notify()),
+            cx.subscribe_in(&list, window, |this, list, event, window, cx| match event {
+                ListEvent::Confirm(ix) if !this.data.disabled => {
+                    let key = list.read(cx).delegate().item(*ix).map(|m| m.key.clone());
+                    if let Some(key) = key {
+                        this.models_page = false;
+                        this.focus.focus(window, cx);
+                        if this.data.selected.as_ref() != Some(&key) {
+                            this.data.disabled = true;
+                            cx.emit(PickerEvent::Model(key));
+                        }
+                        cx.notify();
                     }
-                })
-                .collect(),
-        )],
-        selected: session
-            .state
-            .as_ref()
-            .map(|s| Choice::Thinking(s.thinking_level.clone())),
-    };
-    (models, thinking)
+                }
+                ListEvent::Cancel => {
+                    this.models_page = false;
+                    this.focus.focus(window, cx);
+                    cx.notify();
+                }
+                _ => {}
+            }),
+            cx.subscribe_in(&slider, window, |this, slider, event, window, cx| {
+                this.slider_event(slider.clone(), event, window, cx)
+            }),
+        ];
+        Self {
+            data: Projection::default(),
+            list,
+            slider,
+            focus: cx.focus_handle(),
+            open: false,
+            models_page: false,
+            draft_level: None,
+            _subscriptions: subscriptions,
+        }
+    }
+    pub fn sync_projection(
+        &mut self,
+        data: Projection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.data == data {
+            return;
+        }
+        let reset_slider = self.data.selected != data.selected
+            || self.data.levels != data.levels
+            || self.data.level != data.level
+            || self.data.disabled != data.disabled
+            || data.disabled;
+        self.list.update(cx, |list, cx| {
+            let cursor = list
+                .selected_index()
+                .and_then(|ix| list.delegate().item(ix))
+                .map(|m| m.key.clone());
+            let delegate = list.delegate_mut();
+            delegate.replace(data.models.clone(), data.selected.clone(), data.disabled);
+            let index = cursor
+                .as_ref()
+                .or(data.selected.as_ref())
+                .and_then(|key| delegate.position(key));
+            list.set_selected_index(index, window, cx);
+            cx.notify();
+        });
+        self.data = data;
+        if reset_slider {
+            self.reset_slider(window, cx);
+        }
+        cx.notify();
+    }
+    fn reset_slider(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft_level = None;
+        let max = self.data.levels.len().saturating_sub(1).max(1) as f32;
+        let value = self
+            .data
+            .levels
+            .iter()
+            .position(|v| v == &self.data.level)
+            .unwrap_or(0) as f32;
+        self.slider.update(cx, |slider, cx| {
+            *slider = SliderState::new().min(0.).max(max).step(1.);
+            slider.set_value(value, window, cx);
+        });
+    }
+    pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open = false;
+        self.models_page = false;
+        self.reset_slider(window, cx);
+        cx.notify();
+    }
+    fn can_think(&self) -> bool {
+        !self.data.disabled
+            && self.data.reasoning
+            && self.data.levels.len() > 1
+            && self.data.levels.contains(&self.data.level)
+    }
+    fn slider_event(
+        &mut self,
+        _: Entity<SliderState>,
+        event: &SliderEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.open || !self.can_think() {
+            return;
+        }
+        match event {
+            SliderEvent::Change(value) => {
+                self.draft_level = self
+                    .data
+                    .levels
+                    .get(value.start().round() as usize)
+                    .cloned();
+                self.focus.focus(window, cx);
+                cx.notify();
+            }
+            SliderEvent::Release(value) => {
+                if let Some(level) = self
+                    .data
+                    .levels
+                    .get(value.start().round() as usize)
+                    .cloned()
+                {
+                    self.commit_level(level, cx);
+                }
+            }
+        }
+    }
+    fn commit_level(&mut self, level: String, cx: &mut Context<Self>) {
+        if !self.can_think() || !self.data.levels.contains(&level) {
+            return;
+        }
+        self.draft_level = None;
+        if level != self.data.level {
+            self.data.disabled = true;
+            cx.emit(PickerEvent::Thinking(level));
+        }
+        cx.notify();
+    }
+    fn show_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.data.disabled {
+            return;
+        }
+        if self.data.unloaded {
+            self.data.disabled = true;
+            cx.emit(PickerEvent::Load);
+            cx.notify();
+            return;
+        }
+        self.models_page = true;
+        self.list.update(cx, |list, cx| {
+            list.set_query("", window, cx);
+            let selected = self
+                .data
+                .selected
+                .as_ref()
+                .and_then(|key| list.delegate().position(key));
+            list.set_selected_index(selected, window, cx);
+            list.focus(window, cx);
+        });
+        cx.notify();
+    }
+    fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.data.disabled {
+            return;
+        }
+        self.reset_slider(window, cx);
+        self.data.disabled = true;
+        cx.emit(if self.data.unloaded {
+            PickerEvent::Load
+        } else {
+            PickerEvent::Refresh
+        });
+        cx.notify();
+    }
+    fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let mut panel = v_flex()
+            .w(px(if self.models_page { 336. } else { 256. })
+                .min(window.viewport_size().width - px(40.)))
+            .gap_3();
+        if self.models_page {
+            panel = panel.child(
+                Button::new("model-back")
+                    .ghost()
+                    .small()
+                    .icon(IconName::ChevronLeft)
+                    .label(t(cx, "composer-model-thinking"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.models_page = false;
+                        this.focus.focus(window, cx);
+                        cx.notify();
+                    })),
+            );
+            return panel
+                .child(
+                    List::new(&self.list)
+                        .max_h(rems(18.))
+                        .search_placeholder(t(cx, "conversation-model-search")),
+                )
+                .into_any_element();
+        }
+        let name = if self.data.name.is_empty() {
+            t(cx, "conversation-model")
+        } else {
+            self.data.name.clone()
+        };
+        let model_row = Button::new("choose-model")
+            .ghost()
+            .h_8()
+            .min_w_0()
+            .max_w_full()
+            .px_1()
+            .disabled(self.data.disabled)
+            .accessibility_label(t(cx, "conversation-model"))
+            .tooltip(name.clone())
+            .child(
+                h_flex()
+                    .min_w_0()
+                    .max_w_full()
+                    .items_center()
+                    .justify_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_sm()
+                            .text_center()
+                            .truncate()
+                            .child(name),
+                    )
+                    .child(Icon::new(IconName::ChevronRight).size_4().flex_none()),
+            )
+            .on_click(cx.listener(|this, _, window, cx| this.show_models(window, cx)));
+        let mut provider = h_flex()
+            .id("model-provider")
+            .size_8()
+            .flex_none()
+            .justify_center();
+        if let Some(model) = &self.data.selected {
+            let name = model.provider.clone();
+            provider = provider
+                .role(Role::Image)
+                .aria_label(name.clone())
+                .tooltip(move |window, cx| Tooltip::new(name.clone()).build(window, cx))
+                .child(
+                    if let Some(icon) =
+                        crate::foundation::assets::provider_logo_icon(&model.provider)
+                    {
+                        icon.size_4().into_any_element()
+                    } else {
+                        div()
+                            .min_w_0()
+                            .text_xs()
+                            .truncate()
+                            .child(model.provider.clone())
+                            .into_any_element()
+                    },
+                );
+        }
+        panel = panel.child(
+            h_flex()
+                .gap_1()
+                .items_center()
+                .child(provider)
+                .child(
+                    h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .justify_center()
+                        .child(model_row),
+                )
+                .child(
+                    Button::new("refresh-model-options")
+                        .ghost()
+                        .small()
+                        .size_8()
+                        .flex_none()
+                        .icon(IconName::RefreshCw)
+                        .tooltip(t(cx, "composer-model-refresh"))
+                        .accessibility_label(t(cx, "composer-model-refresh"))
+                        .disabled(self.data.disabled)
+                        .on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx))),
+                ),
+        );
+        if self.data.unloaded {
+            return panel
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t(cx, "conversation-load-options")),
+                )
+                .into_any_element();
+        }
+        if let Some(error) = self.data.model_error.clone() {
+            panel = panel.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().danger)
+                    .child(t(cx, "conversation-model-settings-error"))
+                    .child(error),
+            );
+        }
+        let level = self.draft_level.as_ref().unwrap_or(&self.data.level);
+        let label = if !self.data.reasoning {
+            t(cx, "composer-thinking-unavailable")
+        } else if level.is_empty() {
+            t(cx, "conversation-unknown")
+        } else {
+            thinking_label(level, cx)
+        };
+        let mut effort = v_flex().gap_1();
+        if self.data.reasoning && self.data.levels.len() > 1 {
+            let disabled = !self.can_think();
+            effort = effort
+                .child(
+                    div()
+                        .id("thinking-slider")
+                        .track_focus(&self.focus)
+                        .tab_stop(true)
+                        .aria_label(t(cx, "conversation-thinking"))
+                        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                            if !this.can_think() || event.is_held {
+                                return;
+                            }
+                            let current = this
+                                .data
+                                .levels
+                                .iter()
+                                .position(|l| l == &this.data.level)
+                                .unwrap_or(0);
+                            let index = match event.keystroke.key.as_str() {
+                                "left" => current.saturating_sub(1),
+                                "right" => (current + 1).min(this.data.levels.len() - 1),
+                                "home" => 0,
+                                "end" => this.data.levels.len() - 1,
+                                _ => return,
+                            };
+                            let level = this.data.levels[index].clone();
+                            this.slider
+                                .update(cx, |s, cx| s.set_value(index as f32, window, cx));
+                            this.commit_level(level, cx);
+                            cx.stop_propagation();
+                        }))
+                        .child(Slider::new(&self.slider).disabled(disabled)),
+                )
+                .child(h_flex().justify_between().gap_1().children(
+                    self.data.levels.iter().enumerate().map(|(i, level)| {
+                        let selected =
+                            self.draft_level.as_ref().unwrap_or(&self.data.level) == level;
+                        let level = level.clone();
+                        Button::new(("thinking-level", i))
+                            .ghost()
+                            .xsmall()
+                            .px_1()
+                            .label(thinking_label(&level, cx))
+                            .when(selected, |button| {
+                                button.text_color(cx.theme().primary).font_medium()
+                            })
+                            .disabled(disabled)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.slider
+                                    .update(cx, |s, cx| s.set_value(i as f32, window, cx));
+                                this.commit_level(level.clone(), cx);
+                            }))
+                    }),
+                ));
+        } else {
+            effort = effort.child(
+                div()
+                    .text_sm()
+                    .text_center()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(label),
+            );
+        }
+        panel.child(effort).into_any_element()
+    }
+}
+impl Render for Picker {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let name = if self.data.name.is_empty() {
+            t(cx, "conversation-model")
+        } else {
+            self.data.name.clone()
+        };
+        let level = thinking_label(&self.data.level, cx);
+        let trigger = Button::new("model-thinking")
+            .ghost()
+            .small()
+            .h_8()
+            .min_w_0()
+            .max_w_full()
+            .px_2()
+            .accessibility_label(t(cx, "composer-model-thinking"))
+            .when(!self.open, |button| {
+                button.tooltip(format!("{name}\n{level}"))
+            })
+            .child(
+                h_flex()
+                    .min_w_0()
+                    .gap_1p5()
+                    .child(div().min_w_0().truncate().child(name))
+                    .when(self.data.reasoning && !level.is_empty(), |row| {
+                        row.child(
+                            div()
+                                .flex_none()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("· {level}")),
+                        )
+                    })
+                    .child(Icon::new(IconName::ChevronDown).size_3().flex_none()),
+            );
+        let owner = cx.entity();
+        Popover::new("model-thinking-popover")
+            .anchor(Anchor::BottomRight)
+            .open(self.open)
+            .trigger(trigger)
+            .on_open_change(cx.listener(|this, open, window, cx| {
+                this.open = *open;
+                this.models_page = false;
+                this.reset_slider(window, cx);
+                cx.notify();
+            }))
+            .content(move |_, window, cx| owner.update(cx, |this, cx| this.content(window, cx)))
+    }
 }
 
 pub(super) fn thinking_label(level: &str, cx: &App) -> String {
@@ -292,114 +514,4 @@ pub(super) fn thinking_label(level: &str, cx: &App) -> String {
         _ => return level.to_owned(),
     };
     t(cx, key)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Choice, OptionItem, Picker, Projection};
-    use gpui_kit::component::combobox::ComboboxEvent;
-    use gpui_kit::{
-        AppContext as _, Context, IntoElement, Render, TestAppContext, VisualTestContext, Window,
-        div,
-    };
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    struct Root {
-        picker: Picker,
-    }
-    impl Render for Root {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-        }
-    }
-    fn projection(disabled: bool, selected: &str) -> Projection {
-        Projection {
-            groups: vec![(
-                "provider".into(),
-                ["alpha", "beta"]
-                    .into_iter()
-                    .map(|id| OptionItem {
-                        value: Choice::Thinking(id.into()),
-                        title: id.into(),
-                        search: id.into(),
-                        disabled,
-                        provider: None,
-                        reasoning: false,
-                        vision: false,
-                    })
-                    .collect(),
-            )],
-            selected: Some(Choice::Thinking(selected.into())),
-        }
-    }
-    #[gpui_kit::test]
-    fn refresh_preserves_search_and_domain_selection_without_writing_on_cancel(
-        cx: &mut TestAppContext,
-    ) {
-        cx.update(gpui_kit::init);
-        let writes = Rc::new(Cell::new(0));
-        let counter = writes.clone();
-        let window = cx
-            .update(|cx| {
-                cx.open_window(Default::default(), |window, cx| {
-                    cx.new(|cx| Root {
-                        picker: Picker::with_handler(
-                            true,
-                            move |_, _| counter.set(counter.get() + 1),
-                            window,
-                            cx,
-                        ),
-                    })
-                })
-            })
-            .unwrap();
-        let mut cx = VisualTestContext::from_window(window.into(), cx);
-        let root = window.root(&mut cx).unwrap();
-        cx.update(|window, cx| {
-            root.update(cx, |root, cx| {
-                root.picker.sync(projection(false, "beta"), window, cx);
-                root.picker
-                    .state
-                    .update(cx, |state, cx| state.set_query("alpha", window, cx));
-                root.picker.sync(projection(true, "beta"), window, cx);
-                assert_eq!(root.picker.state.read(cx).query(cx).as_ref(), "alpha");
-                assert_eq!(
-                    root.picker.state.read(cx).selected_value(),
-                    Some(Choice::Thinking("beta".into()))
-                );
-                root.picker.state.update(cx, |_, cx| {
-                    cx.emit(ComboboxEvent::Confirm(vec![Choice::Thinking(
-                        "beta".into(),
-                    )]));
-                    cx.emit(ComboboxEvent::Change(vec![Choice::Thinking("beta".into())]));
-                });
-            })
-        });
-        cx.run_until_parked();
-        assert_eq!(writes.get(), 0);
-        cx.update(|window, cx| {
-            root.update(cx, |root, cx| {
-                root.picker.sync(projection(false, "alpha"), window, cx);
-                root.picker.state.update(cx, |_, cx| {
-                    cx.emit(ComboboxEvent::Confirm(vec![Choice::Thinking(
-                        "alpha".into(),
-                    )]));
-                });
-            })
-        });
-        cx.run_until_parked();
-        assert_eq!(writes.get(), 0);
-        cx.update(|_, cx| {
-            root.update(cx, |root, cx| {
-                root.picker.state.update(cx, |_, cx| {
-                    cx.emit(ComboboxEvent::Change(vec![Choice::Thinking(
-                        "alpha".into(),
-                    )]));
-                });
-            })
-        });
-        cx.run_until_parked();
-        assert_eq!(writes.get(), 1);
-    }
 }

@@ -9,9 +9,11 @@ define_lucide_icons!(pub(crate) enum IconName {
     RotateCw => "rotate-cw", FolderOpen => "folder-open", Save => "save", Search => "search",
     Plus => "plus", PanelLeft => "panel-left", PanelRight => "panel-right",
     ArrowUp => "arrow-up", ArrowDown => "arrow-down", Database => "database", CircleDashed => "circle-dashed", Square => "square", ChevronDown => "chevron-down",
-    ChevronRight => "chevron-right", GitBranch => "git-branch", Copy => "copy",
+    ChevronLeft => "chevron-left", ChevronRight => "chevron-right", GitBranch => "git-branch", Copy => "copy",
     Ellipsis => "ellipsis", CircleAlert => "circle-alert", MessageCircle => "message-circle",
     ListFilter => "list-filter", List => "list",
+    ZoomIn => "zoom-in", ZoomOut => "zoom-out", Scan => "scan", LocateFixed => "locate-fixed",
+    RefreshCw => "refresh-cw",
     X => "x", Folder => "folder", CornerDownLeft => "corner-down-left",
     Terminal => "terminal", BookOpen => "book-open", FilePenLine => "file-pen-line",
     FilePlus => "file-plus", Wrench => "wrench", Brain => "brain", ChartNoAxesColumn => "chart-no-axes-column",
@@ -87,6 +89,11 @@ define_svg_icons!(
 );
 
 pub(crate) fn provider_icon(provider: &str) -> gpui_kit::component::Icon {
+    provider_logo_icon(provider)
+        .unwrap_or_else(|| gpui_kit::component::Icon::new(IconName::Sparkles))
+}
+
+pub(crate) fn provider_logo_icon(provider: &str) -> Option<gpui_kit::component::Icon> {
     use gpui_kit::component::Icon;
     let logo = match provider {
         "openai" | "openai-codex" => ProviderLogoName::OpenAI,
@@ -103,9 +110,9 @@ pub(crate) fn provider_icon(provider: &str) -> gpui_kit::component::Icon {
         "groq" => ProviderLogoName::Groq,
         "perplexity" => ProviderLogoName::Perplexity,
         "together" => ProviderLogoName::Together,
-        _ => return Icon::new(IconName::Sparkles),
+        _ => return None,
     };
-    Icon::new(logo)
+    Some(Icon::new(logo))
 }
 
 const LOGO_BLACK: &str = "brand/logo-black.svg";

@@ -1,3 +1,4 @@
+pub(super) mod canvas;
 mod graph;
 mod presentation;
 use super::*;
@@ -231,22 +232,39 @@ impl HomeView {
                             .checked(self.history_mode == HistoryMode::Detailed)
                             .tooltip(t(cx, "conversation-history-detailed")),
                     )
+                    .child(
+                        Toggle::new("history-canvas")
+                            .icon(Icon::new(IconName::GitBranch).size_4())
+                            .checked(self.history_mode == HistoryMode::Canvas)
+                            .tooltip(t(cx, "history-canvas-mode")),
+                    )
                     .on_click(cx.listener(|this, states: &Vec<bool>, window, cx| {
-                        let next = match this.history_mode {
-                            HistoryMode::Brief if states.get(1) == Some(&true) => {
-                                HistoryMode::Detailed
-                            }
-                            HistoryMode::Detailed if states.first() == Some(&true) => {
-                                HistoryMode::Brief
-                            }
-                            current => current,
-                        };
+                        let next = [
+                            HistoryMode::Brief,
+                            HistoryMode::Detailed,
+                            HistoryMode::Canvas,
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        .find(|(i, mode)| {
+                            *mode != this.history_mode && states.get(*i) == Some(&true)
+                        })
+                        .map(|(_, mode)| mode)
+                        .unwrap_or(this.history_mode);
                         if next != this.history_mode {
+                            if let Some(view) =
+                                this.shown_key.as_ref().and_then(|key| this.views.get(key))
+                            {
+                                view.history_canvas
+                                    .update(cx, |canvas, cx| canvas.clear_pointer(cx));
+                            }
                             this.history_mode = next;
                             this.sync(true, window, cx);
-                            this.history_list.update(cx, |list, cx| {
-                                list.scroll_to_selected_item(window, cx);
-                            });
+                            if next != HistoryMode::Canvas {
+                                this.history_list.update(cx, |list, cx| {
+                                    list.scroll_to_selected_item(window, cx)
+                                });
+                            }
                         }
                         // Keep one mode selected when clicking the active toggle.
                         cx.notify();
@@ -260,6 +278,12 @@ impl HomeView {
                     .tooltip(t(cx, "conversation-close-history"))
                     .accessibility_label(t(cx, "conversation-close-history"))
                     .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(view) =
+                            this.shown_key.as_ref().and_then(|key| this.views.get(key))
+                        {
+                            view.history_canvas
+                                .update(cx, |canvas, cx| canvas.clear_pointer(cx));
+                        }
                         this.show_history = false;
                         cx.notify();
                     })),
@@ -279,6 +303,22 @@ impl HomeView {
                     .tooltip(source.clone())
                     .on_click(move |_, _, cx| cx.reveal_path(std::path::Path::new(&source))),
             );
+        }
+        if self.history_mode == HistoryMode::Canvas {
+            if let Some(view) = self.shown_key.as_ref().and_then(|key| self.views.get(key)) {
+                return panel
+                    .child(div().flex_1().min_h_0().child(view.history_canvas.clone()))
+                    .into_any_element();
+            }
+            return panel
+                .child(
+                    div()
+                        .p_3()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t(cx, "history-canvas-empty")),
+                )
+                .into_any_element();
         }
         let delegate = self.history_list.read(cx).delegate();
         let lanes = delegate.graph.lanes.len();

@@ -235,77 +235,10 @@ impl HomeView {
             let Some(view) = self.views.get(&key) else {
                 return div().into_any_element();
             };
-            let model = session
-                .state
-                .as_ref()
-                .and_then(|s| s.model.as_ref())
-                .map(|m| m.name.clone())
-                .unwrap_or_else(|| t(cx, "conversation-model"));
-            let unavailable = session.busy() || session.operation.is_some();
-            let model_error = session.model_error.clone();
-            let unloaded = session.state.is_none();
-            let owner = self.state.clone();
-            let model_key = key.clone();
-            let model_picker = view
-                .model_picker
-                .element()
-                .placeholder(model.clone())
-                .icon(IconName::Sparkles)
-                .disabled(unavailable)
-                .menu_width(px(340.))
-                .menu_max_h(rems(18.))
-                .search_placeholder(t(cx, "conversation-model-search"))
-                .empty(move |_, cx| {
-                    if unloaded {
-                        let owner = owner.clone();
-                        let key = model_key.clone();
-                        Button::new("load-model-options")
-                            .ghost()
-                            .small()
-                            .label(t(cx, "conversation-load-options"))
-                            .on_click(move |_, _, cx| owner.update(cx, |s, cx| s.connect(&key, cx)))
-                            .into_any_element()
-                    } else {
-                        v_flex()
-                            .p_3()
-                            .text_sm()
-                            .child(t(
-                                cx,
-                                if model_error.is_some() {
-                                    "conversation-model-settings-error"
-                                } else {
-                                    "conversation-model-empty"
-                                },
-                            ))
-                            .children(model_error.clone())
-                            .into_any_element()
-                    }
-                });
-            let thinking = session
-                .state
-                .as_ref()
-                .map(|s| pickers::thinking_label(&s.thinking_level, cx))
-                .filter(|label| !label.is_empty())
-                .unwrap_or_else(|| t(cx, "conversation-thinking"));
-            let model_width = (label_width(&model, window, cx) + px(60.)).min(px(320.));
-            let thinking_width = (label_width(&thinking, window, cx) + px(60.)).min(px(180.));
-            let choices = h_flex()
+            let choices = div()
                 .min_w_0()
-                .max_w_full()
-                .items_center()
-                .gap_2()
-                .child(div().w(model_width).min_w_0().h_8().child(model_picker))
-                .child(
-                    div().w(thinking_width).flex_none().h_8().child(
-                        view.thinking_picker
-                            .element()
-                            .placeholder(thinking)
-                            .icon(IconName::Lightbulb)
-                            .disabled(unavailable || session.thinking_levels.is_empty())
-                            .menu_width(px(180.))
-                            .menu_max_h(rems(16.)),
-                    ),
-                );
+                .max_w(px(340.))
+                .child(view.model_picker.clone());
             let mut actions = h_flex().flex_none().items_center().gap_2();
             if session.stats.is_some() {
                 actions = actions.child(metrics::context(session, cx));
@@ -354,11 +287,22 @@ impl HomeView {
                     .w_full()
                     .min_w_0()
                     .items_center()
-                    .justify_end()
+                    .flex_wrap()
                     .gap_2()
                     .pt_1()
-                    .child(choices)
-                    .child(actions),
+                    .when(session.stats.is_some(), |row| {
+                        row.child(div().flex_none().child(metrics::tokens(session, cx)))
+                    })
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w(px(300.))
+                            .justify_end()
+                            .items_center()
+                            .gap_2()
+                            .child(choices)
+                            .child(actions),
+                    ),
             );
             if session.pending_count > 0 || session.accepted {
                 editor = editor.child(
@@ -414,7 +358,7 @@ impl HomeView {
         for widget in session.widgets.values().filter(|w| w.below) {
             shell = shell.child(div().text_sm().child(widget.lines.join("\n")));
         }
-        if !session.statuses.is_empty() || session.stats.is_some() {
+        if !session.statuses.is_empty() {
             shell = shell.child(
                 h_flex()
                     .w_full()
@@ -430,10 +374,7 @@ impl HomeView {
                                 .text_color(cx.theme().muted_foreground)
                                 .child(status.clone())
                         }),
-                    ))
-                    .when(session.stats.is_some(), |row| {
-                        row.child(metrics::tokens(session, cx))
-                    }),
+                    )),
             );
         }
         div()

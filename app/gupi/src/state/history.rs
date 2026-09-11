@@ -1,4 +1,5 @@
 //! Shared Pi entry projection. UI filtering never changes parent links or the execution leaf.
+pub(crate) mod canvas;
 mod graph;
 mod nodes;
 use crate::foundation::session_catalog::text_content;
@@ -13,17 +14,19 @@ pub(crate) enum HistoryMode {
     #[default]
     Brief,
     Detailed,
+    Canvas,
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct History {
     pub entries: Vec<SessionEntry>,
     pub leaf: Option<String>,
+    pub revision: u64,
     index: HashMap<String, usize>,
     labels: HashMap<String, String>,
     descriptions: HashMap<String, nodes::Description>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HistoryRow {
     pub id: String,
     pub title: String,
@@ -37,6 +40,7 @@ pub(crate) struct HistoryRow {
 }
 impl History {
     pub fn replace(&mut self, entries: Entries) {
+        self.revision = self.revision.wrapping_add(1);
         self.entries = entries.entries;
         self.leaf = entries.leaf_id;
         self.index = self
@@ -162,7 +166,7 @@ impl History {
 }
 fn visible(e: &SessionEntry, leaf: Option<&str>, mode: HistoryMode) -> bool {
     visible_by_default(e, leaf)
-        && (mode == HistoryMode::Detailed
+        && (mode != HistoryMode::Brief
             || e.kind == "message"
                 && matches!(
                     e.data["message"]["role"].as_str(),

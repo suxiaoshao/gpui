@@ -29,8 +29,9 @@ use std::{
 };
 
 struct SessionView {
-    model_picker: pickers::Picker,
-    thinking_picker: pickers::Picker,
+    history_canvas: Entity<history::canvas::HistoryCanvas>,
+    history_revision: u64,
+    model_picker: Entity<pickers::Picker>,
     preview: Option<String>,
     process_open: HashMap<String, bool>,
     scroller: Entity<MessageScrollerState>,
@@ -203,22 +204,99 @@ impl HomeView {
     fn sync(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
         let key = self.state.read(cx).selected.clone();
         let changed = self.shown_key != key;
+        if changed && let Some(view) = self.shown_key.as_ref().and_then(|key| self.views.get(key)) {
+            view.history_canvas
+                .update(cx, |canvas, cx| canvas.clear_pointer(cx));
+            view.model_picker
+                .update(cx, |picker, cx| picker.close(window, cx));
+        }
         self.shown_key = key.clone();
         let Some(key) = key else {
             cx.notify();
             return;
         };
         if !self.views.contains_key(&key) {
+            let history_canvas = cx.new(history::canvas::HistoryCanvas::new);
+            self._subscriptions
+                .push(cx.observe(&history_canvas, |_, _, cx| cx.notify()));
+            let canvas_key = key.clone();
+            self._subscriptions.push(cx.subscribe_in(
+                &history_canvas,
+                window,
+                move |this, _, event: &history::canvas::CanvasEvent, window, cx| {
+                    match event {
+                        history::canvas::CanvasEvent::Preview(id)
+                            if this.shown_key.as_ref() == Some(&canvas_key) =>
+                        {
+                            this.preview_node(id.clone(), window, cx)
+                        }
+                        history::canvas::CanvasEvent::Fork(id) => this
+                            .state
+                            .update(cx, |state, cx| state.fork(&canvas_key, id.clone(), cx)),
+                        _ => {}
+                    }
+                },
+            ));
             let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
             self._subscriptions
                 .push(cx.observe(&scroller, |_, _, cx| cx.notify()));
-            let model_picker = pickers::Picker::new(key.clone(), true, window, cx);
-            let thinking_picker = pickers::Picker::new(key.clone(), false, window, cx);
+            let model_picker = cx.new(|cx| pickers::Picker::new(window, cx));
+            self._subscriptions
+                .push(cx.observe(&model_picker, |_, _, cx| cx.notify()));
+            let picker_key = key.clone();
+            self._subscriptions.push(cx.subscribe_in(
+                &model_picker,
+                window,
+                move |this, _, event: &pickers::PickerEvent, window, cx| {
+                    let owner = this.state.clone();
+                    let key = picker_key.clone();
+                    let event = event.clone();
+                    window.defer(cx, move |_, cx| {
+                        owner.update(cx, |state, cx| {
+                            if state.selected.as_ref() != Some(&key) {
+                                return;
+                            }
+                            match event {
+                                pickers::PickerEvent::Model(selected) => {
+                                    let model = state
+                                        .sessions
+                                        .get(&key)
+                                        .and_then(|s| {
+                                            s.models.iter().find(|m| {
+                                                m.provider == selected.provider
+                                                    && m.id == selected.id
+                                            })
+                                        })
+                                        .cloned();
+                                    if let Some(model) = model {
+                                        state.set_model(&key, model, cx);
+                                    }
+                                }
+                                pickers::PickerEvent::Thinking(level) => {
+                                    state.set_thinking(&key, level, cx)
+                                }
+                                pickers::PickerEvent::Load => state.connect(&key, cx),
+                                pickers::PickerEvent::Refresh => {
+                                    if state.sessions.get(&key).is_some_and(|s| {
+                                        !s.busy()
+                                            && s.operation.is_none()
+                                            && s.refresh.is_none()
+                                            && s.pending_ui.is_empty()
+                                    }) {
+                                        state.refresh(&key, cx);
+                                    }
+                                }
+                            }
+                        })
+                    });
+                },
+            ));
             self.views.insert(
                 key.clone(),
                 SessionView {
+                    history_canvas,
+                    history_revision: u64::MAX,
                     model_picker,
-                    thinking_picker,
                     preview: None,
                     process_open: HashMap::new(),
                     scroller,
@@ -228,10 +306,11 @@ impl HomeView {
             );
         }
         if let Some(session) = self.state.read(cx).sessions.get(&key) {
-            let (models, thinking) = pickers::project(session, cx);
+            let projection = pickers::Projection::from_session(session);
             let view = self.views.get_mut(&key).unwrap();
-            view.model_picker.sync(models, window, cx);
-            view.thinking_picker.sync(thinking, window, cx);
+            view.model_picker.update(cx, |picker, cx| {
+                picker.sync_projection(projection, window, cx)
+            });
         }
         let Some(session) = self.state.read(cx).sessions.get(&key) else {
             return;
@@ -268,7 +347,29 @@ impl HomeView {
                 .filter(|_| !changed)
                 .or(target)
                 .and_then(|id| session.history.visible_ancestor(&id, self.history_mode));
-            let forkable = session
+            let canvas_rows = if view.history_revision != session.history.revision {
+                let mut rows = session
+                    .history
+                    .tree_rows(crate::state::history::HistoryMode::Detailed);
+                let current = session.history.leaf.as_deref().and_then(|id| {
+                    session
+                        .history
+                        .visible_ancestor(id, crate::state::history::HistoryMode::Detailed)
+                });
+                for row in &mut rows {
+                    row.current = current.as_deref() == Some(row.id.as_str());
+                }
+                view.history_revision = session.history.revision;
+                Some(rows)
+            } else {
+                None
+            };
+            let canvas_preview = view.preview.as_deref().and_then(|id| {
+                session
+                    .history
+                    .visible_ancestor(id, crate::state::history::HistoryMode::Detailed)
+            });
+            let forkable: HashSet<_> = session
                 .fork_messages
                 .iter()
                 .map(|m| m.entry_id.clone())
@@ -276,6 +377,9 @@ impl HomeView {
             let can_fork =
                 !session.busy() && session.operation.is_none() && session.pending_ui.is_empty();
             view.content_revision = session.content_revision;
+            view.history_canvas.update(cx, |canvas, cx| {
+                canvas.sync(canvas_rows, canvas_preview, forkable.clone(), can_fork, cx)
+            });
             let old = view.rows.clone();
             view.rows = Rc::new(rows);
             let new = view.rows.clone();
@@ -348,6 +452,8 @@ impl HomeView {
         };
         if let Some(view) = self.views.get_mut(&key) {
             view.preview = Some(id.clone());
+            view.history_canvas
+                .update(cx, |canvas, cx| canvas.reveal(id.clone(), cx));
         }
         self.sync(true, window, cx);
         if let Some(view) = self.views.get_mut(&key)
@@ -472,7 +578,16 @@ impl Render for HomeView {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.show_history = !this.show_history;
                         this.sync(true, window, cx);
-                        if this.show_history {
+                        if !this.show_history
+                            && let Some(view) =
+                                this.shown_key.as_ref().and_then(|key| this.views.get(key))
+                        {
+                            view.history_canvas
+                                .update(cx, |canvas, cx| canvas.clear_pointer(cx));
+                        }
+                        if this.show_history
+                            && this.history_mode != crate::state::history::HistoryMode::Canvas
+                        {
                             this.history_list.update(cx, |list, cx| {
                                 if let Some(last) = list.delegate().rows.len().checked_sub(1) {
                                     list.scroll_to_item(
