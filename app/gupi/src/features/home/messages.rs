@@ -7,6 +7,7 @@ use gpui_kit::component::{
     message_scroller::MessageScroller,
     text::TextView,
 };
+use gpui_kit::prelude::FluentBuilder;
 
 mod actions;
 mod activity;
@@ -23,16 +24,24 @@ pub(super) struct ChatRow {
     kind: RowKind,
 }
 impl ChatRow {
+    fn spacing_before(&self, previous: Option<&Self>) -> Rems {
+        let Some(previous) = previous else {
+            return rems(0.5);
+        };
+        match (&previous.kind, &self.kind) {
+            (RowKind::Run { .. } | RowKind::Compaction(_), RowKind::Compaction(_))
+            | (RowKind::Compaction(_), RowKind::Run { .. }) => rems(0.75),
+            _ => rems(3.),
+        }
+    }
+
     pub(super) fn reveal(&self, entry: &str, open: &mut HashMap<String, bool>) {
         if !self.entries.iter().any(|id| id == entry) {
             return;
         }
         match &self.kind {
-            RowKind::Archive(rows) => {
+            RowKind::Compaction(_) => {
                 open.insert(self.id.clone(), true);
-                for row in rows {
-                    row.reveal(entry, open);
-                }
             }
             RowKind::Run { messages, .. } => {
                 open.insert(self.id.clone(), true);
@@ -50,7 +59,7 @@ impl ChatRow {
                     }
                 }
             }
-            _ => {}
+            RowKind::User(_) | RowKind::BranchSummary(_) => {}
         }
     }
 }
@@ -61,12 +70,13 @@ enum RowKind {
         messages: Vec<DisplayMessage>,
         active: bool,
     },
-    Summary(DisplayMessage),
-    Archive(Vec<ChatRow>),
+    Compaction(DisplayMessage),
+    BranchSummary(DisplayMessage),
 }
 pub(super) fn project(session: &Session, preview: Option<&str>) -> Vec<ChatRow> {
-    let active = (preview.is_none_or(|id| session.history.on_current_path(id)) && session.running)
-        .then_some(&session.active_messages);
+    let active = session
+        .active_messages()
+        .filter(|_| preview.is_none_or(|id| session.history().on_current_path(id)));
     project_rows(session.messages(preview), active)
 }
 fn project_rows(
@@ -83,18 +93,16 @@ fn project_rows(
                 kind: RowKind::User(m),
             });
         } else if matches!(m.role(), "compaction" | "branch_summary") {
-            if m.role() == "compaction" && !rows.is_empty() {
-                let archived = std::mem::take(&mut rows);
-                rows.push(ChatRow {
-                    id: format!("archive-{}", m.id),
-                    entries: archived.iter().flat_map(|r| r.entries.clone()).collect(),
-                    kind: RowKind::Archive(archived),
-                });
-            }
+            // A compaction is a chronological assistant activity, not a container
+            // for earlier messages. Keep both adjacent runs' answers intact.
             rows.push(ChatRow {
                 id: m.id.clone(),
                 entries,
-                kind: RowKind::Summary(m),
+                kind: if m.role() == "compaction" {
+                    RowKind::Compaction(m)
+                } else {
+                    RowKind::BranchSummary(m)
+                },
             });
         } else if let Some(ChatRow {
             entries,
@@ -158,10 +166,44 @@ impl HomeView {
         let Some(session) = self.state.read(cx).sessions.get(&key) else {
             return body.into_any_element();
         };
+        use crate::state::conversation::content::BodyState;
+        match session.body_state() {
+            BodyState::New => {
+                return body
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .justify_center()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_xl().child(t(cx, "conversation-welcome")))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t(cx, "conversation-welcome-hint")),
+                            ),
+                    )
+                    .into_any_element();
+            }
+            BodyState::Loading(stage) => {
+                return body.child(content::skeleton(stage, cx)).into_any_element();
+            }
+            BodyState::Failed(error) => {
+                return body
+                    .child(self.render_content_error("retry-messages", error, cx))
+                    .into_any_element();
+            }
+            BodyState::Ready => {}
+            BodyState::Refreshing(stage) => body = body.child(content::refreshing(stage, cx)),
+            BodyState::RefreshFailed(error) => {
+                body = body.child(self.render_content_error("retry-messages", error, cx))
+            }
+        }
         if view
             .preview
             .as_deref()
-            .is_some_and(|id| !session.history.on_current_path(id))
+            .is_some_and(|id| !session.history().on_current_path(id))
         {
             body = body.child(
                 h_flex()
@@ -187,12 +229,11 @@ impl HomeView {
                     .justify_center()
                     .items_center()
                     .gap_2()
-                    .child(div().text_xl().child(t(cx, "conversation-welcome")))
                     .child(
                         div()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child(t(cx, "conversation-welcome-hint")),
+                            .child(t(cx, "conversation-empty-history")),
                     ),
             );
         } else {
@@ -211,7 +252,10 @@ impl HomeView {
                                     .flex()
                                     .justify_center()
                                     .px_5()
-                                    .py_2()
+                                    .pt(row.spacing_before(
+                                        index.checked_sub(1).and_then(|i| rows.get(i)),
+                                    ))
+                                    .when(index + 1 == rows.len(), |row| row.pb_2())
                                     .child(
                                         div()
                                             .w_full()
@@ -223,6 +267,9 @@ impl HomeView {
                             .unwrap_or_else(|_| div().into_any_element())
                     },
                 )
+                // Gupi owns spacing between row kinds; the scroller's default
+                // bottom padding would separate compaction from its run.
+                .with_row_style(StyleRefinement::default().pb_0())
                 .with_jump_button_label(t(cx, "conversation-bottom"))
                 .size_full(),
             );
@@ -243,12 +290,11 @@ impl HomeView {
                 let target = key.to_owned();
                 let entry = m.entry.clone();
                 let can_fork = self.state.read(cx).sessions.get(key).is_some_and(|s| {
-                    !s.busy()
-                        && s.operation.is_none()
-                        && s.pending_ui.is_empty()
+                    !s.settings_busy()
+                        && !s.model_change.unconfirmed()
                         && entry
                             .as_ref()
-                            .is_some_and(|id| s.fork_messages.iter().any(|m| &m.entry_id == id))
+                            .is_some_and(|id| s.fork_options().iter().any(|m| &m.entry_id == id))
                 });
                 let label = t(cx, "conversation-fork");
                 div()
@@ -285,30 +331,33 @@ impl HomeView {
                     })
                     .into_any_element()
             }
-            RowKind::Summary(m) => v_flex()
+            RowKind::Compaction(m) => Message::new()
+                .content(
+                    MessageContent::new().child(
+                        self.fold(
+                            key,
+                            &row.id,
+                            Disclosure::compaction(t(cx, "conversation-compaction")),
+                            false,
+                            div()
+                                .pl_6()
+                                .child(text_view(format!("text-{}", m.id), m.text()))
+                                .into_any_element(),
+                            cx,
+                        ),
+                    ),
+                )
+                .into_any_element(),
+            RowKind::BranchSummary(m) => v_flex()
                 .gap_2()
                 .text_sm()
-                .child(div().text_color(cx.theme().muted_foreground).child(t(
-                    cx,
-                    if m.role() == "compaction" {
-                        "conversation-compaction"
-                    } else {
-                        "conversation-branch-summary"
-                    },
-                )))
+                .child(
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t(cx, "conversation-branch-summary")),
+                )
                 .child(text_view(format!("text-{}", m.id), m.text()))
                 .into_any_element(),
-            RowKind::Archive(rows) => self.fold(
-                key,
-                &row.id,
-                Disclosure::run(t(cx, "conversation-archive")),
-                false,
-                v_flex()
-                    .gap_4()
-                    .children(rows.iter().map(|r| self.render_row(key, r, cx)))
-                    .into_any_element(),
-                cx,
-            ),
             RowKind::Run { messages, active } => {
                 let live = self
                     .state
@@ -398,9 +447,9 @@ impl HomeView {
 
 #[cfg(test)]
 mod tests {
-    use super::{RowKind, project_rows};
+    use super::{RowKind, RunContent, project_rows};
     use crate::state::history::DisplayMessage;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     fn message(id: &str, role: &str) -> DisplayMessage {
         DisplayMessage {
             id: id.into(),
@@ -427,17 +476,54 @@ mod tests {
         assert!(matches!(rows[3].kind, RowKind::Run { active: true, .. }));
     }
     #[test]
-    fn compaction_keeps_original_entries_available_for_location() {
+    fn compactions_preserve_chronological_messages_and_adjacent_answers() {
         let rows = project_rows(
             vec![
                 message("u", "user"),
                 message("a", "assistant"),
                 message("c", "compaction"),
+                message("after", "assistant"),
+                message("c2", "compaction"),
                 message("next", "user"),
             ],
             None,
         );
-        assert_eq!(rows[0].entries, ["u", "a"]);
-        assert!(matches!(&rows[0].kind, RowKind::Archive(messages) if messages.len()==2));
+        assert_eq!(
+            rows.iter()
+                .flat_map(|row| row.entries.iter().map(String::as_str))
+                .collect::<Vec<_>>(),
+            ["u", "a", "c", "after", "c2", "next"]
+        );
+        assert_eq!(rows.len(), 6);
+        assert!(matches!(rows[0].kind, RowKind::User(_)));
+        assert!(matches!(rows[2].kind, RowKind::Compaction(_)));
+        assert!(matches!(rows[4].kind, RowKind::Compaction(_)));
+        for index in [1, 3] {
+            let RowKind::Run { messages, .. } = &rows[index].kind else {
+                panic!("assistant message must remain visible")
+            };
+            assert_eq!(RunContent::project(messages, &[], false).answer, Some(0));
+        }
+    }
+    #[test]
+    fn locating_a_compaction_expands_only_its_summary() {
+        let rows = project_rows(
+            vec![
+                message("u", "user"),
+                message("a", "assistant"),
+                message("c", "compaction"),
+            ],
+            None,
+        );
+        let mut open = HashMap::new();
+        for row in &rows {
+            row.reveal("c", &mut open);
+        }
+        assert_eq!(open, HashMap::from([("c".to_owned(), true)]));
+        open.clear();
+        for row in &rows {
+            row.reveal("u", &mut open);
+        }
+        assert!(open.is_empty());
     }
 }

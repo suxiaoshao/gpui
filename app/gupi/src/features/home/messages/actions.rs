@@ -10,11 +10,9 @@ pub(super) struct MessageActions {
 }
 impl RenderOnce for MessageActions {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let state =
-            window.use_keyed_state(format!("copy-state-{}", self.id), cx, |_, _| CopyState {
-                copied: false,
-                reset: None,
-            });
+        let state = window.use_keyed_state(format!("copy-state-{}", self.id), cx, |_, _| {
+            CopyState { reset: None }
+        });
         let group = SharedString::from(format!("message-actions-{}", self.id));
         let user = self.message.role() == "user";
         let mut row = h_flex()
@@ -107,7 +105,6 @@ impl RenderOnce for MessageActions {
     }
 }
 struct CopyState {
-    copied: bool,
     reset: Option<Task<()>>,
 }
 #[derive(IntoElement)]
@@ -121,7 +118,7 @@ impl View for CopyAction {
         Some(self.state.entity_id())
     }
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let copied = self.state.read(cx).copied;
+        let copied = self.state.read(cx).reset.is_some();
         let label = t(
             cx,
             if copied {
@@ -159,11 +156,9 @@ impl View for CopyAction {
                     return;
                 }
                 self.state.update(cx, |state, cx| {
-                    state.copied = true;
                     state.reset = Some(cx.spawn(async move |state, cx| {
                         cx.background_executor().timer(Duration::from_secs(2)).await;
                         let _ = state.update(cx, |state, cx| {
-                            state.copied = false;
                             state.reset = None;
                             cx.notify();
                         });

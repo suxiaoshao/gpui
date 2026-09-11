@@ -1,4 +1,5 @@
 use super::*;
+use crate::state::conversation::content::BodyState;
 use gpui_kit::component::input::Textarea;
 use gpui_kit::prelude::FluentBuilder;
 use pi_rpc::protocol::{UiMethod, UiReply};
@@ -48,9 +49,16 @@ impl HomeView {
             .views
             .get(&key)
             .and_then(|v| v.preview.as_deref())
-            .is_some_and(|id| !session.history.on_current_path(id));
+            .is_some_and(|id| !session.history().on_current_path(id));
         let mut shell = v_flex().w_full().max_w(px(820.)).gap_2();
-        if let Some(error) = &session.error {
+        let runtime_error = match session.body_state() {
+            BodyState::New
+            | BodyState::Ready
+            | BodyState::Refreshing(_)
+            | BodyState::RefreshFailed(_) => session.error.as_deref(),
+            BodyState::Loading(_) | BodyState::Failed(_) => None,
+        };
+        if let Some(error) = runtime_error {
             shell = shell.child(
                 h_flex()
                     .gap_2()
@@ -59,7 +67,7 @@ impl HomeView {
                             .flex_1()
                             .text_sm()
                             .text_color(cx.theme().danger)
-                            .child(error.clone()),
+                            .child(error.to_owned()),
                     )
                     .child(
                         Button::new("retry-session")
@@ -240,7 +248,10 @@ impl HomeView {
                 .max_w(px(340.))
                 .child(view.model_picker.clone());
             let mut actions = h_flex().flex_none().items_center().gap_2();
-            if session.stats.is_some() {
+            if session.stats.data().is_some()
+                || session.stats.running()
+                || session.stats.error().is_some()
+            {
                 actions = actions.child(metrics::context(session, cx));
             }
             if session.busy() {
@@ -272,7 +283,9 @@ impl HomeView {
                         .disabled(
                             preview
                                 || session.draft.trim().is_empty()
-                                || session.operation.is_some(),
+                                || session.command.running()
+                                || session.model_change.running()
+                                || session.model_change.unconfirmed(),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             if let Some(key) = this.shown_key.clone() {
@@ -290,9 +303,20 @@ impl HomeView {
                     .flex_wrap()
                     .gap_2()
                     .pt_1()
-                    .when(session.stats.is_some(), |row| {
+                    .when(session.stats.data().is_some(), |row| {
                         row.child(div().flex_none().child(metrics::tokens(session, cx)))
                     })
+                    .when(
+                        session.stats.running() || session.stats.error().is_some(),
+                        |row| {
+                            row.child(metrics::status(
+                                session,
+                                self.state.clone(),
+                                key.clone(),
+                                cx,
+                            ))
+                        },
+                    )
                     .child(
                         h_flex()
                             .flex_1()
@@ -344,7 +368,7 @@ impl HomeView {
                                     .label(name)
                                     .tooltip(session.info.cwd.to_string_lossy().into_owned())
                                     .accessibility_label(t(cx, "conversation-project"))
-                                    .disabled(session.busy() || session.operation.is_some())
+                                    .disabled(session.busy() || session.command.running())
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.pick_directory(cx)),
                                     ),

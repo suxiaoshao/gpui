@@ -13,7 +13,7 @@ define_lucide_icons!(pub(crate) enum IconName {
     Ellipsis => "ellipsis", CircleAlert => "circle-alert", MessageCircle => "message-circle",
     ListFilter => "list-filter", List => "list",
     ZoomIn => "zoom-in", ZoomOut => "zoom-out", Scan => "scan", LocateFixed => "locate-fixed",
-    RefreshCw => "refresh-cw",
+    RefreshCw => "refresh-cw", FileText => "file-text",
     X => "x", Folder => "folder", CornerDownLeft => "corner-down-left",
     Terminal => "terminal", BookOpen => "book-open", FilePenLine => "file-pen-line",
     FilePlus => "file-plus", Wrench => "wrench", Brain => "brain", ChartNoAxesColumn => "chart-no-axes-column",

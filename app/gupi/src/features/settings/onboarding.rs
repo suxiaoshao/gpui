@@ -258,8 +258,13 @@ impl SettingsView {
             );
         let store = self.controller.read(cx).store.clone();
         let problem = store.read(cx, |op| {
-            op.problem()
-                .map(|problem| (problem.key, problem.conflict, problem.reconcile))
+            op.problem().map(|problem| {
+                (
+                    problem.key(),
+                    problem.is_conflict(),
+                    problem.needs_reconcile(),
+                )
+            })
         });
         if let Some(key) = self.error.as_deref().or(problem.map(|p| p.0)) {
             view = view.child(

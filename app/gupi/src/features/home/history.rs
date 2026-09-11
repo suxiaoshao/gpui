@@ -289,6 +289,35 @@ impl HomeView {
                     })),
             );
         let mut panel = v_flex().size_full().child(toolbar);
+        if let Some(session) = self.state.read(cx).current() {
+            use crate::state::conversation::content::BodyState;
+            match session.body_state() {
+                BodyState::New => {
+                    return panel
+                        .child(
+                            div()
+                                .p_3()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t(cx, "history-canvas-empty")),
+                        )
+                        .into_any_element();
+                }
+                BodyState::Loading(stage) => {
+                    return panel.child(content::skeleton(stage, cx)).into_any_element();
+                }
+                BodyState::Failed(error) => {
+                    return panel
+                        .child(self.render_content_error("retry-history-panel", error, cx))
+                        .into_any_element();
+                }
+                BodyState::Ready => {}
+                BodyState::Refreshing(stage) => panel = panel.child(content::refreshing(stage, cx)),
+                BodyState::RefreshFailed(error) => {
+                    panel = panel.child(self.render_content_error("retry-history-panel", error, cx))
+                }
+            }
+        }
         if let Some(source) = self
             .state
             .read(cx)
@@ -303,6 +332,35 @@ impl HomeView {
                     .tooltip(source.clone())
                     .on_click(move |_, _, cx| cx.reveal_path(std::path::Path::new(&source))),
             );
+        }
+        if let Some(session) = self.state.read(cx).current() {
+            if let Some(error) = session.fork_messages.error() {
+                let owner = self.state.clone();
+                let key = self.shown_key.clone().unwrap_or_default();
+                panel = panel.child(
+                    Button::new("fork-options-error")
+                        .ghost()
+                        .small()
+                        .icon(IconName::CircleAlert)
+                        .label(t(cx, "conversation-fork-options-retry"))
+                        .tooltip(error.to_owned())
+                        .on_click(move |_, _, cx| {
+                            owner.update(cx, |state, cx| state.refresh_fork_messages(&key, cx))
+                        }),
+                );
+            } else if session.fork_messages.running() {
+                panel = panel.child(
+                    h_flex()
+                        .px_2()
+                        .gap_2()
+                        .child(gpui_kit::component::spinner::Spinner::new().small())
+                        .child(
+                            div()
+                                .text_xs()
+                                .child(t(cx, "conversation-fork-options-loading")),
+                        ),
+                );
+            }
         }
         if self.history_mode == HistoryMode::Canvas {
             if let Some(view) = self.shown_key.as_ref().and_then(|key| self.views.get(key)) {

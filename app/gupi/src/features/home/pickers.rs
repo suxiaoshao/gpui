@@ -8,6 +8,7 @@ use gpui_kit::component::{
     list::List,
     popover::Popover,
     slider::{Slider, SliderEvent, SliderState},
+    spinner::Spinner,
     tooltip::Tooltip,
 };
 use gpui_kit::prelude::FluentBuilder;
@@ -21,7 +22,8 @@ pub(super) enum PickerEvent {
     Refresh,
 }
 
-#[derive(Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
+/// Computed for the current call; the picker never stores or mutates these facts.
 pub(super) struct Projection {
     models: Vec<ModelOption>,
     selected: Option<ModelKey>,
@@ -32,34 +34,96 @@ pub(super) struct Projection {
     disabled: bool,
     unloaded: bool,
     model_error: Option<String>,
+    thinking_error: Option<String>,
+    change_error: Option<String>,
+    models_loading: bool,
+    models_unloaded: bool,
+    thinking_loading: bool,
+    changing: bool,
+    unconfirmed: bool,
 }
 impl Projection {
     pub fn from_session(session: &Session) -> Self {
         let model = session.state.as_ref().and_then(|s| s.model.as_ref());
         Self {
-            models: session.models.iter().map(ModelOption::from).collect(),
+            models: session
+                .model_options()
+                .iter()
+                .map(ModelOption::from)
+                .collect(),
             selected: model.map(ModelKey::from),
             name: model.map(|m| m.name.clone()).unwrap_or_default(),
             reasoning: model.is_some_and(|m| m.reasoning),
-            levels: session.thinking_levels.clone(),
+            levels: session.levels().to_vec(),
             level: session
                 .state
                 .as_ref()
                 .map(|s| s.thinking_level.clone())
                 .unwrap_or_default(),
             // Keep old model capabilities inert until the post-command snapshot arrives.
-            disabled: session.busy()
-                || session.operation.is_some()
-                || session.refresh.is_some()
-                || !session.pending_ui.is_empty(),
+            disabled: session.settings_busy()
+                || session.state.is_none()
+                    && (session.core_read.running()
+                        || session.instance.is_some() && session.core_read.error().is_none()),
             unloaded: session.state.is_none(),
-            model_error: session.model_error.clone(),
+            model_error: session.models.error().map(str::to_owned),
+            thinking_error: session.thinking_levels.error().map(str::to_owned),
+            change_error: session.model_change.error().map(str::to_owned),
+            models_loading: session.models_loading(),
+            models_unloaded: matches!(
+                session.models,
+                crate::state::conversation::loading::ReadState::Idle
+            ),
+            thinking_loading: session.thinking_levels.running(),
+            changing: session.model_change.running(),
+            unconfirmed: session.model_change.unconfirmed(),
+        }
+    }
+}
+
+impl Projection {
+    fn can_select_model(&self) -> bool {
+        !self.disabled && !self.models_loading && !self.unconfirmed && self.model_error.is_none()
+    }
+    fn can_think(&self) -> bool {
+        !self.disabled
+            && !self.thinking_loading
+            && !self.unconfirmed
+            && self.thinking_error.is_none()
+            && self.reasoning
+            && self.levels.len() > 1
+            && self.levels.contains(&self.level)
+    }
+    fn has_feedback(&self) -> bool {
+        self.models_loading
+            || self.thinking_loading
+            || self.changing
+            || self.model_error.is_some()
+            || self.thinking_error.is_some()
+            || self.change_error.is_some()
+    }
+}
+
+/// Only the canonical slider binding is cached, to preserve an in-progress drag.
+#[derive(PartialEq, Eq)]
+struct SliderBinding {
+    model: Option<ModelKey>,
+    levels: Vec<String>,
+    level: String,
+}
+impl From<&Projection> for SliderBinding {
+    fn from(data: &Projection) -> Self {
+        Self {
+            model: data.selected.clone(),
+            levels: data.levels.clone(),
+            level: data.level.clone(),
         }
     }
 }
 
 pub(super) struct Picker {
-    data: Projection,
+    query: Box<dyn Fn(&App) -> Projection>,
+    slider_binding: Option<SliderBinding>,
     list: Entity<ListState<ModelList>>,
     slider: Entity<SliderState>,
     focus: FocusHandle,
@@ -70,37 +134,44 @@ pub(super) struct Picker {
 }
 impl EventEmitter<PickerEvent> for Picker {}
 impl Picker {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        query: impl Fn(&App) -> Projection + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let list = cx.new(|cx| ListState::new(ModelList::default(), window, cx).searchable(true));
         let slider = cx.new(|_| SliderState::new().min(0.).max(1.).step(1.));
         let subscriptions = vec![
             cx.observe(&list, |_, _, cx| cx.notify()),
-            cx.subscribe_in(&list, window, |this, list, event, window, cx| match event {
-                ListEvent::Confirm(ix) if !this.data.disabled => {
-                    let key = list.read(cx).delegate().item(*ix).map(|m| m.key.clone());
-                    if let Some(key) = key {
+            cx.subscribe_in(&list, window, |this, list, event, window, cx| {
+                let data = this.query(cx);
+                match event {
+                    ListEvent::Confirm(ix) if data.can_select_model() => {
+                        let key = list.read(cx).delegate().item(*ix).map(|m| m.key.clone());
+                        if let Some(key) = key {
+                            this.models_page = false;
+                            this.focus.focus(window, cx);
+                            if data.selected.as_ref() != Some(&key) {
+                                cx.emit(PickerEvent::Model(key));
+                            }
+                            cx.notify();
+                        }
+                    }
+                    ListEvent::Cancel => {
                         this.models_page = false;
                         this.focus.focus(window, cx);
-                        if this.data.selected.as_ref() != Some(&key) {
-                            this.data.disabled = true;
-                            cx.emit(PickerEvent::Model(key));
-                        }
                         cx.notify();
                     }
+                    _ => {}
                 }
-                ListEvent::Cancel => {
-                    this.models_page = false;
-                    this.focus.focus(window, cx);
-                    cx.notify();
-                }
-                _ => {}
             }),
             cx.subscribe_in(&slider, window, |this, slider, event, window, cx| {
                 this.slider_event(slider.clone(), event, window, cx)
             }),
         ];
         Self {
-            data: Projection::default(),
+            query: Box::new(query),
+            slider_binding: None,
             list,
             slider,
             focus: cx.focus_handle(),
@@ -110,27 +181,24 @@ impl Picker {
             _subscriptions: subscriptions,
         }
     }
-    pub fn sync_projection(
-        &mut self,
-        data: Projection,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.data == data {
-            return;
-        }
-        let reset_slider = self.data.selected != data.selected
-            || self.data.levels != data.levels
-            || self.data.level != data.level
-            || self.data.disabled != data.disabled
-            || data.disabled;
+    fn query(&self, cx: &App) -> Projection {
+        (self.query)(cx)
+    }
+    pub fn sync_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let data = self.query(cx);
+        let binding = SliderBinding::from(&data);
+        let reset_slider = self.slider_binding.as_ref() != Some(&binding) || !data.can_think();
         self.list.update(cx, |list, cx| {
             let cursor = list
                 .selected_index()
                 .and_then(|ix| list.delegate().item(ix))
                 .map(|m| m.key.clone());
             let delegate = list.delegate_mut();
-            delegate.replace(data.models.clone(), data.selected.clone(), data.disabled);
+            delegate.replace(
+                data.models.clone(),
+                data.selected.clone(),
+                !data.can_select_model(),
+            );
             let index = cursor
                 .as_ref()
                 .or(data.selected.as_ref())
@@ -138,20 +206,20 @@ impl Picker {
             list.set_selected_index(index, window, cx);
             cx.notify();
         });
-        self.data = data;
+        self.slider_binding = Some(binding);
         if reset_slider {
             self.reset_slider(window, cx);
         }
         cx.notify();
     }
     fn reset_slider(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let data = self.query(cx);
         self.draft_level = None;
-        let max = self.data.levels.len().saturating_sub(1).max(1) as f32;
-        let value = self
-            .data
+        let max = data.levels.len().saturating_sub(1).max(1) as f32;
+        let value = data
             .levels
             .iter()
-            .position(|v| v == &self.data.level)
+            .position(|v| v == &data.level)
             .unwrap_or(0) as f32;
         self.slider.update(cx, |slider, cx| {
             *slider = SliderState::new().min(0.).max(max).step(1.);
@@ -164,11 +232,15 @@ impl Picker {
         self.reset_slider(window, cx);
         cx.notify();
     }
-    fn can_think(&self) -> bool {
-        !self.data.disabled
-            && self.data.reasoning
-            && self.data.levels.len() > 1
-            && self.data.levels.contains(&self.data.level)
+    fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.open = open;
+        self.models_page = false;
+        self.reset_slider(window, cx);
+        let data = self.query(cx);
+        if open && data.models_unloaded && !data.disabled && !data.models_loading {
+            cx.emit(PickerEvent::Load);
+        }
+        cx.notify();
     }
     fn slider_event(
         &mut self,
@@ -177,48 +249,40 @@ impl Picker {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.open || !self.can_think() {
+        let data = self.query(cx);
+        if !self.open || !data.can_think() {
             return;
         }
         match event {
             SliderEvent::Change(value) => {
-                self.draft_level = self
-                    .data
-                    .levels
-                    .get(value.start().round() as usize)
-                    .cloned();
+                self.draft_level = data.levels.get(value.start().round() as usize).cloned();
                 self.focus.focus(window, cx);
                 cx.notify();
             }
             SliderEvent::Release(value) => {
-                if let Some(level) = self
-                    .data
-                    .levels
-                    .get(value.start().round() as usize)
-                    .cloned()
-                {
+                if let Some(level) = data.levels.get(value.start().round() as usize).cloned() {
                     self.commit_level(level, cx);
                 }
             }
         }
     }
     fn commit_level(&mut self, level: String, cx: &mut Context<Self>) {
-        if !self.can_think() || !self.data.levels.contains(&level) {
+        let data = self.query(cx);
+        if !data.can_think() || !data.levels.contains(&level) {
             return;
         }
         self.draft_level = None;
-        if level != self.data.level {
-            self.data.disabled = true;
+        if level != data.level {
             cx.emit(PickerEvent::Thinking(level));
         }
         cx.notify();
     }
     fn show_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.data.disabled {
+        let data = self.query(cx);
+        if !data.can_select_model() {
             return;
         }
-        if self.data.unloaded {
-            self.data.disabled = true;
+        if data.unloaded {
             cx.emit(PickerEvent::Load);
             cx.notify();
             return;
@@ -226,8 +290,7 @@ impl Picker {
         self.models_page = true;
         self.list.update(cx, |list, cx| {
             list.set_query("", window, cx);
-            let selected = self
-                .data
+            let selected = data
                 .selected
                 .as_ref()
                 .and_then(|key| list.delegate().position(key));
@@ -237,12 +300,12 @@ impl Picker {
         cx.notify();
     }
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.data.disabled {
+        let data = self.query(cx);
+        if data.disabled || data.models_loading || data.thinking_loading {
             return;
         }
         self.reset_slider(window, cx);
-        self.data.disabled = true;
-        cx.emit(if self.data.unloaded {
+        cx.emit(if data.unloaded {
             PickerEvent::Load
         } else {
             PickerEvent::Refresh
@@ -250,6 +313,7 @@ impl Picker {
         cx.notify();
     }
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let data = self.query(cx);
         let mut panel = v_flex()
             .w(px(if self.models_page { 336. } else { 256. })
                 .min(window.viewport_size().width - px(40.)))
@@ -268,6 +332,9 @@ impl Picker {
                     })),
             );
             return panel
+                .when(data.has_feedback(), |panel| {
+                    panel.child(self.load_feedback(cx))
+                })
                 .child(
                     List::new(&self.list)
                         .max_h(rems(18.))
@@ -275,10 +342,10 @@ impl Picker {
                 )
                 .into_any_element();
         }
-        let name = if self.data.name.is_empty() {
+        let name = if data.name.is_empty() {
             t(cx, "conversation-model")
         } else {
-            self.data.name.clone()
+            data.name.clone()
         };
         let model_row = Button::new("choose-model")
             .ghost()
@@ -286,7 +353,12 @@ impl Picker {
             .min_w_0()
             .max_w_full()
             .px_1()
-            .disabled(self.data.disabled)
+            .disabled(
+                data.disabled
+                    || data.models_loading
+                    || data.unconfirmed
+                    || data.model_error.is_some(),
+            )
             .accessibility_label(t(cx, "conversation-model"))
             .tooltip(name.clone())
             .child(
@@ -312,7 +384,7 @@ impl Picker {
             .size_8()
             .flex_none()
             .justify_center();
-        if let Some(model) = &self.data.selected {
+        if let Some(model) = &data.selected {
             let name = model.provider.clone();
             provider = provider
                 .role(Role::Image)
@@ -354,12 +426,15 @@ impl Picker {
                         .icon(IconName::RefreshCw)
                         .tooltip(t(cx, "composer-model-refresh"))
                         .accessibility_label(t(cx, "composer-model-refresh"))
-                        .disabled(self.data.disabled)
+                        .disabled(data.disabled || data.models_loading || data.thinking_loading)
                         .on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx))),
                 ),
         );
-        if self.data.unloaded {
+        if data.unloaded {
             return panel
+                .when(data.has_feedback(), |panel| {
+                    panel.child(self.load_feedback(cx))
+                })
                 .child(
                     div()
                         .text_xs()
@@ -368,17 +443,11 @@ impl Picker {
                 )
                 .into_any_element();
         }
-        if let Some(error) = self.data.model_error.clone() {
-            panel = panel.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().danger)
-                    .child(t(cx, "conversation-model-settings-error"))
-                    .child(error),
-            );
+        if data.has_feedback() {
+            panel = panel.child(self.load_feedback(cx));
         }
-        let level = self.draft_level.as_ref().unwrap_or(&self.data.level);
-        let label = if !self.data.reasoning {
+        let level = self.draft_level.as_ref().unwrap_or(&data.level);
+        let label = if !data.reasoning {
             t(cx, "composer-thinking-unavailable")
         } else if level.is_empty() {
             t(cx, "conversation-unknown")
@@ -386,8 +455,8 @@ impl Picker {
             thinking_label(level, cx)
         };
         let mut effort = v_flex().gap_1();
-        if self.data.reasoning && self.data.levels.len() > 1 {
-            let disabled = !self.can_think();
+        if data.reasoning && data.levels.len() > 1 {
+            let disabled = !data.can_think();
             effort = effort
                 .child(
                     div()
@@ -396,23 +465,23 @@ impl Picker {
                         .tab_stop(true)
                         .aria_label(t(cx, "conversation-thinking"))
                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                            if !this.can_think() || event.is_held {
+                            let data = this.query(cx);
+                            if !data.can_think() || event.is_held {
                                 return;
                             }
-                            let current = this
-                                .data
+                            let current = data
                                 .levels
                                 .iter()
-                                .position(|l| l == &this.data.level)
+                                .position(|l| l == &data.level)
                                 .unwrap_or(0);
                             let index = match event.keystroke.key.as_str() {
                                 "left" => current.saturating_sub(1),
-                                "right" => (current + 1).min(this.data.levels.len() - 1),
+                                "right" => (current + 1).min(data.levels.len() - 1),
                                 "home" => 0,
-                                "end" => this.data.levels.len() - 1,
+                                "end" => data.levels.len() - 1,
                                 _ => return,
                             };
-                            let level = this.data.levels[index].clone();
+                            let level = data.levels[index].clone();
                             this.slider
                                 .update(cx, |s, cx| s.set_value(index as f32, window, cx));
                             this.commit_level(level, cx);
@@ -421,9 +490,8 @@ impl Picker {
                         .child(Slider::new(&self.slider).disabled(disabled)),
                 )
                 .child(h_flex().justify_between().gap_1().children(
-                    self.data.levels.iter().enumerate().map(|(i, level)| {
-                        let selected =
-                            self.draft_level.as_ref().unwrap_or(&self.data.level) == level;
+                    data.levels.iter().enumerate().map(|(i, level)| {
+                        let selected = self.draft_level.as_ref().unwrap_or(&data.level) == level;
                         let level = level.clone();
                         Button::new(("thinking-level", i))
                             .ghost()
@@ -452,15 +520,46 @@ impl Picker {
         }
         panel.child(effort).into_any_element()
     }
+    fn load_feedback(&self, cx: &App) -> AnyElement {
+        let data = self.query(cx);
+        let mut feedback = v_flex().gap_1();
+        for (loading, key) in [
+            (data.models_loading, "composer-model-loading"),
+            (data.thinking_loading, "composer-thinking-loading"),
+            (data.changing, "composer-model-confirming"),
+        ] {
+            if loading {
+                feedback = feedback.child(
+                    h_flex()
+                        .gap_2()
+                        .child(Spinner::new().small())
+                        .child(div().text_xs().child(t(cx, key))),
+                );
+            }
+        }
+        for error in [&data.model_error, &data.thinking_error, &data.change_error]
+            .into_iter()
+            .flatten()
+        {
+            feedback = feedback.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().danger)
+                    .child(error.clone()),
+            );
+        }
+        feedback.into_any_element()
+    }
 }
 impl Render for Picker {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let name = if self.data.name.is_empty() {
+        let data = self.query(cx);
+        let name = if data.name.is_empty() {
             t(cx, "conversation-model")
         } else {
-            self.data.name.clone()
+            data.name.clone()
         };
-        let level = thinking_label(&self.data.level, cx);
+        let level = thinking_label(&data.level, cx);
         let trigger = Button::new("model-thinking")
             .ghost()
             .small()
@@ -477,7 +576,7 @@ impl Render for Picker {
                     .min_w_0()
                     .gap_1p5()
                     .child(div().min_w_0().truncate().child(name))
-                    .when(self.data.reasoning && !level.is_empty(), |row| {
+                    .when(data.reasoning && !level.is_empty(), |row| {
                         row.child(
                             div()
                                 .flex_none()
@@ -493,10 +592,7 @@ impl Render for Picker {
             .open(self.open)
             .trigger(trigger)
             .on_open_change(cx.listener(|this, open, window, cx| {
-                this.open = *open;
-                this.models_page = false;
-                this.reset_slider(window, cx);
-                cx.notify();
+                this.set_open(*open, window, cx);
             }))
             .content(move |_, window, cx| owner.update(cx, |this, cx| this.content(window, cx)))
     }

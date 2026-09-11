@@ -133,7 +133,7 @@ fn show(settings: Option<bool>, cx: &mut App) {
                 native = window.native_window_handle().ok();
             }
             view.update(cx, |view, cx| {
-                if !view.draining
+                if !view.is_quitting()
                     && let Some(settings) = settings
                 {
                     view.show_settings = settings;

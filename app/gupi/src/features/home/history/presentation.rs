@@ -109,7 +109,7 @@ pub(super) fn role(row: &HistoryRow, cx: &App) -> (IconName, Hsla, String) {
             "conversation-history-empty",
         ),
         HistoryKind::Compaction => (
-            IconName::Database,
+            IconName::FileText,
             cx.theme().muted_foreground,
             "conversation-compaction",
         ),

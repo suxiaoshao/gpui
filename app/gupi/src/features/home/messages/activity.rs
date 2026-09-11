@@ -5,7 +5,10 @@ use serde_json::Value;
 
 use crate::{
     foundation::session_catalog::text_content,
-    state::{conversation::ToolActivity, history::DisplayMessage},
+    state::{
+        conversation::{ToolActivity, execution::ToolExecution},
+        history::DisplayMessage,
+    },
 };
 
 pub(super) struct RunContent {
@@ -130,20 +133,22 @@ impl RunContent {
                             let (output, status) = if let Some(result) = result {
                                 (result.text(), result_status(result))
                             } else if let Some(update) = update {
-                                (
-                                    text_content(&update.output),
-                                    if update.done {
-                                        if update.error {
-                                            ToolStatus::Failed
+                                match &update.execution {
+                                    ToolExecution::Running(output) => (
+                                        text_content(output),
+                                        if active {
+                                            ToolStatus::Running
                                         } else {
-                                            ToolStatus::Complete
-                                        }
-                                    } else if active {
-                                        ToolStatus::Running
-                                    } else {
-                                        ToolStatus::Unfinished
-                                    },
-                                )
+                                            ToolStatus::Unfinished
+                                        },
+                                    ),
+                                    ToolExecution::Complete(output) => {
+                                        (text_content(output), ToolStatus::Complete)
+                                    }
+                                    ToolExecution::Failed(output) => {
+                                        (text_content(output), ToolStatus::Failed)
+                                    }
+                                }
                             } else {
                                 (
                                     String::new(),
@@ -288,9 +293,9 @@ mod tests {
             id: "read-1".into(),
             name: "read".into(),
             args: json!({"path":"a.rs"}),
-            output: json!({"content":[{"type":"text", "text":"partial"}]}),
-            done: false,
-            error: false,
+            execution: ToolExecution::Running(
+                json!({"content":[{"type":"text", "text":"partial"}]}),
+            ),
         };
         let running = RunContent::project(&[call()], std::slice::from_ref(&live), true);
         let running_tool = tools(&running)[0];

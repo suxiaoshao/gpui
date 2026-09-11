@@ -84,24 +84,64 @@ struct PendingConfig {
     source: ConfigWriteSource,
 }
 #[derive(Debug, thiserror::Error)]
-#[error("{key}: {detail}")]
-pub(crate) struct ConfigProblem {
-    pub key: &'static str,
-    pub detail: String,
-    pub write_source: Option<ConfigWriteSource>,
-    pub backup: Option<PathBuf>,
-    pub reconcile: bool,
-    pub conflict: bool,
+pub(crate) enum ConfigProblem {
+    #[error("configuration read failed: {0}")]
+    Read(String),
+    #[error("configuration parse failed: {0}")]
+    Parse(String),
+    #[error("invalid configuration: {0}")]
+    Validation(String),
+    #[error("configuration write failed: {failure}")]
+    Write {
+        write_source: ConfigWriteSource,
+        failure: Failure,
+        backup: Option<PathBuf>,
+    },
 }
 impl ConfigProblem {
-    fn new(key: &'static str, detail: impl ToString) -> Self {
-        Self {
-            key,
-            detail: detail.to_string(),
-            write_source: None,
-            backup: None,
-            reconcile: false,
-            conflict: false,
+    pub fn key(&self) -> &'static str {
+        match self {
+            Self::Read(_) => "error-config-read",
+            Self::Parse(_) => "error-config-parse",
+            Self::Validation(_) => "error-config-validation",
+            Self::Write {
+                failure: Failure::Conflict,
+                ..
+            } => "error-config-conflict",
+            Self::Write {
+                failure: Failure::Io(_) | Failure::NeedsReconcile(_),
+                ..
+            } => "error-config-write",
+        }
+    }
+    pub fn is_conflict(&self) -> bool {
+        matches!(
+            self,
+            Self::Write {
+                failure: Failure::Conflict,
+                ..
+            }
+        )
+    }
+    pub fn needs_reconcile(&self) -> bool {
+        matches!(
+            self,
+            Self::Write {
+                failure: Failure::NeedsReconcile(_),
+                ..
+            }
+        )
+    }
+    pub fn write_source(&self) -> Option<ConfigWriteSource> {
+        match self {
+            Self::Write { write_source, .. } => Some(*write_source),
+            Self::Read(_) | Self::Parse(_) | Self::Validation(_) => None,
+        }
+    }
+    pub fn backup(&self) -> Option<&PathBuf> {
+        match self {
+            Self::Write { backup, .. } => backup.as_ref(),
+            Self::Read(_) | Self::Parse(_) | Self::Validation(_) => None,
         }
     }
 }
@@ -121,23 +161,18 @@ pub(crate) fn read_config(
     path: PathBuf,
     require_configured: bool,
 ) -> Result<ConfigData, ConfigProblem> {
-    let bytes = persistence::read(&path).map_err(|e| ConfigProblem::new("error-config-read", e))?;
+    let bytes = persistence::read(&path).map_err(|e| ConfigProblem::Read(e.to_string()))?;
     let contents = match &bytes {
         None if require_configured => {
-            return Err(ConfigProblem::new("error-config-read", "file removed"));
+            return Err(ConfigProblem::Read("file removed".into()));
         }
         None => ConfigContents::Missing,
         Some(bytes) => {
-            let text = std::str::from_utf8(bytes)
-                .map_err(|e| ConfigProblem::new("error-config-parse", e))?;
-            let value: AppConfig = toml::from_str(text).map_err(|_| {
-                ConfigProblem::new("error-config-parse", "invalid TOML or unsupported fields")
-            })?;
-            ConfigContents::Configured(
-                value
-                    .normalized()
-                    .map_err(|e| ConfigProblem::new("error-config-validation", e))?,
-            )
+            let text =
+                std::str::from_utf8(bytes).map_err(|e| ConfigProblem::Parse(e.to_string()))?;
+            let value: AppConfig = toml::from_str(text)
+                .map_err(|_| ConfigProblem::Parse("invalid TOML or unsupported fields".into()))?;
+            ConfigContents::Configured(value.normalized().map_err(ConfigProblem::Validation)?)
         }
     };
     Ok(ConfigData {
@@ -166,16 +201,9 @@ fn write_config(
         };
         persistence::replace(&path, expected, &pending.bytes)
     })();
-    result.map_err(|e: Failure| ConfigProblem {
-        key: if matches!(e, Failure::Conflict) {
-            "error-config-conflict"
-        } else {
-            "error-config-write"
-        },
-        detail: e.to_string(),
-        reconcile: matches!(e, Failure::NeedsReconcile(_)),
-        conflict: matches!(e, Failure::Conflict),
-        write_source: Some(pending.source),
+    result.map_err(|failure| ConfigProblem::Write {
+        failure,
+        write_source: pending.source,
         backup: backup.clone(),
     })?;
     Ok(ConfigData {
@@ -295,8 +323,8 @@ impl ConfigController {
             ConfigRepair::BackupAndWrite => {
                 let source = self.store.read(cx, |op| {
                     op.problem()
-                        .filter(|p| p.conflict && !p.reconcile)
-                        .and_then(|p| p.write_source)
+                        .filter(|p| p.is_conflict())
+                        .and_then(ConfigProblem::write_source)
                 });
                 let Some(source) = source else { return Ok(()) };
                 let value = match source {
@@ -331,8 +359,8 @@ impl ConfigController {
             return;
         }
         let allowed = self.store.read(cx, |op| match op.problem() {
-            Some(p) if p.reconcile => matches!(action, ConfigRepair::Reload),
-            Some(p) if p.conflict => {
+            Some(p) if p.needs_reconcile() => matches!(action, ConfigRepair::Reload),
+            Some(p) if p.is_conflict() => {
                 matches!(action, ConfigRepair::Reload | ConfigRepair::BackupAndWrite)
             }
             Some(_) => !matches!(action, ConfigRepair::BackupAndWrite),
@@ -350,7 +378,7 @@ impl ConfigController {
             .unwrap_or(rebase);
         let backup = self
             .store
-            .read(cx, |op| op.problem().and_then(|p| p.backup.clone()));
+            .read(cx, |op| op.problem().and_then(|p| p.backup().cloned()));
         let require_configured = self.store.read(cx, |op| {
             op.data().and_then(ConfigData::configured).is_some()
         });
@@ -362,7 +390,7 @@ impl ConfigController {
         let started = std::time::Instant::now();
         let task = cx.spawn(async move |owner, cx| {
             let result = smol::unblock(move || {
-                let path = path.map_err(|e| ConfigProblem::new("error-config-read", e))?;
+                let path = path.map_err(ConfigProblem::Read)?;
                 match pending {
                     Some(pending) => write_config(path, pending, overwrite, backup),
                     None => read_config(path, require_configured),
@@ -372,7 +400,7 @@ impl ConfigController {
             tracing::info!(
                 elapsed_ms = started.elapsed().as_millis(),
                 success = result.is_ok(),
-                problem = result.as_ref().err().map(|e| e.key),
+                problem = result.as_ref().err().map(ConfigProblem::key),
                 "configuration operation completed"
             );
             let _ = owner.update(cx, |owner, cx| {
@@ -422,7 +450,7 @@ mod tests {
         assert!(read_config(path.clone(), true).is_err());
         std::fs::write(&path, "unexpected = true").unwrap();
         assert_eq!(
-            read_config(path, false).unwrap_err().key,
+            read_config(path, false).unwrap_err().key(),
             "error-config-parse"
         );
     }
@@ -481,7 +509,11 @@ mod tests {
         owner.update(cx, |owner, cx| owner.write_committed(cx));
         settled(&owner, cx).await;
         owner.update(cx, |owner, cx| {
-            assert!(owner.store.read(cx, |op| op.problem().unwrap().conflict));
+            assert!(
+                owner
+                    .store
+                    .read(cx, |op| op.problem().unwrap().is_conflict())
+            );
             owner.submit_draft(cx).unwrap();
             assert!(!owner.store.read(cx, |op| op.is_running()));
             owner.repair(ConfigRepair::BackupAndWrite, cx).unwrap();
@@ -545,8 +577,13 @@ mod tests {
                     source_bytes: None,
                     backup: None,
                 })));
-                let mut problem = ConfigProblem::new("error-config-write", "uncertain commit");
-                problem.reconcile = true;
+                let problem = ConfigProblem::Write {
+                    write_source: super::ConfigWriteSource::Draft,
+                    failure: super::Failure::NeedsReconcile(std::io::Error::other(
+                        "uncertain commit",
+                    )),
+                    backup: None,
+                };
                 op.transition(Settle(Err(problem)));
             });
             owner.submit(AppConfig::default(), cx).unwrap();
@@ -578,7 +615,8 @@ mod tests {
         settled(&owner, cx).await;
         assert!(owner.read_with(cx, |owner, cx| {
             owner.store.read(cx, |op| {
-                op.problem().is_some_and(|p| !p.conflict && !p.reconcile)
+                op.problem()
+                    .is_some_and(|p| !p.is_conflict() && !p.needs_reconcile())
             })
         }));
         assert_eq!(
@@ -620,7 +658,7 @@ mod tests {
         assert!(owner.read_with(cx, |owner, cx| {
             owner
                 .store
-                .read(cx, |op| op.problem().is_some_and(|p| p.conflict))
+                .read(cx, |op| op.problem().is_some_and(|p| p.is_conflict()))
         }));
 
         cx.update(|cx| {

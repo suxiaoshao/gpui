@@ -24,6 +24,15 @@ pub(super) struct Disclosure {
     failed: bool,
 }
 impl Disclosure {
+    pub fn compaction(title: String) -> Self {
+        Self {
+            title,
+            icon: Some(IconName::FileText),
+            level: Level::Tool,
+            loading: false,
+            failed: false,
+        }
+    }
     pub fn run(title: String) -> Self {
         Self {
             title,

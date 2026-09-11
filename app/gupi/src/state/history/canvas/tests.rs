@@ -7,7 +7,7 @@ fn rows(parents: &[Option<usize>]) -> Vec<HistoryRow> {
         .map(|(i, p)| HistoryRow {
             id: i.to_string(),
             title: format!("node {i}"),
-            kind: HistoryKind::User,
+            kind: HistoryKind::AssistantProgress,
             tool: None,
             timestamp: String::new(),
             label: None,
@@ -49,7 +49,7 @@ fn semantic_anchors_split_chains_and_short_runs_stay_visible() {
     let parents: Vec<_> = (0_usize..20).map(|i| i.checked_sub(1)).collect();
     let mut input = rows(&parents);
     input[5].label = Some("bookmark".into());
-    input[10].kind = HistoryKind::Failed;
+    input[10].kind = HistoryKind::Assistant;
     input[13].kind = HistoryKind::Compaction;
     let mut tree = Tree::default();
     tree.replace(input, Some("16".into()));
@@ -66,6 +66,32 @@ fn semantic_anchors_split_chains_and_short_runs_stay_visible() {
             .collect::<Vec<_>>(),
         vec![4, 4]
     );
+}
+
+#[test]
+fn dialogue_anchors_keep_questions_and_answers_while_errors_can_fold() {
+    let parents: Vec<_> = (0_usize..12).map(|i| i.checked_sub(1)).collect();
+    let mut input = rows(&parents);
+    for index in [0, 6] {
+        input[index].kind = HistoryKind::User;
+    }
+    for index in [5, 11] {
+        input[index].kind = HistoryKind::Assistant;
+    }
+    for index in [2, 9] {
+        input[index].kind = HistoryKind::Failed;
+    }
+    let mut tree = Tree::default();
+    tree.replace(input, None);
+    assert_eq!(
+        tree.nodes.iter().map(|node| node.row).collect::<Vec<_>>(),
+        [0, 5, 6, 11]
+    );
+    assert_eq!(tree.edges[0].hidden, [1, 2, 3, 4]);
+    assert_eq!(tree.edges[2].hidden, [7, 8, 9, 10]);
+    tree.expand(0);
+    let failed = tree.node_for("2").expect("expanded error remains visible");
+    assert_eq!(tree.rows[tree.nodes[failed].row].kind, HistoryKind::Failed);
 }
 
 #[test]

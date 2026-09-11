@@ -17,7 +17,7 @@ fn details_text(title: String, fields: Vec<(String, String)>) -> String {
 pub(super) fn context(session: &Session, cx: &App) -> AnyElement {
     let usage = session
         .stats
-        .as_ref()
+        .data()
         .and_then(|stats| stats.context_usage.as_ref());
     let percent = usage
         .and_then(|usage| usage.percent)
@@ -85,7 +85,7 @@ pub(super) fn context(session: &Session, cx: &App) -> AnyElement {
 }
 
 pub(super) fn tokens(session: &Session, cx: &App) -> AnyElement {
-    let Some(stats) = &session.stats else {
+    let Some(stats) = session.stats.data() else {
         return div().into_any_element();
     };
     let usage = &stats.tokens;
@@ -102,8 +102,8 @@ pub(super) fn tokens(session: &Session, cx: &App) -> AnyElement {
         ),
     ];
     let latest = session
-        .history
-        .path(session.history.leaf.as_deref())
+        .history()
+        .path(session.history().leaf.as_deref())
         .into_iter()
         .rev()
         .find_map(|e| {
@@ -148,6 +148,35 @@ pub(super) fn tokens(session: &Session, cx: &App) -> AnyElement {
     trigger
         .tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
         .into_any_element()
+}
+
+pub(super) fn status(
+    session: &Session,
+    owner: Entity<ConversationState>,
+    key: String,
+    cx: &App,
+) -> AnyElement {
+    if let Some(error) = session.stats.error() {
+        return Button::new("stats-error")
+            .ghost()
+            .xsmall()
+            .icon(IconName::CircleAlert)
+            .tooltip(error.to_owned())
+            .accessibility_label(t(cx, "composer-stats-retry"))
+            .on_click(move |_, _, cx| owner.update(cx, |state, cx| state.refresh_stats(&key, cx)))
+            .into_any_element();
+    }
+    if session.stats.running() {
+        let label = t(cx, "composer-stats-loading");
+        return div()
+            .id("stats-loading")
+            .role(Role::Status)
+            .aria_label(label.clone())
+            .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+            .child(gpui_kit::component::spinner::Spinner::new().small())
+            .into_any_element();
+    }
+    div().into_any_element()
 }
 
 fn compact(value: u64) -> String {

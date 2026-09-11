@@ -51,10 +51,12 @@ pub(super) struct ModelList {
 }
 impl ModelList {
     pub fn replace(&mut self, all: Vec<ModelOption>, current: Option<ModelKey>, disabled: bool) {
-        self.all = all;
         self.current = current;
         self.disabled = disabled;
-        self.filter();
+        if self.all != all {
+            self.all = all;
+            self.filter();
+        }
     }
     fn filter(&mut self) {
         let mut groups = BTreeMap::<String, Vec<ModelOption>>::new();

@@ -9,7 +9,7 @@ use crate::{
     },
     pi::PiProbeController,
     state::{
-        config::{AppConfig, ConfigController, ConfigRepair},
+        config::{AppConfig, ConfigContents, ConfigController, ConfigRepair},
         layout, theme,
     },
 };
@@ -19,6 +19,25 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+
+enum StartupScreen {
+    Quitting,
+    LoadingConfig,
+    ConfigFailure(&'static str),
+    Onboarding,
+    Settings,
+    CheckingPi,
+    PiRecovery,
+    Home(std::path::PathBuf),
+}
+impl StartupScreen {
+    fn configured(&self) -> bool {
+        matches!(
+            self,
+            Self::Settings | Self::CheckingPi | Self::PiRecovery | Self::Home(_)
+        )
+    }
+}
 
 pub(crate) struct StartupView {
     focus_handle: FocusHandle,
@@ -30,9 +49,7 @@ pub(crate) struct StartupView {
     pub show_settings: bool,
     config_confirm: bool,
     log_warning: bool,
-    applied: Option<AppConfig>,
     _subscriptions: Vec<Subscription>,
-    pub draining: bool,
     quit_task: Option<Task<()>>,
 }
 impl StartupView {
@@ -54,13 +71,9 @@ impl StartupView {
         });
         let store = config.read(cx).store.clone();
         let config_sub = store.observe_in(cx, window, |this, op, _window, cx| {
-            let value = op.data().and_then(|d| d.configured()).cloned();
-            if this.applied != value {
-                if let Some(value) = &value {
-                    this.applied_pi
-                        .update(cx, |pi, cx| pi.request(value.pi_command.clone(), false, cx));
-                }
-                this.applied = value;
+            if let Some(value) = op.data().and_then(|d| d.configured()) {
+                this.applied_pi
+                    .update(cx, |pi, cx| pi.request(value.pi_command.clone(), false, cx));
             }
             cx.notify();
         });
@@ -101,18 +114,15 @@ impl StartupView {
             show_settings: false,
             config_confirm: false,
             log_warning,
-            applied: None,
             _subscriptions: vec![config_sub, pi_sub, form_sub, appearance, accent],
-            draining: false,
             quit_task: None,
         }
     }
     pub fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.draining {
+        if self.is_quitting() {
             return;
         }
         tracing::info!("managed quit started");
-        self.draining = true;
         self.config.update(cx, |owner, _| owner.draining = true);
         self.applied_pi.update(cx, |pi, _| pi.stop());
         self.draft_pi.update(cx, |pi, _| pi.stop());
@@ -157,39 +167,61 @@ impl StartupView {
         }));
         cx.notify();
     }
+    pub fn is_quitting(&self) -> bool {
+        self.quit_task.is_some()
+    }
+    fn applied_config(&self, cx: &App) -> Option<AppConfig> {
+        self.config
+            .read(cx)
+            .store
+            .read(cx, |op| op.data().and_then(|d| d.configured()).cloned())
+    }
+    fn screen(&self, cx: &App) -> StartupScreen {
+        if self.is_quitting() {
+            return StartupScreen::Quitting;
+        }
+        self.config
+            .read(cx)
+            .store
+            .read(cx, |op| match op.data().map(|data| &data.contents) {
+                Some(ConfigContents::Missing) => StartupScreen::Onboarding,
+                Some(ConfigContents::Configured(config)) => {
+                    let pi = self.applied_pi.read(cx);
+                    if self.show_settings {
+                        StartupScreen::Settings
+                    } else if pi.operation.is_running() {
+                        StartupScreen::CheckingPi
+                    } else if let Some(data) = pi.ready_for(config.pi_command.as_deref()) {
+                        StartupScreen::Home(data.command.clone())
+                    } else {
+                        StartupScreen::PiRecovery
+                    }
+                }
+                None => match op.problem() {
+                    Some(problem) if !op.is_running() => {
+                        StartupScreen::ConfigFailure(problem.key())
+                    }
+                    _ => StartupScreen::LoadingConfig,
+                },
+            })
+    }
 }
 impl Render for StartupView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let store = self.config.read(cx).store.clone();
-        let (configured, missing, config_busy, problem) = store.read(cx, |op| {
-            (
-                op.data().and_then(|d| d.configured()).is_some(),
-                op.data().is_some_and(|d| d.configured().is_none()),
-                op.is_running(),
-                op.problem().map(|p| p.key),
-            )
-        });
-        let ready = self
-            .applied
-            .as_ref()
-            .and_then(|config| {
-                self.applied_pi
-                    .read(cx)
-                    .ready_for(config.pi_command.as_deref())
-            })
-            .map(|data| data.command.clone());
-        let main = configured && !self.show_settings && !self.draining && ready.is_some();
-        if let Some(command) = ready {
+        let screen = self.screen(cx);
+        let configured = screen.configured();
+        let main = matches!(screen, StartupScreen::Home(_));
+        let onboarding = matches!(screen, StartupScreen::Onboarding);
+        if let StartupScreen::Home(command) = &screen {
             if let Some(home) = &self.home {
                 home.read(cx)
                     .state
                     .clone()
-                    .update(cx, |state, _| state.set_command(command));
+                    .update(cx, |state, _| state.set_command(command.clone()));
             } else {
-                self.home = Some(cx.new(|cx| home::HomeView::new(command, window, cx)));
+                self.home = Some(cx.new(|cx| home::HomeView::new(command.clone(), window, cx)));
             }
         }
-        let onboarding = !configured && missing && !self.draining;
         let mut content = v_flex()
             .gap_5()
             .w_full()
@@ -198,18 +230,12 @@ impl Render for StartupView {
         if self.log_warning {
             content = content.child(t(cx, "error-log"));
         }
-        if self.draining {
-            content = content.child(t(cx, "startup-quitting"));
-        } else if !configured {
-            if config_busy && !missing {
-                content = content.child(t(cx, "startup-checking"));
-            } else if !missing && problem.is_some() {
+        match screen {
+            StartupScreen::Quitting => content = content.child(t(cx, "startup-quitting")),
+            StartupScreen::LoadingConfig => content = content.child(t(cx, "startup-checking")),
+            StartupScreen::ConfigFailure(problem) => {
                 content = content
-                    .child(recovery(
-                        t(cx, "recovery-config-title"),
-                        t(cx, problem.unwrap_or("error-config-read")),
-                        cx,
-                    ))
+                    .child(recovery(t(cx, "recovery-config-title"), t(cx, problem), cx))
                     .child(
                         Button::new("config-reload")
                             .label(t(cx, "settings-reload"))
@@ -260,35 +286,30 @@ impl Render for StartupView {
                                 })),
                         );
                 }
-            } else {
-                content = content.child(self.settings.clone());
             }
-        } else {
-            let pi = self.applied_pi.read(cx);
-            if self.show_settings {
-                content = content.child(self.settings.clone());
-            } else if pi.operation.is_running() {
+            StartupScreen::Onboarding | StartupScreen::Settings => {
+                content = content.child(self.settings.clone())
+            }
+            StartupScreen::CheckingPi => {
                 content = content.child(
                     h_flex()
                         .gap_2()
                         .child(Spinner::new())
                         .child(t(cx, "startup-checking")),
-                );
-            } else if let Some(data) = self
-                .applied
-                .as_ref()
-                .and_then(|config| pi.ready_for(config.pi_command.as_deref()))
-            {
-                let _ = data;
-            } else {
+                )
+            }
+            StartupScreen::PiRecovery => {
                 content = content
                     .child(recovery(
                         t(cx, "recovery-pi-title"),
                         t(cx, "error-pi-probe"),
                         cx,
                     ))
-                    .child(self.settings.clone());
+                    .child(self.settings.clone())
             }
+            StartupScreen::Home(_) => {}
+        }
+        if configured && !main {
             let pi = self.applied_pi.read(cx);
             if let Some(problem) = pi.operation.problem() {
                 content = content.child(div().text_sm().child(t(cx, problem.key())));
@@ -298,7 +319,7 @@ impl Render for StartupView {
                     .label(t(cx, "action-check-pi"))
                     .disabled(pi.operation.is_running())
                     .on_click(cx.listener(|this, _, _, cx| {
-                        let command = this.applied.as_ref().and_then(|c| c.pi_command.clone());
+                        let command = this.applied_config(cx).and_then(|c| c.pi_command);
                         this.applied_pi
                             .update(cx, |pi, cx| pi.request(command, true, cx));
                     })),
@@ -334,7 +355,7 @@ impl Render for StartupView {
                                     "menu-settings"
                                 },
                             ))
-                            .disabled(self.draining || !configured)
+                            .disabled(self.is_quitting() || !configured)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.focus_handle.focus(window, cx);
                                 this.show_settings = !this.show_settings;

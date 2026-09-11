@@ -97,7 +97,10 @@ impl Tree {
                     || r.label.is_some()
                     || matches!(
                         r.kind,
-                        HistoryKind::Failed | HistoryKind::Compaction | HistoryKind::BranchSummary
+                        HistoryKind::User
+                            | HistoryKind::Assistant
+                            | HistoryKind::Compaction
+                            | HistoryKind::BranchSummary
                     )
             })
             .collect();

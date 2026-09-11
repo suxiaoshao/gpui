@@ -1,11 +1,20 @@
 use super::*;
-use crate::{app::menus, foundation::session_catalog::SessionInfo, state::conversation::Activity};
+use crate::{
+    app::menus,
+    foundation::{
+        i18n::t_with_args,
+        session_catalog::{ScanProgress, SessionInfo},
+    },
+    state::conversation::Activity,
+};
+use fluent_bundle::FluentArgs;
 use gpui_kit::component::{
     Collapsible as CollapsibleTrait, Icon, StyledExt,
     command::{Command, CommandItem, CommandState},
     input::{Input, InputState},
     label::Label,
     menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
+    progress::Progress,
     sidebar::{Sidebar, SidebarItem},
     spinner::Spinner,
     tooltip::Tooltip,
@@ -17,7 +26,8 @@ type SessionRow = (String, SessionInfo, Activity);
 #[derive(Clone)]
 enum NavigationItem {
     Project(ProjectItem),
-    Loading { refresh: bool },
+    Loading { progress: Option<ScanProgress> },
+    Failed,
     Empty,
 }
 impl CollapsibleTrait for NavigationItem {
@@ -37,7 +47,14 @@ impl SidebarItem for NavigationItem {
     ) -> impl IntoElement {
         match self {
             Self::Project(project) => project.render(id, window, cx).into_any_element(),
-            Self::Loading { refresh } => catalog_loading(refresh, cx),
+            Self::Loading { progress } => catalog_loading(progress, false, cx),
+            Self::Failed => div()
+                .px_2()
+                .py_4()
+                .text_sm()
+                .text_color(cx.theme().danger)
+                .child(t(cx, "conversation-scan-failed"))
+                .into_any_element(),
             Self::Empty => div()
                 .id(id)
                 .px_2()
@@ -50,16 +67,36 @@ impl SidebarItem for NavigationItem {
     }
 }
 
-fn catalog_loading(refresh: bool, cx: &App) -> AnyElement {
-    let label = t(
-        cx,
-        if refresh {
-            "conversation-refreshing"
-        } else {
-            "conversation-scanning"
-        },
-    );
-    h_flex()
+fn catalog_loading(progress: Option<ScanProgress>, refresh: bool, cx: &App) -> AnyElement {
+    let mut args = FluentArgs::new();
+    let (label, percent) = match progress {
+        None => (t(cx, "conversation-restoring"), None),
+        Some(ScanProgress::Discovering { files }) => {
+            args.set("count", files as i64);
+            (t_with_args(cx, "conversation-discovering", &args), None)
+        }
+        Some(ScanProgress::Reading { completed, total }) => {
+            args.set("completed", completed as i64);
+            args.set("total", total as i64);
+            (
+                t_with_args(
+                    cx,
+                    if refresh {
+                        "conversation-refresh-progress"
+                    } else {
+                        "conversation-read-progress"
+                    },
+                    &args,
+                ),
+                Some(if total == 0 {
+                    100.
+                } else {
+                    completed as f32 / total as f32 * 100.
+                }),
+            )
+        }
+    };
+    v_flex()
         .id(if refresh {
             "catalog-refresh"
         } else {
@@ -74,8 +111,16 @@ fn catalog_loading(refresh: bool, cx: &App) -> AnyElement {
         .aria_label(label.clone())
         .text_sm()
         .text_color(cx.theme().muted_foreground)
-        .child(Spinner::new().small())
-        .child(Label::new(label).truncate().min_w_0())
+        .child(
+            h_flex()
+                .gap_2()
+                .min_w_0()
+                .when(percent.is_none(), |row| row.child(Spinner::new().small()))
+                .child(Label::new(label).truncate().min_w_0()),
+        )
+        .when_some(percent, |column, percent| {
+            column.child(Progress::new("catalog-progress").value(percent).xsmall())
+        })
         .into_any_element()
 }
 
@@ -358,7 +403,8 @@ fn session_menu(
             state
                 .read(cx)
                 .catalog
-                .iter()
+                .data()
+                .into_iter()
                 .flat_map(|catalog| &catalog.sessions)
                 .find(|i| i.key() == key)
                 .map(|i| i.path.clone())
@@ -509,10 +555,15 @@ impl HomeView {
             })
             .collect::<Vec<_>>();
         let mut items = Vec::new();
-        if state.scanning() && state.catalog.is_none() {
-            items.push(NavigationItem::Loading { refresh: false });
+        if state.scanning() && state.catalog.data().is_none() {
+            items.push(NavigationItem::Loading {
+                progress: state.catalog.progress(),
+            });
         }
-        if state.catalog.is_some() {
+        if state.catalog.error().is_some() && state.catalog.data().is_none() {
+            items.push(NavigationItem::Failed);
+        }
+        if state.catalog.data().is_some() || !groups.is_empty() {
             if groups.is_empty() && !state.scanning() {
                 items.push(NavigationItem::Empty);
             }
@@ -546,8 +597,8 @@ impl HomeView {
                     let _ = search_owner.update(cx, |this, cx| this.search_dialog(window, cx));
                 },
             ));
-        if state.scanning() && state.catalog.is_some() {
-            header = header.child(catalog_loading(true, cx));
+        if state.catalog.running() && state.catalog.data().is_some() {
+            header = header.child(catalog_loading(state.catalog.progress(), true, cx));
         }
         let refresh = self.state.clone();
         let mut footer = v_flex()
@@ -561,23 +612,24 @@ impl HomeView {
                 cx,
                 |window, cx| window.dispatch_action(Box::new(menus::ShowSettings), cx),
             ))
-            .child(navigation_row(
-                "refresh-sessions",
-                t(cx, "conversation-refresh"),
-                Some(IconName::RotateCw),
-                false,
-                cx,
-                move |_, cx| refresh.update(cx, |s, cx| s.scan(cx)),
-            ));
-        if state
-            .catalog
-            .as_ref()
-            .is_some_and(|catalog| !catalog.warnings.is_empty())
-        {
+            .child(
+                navigation_row(
+                    "refresh-sessions",
+                    t(cx, "conversation-refresh"),
+                    Some(IconName::RotateCw),
+                    false,
+                    cx,
+                    move |_, cx| refresh.update(cx, |s, cx| s.scan(cx)),
+                )
+                .when(state.scanning(), |row| {
+                    row.opacity(0.5).cursor_default().tab_stop(false)
+                }),
+            );
+        if state.catalog.error().is_some() {
             let owner = cx.entity().downgrade();
             footer = footer.child(navigation_row(
-                "catalog-warnings",
-                t(cx, "conversation-scan-warning"),
+                "catalog-error",
+                t(cx, "conversation-scan-failed"),
                 Some(IconName::CircleAlert),
                 false,
                 cx,
@@ -587,12 +639,12 @@ impl HomeView {
                             .state
                             .read(cx)
                             .catalog
-                            .as_ref()
-                            .map(|catalog| catalog.warnings.join("\n"))
-                            .unwrap_or_default();
+                            .error()
+                            .unwrap_or_default()
+                            .to_owned();
                         window.open_dialog(cx, move |dialog, _, cx| {
                             dialog
-                                .title(t(cx, "conversation-scan-warning"))
+                                .title(t(cx, "conversation-scan-failed"))
                                 .child(div().text_sm().child(text.clone()))
                         });
                     });
