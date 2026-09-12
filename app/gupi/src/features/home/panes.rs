@@ -41,18 +41,19 @@ impl PaneLayout {
         } else {
             0.
         };
-        self.left = if left {
-            preferences
+        if left || self.left == 0. {
+            self.left = preferences
                 .sidebar_width
-                .min((width - CONTENT_MIN - right_min).max(0.))
-        } else {
-            0.
-        };
+                .min((width - CONTENT_MIN - right_min).max(0.));
+        }
+        // Offcanvas needs its expanded content width while animating closed.
+        // Hidden panels retain that dimension but reserve no layout space.
+        let reserved_left = if left { self.left } else { 0. };
         self.right = if right {
             preferences.history_width.min(if self.overlay {
                 (width - 100.).max(0.)
             } else {
-                (width - CONTENT_MIN - self.left).max(0.)
+                (width - CONTENT_MIN - reserved_left).max(0.)
             })
         } else {
             0.
@@ -81,7 +82,7 @@ impl PaneLayout {
     }
 
     pub fn resize(&mut self, side: Side, requested: f32) {
-        let Some((width, _, _)) = self.container else {
+        let Some((width, left_visible, _)) = self.container else {
             return;
         };
         let (minimum, maximum) = match side {
@@ -94,7 +95,7 @@ impl PaneLayout {
                 if self.overlay {
                     width - 100.
                 } else {
-                    width - CONTENT_MIN - self.left
+                    width - CONTENT_MIN - if left_visible { self.left } else { 0. }
                 }
                 .min(RIGHT_MAX),
             ),
@@ -247,6 +248,23 @@ impl Element for ResizeEvents {
 mod tests {
     use super::{PaneLayout, Side};
     use crate::state::layout;
+    #[test]
+    fn hidden_sidebar_keeps_animation_width_without_reserving_layout_space() {
+        let preferences = layout::LayoutState {
+            sidebar_width: 480.,
+            history_width: 520.,
+            ..Default::default()
+        };
+        let mut panes = PaneLayout::default();
+        panes.fit(1200., true, true, &preferences);
+        assert_eq!((panes.left, panes.right), (480., 360.));
+        panes.fit(1200., false, true, &preferences);
+        assert_eq!((panes.left, panes.right), (480., 520.));
+        panes.resize(Side::Right, 520.);
+        assert_eq!(panes.right, 520.);
+        panes.fit(1200., true, true, &preferences);
+        assert_eq!((panes.left, panes.right), (480., 360.));
+    }
     #[test]
     fn resizing_one_sidebar_never_borrows_from_the_other() {
         let preferences = layout::LayoutState {

@@ -67,7 +67,7 @@ pub(crate) fn run() {
             titlebar: Some(TitlebarOptions {
                 title: Some("Gupi".into()),
                 appears_transparent: true,
-                ..Default::default()
+                traffic_light_position: Some(point(px(16.), px(16.))),
             }),
             ..TitleBar::window_options()
         };

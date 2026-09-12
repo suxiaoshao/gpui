@@ -1,4 +1,4 @@
-use super::{home, settings::SettingsView};
+use super::{chrome, home, settings::SettingsView};
 use crate::pi::ProbeFailureKey;
 use crate::{
     app::menus,
@@ -15,7 +15,7 @@ use crate::{
 };
 use gpui_form::Form;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Root, TitleBar, button::Button, h_flex, spinner::Spinner, v_flex,
+    ActiveTheme, Disableable, Root, button::Button, h_flex, spinner::Spinner, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -212,6 +212,19 @@ impl Render for StartupView {
         let configured = screen.configured();
         let main = matches!(screen, StartupScreen::Home(_));
         let onboarding = matches!(screen, StartupScreen::Onboarding);
+        let page_title = match &screen {
+            StartupScreen::Settings => t(cx, "menu-settings"),
+            StartupScreen::ConfigFailure(_) => t(cx, "recovery-config-title"),
+            StartupScreen::PiRecovery => t(cx, "recovery-pi-title"),
+            StartupScreen::Onboarding => t(cx, "startup-welcome"),
+            StartupScreen::Quitting => t(cx, "startup-quitting"),
+            StartupScreen::LoadingConfig | StartupScreen::CheckingPi | StartupScreen::Home(_) => {
+                t(cx, "app-title")
+            }
+        };
+        if !main {
+            window.set_window_title(&page_title);
+        }
         if let StartupScreen::Home(command) = &screen {
             if let Some(home) = &self.home {
                 home.read(cx)
@@ -330,40 +343,35 @@ impl Render for StartupView {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(
-                TitleBar::new().child(
-                    h_flex().w_full().justify_between().child("Gupi").child(
-                        Button::new("settings")
-                            .icon(if self.show_settings {
-                                crate::foundation::assets::IconName::ArrowLeft
-                            } else {
-                                crate::foundation::assets::IconName::Settings
+            .when(!main, |view| {
+                view.child(
+                    chrome::title_bar(cx).child(
+                        h_flex()
+                            .size_full()
+                            .pl(chrome::leading_space(window))
+                            .pr_3()
+                            .gap_2()
+                            .border_b_1()
+                            .border_color(cx.theme().border)
+                            .when(self.show_settings, |view| {
+                                view.child(chrome::control(
+                                    "settings-back-control",
+                                    chrome::button("settings-back")
+                                        .icon(crate::foundation::assets::IconName::ArrowLeft)
+                                        .accessibility_label(t(cx, "menu-show-main"))
+                                        .tooltip(t(cx, "menu-show-main"))
+                                        .disabled(self.is_quitting() || !configured)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.focus_handle.focus(window, cx);
+                                            this.show_settings = false;
+                                            cx.notify();
+                                        })),
+                                ))
                             })
-                            .accessibility_label(t(
-                                cx,
-                                if self.show_settings {
-                                    "menu-show-main"
-                                } else {
-                                    "menu-settings"
-                                },
-                            ))
-                            .tooltip(t(
-                                cx,
-                                if self.show_settings {
-                                    "menu-show-main"
-                                } else {
-                                    "menu-settings"
-                                },
-                            ))
-                            .disabled(self.is_quitting() || !configured)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.focus_handle.focus(window, cx);
-                                this.show_settings = !this.show_settings;
-                                cx.notify();
-                            })),
+                            .child(page_title),
                     ),
-                ),
-            )
+                )
+            })
             .child(
                 div()
                     .id("content")

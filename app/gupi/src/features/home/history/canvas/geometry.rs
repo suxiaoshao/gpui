@@ -85,36 +85,54 @@ pub(super) fn clip_segment(
     Some((start, end))
 }
 
+pub(super) fn disclosure_bounds(p: Point<f32>, count: usize) -> Bounds<f32> {
+    let width = (count.to_string().len() as f32 * 7. + 26.).max(36.);
+    Bounds::new(p - point(width / 2., 12.), size(width, 24.))
+}
+
 pub(super) fn label_bounds(
     p: Point<f32>,
     radius: f32,
     width: f32,
     viewport: Size<f32>,
-    branch: bool,
+    prefer_right: bool,
     occupied: &[Bounds<f32>],
 ) -> Option<Bounds<f32>> {
     let below = point(
         (p.x - width / 2.).clamp(8., (viewport.width - width - 8.).max(8.)),
         p.y + radius + 4.,
     );
-    let right = point(p.x + radius + 8., p.y - 16.);
-    let left = point(p.x - radius - 8. - width, p.y - 16.);
-    let above = point(below.x, p.y - radius - 36.);
-    let candidates = if branch {
-        [right, left, below, above]
+    let available = if prefer_right {
+        viewport.width - p.x - radius - 16.
     } else {
-        [below, right, left, above]
+        p.x - radius - 16.
     };
-    candidates
-        .into_iter()
-        .map(|origin| Bounds::new(origin, size(width, 32.)))
-        .find(|b| {
-            b.left() >= 8.
-                && b.top() >= 4.
-                && b.right() <= viewport.width - 8.
-                && b.bottom() <= viewport.height - 4.
-                && !occupied.iter().any(|r| r.intersects(b))
-        })
+    let side_width = width.min(available.max(0.));
+    let side = Bounds::new(
+        point(
+            if prefer_right {
+                p.x + radius + 8.
+            } else {
+                p.x - radius - 8. - side_width
+            },
+            p.y - 16.,
+        ),
+        size(side_width, 32.),
+    );
+    let above = point(below.x, p.y - radius - 36.);
+    // A chain keeps its preferred side even when one caption needs more room.
+    // Collisions fall back vertically, never to the opposite side of the node.
+    let mut candidates = (side_width >= 64.).then_some(side).into_iter().chain([
+        Bounds::new(below, size(width, 32.)),
+        Bounds::new(above, size(width, 32.)),
+    ]);
+    candidates.find(|b| {
+        b.left() >= 8.
+            && b.top() >= 4.
+            && b.right() <= viewport.width - 8.
+            && b.bottom() <= viewport.height - 4.
+            && !occupied.iter().any(|r| r.intersects(b))
+    })
 }
 
 #[cfg(test)]
@@ -178,5 +196,25 @@ mod tests {
         let edge_caption =
             label_bounds(point(28., 350.), 12., 180., size(300., 600.), false, &[]).unwrap();
         assert!(edge_caption.left() >= 8. && edge_caption.right() <= 292.);
+    }
+    #[test]
+    fn chain_captions_keep_their_side_and_fall_back_vertically_on_collision() {
+        let short = label_bounds(point(200., 100.), 12., 80., size(520., 600.), true, &[]).unwrap();
+        let long = label_bounds(point(200., 200.), 12., 180., size(520., 600.), true, &[]).unwrap();
+        assert_eq!(short.left(), long.left());
+        assert!(short.left() > 200.);
+        let collision = label_bounds(
+            point(200., 200.),
+            12.,
+            180.,
+            size(520., 600.),
+            true,
+            &[long],
+        )
+        .unwrap();
+        assert!(collision.top() > 200. || collision.bottom() < 200.);
+        let narrow =
+            label_bounds(point(120., 200.), 12., 180., size(240., 600.), true, &[]).unwrap();
+        assert!(narrow.left() > 120. && narrow.right() <= 232.);
     }
 }

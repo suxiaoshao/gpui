@@ -56,7 +56,6 @@ impl Tree {
             .enumerate()
             .map(|(i, r)| (r.id.clone(), i))
             .collect();
-        self.expanded.retain(|id| self.index.contains_key(id));
         self.current = self.rows.iter().find(|r| r.current).map(|r| r.id.clone());
         if self
             .selected
@@ -94,14 +93,7 @@ impl Tree {
             .map(|(i, r)| {
                 self.parents[i].is_none()
                     || children[i].len() != 1
-                    || r.label.is_some()
-                    || matches!(
-                        r.kind,
-                        HistoryKind::User
-                            | HistoryKind::Assistant
-                            | HistoryKind::Compaction
-                            | HistoryKind::BranchSummary
-                    )
+                    || matches!(r.kind, HistoryKind::User | HistoryKind::Assistant)
             })
             .collect();
         self.segments.clear();
@@ -118,7 +110,7 @@ impl Tree {
         }
         self.segment_ends = vec![vec![]; self.rows.len()];
         for (i, segment) in self.segments.iter().enumerate() {
-            if segment.inner.len() >= 3 {
+            if !segment.inner.is_empty() {
                 self.segment_ends[segment.from].push(i);
                 self.segment_ends[segment.to].push(i);
             }
@@ -130,6 +122,11 @@ impl Tree {
             .get(row)
             .map(Vec::as_slice)
             .unwrap_or_default()
+    }
+    pub fn retain_entries(&mut self, entries: &HashSet<String>) {
+        // Only a new source snapshot may forget expansion intent. Content-level
+        // filters temporarily remove rows but must not erase the user's choices.
+        self.expanded.retain(|id| entries.contains(id));
     }
     fn pinned(&self, row: usize) -> bool {
         let id = &self.rows[row].id;
@@ -184,12 +181,14 @@ impl Tree {
         }
     }
     pub fn can_collapse(&self, segment: usize) -> bool {
-        self.segments.get(segment).is_some_and(|s| {
-            s.inner.len() >= 3
-                && s.inner
-                    .iter()
-                    .any(|&r| self.expanded.contains(&self.rows[r].id))
-                && !s.inner.iter().any(|&r| self.pinned(r))
+        self.collapse_count(segment) > 0
+    }
+    pub fn collapse_count(&self, segment: usize) -> usize {
+        self.segments.get(segment).map_or(0, |s| {
+            s.inner
+                .iter()
+                .filter(|&&r| self.node_index.contains_key(&r) && !self.pinned(r))
+                .count()
         })
     }
     pub fn collapse(&mut self, segment: usize) {
@@ -209,7 +208,7 @@ impl Tree {
                     let r = segment.inner[end];
                     self.pinned(r) || self.expanded.contains(&self.rows[r].id)
                 } {
-                    if end - start >= 3 {
+                    if end > start {
                         for &r in &segment.inner[start..end] {
                             visible[r] = false;
                         }

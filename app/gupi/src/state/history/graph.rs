@@ -15,7 +15,7 @@ pub(crate) struct Edge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::history::{History, HistoryMode};
+    use crate::state::history::{History, HistoryDetail};
 
     fn project(parents: &[Option<usize>]) -> (Vec<HistoryRow>, HistoryGraph) {
         let entries = parents
@@ -32,7 +32,7 @@ mod tests {
         history.replace(
             serde_json::from_value(serde_json::json!({"entries":entries,"leafId":null})).unwrap(),
         );
-        let rows = history.tree_rows(HistoryMode::Detailed);
+        let rows = history.tree_rows(HistoryDetail::Detailed);
         let graph = HistoryGraph::new(&rows);
         (rows, graph)
     }

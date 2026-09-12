@@ -10,11 +10,25 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum HistoryMode {
+pub(crate) enum HistoryDetail {
     #[default]
     Brief,
     Detailed,
-    Canvas,
+    All,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum HistoryView {
+    #[default]
+    List,
+    Tree,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum HistoryScope {
+    #[default]
+    All,
+    Branch,
 }
 
 #[derive(Clone, Default)]
@@ -116,14 +130,14 @@ impl History {
             .filter_map(DisplayMessage::from_entry)
             .collect()
     }
-    pub fn visible_ancestor(&self, id: &str, mode: HistoryMode) -> Option<String> {
+    pub fn visible_ancestor(&self, id: &str, mode: HistoryDetail) -> Option<String> {
         self.path(Some(id))
             .into_iter()
             .rev()
-            .find(|entry| visible(entry, self.leaf.as_deref(), mode))
+            .find(|entry| self.visible(entry, mode))
             .map(|entry| entry.id.clone())
     }
-    pub fn tree_rows(&self, mode: HistoryMode) -> Vec<HistoryRow> {
+    pub fn tree_rows(&self, mode: HistoryDetail) -> Vec<HistoryRow> {
         // Pi appends parents before children. Carry the nearest visible ancestor
         // across filtered entries without changing the underlying parent links.
         let mut nearest: HashMap<String, Option<String>> = HashMap::new();
@@ -135,7 +149,7 @@ impl History {
                 .and_then(|id| nearest.get(id))
                 .cloned()
                 .flatten();
-            if visible(e, self.leaf.as_deref(), mode) {
+            if self.visible(e, mode) {
                 let mut row = self.row(e);
                 row.indirect_parent = parent.is_some() && parent != e.parent_id;
                 row.parent = parent;
@@ -147,7 +161,56 @@ impl History {
         }
         // Append order keeps parents above children and matches the conversation,
         // even if entry timestamps are equal or a clock moves backwards.
+        if let Some(current) = self
+            .leaf
+            .as_ref()
+            .and_then(|id| nearest.get(id))
+            .and_then(Option::as_ref)
+            && let Some(row) = rows.iter_mut().find(|row| &row.id == current)
+        {
+            row.current = true;
+        }
         rows
+    }
+    pub fn list_rows(
+        &self,
+        detail: HistoryDetail,
+        scope: HistoryScope,
+        preview: Option<&str>,
+    ) -> Vec<HistoryRow> {
+        let mut rows = self.tree_rows(detail);
+        if scope == HistoryScope::Branch {
+            let leaf = preview
+                .and_then(|id| self.preview_leaf(id))
+                .or_else(|| self.leaf.clone());
+            let path: HashSet<_> = self
+                .path(leaf.as_deref())
+                .into_iter()
+                .map(|e| e.id.as_str())
+                .collect();
+            rows.retain(|row| path.contains(row.id.as_str()));
+        }
+        rows
+    }
+    fn visible(&self, entry: &SessionEntry, detail: HistoryDetail) -> bool {
+        let kind = self.descriptions[&entry.id].kind;
+        match detail {
+            HistoryDetail::Brief => matches!(kind, HistoryKind::User | HistoryKind::Assistant),
+            HistoryDetail::Detailed => matches!(
+                kind,
+                HistoryKind::User
+                    | HistoryKind::Assistant
+                    | HistoryKind::AssistantProgress
+                    | HistoryKind::Thinking
+                    | HistoryKind::ToolCall
+                    | HistoryKind::ToolResult
+                    | HistoryKind::Failed
+                    | HistoryKind::Stopped
+                    | HistoryKind::Compaction
+                    | HistoryKind::BranchSummary
+            ),
+            HistoryDetail::All => true,
+        }
     }
     fn row(&self, e: &SessionEntry) -> HistoryRow {
         let description = &self.descriptions[&e.id];
@@ -163,35 +226,6 @@ impl History {
             current: self.leaf.as_deref() == Some(e.id.as_str()),
         }
     }
-}
-fn visible(e: &SessionEntry, leaf: Option<&str>, mode: HistoryMode) -> bool {
-    visible_by_default(e, leaf)
-        && (mode != HistoryMode::Brief
-            || e.kind == "message"
-                && matches!(
-                    e.data["message"]["role"].as_str(),
-                    Some("user" | "assistant")
-                ))
-}
-fn visible_by_default(e: &SessionEntry, leaf: Option<&str>) -> bool {
-    // Match Pi /tree's default filter, including its current-leaf exception for
-    // assistants without text. Labels and branch points do not bypass filtering.
-    if matches!(
-        e.kind.as_str(),
-        "label" | "custom" | "model_change" | "thinking_level_change" | "session_info"
-    ) {
-        return false;
-    }
-    if e.kind == "message"
-        && leaf != Some(e.id.as_str())
-        && let Some(message) = e.data.get("message").filter(|m| m["role"] == "assistant")
-    {
-        let exceptional_stop = message["stopReason"]
-            .as_str()
-            .is_some_and(|reason| !matches!(reason, "" | "stop" | "toolUse"));
-        return exceptional_stop || !text_content(message).trim().is_empty();
-    }
-    true
 }
 #[derive(Clone, Debug)]
 pub(crate) struct DisplayMessage {
@@ -258,7 +292,7 @@ mod tests {
     #[test]
     fn projection_keeps_chains_flat_and_preview_does_not_change_leaf() {
         let h = history();
-        let rows = h.tree_rows(HistoryMode::Detailed);
+        let rows = h.tree_rows(HistoryDetail::Detailed);
         assert_eq!(
             rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
             vec!["root", "tool", "split", "a", "b", "b2"]
@@ -267,7 +301,7 @@ mod tests {
         assert!(!rows[2].indirect_parent);
         assert_eq!(h.preview_leaf("a").as_deref(), Some("a"));
         assert_eq!(h.leaf.as_deref(), Some("b2"));
-        let brief = h.tree_rows(HistoryMode::Brief);
+        let brief = h.tree_rows(HistoryDetail::Brief);
         assert_eq!(
             brief.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
             vec!["root", "split", "a", "b", "b2"]
@@ -275,17 +309,18 @@ mod tests {
         assert_eq!(brief[1].parent.as_deref(), Some("root"));
         assert!(brief[1].indirect_parent);
         assert_eq!(
-            h.visible_ancestor("tool", HistoryMode::Brief).as_deref(),
+            h.visible_ancestor("tool", HistoryDetail::Brief).as_deref(),
             Some("root")
         );
         assert_eq!(
-            h.visible_ancestor("tool", HistoryMode::Detailed).as_deref(),
+            h.visible_ancestor("tool", HistoryDetail::Detailed)
+                .as_deref(),
             Some("tool")
         );
         assert_eq!(h.entry("split").unwrap().parent_id.as_deref(), Some("tool"));
     }
     #[test]
-    fn brief_mode_excludes_tools_and_summaries_even_at_the_execution_leaf() {
+    fn brief_excludes_tools_and_summaries_even_at_the_execution_leaf() {
         let mut h = history();
         let mut entries = h.entries.clone();
         entries.extend(serde_json::from_value::<Vec<SessionEntry>>(serde_json::json!([
@@ -297,85 +332,178 @@ mod tests {
             entries,
             leaf_id: Some("latest-tool".into()),
         });
-        let brief = h.tree_rows(HistoryMode::Brief);
-        assert_eq!(
-            brief.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
-            vec!["root", "split", "a", "b", "b2"]
-        );
-        let detailed = h.tree_rows(HistoryMode::Detailed);
+        {
+            let mode = HistoryDetail::Brief;
+            let rows = h.tree_rows(mode);
+            assert_eq!(
+                rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+                vec!["root", "split", "a", "b", "b2"]
+            );
+            assert_eq!(
+                h.visible_ancestor("latest-tool", mode).as_deref(),
+                Some("b2")
+            );
+        }
+        let detailed = h.tree_rows(HistoryDetail::Detailed);
         assert_eq!(detailed.last().unwrap().id, "latest-tool");
         assert!(detailed.last().unwrap().current);
-        assert_eq!(
-            h.visible_ancestor("latest-tool", HistoryMode::Brief)
-                .as_deref(),
-            Some("b2")
-        );
         assert_eq!(h.leaf.as_deref(), Some("latest-tool"));
     }
     #[test]
-    fn default_filter_preserves_content_and_exceptional_assistants() {
-        for (message, visible) in [
-            (serde_json::json!({"role":"user","content":[]}), true),
-            (
-                serde_json::json!({"role":"toolResult","content":"output"}),
-                true,
-            ),
-            (
-                serde_json::json!({"role":"assistant","content":"checking"}),
-                true,
-            ),
-            (
-                serde_json::json!({"role":"assistant","content":[{"type":"text","text":"checking"},{"type":"toolCall","id":"c"}],"stopReason":"toolUse"}),
-                true,
-            ),
-            (
-                serde_json::json!({"role":"assistant","content":[{"type":"toolCall","id":"c"}],"stopReason":"toolUse"}),
-                false,
-            ),
-            (
-                serde_json::json!({"role":"assistant","content":[{"type":"thinking","thinking":"reason"}],"stopReason":"stop"}),
-                false,
-            ),
-            (
-                serde_json::json!({"role":"assistant","content":[{"type":"text","text":" \n "}]}),
-                false,
-            ),
-            (
-                serde_json::json!({"role":"assistant","content":[],"stopReason":"error"}),
-                true,
-            ),
-            (
-                serde_json::json!({"role":"assistant","content":[],"stopReason":"aborted"}),
-                true,
-            ),
-            (
-                serde_json::json!({"role":"assistant","content":[],"stopReason":"length"}),
-                true,
-            ),
-        ] {
-            let entry: SessionEntry = serde_json::from_value(serde_json::json!({
-                "id":"entry","parentId":null,"timestamp":"t","type":"message","message":message
-            }))
-            .unwrap();
-            assert_eq!(visible_by_default(&entry, None), visible, "{message}");
-            assert!(visible_by_default(&entry, Some("entry")), "{message}");
+    fn content_levels_preserve_semantics_and_reconnect_branches() {
+        let entries: Entries = serde_json::from_value(serde_json::json!({"leafId":"empty", "entries":[
+            {"type":"message","id":"u","parentId":null,"timestamp":"t","message":{"role":"user","content":"question"}},
+            {"type":"message","id":"progress","parentId":"u","timestamp":"t","message":{"role":"assistant","content":"checking"}},
+            {"type":"message","id":"call","parentId":"progress","timestamp":"t","message":{"role":"assistant","content":[{"type":"text","text":"reading"},{"type":"toolCall","id":"c","name":"read"}],"stopReason":"toolUse"}},
+            {"type":"message","id":"silent-call","parentId":"call","timestamp":"t","message":{"role":"assistant","content":[{"type":"toolCall","id":"d","name":"read"}],"stopReason":"toolUse"}},
+            {"type":"message","id":"result","parentId":"silent-call","timestamp":"t","message":{"role":"toolResult","content":"output"}},
+            {"type":"message","id":"thinking","parentId":"result","timestamp":"t","message":{"role":"assistant","content":[{"type":"thinking","thinking":"reason"}]}},
+            {"type":"message","id":"answer","parentId":"thinking","timestamp":"t","message":{"role":"assistant","content":"answer","stopReason":"stop"}},
+            {"type":"compaction","id":"summary","parentId":"answer","timestamp":"t","summary":"compressed"},
+            {"type":"branch_summary","id":"branch","parentId":"summary","timestamp":"t","summary":"branch summary"},
+            {"type":"custom_message","id":"notice","parentId":"branch","timestamp":"t","content":"notice"},
+            {"type":"message","id":"next","parentId":"notice","timestamp":"t","message":{"role":"user","content":"next question"}},
+            {"type":"message","id":"failed","parentId":"next","timestamp":"t","message":{"role":"assistant","content":"failure","stopReason":"error"}},
+            {"type":"message","id":"stopped","parentId":"next","timestamp":"t","message":{"role":"assistant","content":"interrupted","stopReason":"aborted"}},
+            {"type":"message","id":"empty","parentId":"next","timestamp":"t","message":{"role":"assistant","content":[]}},
+            {"type":"message","id":"alternative","parentId":"result","timestamp":"t","message":{"role":"assistant","content":"other answer","stopReason":"stop"}},
+            {"type":"label","id":"label","parentId":"empty","timestamp":"t","targetId":"failed","label":"bookmark"},
+            {"type":"model_change","id":"model","parentId":"label","timestamp":"t","provider":"provider","modelId":"model"},
+            {"type":"thinking_level_change","id":"level","parentId":"model","timestamp":"t","thinkingLevel":"high"},
+            {"type":"session_info","id":"name","parentId":"level","timestamp":"t","name":"session name"},
+            {"type":"custom","id":"custom","parentId":"name","timestamp":"t","customType":"test"},
+            {"type":"future_record","id":"future","parentId":"custom","timestamp":"t"}
+        ]})).unwrap();
+        let mut h = History::default();
+        h.replace(entries);
+        let brief = h.tree_rows(HistoryDetail::Brief);
+        assert_eq!(
+            brief
+                .iter()
+                .map(|r| (r.id.as_str(), r.parent.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                ("u", None),
+                ("answer", Some("u")),
+                ("next", Some("answer")),
+                ("alternative", Some("u"))
+            ]
+        );
+        assert!(brief[1..].iter().all(|row| row.indirect_parent));
+        assert_eq!(
+            brief
+                .iter()
+                .filter(|row| row.current)
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["next"]
+        );
+        {
+            let mode = HistoryDetail::Brief;
+            for (hidden, ancestor) in [
+                ("thinking", "u"),
+                ("notice", "answer"),
+                ("failed", "next"),
+                ("stopped", "next"),
+                ("empty", "next"),
+            ] {
+                assert_eq!(h.visible_ancestor(hidden, mode).as_deref(), Some(ancestor));
+            }
         }
-        for (kind, visible) in [
-            ("model_change", false),
-            ("thinking_level_change", false),
-            ("session_info", false),
-            ("custom", false),
-            ("label", false),
-            ("custom_message", true),
-            ("compaction", true),
-            ("branch_summary", true),
+        let detailed = h.tree_rows(HistoryDetail::Detailed);
+        for id in [
+            "progress",
+            "call",
+            "silent-call",
+            "result",
+            "thinking",
+            "summary",
+            "branch",
+            "failed",
+            "stopped",
         ] {
-            let entry: SessionEntry = serde_json::from_value(serde_json::json!({
-                "id":"entry","parentId":null,"timestamp":"t","type":kind
-            }))
-            .unwrap();
-            assert_eq!(visible_by_default(&entry, None), visible, "{kind}");
-            assert_eq!(visible_by_default(&entry, Some("entry")), visible, "{kind}");
+            assert!(detailed.iter().any(|row| row.id == id), "missing {id}");
         }
+        assert!(
+            detailed
+                .iter()
+                .find(|row| row.id == "next")
+                .unwrap()
+                .current
+        );
+        for id in [
+            "notice", "empty", "label", "model", "level", "name", "custom", "future",
+        ] {
+            assert!(detailed.iter().all(|row| row.id != id), "unexpected {id}");
+        }
+        let all = h.tree_rows(HistoryDetail::All);
+        assert_eq!(all.len(), h.entries.len());
+        for id in [
+            "model", "level", "name", "label", "custom", "future", "notice",
+        ] {
+            assert!(
+                !all.iter()
+                    .find(|row| row.id == id)
+                    .unwrap()
+                    .title
+                    .is_empty()
+            );
+        }
+        assert!(all.iter().find(|row| row.id == "empty").unwrap().current);
+        assert_eq!(h.leaf.as_deref(), Some("empty"));
+        assert_eq!(
+            h.entry("answer").unwrap().parent_id.as_deref(),
+            Some("thinking")
+        );
+        // The canvas cannot unfold records removed by the shared content filter.
+        let mut tree = canvas::Tree::default();
+        tree.replace(h.tree_rows(HistoryDetail::Brief), None);
+        assert_eq!(tree.nodes.len(), brief.len());
+        assert!(tree.edges.iter().all(|edge| edge.hidden.is_empty()));
+    }
+    #[test]
+    fn branch_scope_matches_body_path_including_shared_history_and_descendants() {
+        let h = history();
+        for detail in [
+            HistoryDetail::Brief,
+            HistoryDetail::Detailed,
+            HistoryDetail::All,
+        ] {
+            let active = h.list_rows(detail, HistoryScope::Branch, None);
+            assert_eq!(
+                active,
+                h.list_rows(detail, HistoryScope::Branch, Some("split"))
+            );
+            assert!(active.iter().any(|row| row.id == "root"));
+            assert!(active.iter().any(|row| row.id == "b2" && row.current));
+            assert!(active.iter().all(|row| row.id != "a"));
+            let preview = h.list_rows(detail, HistoryScope::Branch, Some("a"));
+            assert_eq!(preview.last().unwrap().id, "a");
+            assert!(preview.iter().any(|row| row.id == "root"));
+            assert!(
+                preview
+                    .iter()
+                    .all(|row| !row.current && row.id != "b" && row.id != "b2")
+            );
+            assert_eq!(
+                h.list_rows(detail, HistoryScope::All, Some("a")),
+                h.tree_rows(detail)
+            );
+        }
+        assert_eq!(h.leaf.as_deref(), Some("b2"));
+        assert_eq!(h.entry("split").unwrap().parent_id.as_deref(), Some("tool"));
+        // Previewing an older off-branch node includes the rest of that branch.
+        let mut h = h;
+        let mut entries = h.entries.clone();
+        entries.push(serde_json::from_value(serde_json::json!({"type":"message","id":"a2","parentId":"a","timestamp":"t","message":{"role":"assistant","content":"A answer"}})).unwrap());
+        h.replace(Entries {
+            entries,
+            leaf_id: Some("b2".into()),
+        });
+        let rows = h.list_rows(HistoryDetail::Brief, HistoryScope::Branch, Some("a"));
+        assert_eq!(
+            rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["root", "split", "a", "a2"]
+        );
     }
 }

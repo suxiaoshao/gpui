@@ -15,7 +15,7 @@ use gpui_kit::component::{
     label::Label,
     menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
     progress::Progress,
-    sidebar::{Sidebar, SidebarItem},
+    sidebar::{Sidebar, SidebarCollapsible, SidebarItem},
     spinner::Spinner,
     tooltip::Tooltip,
 };
@@ -387,7 +387,7 @@ impl SidebarItem for ProjectItem {
         content
     }
 }
-fn session_menu(
+pub(super) fn session_menu(
     menu: PopupMenu,
     key: String,
     state: Entity<ConversationState>,
@@ -505,6 +505,11 @@ fn activity_mark(activity: Activity, cx: &App) -> AnyElement {
 }
 
 impl HomeView {
+    pub(super) fn new_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| state.new_draft(None, cx));
+        self.input.update(cx, |input, cx| input.focus(window, cx));
+    }
+
     pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         let state = self.state.read(cx);
         let mut projects: Vec<(PathBuf, Vec<SessionRow>)> = vec![];
@@ -573,7 +578,26 @@ impl HomeView {
         let search_owner = owner.clone();
         let mut header = v_flex()
             .w_full()
-            .gap_1()
+            .gap_2()
+            .child(
+                h_flex()
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .child(div().flex_1().text_lg().child(t(cx, "app-title")))
+                    .child(
+                        Button::new("search-sessions")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Search)
+                            .tooltip(t(cx, "conversation-search"))
+                            .accessibility_label(t(cx, "conversation-search"))
+                            .on_click(move |_, window, cx| {
+                                let _ = search_owner
+                                    .update(cx, |this, cx| this.search_dialog(window, cx));
+                            }),
+                    ),
+            )
             .child(navigation_row(
                 "new-conversation",
                 t(cx, "conversation-new"),
@@ -581,20 +605,7 @@ impl HomeView {
                 false,
                 cx,
                 move |window, cx| {
-                    let _ = owner.update(cx, |this, cx| {
-                        this.state.update(cx, |s, cx| s.new_draft(None, cx));
-                        this.input.update(cx, |s, cx| s.focus(window, cx));
-                    });
-                },
-            ))
-            .child(navigation_row(
-                "search-sessions",
-                t(cx, "conversation-search"),
-                Some(IconName::Search),
-                false,
-                cx,
-                move |window, cx| {
-                    let _ = search_owner.update(cx, |this, cx| this.search_dialog(window, cx));
+                    let _ = owner.update(cx, |this, cx| this.new_conversation(window, cx));
                 },
             ));
         if state.catalog.running() && state.catalog.data().is_some() {
@@ -652,13 +663,13 @@ impl HomeView {
             ));
         }
         Sidebar::new("sessions-sidebar")
-            .collapsible(false)
-            .collapsed(false)
+            .collapsible(SidebarCollapsible::Offcanvas)
+            .collapsed(!self.show_sidebar)
             .border_r_0()
             .header(header)
             .children(items)
             .footer(footer)
-            .w_full()
+            .w(px(self.pane_layout.left))
             .h_full()
             .into_any_element()
     }

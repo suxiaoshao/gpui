@@ -123,6 +123,31 @@ pub(super) fn role(row: &HistoryRow, cx: &App) -> (IconName, Hsla, String) {
             cx.theme().muted_foreground,
             "conversation-event",
         ),
+        HistoryKind::ModelChange => (
+            IconName::Bot,
+            cx.theme().muted_foreground,
+            "history-model-change",
+        ),
+        HistoryKind::ThinkingLevelChange => (
+            IconName::Brain,
+            cx.theme().muted_foreground,
+            "history-thinking-change",
+        ),
+        HistoryKind::SessionInfo => (
+            IconName::FileText,
+            cx.theme().muted_foreground,
+            "history-session-info",
+        ),
+        HistoryKind::Label => (
+            IconName::Tag,
+            cx.theme().muted_foreground,
+            "history-label-change",
+        ),
+        HistoryKind::Custom => (
+            IconName::Ellipsis,
+            cx.theme().muted_foreground,
+            "history-custom-record",
+        ),
     };
     (icon, color, t(cx, label))
 }
@@ -148,6 +173,11 @@ pub(super) fn is_process(kind: HistoryKind) -> bool {
             | HistoryKind::ToolResult
             | HistoryKind::EmptyAssistant
             | HistoryKind::Event
+            | HistoryKind::ModelChange
+            | HistoryKind::ThinkingLevelChange
+            | HistoryKind::SessionInfo
+            | HistoryKind::Label
+            | HistoryKind::Custom
     )
 }
 

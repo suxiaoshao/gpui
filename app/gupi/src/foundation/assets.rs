@@ -2,19 +2,19 @@ use app_assets::{AppAssets, define_lucide_icons, define_svg_icons};
 use gpui_kit::{AssetSource, SharedString};
 use std::borrow::Cow;
 define_lucide_icons!(pub(crate) enum IconName {
-    Sparkles => "sparkles", Lightbulb => "lightbulb",
+    Sparkles => "sparkles",
     UserRound => "user-round", Bot => "bot",
     Settings => "settings", ArrowLeft => "arrow-left", ArrowRight => "arrow-right",
-    Check => "check", Sun => "sun", Moon => "moon", Monitor => "monitor",
+    Check => "check",
     RotateCw => "rotate-cw", FolderOpen => "folder-open", Save => "save", Search => "search",
-    Plus => "plus", PanelLeft => "panel-left", PanelRight => "panel-right",
+    Plus => "plus", SquarePen => "square-pen", PanelRight => "panel-right",
     ArrowUp => "arrow-up", ArrowDown => "arrow-down", Database => "database", CircleDashed => "circle-dashed", Square => "square", ChevronDown => "chevron-down",
-    ChevronLeft => "chevron-left", ChevronRight => "chevron-right", GitBranch => "git-branch", Copy => "copy",
+    ChevronLeft => "chevron-left", ChevronRight => "chevron-right", ChevronUp => "chevron-up", GitBranch => "git-branch", Copy => "copy",
     Ellipsis => "ellipsis", CircleAlert => "circle-alert", MessageCircle => "message-circle",
-    ListFilter => "list-filter", List => "list",
+    List => "list", Tag => "tag",
     ZoomIn => "zoom-in", ZoomOut => "zoom-out", Scan => "scan", LocateFixed => "locate-fixed",
     RefreshCw => "refresh-cw", FileText => "file-text",
-    X => "x", Folder => "folder", CornerDownLeft => "corner-down-left",
+    X => "x", Folder => "folder",
     Terminal => "terminal", BookOpen => "book-open", FilePenLine => "file-pen-line",
     FilePlus => "file-plus", Wrench => "wrench", Brain => "brain", ChartNoAxesColumn => "chart-no-axes-column",
 });

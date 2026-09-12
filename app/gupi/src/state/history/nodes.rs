@@ -14,6 +14,11 @@ pub(crate) enum HistoryKind {
     EmptyAssistant,
     Compaction,
     BranchSummary,
+    ModelChange,
+    ThinkingLevelChange,
+    SessionInfo,
+    Label,
+    Custom,
     Event,
 }
 
@@ -113,6 +118,11 @@ fn describe_entry(entry: &SessionEntry, continued: bool) -> Description {
         _ => match entry.kind.as_str() {
             "compaction" => HistoryKind::Compaction,
             "branch_summary" => HistoryKind::BranchSummary,
+            "model_change" => HistoryKind::ModelChange,
+            "thinking_level_change" => HistoryKind::ThinkingLevelChange,
+            "session_info" => HistoryKind::SessionInfo,
+            "label" => HistoryKind::Label,
+            "custom" | "custom_message" => HistoryKind::Custom,
             _ => HistoryKind::Event,
         },
     };
@@ -130,6 +140,31 @@ fn describe_entry(entry: &SessionEntry, continued: bool) -> Description {
         text
     };
     let mut title = plain_summary(&body);
+    if entry.kind != "message" && title.is_empty() {
+        let data = &entry.data;
+        let field = |key: &str| data.get(key).and_then(Value::as_str);
+        let metadata = match kind {
+            HistoryKind::ModelChange => [field("provider"), field("modelId")]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" / "),
+            HistoryKind::ThinkingLevelChange => field("thinkingLevel").unwrap_or_default().into(),
+            HistoryKind::SessionInfo => field("name").unwrap_or_default().into(),
+            HistoryKind::Label => field("label").unwrap_or_default().into(),
+            HistoryKind::Custom => {
+                let content = text_content(&Value::Object(data.clone()));
+                if content.trim().is_empty() {
+                    field("customType").unwrap_or_default().into()
+                } else {
+                    content
+                }
+            }
+            HistoryKind::Event => entry.kind.clone(),
+            _ => String::new(),
+        };
+        title = plain_summary(&metadata);
+    }
     if kind == HistoryKind::ToolResult {
         title = tool.clone().unwrap_or_default();
     } else if kind == HistoryKind::ToolCall && title.is_empty() {
@@ -218,16 +253,13 @@ mod tests {
         assert_eq!(descriptions["b"].kind, HistoryKind::Assistant);
         let mut history = History::default();
         history.replace(entries);
-        let rows = history.tree_rows(HistoryMode::Detailed);
-        assert!(
-            !rows
-                .iter()
-                .any(|row| matches!(row.id.as_str(), "call" | "meta"))
-        );
+        let rows = history.tree_rows(HistoryDetail::Detailed);
+        assert!(rows.iter().any(|row| row.id == "call"));
+        assert!(rows.iter().all(|row| row.id != "meta"));
         let tool = rows.iter().find(|row| row.id == "tool").unwrap();
         assert_eq!(tool.title, "read · settings.json");
-        assert_eq!(tool.parent.as_deref(), Some("p"));
-        assert!(tool.indirect_parent);
+        assert_eq!(tool.parent.as_deref(), Some("call"));
+        assert!(!tool.indirect_parent);
         assert_eq!(history.leaf.as_deref(), Some("b"));
     }
     #[test]

@@ -5,10 +5,12 @@ mod messages;
 mod navigation;
 mod panes;
 mod pickers;
+mod titlebar;
 use crate::{
     foundation::{assets::IconName, i18n::t},
     state::{
         conversation::{ConversationEvent, ConversationState},
+        history::{HistoryDetail, HistoryScope, HistoryView},
         layout,
     },
 };
@@ -31,7 +33,7 @@ use std::{
 
 struct SessionView {
     history_canvas: Entity<history::canvas::HistoryCanvas>,
-    history_revision: u64,
+    history_projection: Option<(u64, HistoryDetail)>,
     model_picker: Entity<pickers::Picker>,
     preview: Option<String>,
     process_open: HashMap<String, bool>,
@@ -47,7 +49,9 @@ pub(crate) struct HomeView {
     shown_request: Option<(String, String)>,
     views: BTreeMap<String, SessionView>,
     history_list: Entity<ListState<history::HistoryDelegate>>,
-    history_mode: crate::state::history::HistoryMode,
+    history_view: HistoryView,
+    history_detail: HistoryDetail,
+    history_scope: HistoryScope,
     show_sidebar: bool,
     show_history: bool,
     projects_with_more: HashSet<PathBuf>,
@@ -189,7 +193,9 @@ impl HomeView {
             shown_request: None,
             views: BTreeMap::new(),
             history_list,
-            history_mode: Default::default(),
+            history_view: Default::default(),
+            history_detail: Default::default(),
+            history_scope: Default::default(),
             show_sidebar: true,
             show_history: false,
             projects_with_more: HashSet::new(),
@@ -304,7 +310,7 @@ impl HomeView {
                 key.clone(),
                 SessionView {
                     history_canvas,
-                    history_revision: u64::MAX,
+                    history_projection: None,
                     model_picker,
                     preview: None,
                     process_open: HashMap::new(),
@@ -338,7 +344,11 @@ impl HomeView {
                 view.preview = None;
             }
             let rows = messages::project(session, view.preview.as_deref());
-            let history_rows = session.history().tree_rows(self.history_mode);
+            let history_rows = session.history().list_rows(
+                self.history_detail,
+                self.history_scope,
+                view.preview.as_deref(),
+            );
             let target = view
                 .preview
                 .clone()
@@ -351,29 +361,45 @@ impl HomeView {
                 .clone()
                 .filter(|_| !changed)
                 .or(target)
-                .and_then(|id| session.history().visible_ancestor(&id, self.history_mode));
-            let canvas_rows = if view.history_revision != session.history().revision {
-                let mut rows = session
-                    .history()
-                    .tree_rows(crate::state::history::HistoryMode::Detailed);
-                let current = session.history().leaf.as_deref().and_then(|id| {
+                .and_then(|id| session.history().visible_ancestor(&id, self.history_detail))
+                .filter(|id| history_rows.iter().any(|row| &row.id == id))
+                .or_else(|| {
+                    view.preview
+                        .as_deref()
+                        .and_then(|id| session.history().visible_ancestor(id, self.history_detail))
+                        .filter(|id| history_rows.iter().any(|row| &row.id == id))
+                })
+                .or_else(|| {
+                    history_rows
+                        .iter()
+                        .find(|row| row.current)
+                        .or_else(|| history_rows.last())
+                        .map(|row| row.id.clone())
+                });
+            let projection = (session.history().revision, self.history_detail);
+            let canvas_rows = if view.history_projection != Some(projection) {
+                let rows = session.history().tree_rows(self.history_detail);
+                view.history_projection = Some(projection);
+                Some((
+                    rows,
                     session
                         .history()
-                        .visible_ancestor(id, crate::state::history::HistoryMode::Detailed)
-                });
-                for row in &mut rows {
-                    row.current = current.as_deref() == Some(row.id.as_str());
-                }
-                view.history_revision = session.history().revision;
-                Some(rows)
+                        .entries
+                        .iter()
+                        .map(|entry| entry.id.clone())
+                        .collect(),
+                ))
             } else {
                 None
             };
-            let canvas_preview = view.preview.as_deref().and_then(|id| {
-                session
-                    .history()
-                    .visible_ancestor(id, crate::state::history::HistoryMode::Detailed)
-            });
+            let canvas_preview = view
+                .preview
+                .as_deref()
+                .and_then(|id| session.history().visible_ancestor(id, self.history_detail));
+            let history_preview = view
+                .preview
+                .as_deref()
+                .and_then(|id| session.history().visible_ancestor(id, self.history_detail));
             let forkable: HashSet<_> = session
                 .fork_options()
                 .iter()
@@ -403,7 +429,7 @@ impl HomeView {
                 let old_lane_offset = list.delegate().lane_offset;
                 let delegate = list.delegate_mut();
                 delegate.graph = Rc::new(crate::state::history::HistoryGraph::new(&history_rows));
-                delegate.preview_id = view.preview.clone();
+                delegate.preview_id = history_preview;
                 if changed {
                     delegate.lane_offset = 0;
                 }
@@ -546,71 +572,6 @@ impl HomeView {
 }
 impl Render for HomeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read(cx);
-        let title = state
-            .current()
-            .map(|s| s.info.title())
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(|| t(cx, "conversation-new"));
-        let toolbar = h_flex()
-            .px_4()
-            .py_2()
-            .gap_2()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                Button::new("toggle-sidebar")
-                    .ghost()
-                    .small()
-                    .icon(IconName::PanelLeft)
-                    .tooltip(t(cx, "conversation-sidebar"))
-                    .accessibility_label(t(cx, "conversation-sidebar"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_sidebar = !this.show_sidebar;
-                        cx.notify();
-                    })),
-            )
-            .child(div().flex_1().min_w_0().text_ellipsis().child(title))
-            .child(
-                Button::new("toggle-history")
-                    .ghost()
-                    .small()
-                    .icon(IconName::PanelRight)
-                    .tooltip(t(cx, "conversation-history"))
-                    .accessibility_label(t(cx, "conversation-history"))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.show_history = !this.show_history;
-                        this.sync(true, window, cx);
-                        if !this.show_history
-                            && let Some(view) =
-                                this.shown_key.as_ref().and_then(|key| this.views.get(key))
-                        {
-                            view.history_canvas
-                                .update(cx, |canvas, cx| canvas.clear_pointer(cx));
-                        }
-                        if this.show_history
-                            && this.history_mode != crate::state::history::HistoryMode::Canvas
-                        {
-                            this.history_list.update(cx, |list, cx| {
-                                if let Some(last) = list.delegate().rows.len().checked_sub(1) {
-                                    list.scroll_to_item(
-                                        gpui_kit::component::IndexPath::new(last),
-                                        ScrollStrategy::Bottom,
-                                        window,
-                                        cx,
-                                    );
-                                }
-                            });
-                        }
-                    })),
-            );
-        let center = v_flex()
-            .size_full()
-            .min_w_0()
-            .child(toolbar)
-            .child(self.render_messages(window, cx))
-            .child(self.render_composer(window, cx));
         if self.pane_layout.fit(
             f32::from(window.viewport_size().width),
             self.show_sidebar,
@@ -623,16 +584,15 @@ impl Render for HomeView {
                 cx.stop_active_drag(window);
             }
         }
-        let mut columns = h_flex().size_full();
-        if self.show_sidebar {
-            columns = columns.child(
-                div()
-                    .w(px(self.pane_layout.left))
-                    .h_full()
-                    .flex_none()
-                    .child(self.render_sidebar(cx)),
-            );
-        }
+        let titlebar = self.render_titlebar(window, cx);
+        let center = v_flex()
+            .size_full()
+            .min_w_0()
+            .child(self.render_messages(window, cx))
+            .child(self.render_composer(window, cx));
+        // Keep the component mounted: Offcanvas owns the closing animation and
+        // removes its contents from the tab order after the transition finishes.
+        let mut columns = h_flex().size_full().child(self.render_sidebar(cx));
         let mut center_panel = div().relative().flex_1().min_w_0().h_full().child(center);
         if self.show_sidebar {
             center_panel = center_panel.child(self.pane_handle(panes::Side::Left, cx));
@@ -649,7 +609,7 @@ impl Render for HomeView {
                     .child(self.pane_handle(panes::Side::Right, cx)),
             );
         }
-        let mut shell = div().relative().size_full().child(columns);
+        let mut shell = div().relative().flex_1().min_h_0().w_full().child(columns);
         if self.show_history && self.pane_layout.overlay {
             shell = shell.child(
                 div()
@@ -666,6 +626,6 @@ impl Render for HomeView {
             );
         }
         shell = shell.child(panes::ResizeEvents(cx.weak_entity()));
-        shell
+        v_flex().size_full().child(titlebar).child(shell)
     }
 }

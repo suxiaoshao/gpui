@@ -89,12 +89,19 @@ impl PiState {
     ) -> Task<()> {
         let mut status = client.subscribe();
         cx.spawn(async move |owner, cx| {
+            let mut events_open = true;
             loop {
                 // Tokio channels can be awaited on GPUI's executor; process I/O stays
                 // on the Tokio owner. Only one delivered event is held on this bridge.
                 tokio::select! {
-                    event = events.recv() => {
-                        let Some(event) = event else { break; };
+                    event = events.recv(), if events_open => {
+                        let Some(event) = event else {
+                            // The event sender can close before the final status
+                            // notification. Keep observing until owners learn the
+                            // connection has exited and can reconnect it.
+                            events_open = false;
+                            continue;
+                        };
                         if owner.update(cx, |_, cx| {
                             cx.emit(PiEvent { instance: id, event });
                             cx.notify();

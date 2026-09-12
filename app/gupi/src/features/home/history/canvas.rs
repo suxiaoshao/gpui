@@ -3,7 +3,9 @@ use super::*;
 use crate::foundation::i18n::t_with_args;
 use crate::state::history::canvas::{Tree, X_GAP};
 use fluent_bundle::FluentArgs;
-use geometry::{Camera, clip_segment, curve, distance, label_bounds, path_distance};
+use geometry::{
+    Camera, clip_segment, curve, disclosure_bounds, distance, label_bounds, path_distance,
+};
 
 pub(crate) enum CanvasEvent {
     Preview(String),
@@ -21,6 +23,7 @@ pub(crate) struct HistoryCanvas {
     drag: Option<Drag>,
     space: bool,
     labels: Vec<(Bounds<f32>, usize)>,
+    collapse_controls: Vec<(Bounds<f32>, usize)>,
     forkable: HashSet<String>,
     can_fork: bool,
 }
@@ -28,6 +31,7 @@ pub(crate) struct HistoryCanvas {
 enum Hit {
     Node(usize),
     Edge(usize),
+    Collapse(usize),
 }
 enum HoverTip {
     Waiting { target: Hit, _task: Task<()> },
@@ -66,21 +70,23 @@ impl HistoryCanvas {
             drag: None,
             space: false,
             labels: vec![],
+            collapse_controls: vec![],
             forkable: HashSet::new(),
             can_fork: false,
         }
     }
     pub fn sync(
         &mut self,
-        rows: Option<Vec<HistoryRow>>,
+        rows: Option<(Vec<HistoryRow>, HashSet<String>)>,
         preview: Option<String>,
         forkable: HashSet<String>,
         can_fork: bool,
         cx: &mut Context<Self>,
     ) {
-        if let Some(rows) = rows {
+        if let Some((rows, entries)) = rows {
             self.tooltip = None;
             let anchor = self.anchor(None);
+            self.tree.retain_entries(&entries);
             self.tree.replace(rows, preview);
             self.restore(anchor);
             self.hover = None;
@@ -177,6 +183,13 @@ impl HistoryCanvas {
         )
     }
     fn hit(&self, p: Point<f32>) -> Option<Hit> {
+        if let Some((_, segment)) = self
+            .collapse_controls
+            .iter()
+            .find(|(bounds, _)| bounds.contains(&p))
+        {
+            return Some(Hit::Collapse(*segment));
+        }
         let (nodes, edges) = self.visible();
         let radius = (12. * self.camera.zoom).max(12.);
         if let Some(i) = nodes
@@ -196,7 +209,7 @@ impl HistoryCanvas {
             .filter(|&i| !self.tree.edges[i].hidden.is_empty())
             .map(|i| {
                 let curve = self.edge_curve(i);
-                let number = Bounds::new(curve[16] - point(18., 10.), size(36., 20.));
+                let number = disclosure_bounds(curve[16], self.tree.edges[i].hidden.len());
                 (
                     i,
                     if number.contains(&p) {
@@ -216,6 +229,7 @@ impl HistoryCanvas {
         self.hover = None;
         self.drag = None;
         self.labels.clear();
+        self.collapse_controls.clear();
         cx.notify();
     }
     fn locate(&mut self, cx: &mut Context<Self>) {
@@ -259,6 +273,7 @@ impl HistoryCanvas {
         self.initialized = true;
         self.hover = None;
         self.labels.clear();
+        self.collapse_controls.clear();
         cx.notify();
     }
     fn expand(&mut self, edge: usize, cx: &mut Context<Self>) {
@@ -268,6 +283,7 @@ impl HistoryCanvas {
         self.restore(anchor);
         self.hover = None;
         self.labels.clear();
+        self.collapse_controls.clear();
         cx.notify();
     }
     fn collapse(&mut self, from: &str, to: &str, cx: &mut Context<Self>) {
@@ -285,6 +301,7 @@ impl HistoryCanvas {
         self.restore(anchor);
         self.hover = None;
         self.labels.clear();
+        self.collapse_controls.clear();
         cx.notify();
     }
     fn choose(&mut self, node: usize, preview: bool, cx: &mut Context<Self>) {
@@ -376,6 +393,9 @@ impl HistoryCanvas {
             Hit::Edge(i) => {
                 count_text(cx, "history-canvas-expand", self.tree.edges[i].hidden.len())
             }
+            Hit::Collapse(i) => {
+                count_text(cx, "history-canvas-collapse", self.tree.collapse_count(i))
+            }
             Hit::Node(i) => {
                 let row = &self.tree.rows[self.tree.nodes[i].row];
                 format!(
@@ -444,9 +464,13 @@ impl Render for HistoryCanvas {
         let draw = cx.entity();
         let paint = draw.clone();
         let toolbar = h_flex()
-            .px_2()
-            .pb_1()
+            .px_1()
+            .py_1()
             .gap_1()
+            .border_1()
+            .border_color(cx.theme().border)
+            .rounded_md()
+            .bg(cx.theme().background)
             .child(
                 Button::new("canvas-zoom-out")
                     .ghost()
@@ -473,7 +497,7 @@ impl Render for HistoryCanvas {
                     .accessibility_label(t(cx, "history-canvas-zoom-in"))
                     .on_click(cx.listener(|this, _, _, cx| this.zoom(1.2, this.center(), cx))),
             )
-            .child(div().flex_1())
+            .child(div().w(px(1.)).h_4().mx_1().bg(cx.theme().border))
             .child(
                 Button::new("canvas-fit")
                     .ghost()
@@ -492,136 +516,148 @@ impl Render for HistoryCanvas {
                     .accessibility_label(t(cx, "history-canvas-current"))
                     .on_click(cx.listener(|this, _, _, cx| this.locate(cx))),
             );
-        v_flex().size_full().min_h_0().child(toolbar).child(
-            div()
-                .id("history-canvas-surface")
-                .relative()
-                .flex_1()
-                .min_h_0()
-                .overflow_hidden()
-                .track_focus(&self.focus)
-                .aria_label(t(cx, "history-canvas-help"))
-                .cursor(if self.drag.as_ref().is_some_and(|d| d.moved) {
-                    CursorStyle::ClosedHand
-                } else if self.hover.is_some() {
-                    CursorStyle::PointingHand
-                } else {
-                    CursorStyle::OpenHand
-                })
-                .on_key_down(cx.listener(Self::keyboard))
-                .on_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| {
-                    if event.keystroke.key == "space" {
-                        this.space = false;
-                    }
-                }))
-                .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
-                    let delta = event.delta.pixel_delta(window.line_height()).map(f32::from);
-                    if event.modifiers.platform || event.modifiers.control {
-                        this.zoom((-delta.y * 0.005).exp(), this.local(event.position), cx);
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .child(
+                div()
+                    .id("history-canvas-surface")
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .track_focus(&self.focus)
+                    .aria_label(t(cx, "history-canvas-help"))
+                    .cursor(if self.drag.as_ref().is_some_and(|d| d.moved) {
+                        CursorStyle::ClosedHand
+                    } else if self.hover.is_some() {
+                        CursorStyle::PointingHand
                     } else {
-                        this.camera.pan += delta;
-                        this.hover = None;
-                        this.drag = None;
-                        this.labels.clear();
-                        cx.notify();
-                    }
-                    cx.stop_propagation();
-                }))
-                .on_pinch(cx.listener(|this, event: &PinchEvent, _, cx| {
-                    this.zoom((1. + event.delta).max(0.01), this.local(event.position), cx);
-                    cx.stop_propagation();
-                }))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                        window.focus(&this.focus, cx);
-                        this.tooltip = None;
-                        let p = this.local(event.position);
-                        this.drag = Some(Drag {
-                            start: p,
-                            pan: this.camera.pan,
-                            moved: false,
-                            target: if this.space { None } else { this.hit(p) },
-                        });
-                        this.hover = None;
-                        cx.notify();
-                        cx.stop_propagation();
-                    }),
-                )
-                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                    let p = this.local(event.position);
-                    this.pointer = p;
-                    if let Some(drag) = &mut this.drag {
-                        if event.pressed_button != Some(MouseButton::Left) {
-                            this.drag = None;
-                        } else if drag.moved || distance(p, drag.start) > 4. {
-                            drag.moved = true;
-                            this.camera.pan = drag.pan + p - drag.start;
+                        CursorStyle::OpenHand
+                    })
+                    .on_key_down(cx.listener(Self::keyboard))
+                    .on_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| {
+                        if event.keystroke.key == "space" {
+                            this.space = false;
+                        }
+                    }))
+                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+                        let delta = event.delta.pixel_delta(window.line_height()).map(f32::from);
+                        if event.modifiers.platform || event.modifiers.control {
+                            this.zoom((-delta.y * 0.005).exp(), this.local(event.position), cx);
+                        } else {
+                            this.camera.pan += delta;
                             this.hover = None;
+                            this.drag = None;
                             this.labels.clear();
+                            this.collapse_controls.clear();
+                            cx.notify();
+                        }
+                        cx.stop_propagation();
+                    }))
+                    .on_pinch(cx.listener(|this, event: &PinchEvent, _, cx| {
+                        this.zoom((1. + event.delta).max(0.01), this.local(event.position), cx);
+                        cx.stop_propagation();
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            window.focus(&this.focus, cx);
+                            this.tooltip = None;
+                            let p = this.local(event.position);
+                            this.drag = Some(Drag {
+                                start: p,
+                                pan: this.camera.pan,
+                                moved: false,
+                                target: if this.space { None } else { this.hit(p) },
+                            });
+                            this.hover = None;
                             cx.notify();
                             cx.stop_propagation();
-                            return;
-                        }
-                    }
-                    let hit = this.hit(p);
-                    if this.hover != hit || matches!(hit, Some(Hit::Edge(_))) {
-                        this.hover = hit;
-                        cx.notify();
-                    }
-                }))
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|this, event: &MouseUpEvent, _, cx| {
-                        if let Some(drag) = this.drag.take()
-                            && !drag.moved
-                            && distance(this.local(event.position), drag.start) <= 4.
-                        {
-                            let hit = this.hit(this.local(event.position));
-                            if hit == drag.target {
-                                match hit {
-                                    Some(Hit::Node(i)) => this.choose(i, true, cx),
-                                    Some(Hit::Edge(i)) => this.expand(i, cx),
-                                    None => {}
-                                }
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                        let p = this.local(event.position);
+                        this.pointer = p;
+                        if let Some(drag) = &mut this.drag {
+                            if event.pressed_button != Some(MouseButton::Left) {
+                                this.drag = None;
+                            } else if drag.moved || distance(p, drag.start) > 4. {
+                                drag.moved = true;
+                                this.camera.pan = drag.pan + p - drag.start;
+                                this.hover = None;
+                                this.labels.clear();
+                                this.collapse_controls.clear();
+                                cx.notify();
+                                cx.stop_propagation();
+                                return;
                             }
                         }
-                        this.pointer = this.local(event.position);
-                        this.hover = this.hit(this.pointer);
-                        cx.notify();
-                        cx.stop_propagation();
-                    }),
-                )
-                .on_mouse_up_out(
-                    MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        this.drag = None;
-                        cx.notify();
-                    }),
-                )
-                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                    if !hovered {
-                        this.hover = None;
-                        cx.notify();
-                    }
-                }))
-                .child(
-                    canvas(
-                        move |bounds, window, cx| {
-                            draw.update(cx, |this, cx| this.prepare(bounds, window, cx))
-                        },
-                        move |_, mut frame: Frame, window, cx| {
-                            window.with_content_mask(Some(frame.mask), |window| {
-                                paint.read(cx).paint_lines(&frame.lines, window);
-                                for element in &mut frame.elements {
-                                    element.paint(window, cx);
+                        let hit = this.hit(p);
+                        if this.hover != hit || matches!(hit, Some(Hit::Edge(_))) {
+                            this.hover = hit;
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseUpEvent, _, cx| {
+                            if let Some(drag) = this.drag.take()
+                                && !drag.moved
+                                && distance(this.local(event.position), drag.start) <= 4.
+                            {
+                                let hit = this.hit(this.local(event.position));
+                                if hit == drag.target {
+                                    match hit {
+                                        Some(Hit::Node(i)) => this.choose(i, true, cx),
+                                        Some(Hit::Edge(i)) => this.expand(i, cx),
+                                        Some(Hit::Collapse(i)) => {
+                                            let segment = &this.tree.segments[i];
+                                            let from = this.tree.rows[segment.from].id.clone();
+                                            let to = this.tree.rows[segment.to].id.clone();
+                                            this.collapse(&from, &to, cx);
+                                        }
+                                        None => {}
+                                    }
                                 }
-                            });
-                        },
+                            }
+                            this.pointer = this.local(event.position);
+                            this.hover = this.hit(this.pointer);
+                            cx.notify();
+                            cx.stop_propagation();
+                        }),
                     )
-                    .size_full(),
-                ),
-        )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.drag = None;
+                            cx.notify();
+                        }),
+                    )
+                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                        if !hovered {
+                            this.hover = None;
+                            cx.notify();
+                        }
+                    }))
+                    .child(
+                        canvas(
+                            move |bounds, window, cx| {
+                                draw.update(cx, |this, cx| this.prepare(bounds, window, cx))
+                            },
+                            move |_, mut frame: Frame, window, cx| {
+                                window.with_content_mask(Some(frame.mask), |window| {
+                                    paint.read(cx).paint_lines(&frame.lines, window);
+                                    for element in &mut frame.elements {
+                                        element.paint(window, cx);
+                                    }
+                                });
+                            },
+                        )
+                        .size_full(),
+                    ),
+            )
+            .child(h_flex().w_full().justify_center().p_2().child(toolbar))
     }
 }
 
@@ -674,6 +710,7 @@ impl HistoryCanvas {
             })
             .collect();
         self.labels.clear();
+        self.collapse_controls.clear();
         for &i in &edges {
             let edge = &self.tree.edges[i];
             let highlighted = self.tree.highlighted.contains(&edge.to);
@@ -696,18 +733,17 @@ impl HistoryCanvas {
                 let action_owner = cx.entity().downgrade();
                 let action_id = self.tree.rows[self.tree.nodes[edge.to].row].id.clone();
                 let number = edge.hidden.len().to_string();
-                let number_width = (number.len() as f32 * 7. + 8.).max(18.);
-                label_rects.push(Bounds::new(
-                    p - point(number_width / 2., 10.),
-                    size(number_width, 20.),
-                ));
+                let control = disclosure_bounds(p, edge.hidden.len());
+                label_rects.push(control);
                 let label = div()
                     .id(format!(
                         "canvas-count-{}",
                         self.tree.rows[self.tree.nodes[edge.to].row].id
                     ))
-                    .w(px(number_width))
-                    .h(px(20.))
+                    .w(px(control.size.width))
+                    .h(px(control.size.height))
+                    .gap_1()
+                    .rounded_sm()
                     .flex()
                     .items_center()
                     .justify_center()
@@ -730,18 +766,122 @@ impl HistoryCanvas {
                             }
                         });
                     })
+                    .child(Icon::new(IconName::ChevronDown).size_3())
                     .child(number)
                     .into_any_element();
                 self.place(
                     label,
-                    p - point(number_width / 2., 10.),
-                    size(px(number_width), px(20.)),
+                    control.origin,
+                    control.size.map(px),
                     &mut elements,
                     mask,
                     window,
                     cx,
                 );
             }
+        }
+        // The inverse action occupies the same incoming-link gap as the
+        // collapsed count. A pale bracket identifies the expanded process range.
+        let mut direct_incoming = vec![false; self.tree.nodes.len()];
+        for edge in &self.tree.edges {
+            direct_incoming[edge.to] = edge.hidden.is_empty();
+        }
+        for segment_index in 0..self.tree.segments.len() {
+            let count = self.tree.collapse_count(segment_index);
+            if count == 0 {
+                continue;
+            }
+            let segment = &self.tree.segments[segment_index];
+            let process_nodes: Vec<_> = segment
+                .inner
+                .iter()
+                .filter_map(|&row| self.tree.node_for(&self.tree.rows[row].id))
+                .collect();
+            if let (Some(&first), Some(&last)) = (process_nodes.first(), process_nodes.last()) {
+                let first = self.position(first);
+                let last = self.position(last);
+                let radius = ((20. * self.camera.zoom).clamp(14., 32.) + 4.).max(24.) / 2.;
+                let left = first.x + radius + 96. <= f32::from(bounds.size.width);
+                let side = if left { -1. } else { 1. };
+                let x = first.x + side * (radius + 10.);
+                let top = first.y - radius;
+                let bottom = last.y + radius;
+                if x > 4.
+                    && x < f32::from(bounds.size.width) - 4.
+                    && bottom >= 0.
+                    && top <= f32::from(bounds.size.height)
+                {
+                    lines.push((
+                        vec![
+                            point(x - side * 4., top),
+                            point(x, top),
+                            point(x, bottom),
+                            point(x - side * 4., bottom),
+                        ],
+                        false,
+                        cx.theme().muted_foreground.opacity(0.22),
+                    ));
+                }
+            }
+            let control = process_nodes
+                .into_iter()
+                .filter(|&node| direct_incoming[node])
+                .find_map(|node| {
+                    let parent = self.tree.nodes[node].parent?;
+                    let p = curve(self.position(parent), self.position(node))[16];
+                    let control = disclosure_bounds(p, count);
+                    (control.left() >= 4.
+                        && control.right() <= f32::from(bounds.size.width) - 4.
+                        && control.top() >= 4.
+                        && control.bottom() <= f32::from(bounds.size.height) - 4.
+                        && !label_rects.iter().any(|rect| rect.intersects(&control)))
+                    .then_some(control)
+                });
+            let Some(control) = control else {
+                continue;
+            };
+            label_rects.push(control);
+            self.collapse_controls.push((control, segment_index));
+            let from = self.tree.rows[segment.from].id.clone();
+            let to = self.tree.rows[segment.to].id.clone();
+            let owner = cx.weak_entity();
+            let action = div()
+                .id(format!("canvas-collapse-{from}-{to}"))
+                .w(px(control.size.width))
+                .h(px(control.size.height))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap_1()
+                .rounded_sm()
+                .bg(if self.hover == Some(Hit::Collapse(segment_index)) {
+                    cx.theme().accent
+                } else {
+                    cx.theme().background
+                })
+                .text_color(if self.hover == Some(Hit::Collapse(segment_index)) {
+                    cx.theme().foreground
+                } else {
+                    cx.theme().muted_foreground
+                })
+                .text_size(px(11.))
+                .role(Role::Button)
+                .aria_label(count_text(cx, "history-canvas-collapse", count))
+                .on_a11y_action(AccessibleAction::Click, move |_, _, cx| {
+                    let _ = owner.update(cx, |this, cx| this.collapse(&from, &to, cx));
+                })
+                .child(Icon::new(IconName::ChevronUp).size_3())
+                .child(count.to_string())
+                .into_any_element();
+            self.place(
+                action,
+                control.origin,
+                control.size.map(px),
+                &mut elements,
+                mask,
+                window,
+                cx,
+            );
         }
         // Selected labels win collision checks; remaining nodes retain stable order.
         visible.sort_by_key(|&i| {
@@ -777,7 +917,7 @@ impl HistoryCanvas {
                         hit_size / 2.,
                         label_width,
                         bounds.size.map(f32::from),
-                        !node.children.is_empty(),
+                        p.x + hit_size / 2. + 96. <= f32::from(bounds.size.width),
                         &label_rects,
                     )
                 })
@@ -797,10 +937,10 @@ impl HistoryCanvas {
                     (
                         self.tree.rows[segment.from].id.clone(),
                         self.tree.rows[segment.to].id.clone(),
-                        segment.inner.len(),
-                        self.tree.can_collapse(s),
+                        self.tree.collapse_count(s),
                     )
                 })
+                .filter(|(_, _, count)| *count > 0)
                 .collect();
             let menu_owner = cx.entity().downgrade();
             let action_owner = menu_owner.clone();
@@ -821,13 +961,12 @@ impl HistoryCanvas {
                 })
                 .context_menu(move |menu, _, cx| {
                     let mut menu = menu;
-                    for (from, to, count, enabled) in &segments {
+                    for (from, to, count) in &segments {
                         let owner = menu_owner.clone();
                         let from = from.clone();
                         let to = to.clone();
                         menu = menu.item(
                             PopupMenuItem::new(count_text(cx, "history-canvas-collapse", *count))
-                                .disabled(!*enabled)
                                 .on_click(move |_, _, cx| {
                                     let _ =
                                         owner.update(cx, |this, cx| this.collapse(&from, &to, cx));
@@ -893,10 +1032,12 @@ impl HistoryCanvas {
             if let Some(caption) = caption {
                 let label = div()
                     .h(px(32.))
-                    .w(px(label_width))
+                    .w(px(caption.size.width))
                     .text_size(px(11.))
                     .line_height(px(15.))
                     .text_center()
+                    .when(caption.left() >= p.x, |label| label.text_left())
+                    .when(caption.right() <= p.x, |label| label.text_right())
                     .line_clamp(2)
                     .text_color(cx.theme().foreground)
                     .child(row.title.clone())
