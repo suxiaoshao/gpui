@@ -4,3 +4,4 @@ pub(crate) mod model_scope;
 pub(crate) mod paths;
 pub(crate) mod persistence;
 pub(crate) mod session_catalog;
+pub(crate) mod session_file;

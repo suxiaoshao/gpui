@@ -51,6 +51,7 @@ impl ConversationState {
             s.binding += 1;
             s.reset_reads();
             s.state = None;
+            s.clear_extension_ui();
             if let Some(id) = s.instance.take() {
                 closing.push(pi::global(cx).update(cx, |pi, cx| pi.close(id, cx)));
             }

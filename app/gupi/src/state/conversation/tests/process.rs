@@ -61,6 +61,14 @@ fn main() {
                 println!("{{\"type\":\"extension_ui_request\",\"id\":\"submission-confirm\",\"method\":\"confirm\",\"title\":\"Continue?\",\"message\":\"Fixture confirmation\"}}");
                 reply(&id, &command, "null", true);
             }
+            "emit_presentation" => {
+                println!("{{\"type\":\"extension_ui_request\",\"id\":\"title\",\"method\":\"setTitle\",\"title\":\"Fixture extension\"}}");
+                println!("{{\"type\":\"extension_ui_request\",\"id\":\"status\",\"method\":\"setStatus\",\"statusKey\":\"fixture\",\"statusText\":\"Checking project\"}}");
+                for placement in ["aboveEditor", "belowEditor"] {
+                    println!("{{\"type\":\"extension_ui_request\",\"id\":\"{placement}\",\"method\":\"setWidget\",\"widgetKey\":\"{placement}\",\"widgetLines\":[\"Progress panel\"],\"widgetPlacement\":\"{placement}\"}}");
+                }
+                reply(&id, &command, "null", true);
+            }
             "emit_newer" => {
                 newer = true;
                 println!("{{\"type\":\"agent_start\"}}");
@@ -90,8 +98,10 @@ fn main() {
                     "set_model" => { selected = field(&line, "modelId"); "null".into() }
                     "set_thinking_level" => { thinking = field(&line, "level"); "null".into() }
                     "fork" => {
-                        println!("{{\"type\":\"extension_ui_request\",\"id\":\"fork-editor\",\"method\":\"set_editor_text\",\"text\":\"extension fork draft\"}}");
-                        "{\"cancelled\":false,\"text\":\"fallback fork draft\"}".into()
+                        if !Path::new("skip-fork-editor").exists() {
+                            println!("{{\"type\":\"extension_ui_request\",\"id\":\"fork-editor\",\"method\":\"set_editor_text\",\"text\":\"extension fork draft\"}}");
+                        }
+                        format!("{{\"cancelled\":{},\"text\":\"selected fork message\"}}", Path::new("cancel-fork").exists())
                     }
                     _ => "null".into(),
                 };

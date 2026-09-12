@@ -6437,6 +6437,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trash",
+ "uuid",
  "window-ext",
 ]
 

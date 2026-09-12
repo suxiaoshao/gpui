@@ -41,6 +41,161 @@ fn fixture() -> PathBuf {
 }
 
 #[gpui_kit::test]
+async fn offline_catalog_rename_appends_metadata_without_launching_pi(cx: &mut TestAppContext) {
+    let (dir, owner, foreground) = prepare(cx, &[]);
+    let path = dir.path().join("rename.jsonl");
+    let original = format!(
+        "{}\n{}\n",
+        serde_json::json!({"type":"session","version":3,"id":"offline","cwd":dir.path()}),
+        serde_json::json!({"type":"message","id":"last","parentId":null,"message":{"role":"user","content":"old title"}})
+    );
+    std::fs::write(&path, &original).unwrap();
+    let path = path.canonicalize().unwrap();
+    let info = crate::foundation::session_catalog::read_metadata(&path).unwrap();
+    let key = info.key();
+    owner.update(cx, |state, cx| {
+        state.discovery.session_override = Some(dir.path().into());
+        state.catalog =
+            super::super::CatalogState::Ready(crate::foundation::session_catalog::Catalog {
+                sessions: vec![info],
+                ..Default::default()
+            });
+        state.set_draft(&foreground, "keep input".into(), cx);
+        assert!(state.can_rename(&key, cx));
+        assert!(state.rename(&key, "renamed\n\nconversation".into(), cx));
+        assert!(!state.rename(&key, "duplicate".into(), cx));
+        state.connect(&key, cx);
+        assert!(state.sessions[&key].instance.is_none());
+    });
+    cx.condition(&owner, |state, _| {
+        !state.sessions[&key].command.running() && !state.scanning()
+    })
+    .await;
+    owner.read_with(cx, |state, _| {
+        assert_eq!(state.selected.as_ref(), Some(&foreground));
+        assert_eq!(state.sessions[&foreground].draft, "keep input");
+        assert_eq!(
+            state.sessions[&key].info.name.as_deref(),
+            Some("renamed conversation")
+        );
+        assert!(state.sessions[&key].instance.is_none());
+        assert!(
+            state
+                .catalog
+                .data()
+                .unwrap()
+                .sessions
+                .iter()
+                .any(|info| info.path == path
+                    && info.name.as_deref() == Some("renamed conversation"))
+        );
+    });
+    let contents = std::fs::read_to_string(&path).unwrap();
+    assert!(contents.starts_with(&original));
+    assert_eq!(contents.lines().count(), 3);
+    assert!(!dir.path().join("commands.log").exists());
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn offline_rename_failure_notifies_and_preserves_name(cx: &mut TestAppContext) {
+    let (dir, owner, key) = prepare(cx, &[]);
+    let notifications = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = notifications.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&owner, move |_, event, _| {
+            if let super::super::ConversationEvent::Notify {
+                message,
+                error: true,
+            } = event
+            {
+                captured.borrow_mut().push(message.clone());
+            }
+        })
+    });
+    owner.update(cx, |state, cx| {
+        let session = state.sessions.get_mut(&key).unwrap();
+        session.info.path = dir.path().join("missing.jsonl");
+        session.info.name = Some("original".into());
+        assert!(state.rename(&key, "replacement".into(), cx));
+    });
+    cx.condition(&owner, |state, _| !state.sessions[&key].command.running())
+        .await;
+    owner.read_with(cx, |state, _| {
+        assert_eq!(state.sessions[&key].info.name.as_deref(), Some("original"));
+        assert!(state.sessions[&key].error.is_some());
+        assert_eq!(state.scan_serial, 0);
+    });
+    assert_eq!(notifications.borrow().len(), 1);
+    assert!(!dir.path().join("missing.jsonl").exists());
+    assert!(!dir.path().join("commands.log").exists());
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn rename_waits_for_reconnection_then_uses_existing_rpc(cx: &mut TestAppContext) {
+    let (dir, owner, key) = begin(cx, &[]);
+    cx.condition(&owner, |state, _| {
+        state.sessions[&key].state.is_some() && !state.sessions[&key].core_read.running()
+    })
+    .await;
+    let path = dir.path().join("existing.jsonl");
+    std::fs::write(
+        &path,
+        format!(
+            "{}\n",
+            serde_json::json!({"type":"session","version":3,"id":"fixture","cwd":dir.path()})
+        ),
+    )
+    .unwrap();
+    owner.update(cx, |state, _| {
+        state.sessions.get_mut(&key).unwrap().info.path = path.clone()
+    });
+    let client = owner.read_with(cx, |state, cx| state.client(&key, cx).unwrap());
+    assert!(
+        client
+            .request_raw(serde_json::json!({"type":"disconnect"}))
+            .await
+            .is_err()
+    );
+    cx.condition(&owner, |state, _| state.sessions[&key].instance.is_none())
+        .await;
+    std::fs::write(dir.path().join("hold-get_state"), "").unwrap();
+    std::fs::write(dir.path().join("hold-get_entries"), "").unwrap();
+    owner.update(cx, |state, cx| {
+        assert!(state.sessions[&key].state.is_some());
+        state.connect(&key, cx);
+        assert!(!state.can_rename(&key, cx));
+        assert!(!state.rename(&key, "too early".into(), cx));
+    });
+    cx.condition(&owner, |state, cx| state.client(&key, cx).is_some())
+        .await;
+    let client = owner.read_with(cx, |state, cx| state.client(&key, cx).unwrap());
+    control(&client, "wait_for", "get_state", 1).await;
+    owner.update(cx, |state, cx| {
+        assert!(!state.rename(&key, "during handshake".into(), cx))
+    });
+    control(&client, "release", "get_state", 0).await;
+    control(&client, "wait_for", "get_entries", 1).await;
+    owner.update(cx, |state, cx| {
+        assert!(!state.rename(&key, "during history load".into(), cx))
+    });
+    control(&client, "release", "get_entries", 0).await;
+    cx.condition(&owner, |state, cx| state.can_rename(&key, cx))
+        .await;
+    owner.update(cx, |state, cx| {
+        assert!(state.rename(&key, "accepted".into(), cx));
+        assert!(!state.rename(&key, "duplicate".into(), cx));
+    });
+    cx.condition(&owner, |state, _| !state.sessions[&key].command.running())
+        .await;
+    assert_eq!(count(dir.path(), "set_session_name"), 1);
+    // The fixture RPC does not write files: a direct-file fallback would add a line.
+    assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(), 1);
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
 async fn deletion_waits_for_exit_removes_draft_and_catalog_then_opens_new_page(
     cx: &mut TestAppContext,
 ) {
@@ -249,6 +404,159 @@ async fn new_conversation_model_options_and_catalog_have_independent_lifecycles(
 }
 
 #[gpui_kit::test]
+async fn project_switch_reuses_empty_sessions_and_their_model_connections(cx: &mut TestAppContext) {
+    let (dir, owner, a) = prepare(cx, &[]);
+    let project_b = dir.path().join("project-b");
+    std::fs::create_dir(&project_b).unwrap();
+    owner.update(cx, |state, cx| state.refresh_models(&a, cx));
+    cx.condition(&owner, |state, _| {
+        state.sessions[&a].models.data().is_some()
+            && state.sessions[&a].thinking_levels.data().is_some()
+    })
+    .await;
+    owner.update(cx, |state, cx| {
+        state.set_model(&a, state.sessions[&a].model_options()[1].clone(), cx);
+    });
+    cx.condition(&owner, |state, _| {
+        !state.sessions[&a].model_change.running() && !state.sessions[&a].thinking_levels.running()
+    })
+    .await;
+    owner.update(cx, |state, cx| state.set_thinking(&a, "off".into(), cx));
+    cx.condition(&owner, |state, _| {
+        !state.sessions[&a].model_change.running()
+    })
+    .await;
+    let instance_a = owner.read_with(cx, |state, _| state.sessions[&a].instance.unwrap());
+    let b = owner.update(cx, |state, cx| {
+        state.set_cwd(&a, project_b.clone(), cx);
+        let b = state.selected.clone().unwrap();
+        state.refresh_models(&b, cx);
+        b
+    });
+    cx.condition(&owner, |state, _| {
+        state.sessions[&b].models.data().is_some()
+            && state.sessions[&b].thinking_levels.data().is_some()
+    })
+    .await;
+    let instance_b = owner.read_with(cx, |state, _| state.sessions[&b].instance.unwrap());
+    let reads_a = count(dir.path(), "get_state");
+    for _ in 0..3 {
+        owner.update(cx, |state, cx| {
+            state.set_cwd(&b, dir.path().into(), cx);
+            assert_eq!(state.selected.as_deref(), Some(a.as_str()));
+            assert_eq!(state.current().unwrap().instance, Some(instance_a));
+            assert_eq!(
+                state.current().unwrap().model_identity(),
+                Some(("fixture".into(), "beta".into()))
+            );
+            assert_eq!(
+                state
+                    .current()
+                    .unwrap()
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .thinking_level,
+                "off"
+            );
+            state.set_cwd(&a, project_b.clone(), cx);
+            assert_eq!(state.selected.as_deref(), Some(b.as_str()));
+            assert_eq!(state.current().unwrap().instance, Some(instance_b));
+            assert_eq!(state.sessions.len(), 2);
+            assert!(state.infos().is_empty());
+        });
+    }
+    assert_eq!(count(dir.path(), "get_state"), reads_a);
+    assert_eq!(count(&project_b, "get_state"), 1);
+    for project in [dir.path(), project_b.as_path()] {
+        assert_eq!(count(project, "get_available_models"), 1);
+        assert_eq!(count(project, "get_entries"), 0);
+    }
+    // Sending after returning uses A's retained client and promotes it to a conversation.
+    owner.update(cx, |state, cx| {
+        state.set_cwd(&b, dir.path().into(), cx);
+        state.set_draft(&a, "send on the retained connection".into(), cx);
+        state.send(&a, StreamingBehavior::Steer, cx);
+    });
+    cx.condition(&owner, |state, _| {
+        !state.sessions[&a].submitting() && !state.sessions[&a].history().entries.is_empty()
+    })
+    .await;
+    owner.update(cx, |state, cx| {
+        assert_eq!(state.sessions[&a].instance, Some(instance_a));
+        assert!(state.sessions[&a].draft.is_empty());
+        state.set_cwd(&a, project_b, cx);
+        state.set_cwd(&b, dir.path().into(), cx);
+        assert_ne!(
+            state.selected.as_deref(),
+            Some(a.as_str()),
+            "a conversation with history must not be reused as an empty session"
+        );
+    });
+    assert_eq!(count(dir.path(), "prompt"), 1);
+    assert_eq!(count(dir.path(), "set_model"), 1);
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn project_switch_from_unconnected_draft_rejoins_pending_model_load(cx: &mut TestAppContext) {
+    let (dir, owner, a) = prepare(cx, &["hold-get_available_models"]);
+    let project_b = dir.path().join("project-b");
+    std::fs::create_dir(&project_b).unwrap();
+    owner.update(cx, |state, cx| state.refresh_models(&a, cx));
+    cx.condition(&owner, |state, _| state.sessions[&a].models.running())
+        .await;
+    let client = owner.read_with(cx, |state, cx| state.client(&a, cx).unwrap());
+    control(&client, "wait_for", "get_available_models", 1).await;
+    owner.update(cx, |state, cx| {
+        let instance = state.sessions[&a].instance;
+        state.set_cwd(&a, project_b.clone(), cx);
+        let b = state.selected.clone().unwrap();
+        assert!(state.sessions[&b].instance.is_none());
+        state.set_cwd(&b, dir.path().into(), cx);
+        assert_eq!(state.selected.as_deref(), Some(a.as_str()));
+        assert_eq!(state.sessions[&b].info.cwd, project_b);
+        assert_eq!(state.sessions[&a].instance, instance);
+        assert!(state.sessions[&a].models.running());
+        state.refresh_models(&a, cx);
+    });
+    control(&client, "release", "get_available_models", 0).await;
+    cx.condition(&owner, |state, _| {
+        state.sessions[&a].models.data().is_some()
+    })
+    .await;
+    assert_eq!(count(dir.path(), "get_state"), 1);
+    assert_eq!(count(dir.path(), "get_available_models"), 1);
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn project_switch_preserves_nonempty_drafts(cx: &mut TestAppContext) {
+    let (dir, owner, a) = prepare(cx, &[]);
+    let project_b = dir.path().join("project-b");
+    std::fs::create_dir(&project_b).unwrap();
+    owner.update(cx, |state, cx| {
+        state.set_draft(&a, "keep A's draft".into(), cx);
+        state.new_draft(Some(project_b.clone()), cx);
+        let b = state.selected.clone().unwrap();
+        state.set_cwd(&b, dir.path().into(), cx);
+        assert_eq!(state.selected.as_deref(), Some(b.as_str()));
+        assert_eq!(state.sessions[&a].draft, "keep A's draft");
+        assert!(state.sessions[&b].draft.is_empty());
+        state.new_draft(Some(project_b.clone()), cx);
+        let empty_b = state.selected.clone().unwrap();
+        state.selected = Some(b.clone());
+        state.set_draft(&b, "carry this input to B".into(), cx);
+        state.set_cwd(&b, project_b.clone(), cx);
+        assert_eq!(state.selected.as_deref(), Some(b.as_str()));
+        assert_eq!(state.sessions[&b].draft, "carry this input to B");
+        assert_eq!(state.sessions[&b].info.cwd, project_b);
+        assert!(state.sessions[&empty_b].draft.is_empty());
+    });
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
 async fn sending_can_join_a_connection_started_only_for_model_options(cx: &mut TestAppContext) {
     let (dir, owner, key) = prepare(cx, &[]);
     owner.update(cx, |state, cx| {
@@ -359,6 +667,75 @@ async fn live_messages_promote_a_model_only_draft_to_content(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
+async fn discarded_connection_clears_extension_ui_but_preserves_conversation(
+    cx: &mut TestAppContext,
+) {
+    let (_dir, owner, key) = begin(cx, &[]);
+    cx.condition(&owner, |state, _| {
+        !state.sessions[&key].core_read.running() && state.sessions[&key].state.is_some()
+    })
+    .await;
+    owner.update(cx, |state, cx| {
+        state.set_draft(&key, "keep my input".into(), cx)
+    });
+    let client = owner.read_with(cx, |state, cx| state.client(&key, cx).unwrap());
+    control(&client, "emit_presentation", "", 0).await;
+    control(&client, "emit_confirm", "", 0).await;
+    cx.condition(&owner, |state, _| {
+        state.sessions[&key].widgets.len() == 2 && state.sessions[&key].pending_ui.len() == 1
+    })
+    .await;
+    let old_instance = owner.read_with(cx, |state, _| {
+        let s = &state.sessions[&key];
+        assert_eq!(s.extension_title.as_deref(), Some("Fixture extension"));
+        assert_eq!(s.statuses["fixture"], "Checking project");
+        assert!(s.history().entry("old").is_some());
+        s.instance.unwrap()
+    });
+    assert!(
+        client
+            .request_raw(serde_json::json!({"type":"disconnect"}))
+            .await
+            .is_err()
+    );
+    cx.condition(&owner, |state, _| state.sessions[&key].instance.is_none())
+        .await;
+    let assert_cleared = |s: &Session| {
+        assert!(s.pending_ui.is_empty());
+        assert!(s.extension_title.is_none());
+        assert!(s.statuses.is_empty());
+        assert!(s.widgets.is_empty());
+        assert_eq!(s.draft, "keep my input");
+        assert!(s.history().entry("old").is_some());
+    };
+    owner.update(cx, |state, cx| {
+        assert_cleared(&state.sessions[&key]);
+        assert!(state.sessions[&key].state.is_some());
+        state.connect(&key, cx);
+    });
+    cx.condition(&owner, |state, _| {
+        state.sessions[&key].state.is_some() && !state.sessions[&key].core_read.running()
+    })
+    .await;
+    owner.read_with(cx, |state, _| {
+        assert_cleared(&state.sessions[&key]);
+        assert_ne!(state.sessions[&key].instance, Some(old_instance));
+    });
+    let replacement = owner.read_with(cx, |state, cx| state.client(&key, cx).unwrap());
+    control(&replacement, "emit_presentation", "", 0).await;
+    cx.condition(&owner, |state, _| state.sessions[&key].widgets.len() == 2)
+        .await;
+    owner.update(cx, |state, cx| state.close(&key, cx));
+    cx.condition(&owner, |state, _| !state.sessions[&key].command.running())
+        .await;
+    owner.read_with(cx, |state, _| {
+        assert!(state.sessions[&key].instance.is_none());
+        assert_cleared(&state.sessions[&key]);
+    });
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
 async fn model_refresh_reconnects_even_when_a_cached_snapshot_survives(cx: &mut TestAppContext) {
     let (dir, owner, key) = prepare(cx, &[]);
     owner.update(cx, |state, cx| state.refresh_models(&key, cx));
@@ -462,7 +839,7 @@ async fn uncertain_model_settings_block_send_until_readback_succeeds(cx: &mut Te
 }
 
 #[gpui_kit::test]
-async fn commands_own_their_tasks_and_fork_editor_until_completion(cx: &mut TestAppContext) {
+async fn fork_success_replaces_editor_like_tui_before_history_loads(cx: &mut TestAppContext) {
     use super::super::command::SessionCommand;
     let (dir, owner, key) = begin(cx, &[]);
     cx.condition(&owner, |state, _| {
@@ -488,21 +865,155 @@ async fn commands_own_their_tasks_and_fork_editor_until_completion(cx: &mut Test
             && !state.sessions[&key].fork_options().is_empty()
     })
     .await;
+    control(&client, "emit_presentation", "", 0).await;
+    cx.condition(&owner, |state, _| state.sessions[&key].widgets.len() == 2)
+        .await;
     std::fs::write(dir.path().join("hold-get_entries"), "").unwrap();
+    std::fs::write(dir.path().join("hold-fork"), "").unwrap();
     let reads = count(dir.path(), "get_entries");
     owner.update(cx, |state, cx| state.fork(&key, "old".into(), cx));
+    control(&client, "wait_for", "fork", 1).await;
+    cx.condition(&owner, |state, _| {
+        state.sessions[&key].draft == "extension fork draft"
+    })
+    .await;
+    owner.read_with(cx, |state, _| {
+        assert!(matches!(
+            state.sessions[&key].command,
+            SessionCommand::Forking { .. }
+        ));
+        assert_eq!(state.selected.as_ref(), Some(&key));
+    });
+    control(&client, "release", "fork", 0).await;
     control(&client, "wait_for", "get_entries", reads + 1).await;
-    cx.condition(&owner, |state, _| matches!(&state.sessions[&key].command, SessionCommand::Forking { editor: Some(editor), .. } if editor == "extension fork draft")).await;
-    assert!(owner.read_with(cx, |state, _| state.sessions[&key].draft.is_empty()));
-    control(&client, "release", "get_entries", 0).await;
     cx.condition(&owner, |state, _| state.selected.as_ref() != Some(&key))
         .await;
     owner.read_with(cx, |state, _| {
-        assert_eq!(state.current().unwrap().draft, "extension fork draft");
+        assert_eq!(state.current().unwrap().draft, "selected fork message");
+        assert_eq!(
+            state.current().unwrap().body_state(),
+            BodyState::Loading(LoadStage::History)
+        );
+        assert_eq!(
+            state.current().unwrap().extension_title.as_deref(),
+            Some("Fixture extension")
+        );
+        assert_eq!(
+            state.current().unwrap().statuses["fixture"],
+            "Checking project"
+        );
+        assert_eq!(state.current().unwrap().widgets.len(), 2);
+        assert!(state.sessions[&key].extension_title.is_none());
+        assert!(state.sessions[&key].statuses.is_empty());
+        assert!(state.sessions[&key].widgets.is_empty());
         assert!(!state.sessions[&key].command.running());
         assert!(!state.current().unwrap().command.running());
     });
+    // A later extension edit still applies normally, even while history is loading.
+    control(&client, "emit_editor", "", 0).await;
+    cx.condition(&owner, |state, _| {
+        state.current().unwrap().draft == "next extension draft"
+    })
+    .await;
+    control(&client, "release", "get_entries", 0).await;
+    cx.condition(&owner, |state, _| {
+        state.current().unwrap().body_state() == BodyState::Ready
+    })
+    .await;
+    assert_eq!(
+        owner.read_with(cx, |state, _| state.current().unwrap().draft.clone()),
+        "next extension draft"
+    );
     close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn fork_history_failure_keeps_successful_fork_and_returned_text(cx: &mut TestAppContext) {
+    for failure in ["get_state", "get_entries"] {
+        let (dir, owner, key) = begin(cx, &["skip-fork-editor"]);
+        cx.condition(&owner, |state, _| {
+            !state.sessions[&key].fork_options().is_empty()
+        })
+        .await;
+        let instance = owner.read_with(cx, |state, _| state.sessions[&key].instance);
+        let scans = owner.read_with(cx, |state, _| state.scan_serial);
+        let flag = dir.path().join(format!("fail-{failure}"));
+        std::fs::write(&flag, "").unwrap();
+        owner.update(cx, |state, cx| {
+            state.set_draft(&key, "original conversation draft".into(), cx);
+            state.fork(&key, "old".into(), cx);
+        });
+        cx.condition(&owner, |state, _| {
+            state.selected.as_ref() != Some(&key)
+                && matches!(state.current().unwrap().body_state(), BodyState::Failed(_))
+        })
+        .await;
+        let forked = owner.read_with(cx, |state, _| {
+            assert_eq!(state.current().unwrap().draft, "selected fork message");
+            assert_eq!(state.current().unwrap().instance, instance);
+            assert_eq!(state.sessions[&key].draft, "original conversation draft");
+            assert!(state.scan_serial > scans);
+            assert!(
+                state
+                    .file()
+                    .drafts
+                    .iter()
+                    .any(|draft| draft.draft == "selected fork message")
+            );
+            state.selected.clone().unwrap()
+        });
+        std::fs::remove_file(flag).unwrap();
+        owner.update(cx, |state, cx| state.refresh(&forked, cx));
+        cx.condition(&owner, |state, _| {
+            state.sessions[&forked].body_state() == BodyState::Ready
+        })
+        .await;
+        owner.read_with(cx, |state, _| {
+            assert_eq!(state.sessions[&forked].draft, "selected fork message");
+            assert_eq!(state.sessions[&forked].instance, instance);
+        });
+        assert_eq!(count(dir.path(), "fork"), 1);
+        close(&owner, cx).await;
+    }
+}
+
+#[gpui_kit::test]
+async fn cancelled_or_failed_fork_does_not_replace_current_editor(cx: &mut TestAppContext) {
+    for (flag, skip_editor) in [
+        ("cancel-fork", true),
+        ("cancel-fork", false),
+        ("fail-fork", false),
+    ] {
+        let (dir, owner, key) = begin(cx, &[flag]);
+        if skip_editor {
+            std::fs::write(dir.path().join("skip-fork-editor"), "").unwrap();
+        }
+        cx.condition(&owner, |state, _| {
+            !state.sessions[&key].fork_options().is_empty()
+        })
+        .await;
+        let instance = owner.read_with(cx, |state, _| state.sessions[&key].instance);
+        owner.update(cx, |state, cx| {
+            state.set_draft(&key, "original input".into(), cx);
+            state.fork(&key, "old".into(), cx);
+        });
+        cx.condition(&owner, |state, _| !state.sessions[&key].command.running())
+            .await;
+        owner.read_with(cx, |state, _| {
+            assert_eq!(state.selected.as_ref(), Some(&key));
+            assert_eq!(state.sessions[&key].instance, instance);
+            assert_eq!(
+                state.sessions[&key].draft,
+                if skip_editor {
+                    "original input"
+                } else {
+                    "extension fork draft"
+                }
+            );
+            assert_eq!(state.sessions[&key].error.is_some(), flag == "fail-fork");
+        });
+        close(&owner, cx).await;
+    }
 }
 async fn control(client: &Client, kind: &str, command: &str, count: usize) {
     client

@@ -7,6 +7,7 @@ pub(crate) mod execution;
 pub(crate) mod loading;
 mod model_change;
 mod reads;
+mod renaming;
 use super::{
     history::DisplayMessage,
     pi::{self, InstanceId, PiEvent},
@@ -167,6 +168,12 @@ impl Session {
                 error: true,
             });
         }
+    }
+    fn clear_extension_ui(&mut self) {
+        self.pending_ui.clear();
+        self.extension_title = None;
+        self.statuses.clear();
+        self.widgets.clear();
     }
     pub fn active_messages(&self) -> Option<&HashSet<String>> {
         self.run.active_messages()
@@ -512,16 +519,45 @@ impl ConversationState {
         self.selected = Some(key);
     }
     pub fn set_cwd(&mut self, key: &str, cwd: PathBuf, cx: &mut Context<Self>) {
-        if self
-            .sessions
-            .get(key)
-            .is_some_and(|s| s.instance.is_none() && s.history().entries.is_empty())
-        {
-            self.sessions.get_mut(key).unwrap().info.cwd = cwd;
-            self.changed(cx);
-        } else {
-            self.new_draft(Some(cwd), cx);
+        if self.draining {
+            return;
         }
+        let Some(source) = self.sessions.get(key) else {
+            return;
+        };
+        if source.info.cwd == cwd {
+            return;
+        }
+        let can_retarget = source.instance.is_none() && source.history().entries.is_empty();
+        // Keep carrying unsent input when changing an unconnected draft's project.
+        // Otherwise select the retained empty session, including its model-only connection.
+        let reusable = (!can_retarget || source.draft.is_empty())
+            .then(|| {
+                self.sessions
+                    .iter()
+                    .filter(|(_, s)| {
+                        s.info.cwd == cwd
+                            && s.info.path.as_os_str().is_empty()
+                            && s.draft.is_empty()
+                            && s.history().entries.is_empty()
+                            && s.live.is_empty()
+                            && !s.busy()
+                            && !s.command.running()
+                            && !s.core_read.running()
+                            && s.pending_ui.is_empty()
+                    })
+                    .max_by_key(|(_, s)| s.instance.is_some())
+                    .map(|(key, _)| key.clone())
+            })
+            .flatten();
+        if let Some(key) = reusable {
+            self.selected = Some(key);
+        } else if can_retarget {
+            self.sessions.get_mut(key).unwrap().info.cwd = cwd;
+        } else {
+            self.insert_draft(Some(cwd));
+        }
+        self.changed(cx);
         self.request_scan(cx);
     }
     pub fn open(&mut self, key: &str, cx: &mut Context<Self>) {
@@ -661,7 +697,7 @@ impl ConversationState {
                         s.compacting = false;
                         s.retrying = false;
                         s.stopping = false;
-                        s.pending_ui.clear();
+                        s.clear_extension_ui();
                         s.reset_reads();
                         s.command.finish();
                         s.pending_count = 0;
@@ -695,7 +731,7 @@ impl ConversationState {
                     s.fail_submission(error.to_string(), cx);
                     s.instance = None;
                     s.reset_reads();
-                    s.pending_ui.clear();
+                    s.clear_extension_ui();
                     s.command.finish();
                     s.binding += 1;
                 }
@@ -961,6 +997,7 @@ impl ConversationState {
             s.binding += 1;
             s.reset_reads();
             s.state = None;
+            s.clear_extension_ui();
             s.command.finish();
             let closing = pi::global(cx).update(cx, |pi, cx| pi.close(id, cx));
             let key = key.to_owned();
@@ -1010,44 +1047,6 @@ impl ConversationState {
         }
         self.change_model_setting(key, Some(protocol::Command::SetThinkingLevel { level }), cx);
     }
-    pub fn rename(&mut self, key: &str, name: String, cx: &mut Context<Self>) {
-        let Some(client) = self.client(key, cx) else {
-            self.connect(key, cx);
-            return;
-        };
-        let s = self.sessions.get_mut(key).unwrap();
-        if s.settings_busy() {
-            return;
-        }
-        let binding = s.binding;
-        let target = key.to_owned();
-        let task_key = target.clone();
-        let task = cx.spawn(async move |owner, cx| {
-            let key = task_key;
-            let result = client
-                .request(protocol::Command::SetSessionName { name })
-                .await;
-            let _ = owner.update(cx, |this, cx| {
-                let Some(s) = this.sessions.get_mut(&key).filter(|s| s.binding == binding) else {
-                    return;
-                };
-                s.command.finish();
-                let succeeded = result.is_ok();
-                if let Err(error) = result {
-                    s.error = Some(error.to_string());
-                } else {
-                    s.error = None;
-                }
-                this.refresh(&key, cx);
-                if succeeded {
-                    this.request_scan(cx);
-                }
-                cx.notify();
-            });
-        });
-        self.sessions.get_mut(&target).unwrap().command = SessionCommand::Renaming { _task: task };
-        cx.notify();
-    }
     pub fn fork(&mut self, key: &str, entry: String, cx: &mut Context<Self>) {
         let Some(client) = self.client(key, cx) else {
             return;
@@ -1069,20 +1068,15 @@ impl ConversationState {
         let task_key = target.clone();
         let task = cx.spawn(async move |owner, cx| {
             let key = task_key;
-            let result = async {
-                let fork = client.fork(entry).await?;
-                let snapshot = snapshot(&client).await?;
-                Ok::<_, pi_rpc::Error>((fork, snapshot))
-            }
-            .await;
+            let result = client.fork(entry).await;
             let _ = owner.update(cx, |this, cx| {
                 let Some(source) = this.sessions.get_mut(&key).filter(|s| s.binding == binding)
                 else {
                     return;
                 };
-                let editor = source.command.finish();
+                source.command.finish();
                 match result {
-                    Ok((fork, snapshot)) if !fork.cancelled => {
+                    Ok(fork) if !fork.cancelled => {
                         let instance = source.instance.take();
                         let cwd = source.info.cwd.clone();
                         let origin = source.info.path.to_string_lossy().into_owned();
@@ -1090,60 +1084,36 @@ impl ConversationState {
                         let statuses = std::mem::take(&mut source.statuses);
                         let widgets = std::mem::take(&mut source.widgets);
                         let extension_title = source.extension_title.take();
-                        let editor = editor.unwrap_or(fork.text);
                         source.state = None;
-                        let new_key =
-                            snapshot.state.session_file.clone().unwrap_or_else(|| {
-                                format!("session-{}", snapshot.state.session_id)
-                            });
-                        let mut session = Session::new(
-                            SessionInfo {
-                                path: PathBuf::new(),
-                                id: snapshot.state.session_id.clone(),
-                                cwd,
-                                name: None,
-                                first_message: String::new(),
-                                activity: String::new(),
-                                parent_session: Some(origin),
-                            },
-                            editor,
-                        );
+                        // Like Pi TUI, a successful fork replaces the editor with
+                        // the selected message. Loading its history is independent.
+                        this.insert_draft(Some(cwd));
+                        let new_key = this.selected.clone().unwrap();
+                        let session = this.sessions.get_mut(&new_key).unwrap();
+                        session.info.parent_session = Some(origin);
+                        session.draft = fork.text;
+                        session.transcript = Transcript::Unloaded;
                         session.pending_ui = pending_ui;
                         session.statuses = statuses;
                         session.widgets = widgets;
                         session.extension_title = extension_title;
                         session.instance = instance;
                         session.binding = binding + 1;
-                        this.sessions.insert(new_key.clone(), session);
-                        this.selected = Some(new_key.clone());
-                        this.apply_snapshot(&new_key, snapshot, cx);
+                        this.refresh(&new_key, cx);
                         this.request_scan(cx);
                     }
-                    Ok((_, snapshot)) => {
-                        if let Some(editor) = editor {
-                            source.draft = editor;
-                            source.draft_revision += 1;
-                        }
-                        this.apply_snapshot(&key, snapshot, cx);
+                    Ok(_) => {
+                        this.refresh(&key, cx);
                     }
                     Err(error) => {
                         source.error = Some(error.to_string());
-                        if let Some(id) = source.instance.take() {
-                            pi::global(cx)
-                                .update(cx, |pi, cx| pi.close(id, cx))
-                                .detach();
-                        }
-                        source.state = None;
-                        source.pending_ui.clear();
+                        this.refresh_auxiliary(&key, cx);
                     }
                 }
                 this.changed(cx);
             });
         });
-        self.sessions.get_mut(&target).unwrap().command = SessionCommand::Forking {
-            _task: task,
-            editor: None,
-        };
+        self.sessions.get_mut(&target).unwrap().command = SessionCommand::Forking { _task: task };
         cx.notify();
     }
     pub fn reply(&mut self, key: &str, id: &str, reply: UiReply, cx: &mut Context<Self>) {
@@ -1327,12 +1297,8 @@ impl ConversationState {
                     deadline: None,
                 }),
                 UiMethod::SetEditorText { text } => {
-                    if let SessionCommand::Forking { editor, .. } = &mut s.command {
-                        *editor = Some(text.clone());
-                    } else {
-                        s.draft = text.clone();
-                        s.draft_revision += 1;
-                    }
+                    s.draft = text.clone();
+                    s.draft_revision += 1;
                 }
                 UiMethod::SetTitle { title } => s.extension_title = Some(title.clone()),
                 UiMethod::SetStatus { key, text } => {

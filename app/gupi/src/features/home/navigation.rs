@@ -416,10 +416,11 @@ pub(super) fn session_menu(
     let delete_key = key.clone();
     let delete_state = state.clone();
     let can_delete = state.read(cx).can_delete(&key);
+    let can_rename = state.read(cx).can_rename(&key, cx);
     let mut menu = menu
         .item(
             PopupMenuItem::new(t(cx, "conversation-rename"))
-                .disabled(busy || path.as_os_str().is_empty())
+                .disabled(!can_rename || path.as_os_str().is_empty())
                 .on_click(move |_, window, cx| {
                     let _ = owner.update(cx, |this, cx| {
                         this.rename_dialog(rename_key.clone(), window, cx)
@@ -719,21 +720,13 @@ impl HomeView {
         search_focus.update(cx, |search, cx| search.focus(window, cx));
     }
     fn rename_dialog(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
-        // Opening the rename action may restore this source; merely opening its menu does not.
-        if !self.state.read(cx).sessions.contains_key(&key) {
-            let current = self.state.read(cx).selected.clone();
-            self.state.update(cx, |s, cx| {
-                s.open(&key, cx);
-                s.selected = current;
-            });
-        }
-        self.state.update(cx, |s, cx| s.connect(&key, cx));
         let title = self
             .state
             .read(cx)
-            .sessions
-            .get(&key)
-            .map(|s| s.info.title().to_owned())
+            .infos()
+            .into_iter()
+            .find(|(target, _)| target == &key)
+            .map(|(_, info)| info.title().to_owned())
             .unwrap_or_default();
         let input = cx.new(|cx| {
             let mut s = InputState::new(window, cx);
@@ -753,16 +746,7 @@ impl HomeView {
                     if name.trim().is_empty() {
                         return false;
                     }
-                    let ready = state
-                        .read(cx)
-                        .sessions
-                        .get(&key)
-                        .is_some_and(|s| s.state.is_some());
-                    if !ready {
-                        return false;
-                    }
-                    state.update(cx, |s, cx| s.rename(&key, name.trim().into(), cx));
-                    true
+                    state.update(cx, |s, cx| s.rename(&key, name.trim().into(), cx))
                 })
         });
     }
