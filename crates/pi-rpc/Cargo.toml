@@ -13,9 +13,6 @@ thiserror = "2.0.20"
 which = "8.0.2"
 tracing = "0.1.44"
 
-[target.'cfg(unix)'.dependencies]
-libc = "0.2.189"
-
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "test-util"] }
 tempfile = "3.27.0"

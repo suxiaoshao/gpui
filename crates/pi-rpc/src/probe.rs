@@ -13,7 +13,6 @@ use tokio::{
 
 const OUTPUT_LIMIT: u64 = 16 * 1024;
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
-const CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 static STARTUP_SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 #[derive(Debug, thiserror::Error)]
 pub enum ProbeFailure {
@@ -122,7 +121,7 @@ async fn probe_with(
         .map_err(|_| ProbeFailure::Timeout)??;
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
-    let result = {
+    {
         let attempt = async {
             let (stdout, _, status) = tokio::try_join!(bounded(stdout), bounded(stderr), async {
                 child.wait().await.map_err(ProbeFailure::Io)
@@ -147,21 +146,7 @@ async fn probe_with(
         tokio::time::timeout_at(deadline, attempt)
             .await
             .unwrap_or(Err(ProbeFailure::Timeout))
-    };
-    if result.is_err() {
-        let cleanup = async {
-            if child.try_wait()?.is_none() {
-                child.kill().await?;
-            }
-            Ok::<_, std::io::Error>(())
-        };
-        match tokio::time::timeout(CLEANUP_TIMEOUT, cleanup).await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => tracing::warn!(%error, "Pi probe cleanup failed; dropping child"),
-            Err(_) => tracing::warn!("Pi probe cleanup timed out; dropping child"),
-        }
     }
-    result
 }
 #[cfg(test)]
 mod launch_tests {
@@ -362,7 +347,7 @@ mod tests {
         ));
     }
     #[tokio::test]
-    async fn timeout_reaps_and_cancellation_terminates_the_owned_process() {
+    async fn timeout_and_cancellation_release_the_owned_process() {
         for cancel_early in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("pi");

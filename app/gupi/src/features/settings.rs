@@ -182,13 +182,13 @@ impl Render for SettingsView {
         let (problem, can_write, conflict, reconcile, write_failed, backup) =
             store.read(cx, |op| {
                 (
-                    op.problem().map(|p| p.key),
+                    op.problem().map(|p| p.key()),
                     op.data().and_then(|d| d.configured()).is_some(),
-                    op.problem().is_some_and(|p| p.conflict),
-                    op.problem().is_some_and(|p| p.reconcile),
-                    op.problem().is_some_and(|p| p.write_source.is_some()),
+                    op.problem().is_some_and(|p| p.is_conflict()),
+                    op.problem().is_some_and(|p| p.needs_reconcile()),
+                    op.problem().is_some_and(|p| p.write_source().is_some()),
                     op.problem()
-                        .and_then(|p| p.backup.clone())
+                        .and_then(|p| p.backup().cloned())
                         .or_else(|| op.data().and_then(|d| d.backup.clone())),
                 )
             });

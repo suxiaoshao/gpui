@@ -208,6 +208,13 @@ pub fn resolve_theme_config(
     }
 }
 
+/// Applies a theme and synchronizes Base renderers, including resize handles,
+/// scrollbars and rich-text defaults. Callers decide when to refresh windows.
+pub fn apply_theme_config(config: &Rc<ThemeConfig>, cx: &mut App) {
+    Theme::global_mut(cx).apply_config(config);
+    Theme::sync_base(cx);
+}
+
 pub fn preview_theme(config: &Rc<ThemeConfig>) -> Theme {
     let default_colors = if config.mode.is_dark() {
         ThemeColor::dark()
@@ -342,7 +349,7 @@ pub fn fixed_system_accent_theme_config(mode: ComponentThemeMode) -> Rc<ThemeCon
 pub fn apply_fixed_system_accent_theme(window: &mut Window, cx: &mut App) {
     let mode = component_theme_mode_from_appearance(window.appearance());
     let config = fixed_system_accent_theme_config(mode);
-    Theme::global_mut(cx).apply_config(&config);
+    apply_theme_config(&config, cx);
 }
 
 pub fn generated_theme_config(color: &str, mode: ComponentThemeMode) -> Option<ThemeConfig> {

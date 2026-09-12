@@ -10,6 +10,26 @@ pub enum Command {
     Prompt(Prompt),
     Abort,
     ClearQueue,
+    GetEntries,
+    GetForkMessages,
+    Fork {
+        #[serde(rename = "entryId")]
+        entry_id: String,
+    },
+    SetSessionName {
+        name: String,
+    },
+    GetAvailableModels,
+    SetModel {
+        provider: String,
+        #[serde(rename = "modelId")]
+        model_id: String,
+    },
+    GetAvailableThinkingLevels,
+    SetThinkingLevel {
+        level: String,
+    },
+    GetSessionStats,
 }
 impl Command {
     pub fn name(&self) -> &'static str {
@@ -19,6 +39,15 @@ impl Command {
             Self::Prompt(_) => "prompt",
             Self::Abort => "abort",
             Self::ClearQueue => "clear_queue",
+            Self::GetEntries => "get_entries",
+            Self::GetForkMessages => "get_fork_messages",
+            Self::Fork { .. } => "fork",
+            Self::SetSessionName { .. } => "set_session_name",
+            Self::GetAvailableModels => "get_available_models",
+            Self::SetModel { .. } => "set_model",
+            Self::GetAvailableThinkingLevels => "get_available_thinking_levels",
+            Self::SetThinkingLevel { .. } => "set_thinking_level",
+            Self::GetSessionStats => "get_session_stats",
         }
     }
 }
@@ -60,8 +89,99 @@ pub struct SessionState {
     pub session_id: String,
     pub is_streaming: bool,
     pub is_compacting: bool,
+    pub session_file: Option<String>,
+    pub session_name: Option<String>,
+    pub model: Option<Model>,
+    #[serde(default)]
+    pub thinking_level: String,
+    #[serde(default)]
+    pub auto_compaction_enabled: bool,
+    #[serde(default)]
+    pub pending_message_count: usize,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// Entry identity is typed; kind-specific fields preserve Pi's extensible format.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionEntry {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(flatten)]
+    pub data: Map<String, Value>,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Entries {
+    pub entries: Vec<SessionEntry>,
+    pub leaf_id: Option<String>,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForkMessage {
+    pub entry_id: String,
+    pub text: String,
+}
+#[derive(Clone, Debug, Deserialize)]
+pub struct ForkMessages {
+    pub messages: Vec<ForkMessage>,
+}
+#[derive(Clone, Debug, Deserialize)]
+pub struct ForkResult {
+    #[serde(default)]
+    pub text: String,
+    pub cancelled: bool,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Model {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    #[serde(default)]
+    pub reasoning: bool,
+    #[serde(default)]
+    pub context_window: u64,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+#[derive(Clone, Debug, Deserialize)]
+pub struct Models {
+    pub models: Vec<Model>,
+}
+#[derive(Clone, Debug, Deserialize)]
+pub struct ThinkingLevels {
+    pub levels: Vec<String>,
+}
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsage {
+    #[serde(default)]
+    pub input: u64,
+    #[serde(default)]
+    pub output: u64,
+    #[serde(default)]
+    pub cache_read: u64,
+    #[serde(default)]
+    pub cache_write: u64,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsage {
+    pub tokens: Option<u64>,
+    pub context_window: u64,
+    pub percent: Option<f64>,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStats {
+    pub tokens: TokenUsage,
+    pub cost: f64,
+    pub context_usage: Option<ContextUsage>,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -197,6 +317,13 @@ impl Event {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn follow_up_prompt_uses_the_native_camel_case_value() {
+        let mut prompt = super::Prompt::new("next");
+        prompt.streaming_behavior = Some(super::StreamingBehavior::FollowUp);
+        let value = serde_json::to_value(prompt).unwrap();
+        assert_eq!(value["streamingBehavior"], "followUp");
+    }
     use super::*;
     #[test]
     fn unknown_extension_method_and_image_envelope_remain_compatible() {

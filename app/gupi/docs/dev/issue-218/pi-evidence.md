@@ -15,7 +15,7 @@
 
 已克隆 `StarkInternationalAI/pi-desktop` 到 `/tmp/gupi-reference-pi-desktop-20260907`，提交 `7ffbc1606475a22bfbcec4252ab0577b821305ff`。选取理由是 Rust/Tauri 后端实际包装本机 Pi RPC，与 Gupi 边界接近；没有核实其用户规模，不称其为业界标准。
 
-[process_manager.rs](https://github.com/StarkInternationalAI/pi-desktop/blob/7ffbc1606475a22bfbcec4252ab0577b821305ff/src-tauri/src/process_manager.rs) 持有 stdin writer、stdout reader、退出监听任务，并以 abort、关闭 stdin、延迟 SIGTERM 的顺序关闭。参考其职责拆分；不照抄固定 sleep 后按 PID 发信号、随后 abort 退出监听的方式，Gupi 需要持有 child 并确认 wait 结果。
+[process_manager.rs](https://github.com/StarkInternationalAI/pi-desktop/blob/7ffbc1606475a22bfbcec4252ab0577b821305ff/src-tauri/src/process_manager.rs) 持有 stdin writer、stdout reader、退出监听任务，并以 abort、关闭 stdin、延迟 SIGTERM 的顺序关闭。参考其职责拆分；不照抄固定 sleep 后按 PID 发信号、随后 abort 退出监听的方式，当前 Gupi 协议关闭与 Child Drop 边界见[第二阶段计划](../../../../../docs/dev/issue-219/README.md)，无需为确认操作系统回收另加等待。
 
 另查看 [justhil/pi-app](https://github.com/justhil/pi-app) 项目说明：它采用 Pi SDK。可参考产品交互，但该集成边界不能替代本机 CLI 进程管理契约；本轮未审查其进程代码。
 

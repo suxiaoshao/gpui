@@ -54,6 +54,7 @@ pub(crate) fn run() {
                 tracing::warn!(%error, "layout directory unavailable; using default layout");
                 layout::LayoutState::default()
             });
+        cx.set_global(layout.clone());
         let bounds = layout
             .main_window
             .map(|p| p.restored(cx))
@@ -66,7 +67,7 @@ pub(crate) fn run() {
             titlebar: Some(TitlebarOptions {
                 title: Some("Gupi".into()),
                 appears_transparent: true,
-                ..Default::default()
+                traffic_light_position: Some(point(px(16.), px(16.))),
             }),
             ..TitleBar::window_options()
         };
@@ -132,7 +133,7 @@ fn show(settings: Option<bool>, cx: &mut App) {
                 native = window.native_window_handle().ok();
             }
             view.update(cx, |view, cx| {
-                if !view.draining
+                if !view.is_quitting()
                     && let Some(settings) = settings
                 {
                     view.show_settings = settings;

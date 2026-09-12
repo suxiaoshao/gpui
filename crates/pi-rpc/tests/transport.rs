@@ -41,7 +41,7 @@ async fn request_order_cancellation_extensions_and_isolation() {
         let log = std::fs::read_to_string(dir.path().join("process.log")).unwrap();
         assert!(!log.lines().any(|line| line.starts_with("abort ")), "cancelling a wait must not abort Pi");
         let report = client.close().await;
-        assert!(report.status.is_some()); assert!(report.cleanup_error.is_none(), "{report:?}");
+        assert!(report.status.is_some()); assert!(report.reason.is_none(), "{report:?}");
         assert!(matches!(client.get_state().await, Err(Error::Closed)));
         assert!(client.close().await.status.is_some());
         assert!(other.get_state().await.is_ok());
@@ -87,7 +87,7 @@ async fn protocol_startup_and_consumer_failures_settle_waiters() {
                 "capacity" => assert!(matches!(error, Error::Capacity(_))),
                 _ => assert!(matches!(error, Error::NotReady | Error::Closed)),
             }
-            assert!(client.close().await.status.is_some());
+            assert!(client.close().await.reason.is_some());
         }
         let dir = tempfile::tempdir().unwrap();
         let mut options = support::options(dir.path(), "");
@@ -98,25 +98,25 @@ async fn protocol_startup_and_consumer_failures_settle_waiters() {
             client.prompt(Prompt::new("flood")).await,
             Err(Error::Capacity(_))
         ));
-        assert!(client.close().await.status.is_some());
+        assert!(matches!(
+            client.close().await.reason,
+            Some(Error::Capacity(_))
+        ));
     })
     .await;
 }
 #[tokio::test]
-async fn shutdown_observes_abort_eof_and_terminates_lingering_process() {
+async fn shutdown_waits_for_abort_before_eof_without_fixed_delays() {
     bounded(async {
         let dir = tempfile::tempdir().unwrap();
-        let mut options = support::options(dir.path(), "linger");
+        let mut options = support::options(dir.path(), "slow_abort");
         options.limits.stderr_bytes = 128;
         let (client, _events) = Client::spawn(options).await.unwrap();
         client.ready().await.unwrap();
         client.prompt(Prompt::new("stderr")).await.unwrap();
-        let started = std::time::Instant::now();
         let report = client.close().await;
-        assert!(started.elapsed() >= Duration::from_millis(1000));
         assert!(report.status.is_some());
-        assert!(!report.forced, "{report:?}");
-        assert!(report.cleanup_error.is_none(), "{report:?}");
+        assert!(report.reason.is_none(), "{report:?}");
         assert!(report.stderr.ends_with("TAIL\n"));
         assert!(report.stderr.len() <= 128);
         let log = std::fs::read_to_string(dir.path().join("process.log")).unwrap();
@@ -128,7 +128,9 @@ async fn shutdown_observes_abort_eof_and_terminates_lingering_process() {
                 })
                 .unwrap()
         };
-        assert!(stamp("eof ") >= stamp("abort ") + 450, "{log}");
+        assert!(stamp("abort_done ") >= stamp("abort ") + 70, "{log}");
+        assert!(stamp("eof ") >= stamp("abort_done "), "{log}");
+        assert!(stamp("eof ") < stamp("abort ") + 450, "{log}");
     })
     .await;
 }
@@ -145,8 +147,9 @@ async fn blocked_stdin_and_dropped_last_client_cannot_leak_process_ownership() {
         let mut state = client.subscribe();
         drop(client);
         loop {
-            if let ConnectionState::Exited(report) = state.borrow_and_update().clone() {
-                assert!(report.status.is_some());
+            if let ConnectionState::Closed(report) = state.borrow_and_update().clone() {
+                assert!(report.status.is_none());
+                assert!(matches!(report.reason, Some(Error::ShutdownTimeout)));
                 break;
             }
             state.changed().await.unwrap();
@@ -201,7 +204,12 @@ async fn mismatched_response_and_process_exit_fail_pending_requests() {
             } else {
                 assert!(matches!(result, Err(Error::Closed)));
             }
-            assert!(client.close().await.status.is_some());
+            let report = client.close().await;
+            if message == "mismatch" {
+                assert!(matches!(report.reason, Some(Error::Protocol(_))));
+            } else {
+                assert!(report.status.is_some());
+            }
         }
     })
     .await;
@@ -214,7 +222,10 @@ async fn startup_deadline_closes_a_process_that_never_reads_requests() {
         options.startup_timeout = Duration::from_millis(200);
         let (client, _events) = Client::spawn(options).await.unwrap();
         assert!(matches!(client.ready().await, Err(Error::StartupTimeout)));
-        assert!(client.close().await.status.is_some());
+        assert!(matches!(
+            client.close().await.reason,
+            Some(Error::StartupTimeout)
+        ));
     })
     .await;
 }
@@ -238,24 +249,22 @@ async fn windows_cmd_shim_uses_structured_arguments() {
     .await;
 }
 
-#[cfg(unix)]
 #[tokio::test]
-async fn ignored_sigterm_is_reported_and_the_direct_child_is_still_reaped() {
+async fn shutdown_timeout_closes_the_connection_without_claiming_observed_exit() {
     bounded(async {
         let dir = tempfile::tempdir().unwrap();
-        let (client, _events) = Client::spawn(support::options(dir.path(), "ignore_term"))
+        let (client, _events) = Client::spawn(support::options(dir.path(), "linger"))
             .await
             .unwrap();
         client.ready().await.unwrap();
         let report = client.close().await;
-        assert!(report.forced, "{report:?}");
+        assert!(report.status.is_none());
+        assert!(matches!(report.reason, Some(Error::ShutdownTimeout)));
+        assert!(matches!(client.state(), ConnectionState::Closed(_)));
         assert!(
-            report.cleanup_error.is_some(),
-            "failed graceful termination must stay visible"
-        );
-        assert!(
-            report.status.is_some(),
-            "forced cleanup must reap the owned child"
+            std::fs::read_to_string(dir.path().join("process.log"))
+                .unwrap()
+                .contains("eof ")
         );
     })
     .await;

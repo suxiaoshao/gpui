@@ -1,5 +1,5 @@
 use super::config::{AppConfig, ThemeMode};
-use gpui_kit::component::{Theme, ThemeMode as Mode, ThemeRegistry};
+use gpui_kit::component::{ThemeMode as Mode, ThemeRegistry};
 use gpui_kit::{App, Window};
 
 pub(crate) fn init(cx: &mut App) {
@@ -20,7 +20,6 @@ pub(crate) fn init(cx: &mut App) {
         include_str!("../../assets/themes/jellybeans.json"),
         include_str!("../../assets/themes/kibble.json"),
         include_str!("../../assets/themes/macos-classic.json"),
-        include_str!("../../assets/themes/matrix.json"),
         include_str!("../../assets/themes/mellifluous.json"),
         include_str!("../../assets/themes/molokai.json"),
         include_str!("../../assets/themes/solarized.json"),
@@ -60,6 +59,42 @@ pub(crate) fn apply(config: &AppConfig, window: &mut Window, cx: &mut App) {
         selected_id(config, mode),
         &[],
     );
-    Theme::global_mut(cx).apply_config(&theme);
+    app_theme::apply_theme_config(&theme, cx);
     cx.refresh_windows();
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit as gpui;
+    use gpui_kit::{
+        TestAppContext,
+        component::{Theme, ThemeRegistry},
+    };
+
+    #[gpui::test]
+    fn applying_presets_updates_base_renderer_colors(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let registry = ThemeRegistry::global(cx);
+            let presets = [
+                registry.default_dark_theme().clone(),
+                registry.default_light_theme().clone(),
+            ];
+            for preset in presets {
+                app_theme::apply_theme_config(&preset, cx);
+                let component = Theme::global(cx);
+                let base = gpui_kit::base::Theme::global(cx);
+                assert_eq!(
+                    base.tokens.colors.foreground, component.foreground,
+                    "rich-text/base colors must follow the selected preset"
+                );
+                assert_eq!(
+                    base.resizable.handle,
+                    Some(component.border),
+                    "resize divider must use the selected border color"
+                );
+                assert_eq!(base.resizable.active_handle, Some(component.drag_border));
+            }
+        });
+    }
 }

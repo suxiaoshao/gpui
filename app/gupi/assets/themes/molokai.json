@@ -1,5 +1,5 @@
 {
-  "$schema": "https://github.com/longbridge/gpui-component/raw/refs/heads/main/.theme-schema.json",
+  "$schema": "https://github.com/longbridge/gpui-kit/raw/refs/heads/main/.theme-schema.json",
   "name": "Molokai",
   "author": "Tomas Restrepo",
   "url": "https://github.com/tomasr/molokai",
@@ -40,12 +40,7 @@
         "base.blue": "#e16032",
         "base.blue.light": "#e16032",
         "base.magenta": "#7058be",
-        "base.cyan": "#0acc78",
-        "tab.active.background": "#FEFAF9",
-        "tab.active.foreground": "#0a0a0a",
-        "tab.background": "#EBE4E100",
-        "tab.foreground": "#767676",
-        "tab_bar.background": "#EBE4E1"
+        "base.cyan": "#0acc78"
       },
       "highlight": {
         "editor.foreground": "#0a0a0a",
@@ -181,12 +176,7 @@
         "base.yellow": "#807607",
         "base.blue": "#075880",
         "base.magenta": "#800780",
-        "base.cyan": "#07807e",
-        "tab.active.background": "#1b1d1e",
-        "tab.active.foreground": "#f8f8f2",
-        "tab.background": "#2b2f3000",
-        "tab.foreground": "#5b5a54",
-        "tab_bar.background": "#2b2f30"
+        "base.cyan": "#07807e"
       },
       "highlight": {
         "editor.foreground": "#DDDDDD",

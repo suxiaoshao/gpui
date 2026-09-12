@@ -61,3 +61,225 @@ setup-finish = Finish setup
 setup-saving = Saving…
 light-themes = Light themes
 dark-themes = Dark themes
+
+# Conversation workspace
+conversation-new = New conversation
+conversation-sidebar = Conversation sidebar
+conversation-history = Conversation history
+conversation-restoring = Restoring drafts…
+conversation-discovering = Finding conversations… { $count } files
+conversation-read-progress = Read { $completed } / { $total } files
+conversation-refresh-progress = Refreshing { $completed } / { $total } files
+conversation-project = Choose working directory
+conversation-untitled = Untitled conversation
+conversation-idle = Idle
+conversation-loading = Opening session
+conversation-running = Running
+conversation-failed = Error needs attention
+conversation-waiting = Waiting for input
+conversation-search = Search conversations
+conversation-refresh = Refresh sessions
+conversation-refresh-current = Refresh current session
+conversation-actions = Session actions
+conversation-show-sidebar = Show session sidebar
+conversation-hide-sidebar = Hide session sidebar
+conversation-scan-failed = Could not load the conversation catalog
+conversation-search-placeholder = Search names, messages, or project paths
+conversation-search-empty = No matching conversations
+conversation-rename = Rename…
+conversation-delete = Move to Trash
+conversation-delete-failed = Could not delete conversation: { $error }
+conversation-copy-path = Copy path
+conversation-stop = Stop generation
+conversation-close-run = Close runtime
+conversation-show-less = Show less
+conversation-show-more = Show more…
+conversation-fork = Fork conversation from here
+conversation-preview = Previewing another branch
+conversation-return-current = Return to current branch
+conversation-welcome = Start a conversation
+conversation-welcome-hint = Choose a working directory and write a message.
+conversation-empty-history = No messages in this conversation yet.
+conversation-bottom = Jump to bottom
+conversation-copy = Copy
+conversation-compaction = Context compaction summary
+conversation-branch-summary = Branch summary
+conversation-working = Working…
+conversation-process = View process
+conversation-details = Toggle details
+conversation-role-user = User message
+conversation-role-assistant = Assistant message
+conversation-role-tool = Tool result
+conversation-event = Session event
+conversation-close-history = Close conversation history
+conversation-source = Reveal source session file
+conversation-reconnect = Reconnect
+conversation-save-error = Draft could not be saved
+conversation-interrupted = Run stopped; existing content is preserved.
+conversation-no = No
+conversation-submit = Submit
+conversation-input = Write a message
+conversation-model = Model
+conversation-load-options = Connect to Pi to load models
+conversation-thinking = Thinking level
+conversation-unknown = Unavailable
+conversation-context = Current execution branch context
+conversation-auto-compaction = Auto compaction
+conversation-on = On
+conversation-off = Off
+conversation-tokens = Total input / output
+conversation-cache = Total cache read / write
+conversation-cache-hit = Latest cache hit rate
+conversation-cost = Cost reported by Pi
+conversation-statistics = Usage statistics
+conversation-send = Send (Enter); Alt+Enter queues a follow-up
+conversation-sending = Sending…
+conversation-queued = Queued for Pi
+conversation-graph-current = Current
+conversation-graph-preview = Preview
+conversation-graph-left = Show lanes to the left (or scroll horizontally)
+conversation-graph-right = Show lanes to the right (or scroll horizontally)
+conversation-graph-reveal = Reveal selected
+conversation-graph-column = Graph
+conversation-graph-message = Message
+conversation-catalog-empty = No conversations yet
+
+conversation-thinking-content = Thinking
+conversation-tool-group = Tool calls ({ $count })
+conversation-tool-group-running = Working on { $count } tool calls
+conversation-tool-group-read = Read files ({ $count })
+conversation-tool-group-bash = Commands ({ $count })
+conversation-tool-group-search = Searches ({ $count })
+conversation-tool-group-edit = File changes ({ $count })
+conversation-tool-line = { $action } { $summary }
+conversation-tool-action-read =
+    { $state ->
+        [running] Reading
+        [complete] Read
+        [failed] Failed to read
+        *[unfinished] Unfinished read
+    }
+conversation-tool-action-write =
+    { $state ->
+        [running] Writing
+        [complete] Wrote
+        [failed] Failed to write
+        *[unfinished] Unfinished write
+    }
+conversation-tool-action-edit =
+    { $state ->
+        [running] Editing
+        [complete] Edited
+        [failed] Failed to edit
+        *[unfinished] Unfinished edit
+    }
+conversation-tool-action-bash =
+    { $state ->
+        [running] Running
+        [complete] Ran
+        [failed] Command failed
+        *[unfinished] Unfinished command
+    }
+conversation-tool-action-search =
+    { $state ->
+        [running] Searching
+        [complete] Searched
+        [failed] Search failed
+        *[unfinished] Unfinished search
+    }
+conversation-tool-action-other =
+    { $state ->
+        [running] Calling { $name }
+        [complete] Called { $name }
+        [failed] Failed call to { $name }
+        *[unfinished] Unfinished call to { $name }
+    }
+conversation-tool-group-explore = Searched and read files
+conversation-tool-group-explore-commands = Read files and ran commands
+
+conversation-processed = Worked for { $duration }
+conversation-processed-failed = Failed after { $duration }
+conversation-processed-stopped = Stopped after { $duration }
+conversation-copied = Copied
+conversation-copy-failed = Copy failed. Please try again.
+conversation-usage-title = Request usage
+conversation-usage-model = Model
+conversation-usage-provider = Provider
+conversation-usage-input = Input tokens
+conversation-usage-output = Output tokens
+conversation-usage-cache-read = Cache read tokens
+conversation-usage-cache-write = Cache write tokens
+conversation-usage-total = Total tokens
+conversation-usage-cost = Cost
+
+composer-context-used = Used tokens
+composer-context-limit = Context capacity
+composer-context-percent = Context used
+composer-token-input = Total input tokens
+composer-token-output = Total output tokens
+composer-token-cache-read = Total cache read tokens
+composer-token-cache-write = Total cache write tokens
+composer-token-usage = Session token usage
+
+conversation-model-search = Search models…
+conversation-model-empty = No matching models
+conversation-thinking-off = Off
+conversation-thinking-minimal = Minimal
+conversation-thinking-low = Low
+conversation-thinking-medium = Medium
+conversation-thinking-high = High
+conversation-thinking-xhigh = Extra High
+conversation-thinking-max = Max
+
+conversation-model-reasoning = Reasoning
+conversation-model-vision = Vision
+
+conversation-history-reply = Assistant reply
+conversation-history-brief = Brief: user messages and final answers
+conversation-history-detailed = Detailed: messages, tools and summaries
+conversation-history-progress = Assistant progress
+conversation-history-thinking = Thinking
+conversation-history-calls = Tool calls
+conversation-history-failed = Execution failed
+conversation-history-stopped = Interrupted
+conversation-history-empty = Reply without text
+composer-model-thinking = Model and thinking
+composer-model-refresh = Refresh models and thinking levels
+composer-thinking-unavailable = Not supported
+composer-model-loading = Loading models…
+composer-thinking-loading = Loading thinking levels…
+composer-model-confirming = Confirming model settings…
+composer-stats-loading = Loading usage…
+composer-stats-retry = Retry loading usage
+conversation-checking-file = Checking conversation file…
+conversation-connecting = Connecting to Pi…
+conversation-history-loading = Loading conversation history…
+conversation-history-refreshing = Refreshing conversation history…
+conversation-fork-options-loading = Loading fork options…
+conversation-fork-options-retry = Retry loading fork options
+history-canvas-zoom-in = Zoom in
+history-canvas-zoom-out = Zoom out
+history-canvas-fit = Fit tree (0)
+history-canvas-current = Locate execution node
+history-canvas-expand = Expand { $count } nodes
+history-canvas-collapse = Collapse { $count } process nodes, keeping navigation markers
+history-canvas-empty = No history nodes to display
+history-canvas-help = Conversation tree: scroll or drag to pan, pinch or plus/minus to zoom, arrow keys to select, Enter to preview, E to expand the next segment
+
+history-view-tree = Tree
+history-view-list = List
+history-level-brief = Brief
+history-level-detailed = Detailed
+history-level-all = All
+history-level-all-description = All: including settings, labels and custom records
+history-scope-all = All branches
+history-scope-branch = This branch only
+history-model-change = Model change
+history-thinking-change = Thinking level change
+history-session-info = Session information change
+history-label-change = Label change
+history-custom-record = Custom record
+
+
+history-content = Content
+history-range = Scope
