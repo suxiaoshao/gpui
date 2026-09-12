@@ -2,6 +2,7 @@
 pub(crate) mod catalog;
 mod command;
 pub(crate) mod content;
+mod deletion;
 pub(crate) mod execution;
 pub(crate) mod loading;
 mod model_change;
@@ -174,7 +175,8 @@ impl Session {
             Activity::Failed
         } else if self.busy() {
             Activity::Running
-        } else if matches!(self.core_read, CoreRead::CheckingFile { .. })
+        } else if matches!(self.command, SessionCommand::Deleting { .. })
+            || matches!(self.core_read, CoreRead::CheckingFile { .. })
             || self.instance.is_some() && self.state.is_none()
         {
             Activity::Loading
@@ -226,6 +228,7 @@ async fn snapshot(client: &Client) -> Result<Snapshot, pi_rpc::Error> {
 }
 pub(crate) enum ConversationEvent {
     Notify { message: String, error: bool },
+    Deleted,
 }
 pub(crate) struct ConversationState {
     pub sessions: BTreeMap<String, Session>,
@@ -923,7 +926,7 @@ impl ConversationState {
         let Some(s) = self
             .sessions
             .get_mut(key)
-            .filter(|s| !s.busy() && s.pending_ui.is_empty())
+            .filter(|s| !s.busy() && s.pending_ui.is_empty() && !s.command.running())
         else {
             return;
         };
@@ -932,9 +935,18 @@ impl ConversationState {
             s.reset_reads();
             s.state = None;
             s.command.finish();
-            pi::global(cx)
-                .update(cx, |pi, cx| pi.close(id, cx))
-                .detach();
+            let closing = pi::global(cx).update(cx, |pi, cx| pi.close(id, cx));
+            let key = key.to_owned();
+            let task = cx.spawn(async move |owner, cx| {
+                closing.await;
+                let _ = owner.update(cx, |this, cx| {
+                    if let Some(s) = this.sessions.get_mut(&key) {
+                        s.command.finish();
+                    }
+                    cx.notify();
+                });
+            });
+            s.command = SessionCommand::Closing { _task: task };
         }
         cx.notify();
     }
@@ -1407,13 +1419,22 @@ impl ConversationState {
     pub fn flush(&mut self, cx: &mut Context<Self>) -> Task<()> {
         self.draining = true;
         self.catalog.transition(CatalogMessage::Cancel);
+        let mut deletions = Vec::new();
         for s in self.sessions.values_mut() {
             s.reset_reads();
             s.pending_send = None;
+            if matches!(s.command, SessionCommand::Deleting { .. })
+                && let SessionCommand::Deleting { task } = std::mem::take(&mut s.command)
+            {
+                deletions.push(task);
+            }
         }
         let restore = self.restore_task.take();
         let prior = self.save_task.take();
         cx.spawn(async move |owner, cx| {
+            for deletion in deletions {
+                deletion.await;
+            }
             if let Some(restore) = restore {
                 restore.await;
             }

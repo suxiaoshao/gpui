@@ -7,6 +7,12 @@ pub(crate) enum SessionCommand {
     Renaming {
         _task: Task<()>,
     },
+    Deleting {
+        task: Task<()>,
+    },
+    Closing {
+        _task: Task<()>,
+    },
     Forking {
         _task: Task<()>,
         editor: Option<String>,
@@ -14,12 +20,14 @@ pub(crate) enum SessionCommand {
 }
 impl SessionCommand {
     pub fn running(&self) -> bool {
-        matches!(self, Self::Renaming { .. } | Self::Forking { .. })
+        !matches!(self, Self::Idle)
     }
     pub fn finish(&mut self) -> Option<String> {
         match std::mem::replace(self, Self::Idle) {
             Self::Forking { editor, .. } => editor,
-            Self::Idle | Self::Renaming { .. } => None,
+            Self::Idle | Self::Renaming { .. } | Self::Deleting { .. } | Self::Closing { .. } => {
+                None
+            }
         }
     }
 }

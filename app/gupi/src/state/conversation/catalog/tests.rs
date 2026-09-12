@@ -17,6 +17,39 @@ fn start(state: &mut CatalogState<Task>, id: u64, dropped: &Rc<Cell<usize>>) -> 
     )));
     cancel
 }
+
+#[test]
+fn deletion_cancels_old_scan_so_its_result_cannot_restore_the_session() {
+    let info = crate::foundation::session_catalog::SessionInfo {
+        path: "/project/session.jsonl".into(),
+        id: "session".into(),
+        cwd: "/project".into(),
+        name: None,
+        first_message: String::new(),
+        activity: String::new(),
+        parent_session: None,
+    };
+    let dropped = Rc::new(Cell::new(0));
+    let mut state = CatalogState::Ready(Catalog {
+        sessions: vec![info.clone()],
+        ..Default::default()
+    });
+    let cancel = start(&mut state, 1, &dropped);
+    state.transition(Message::RemoveSession(info.path.clone()));
+    assert!(cancel.load(Ordering::Relaxed));
+    assert!(state.data().unwrap().sessions.is_empty());
+    assert_eq!(
+        state.transition(Message::Finish {
+            id: 1,
+            result: Ok(Catalog {
+                sessions: vec![info],
+                ..Default::default()
+            })
+        }),
+        Update::Ignored
+    );
+    assert!(state.data().unwrap().sessions.is_empty());
+}
 #[test]
 fn phase_transfer_preserves_task_and_rejects_invalid_or_stale_progress() {
     let dropped = Rc::new(Cell::new(0));

@@ -39,6 +39,111 @@ fn fixture() -> PathBuf {
         .1
         .clone()
 }
+
+#[gpui_kit::test]
+async fn deletion_waits_for_exit_removes_draft_and_catalog_then_opens_new_page(
+    cx: &mut TestAppContext,
+) {
+    let (dir, owner, key) = begin(cx, &[]);
+    cx.condition(&owner, |state, _| {
+        state.sessions[&key].state.is_some() && !state.sessions[&key].core_read.running()
+    })
+    .await;
+    let path = dir.path().join("delete-session.jsonl");
+    std::fs::write(&path, "fixture history").unwrap();
+    let destination = dir.path().join("trashed-session.jsonl");
+    let moved = destination.clone();
+    let client = owner.read_with(cx, |state, cx| state.client(&key, cx).unwrap());
+    owner.update(cx, |state, cx| {
+        let s = state.sessions.get_mut(&key).unwrap();
+        s.info.path = path.clone();
+        s.draft = "draft to delete".into();
+        let info = s.info.clone();
+        state.catalog = super::super::CatalogState::Ready(crate::foundation::session_catalog::Catalog {
+            sessions: vec![info], ..Default::default()
+        });
+        state.scan(cx);
+        assert!(state.can_delete(&key));
+        state.delete_with(&key, move |info| {
+            assert!(matches!(client.state(), pi_rpc::ConnectionState::Closed(ref report) if report.status.is_some()));
+            std::fs::rename(&info.path, moved).map_err(|e| e.to_string())
+        }, cx);
+        assert!(!state.can_delete(&key));
+        state.connect(&key, cx);
+        assert!(state.sessions[&key].instance.is_none());
+    });
+    cx.condition(&owner, |state, _| {
+        !state.sessions.contains_key(&key) && !state.scanning()
+    })
+    .await;
+    owner.read_with(cx, |state, _| {
+        assert!(state.infos().is_empty());
+        assert!(state.file().drafts.is_empty());
+        let current = state.current().unwrap();
+        assert!(current.info.path.as_os_str().is_empty());
+        assert_eq!(current.info.cwd, dir.path());
+        assert_eq!(current.body_state(), BodyState::New);
+        assert!(current.instance.is_none());
+    });
+    assert!(!path.exists());
+    assert!(destination.exists());
+}
+
+#[gpui_kit::test]
+async fn deletion_failure_keeps_selection_draft_and_file_and_can_retry(cx: &mut TestAppContext) {
+    let (dir, owner, key) = prepare(cx, &[]);
+    cx.update(|cx| crate::foundation::i18n::apply(crate::state::config::AppLanguage::English, cx));
+    let path = dir.path().join("keep.jsonl");
+    std::fs::write(&path, "untouched").unwrap();
+    owner.update(cx, |state, cx| {
+        let s = state.sessions.get_mut(&key).unwrap();
+        s.info.path = path.clone();
+        s.draft = "keep draft".into();
+        state.delete_with(&key, |_| Err("trash unavailable".into()), cx);
+    });
+    cx.condition(&owner, |state, _| !state.sessions[&key].command.running())
+        .await;
+    owner.read_with(cx, |state, _| {
+        assert_eq!(state.selected.as_deref(), Some(key.as_str()));
+        assert_eq!(state.sessions[&key].draft, "keep draft");
+        assert!(state.can_delete(&key));
+        assert_eq!(state.scan_serial, 0);
+    });
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "untouched");
+}
+
+#[gpui_kit::test]
+async fn deletion_of_catalog_only_session_does_not_launch_pi(cx: &mut TestAppContext) {
+    let (dir, owner, foreground) = prepare(cx, &[]);
+    let path = dir.path().join("catalog-only.jsonl");
+    std::fs::write(&path, "fixture").unwrap();
+    let key = path.to_string_lossy().into_owned();
+    owner.update(cx, |state, cx| {
+        let mut info = state.sessions[&foreground].info.clone();
+        info.path = path;
+        state.catalog =
+            super::super::CatalogState::Ready(crate::foundation::session_catalog::Catalog {
+                sessions: vec![info],
+                ..Default::default()
+            });
+        state.set_draft(&foreground, "other draft".into(), cx);
+        state.delete_with(
+            &key,
+            |info| std::fs::remove_file(&info.path).map_err(|e| e.to_string()),
+            cx,
+        );
+    });
+    cx.condition(&owner, |state, _| {
+        !state.sessions.contains_key(&key) && !state.scanning()
+    })
+    .await;
+    owner.read_with(cx, |state, _| {
+        assert_eq!(state.sessions[&foreground].draft, "other draft");
+        assert_ne!(state.selected.as_deref(), Some(foreground.as_str()));
+        assert!(state.current().unwrap().instance.is_none());
+    });
+    assert!(!dir.path().join("commands.log").exists());
+}
 fn begin(
     cx: &mut TestAppContext,
     flags: &[&str],

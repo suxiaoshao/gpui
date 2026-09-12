@@ -104,7 +104,13 @@ impl HomeView {
             cx.subscribe_in(
                 &state,
                 window,
-                |_, _, event: &ConversationEvent, window, cx| match event {
+                |this, _, event: &ConversationEvent, window, cx| match event {
+                    ConversationEvent::Deleted => {
+                        this.sync(false, window, cx);
+                        this.views
+                            .retain(|key, _| this.state.read(cx).sessions.contains_key(key));
+                        this.input.update(cx, |input, cx| input.focus(window, cx));
+                    }
                     ConversationEvent::Notify { message, error } => {
                         use gpui_kit::component::notification::Notification;
                         window.push_notification(

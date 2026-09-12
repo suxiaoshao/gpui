@@ -213,6 +213,16 @@ Codex 的 Git/PR 操作、侧边聊天和语音入口不带入本阶段。右侧
 
 Pi 的 `setFooter` / `setHeader` 接口接受创建 TUI Component 的函数，RPC 模式均为空实现，不发出对应 UI 消息。标准 `setStatus` 和字符串数组 `setWidget` 可接收；widget 组件工厂、自定义 footer/header 不通过原生 RPC 呈现，不增加自带扩展或私有桥接。依据：[扩展接口](https://github.com/earendil-works/pi/blob/da840b6216578c2a571d0374ac6a2091a83f9d91/packages/coding-agent/src/core/extensions/types.ts)、[RPC 实现](https://github.com/earendil-works/pi/blob/da840b6216578c2a571d0374ac6a2091a83f9d91/packages/coding-agent/src/modes/rpc/rpc-mode.ts)。
 
+## 会话删除
+
+侧栏右键菜单和标题更多菜单共用“移到废纸篓”。仅对已落盘、空闲且没有加载或其他会话操作的记录启用；目录中尚未打开的会话无需启动 Pi。Gupi 等待自身写入实例实际退出后，重新核对普通文件、session ID 和 cwd，再通过系统废纸篓 API 删除，不修改 JSONL 内容，也不回退到永久删除。macOS 使用 NSFileManager，文件可从废纸篓手动恢复。
+
+成功后移除该路径对应的内存会话与草稿，取消可能含旧结果的目录扫描，立即清理旧列表并重新扫描，进入被删除会话所在项目的空白新对话并聚焦输入。失败保留原选择、历史与草稿，显示错误；关闭后的实例按已有连接入口重连。退出应用时等待已开始的删除完成再保存草稿。独立 fork 文件不连带删除；外部 Pi 进程仍不在 Gupi 的实例所有权范围内。
+
+这是会话文件管理能力；同文件树节点续聊仍未实现。Pi TUI 的 `/tree` 直接调用当前 AgentSession.navigateTree，移动内存 leaf、重建上下文并触发树导航扩展事件，普通无总结导航不追加文件记录。原生 RPC 尚无对应命令。文件追加 custom 节点并重载可实现基础分支续聊，但增加真实节点且使用恢复流程；要复用原生行为应通过扩展命令调用已有 navigateTree，而非自定义文件导航记录。
+
+验证：会话相关 20 项回归、Gupi 构建、全目标 Clippy 和格式检查通过。删除回归覆盖进程退出先于文件操作、目录扫描旧结果失效、失败保留选择与草稿，以及未打开会话无需启动 Pi。隔离原生窗口确认从当前会话右键菜单移入系统废纸篓后，自动进入同项目新对话、聚焦输入并刷新侧栏；退出后草稿记录为空。未调用模型，测试进程与文件已清理。
+
 ## 对话功能要求
 
 主对话展示当前分支可追溯历史。压缩前后的用户和 assistant 消息保持正常顺序，压缩记录作为 assistant 消息流中的活动条目，以压缩图标和标题呈现，点击只展开该条摘要。压缩记录不包裹、不隐藏此前消息，也不改变相邻 assistant 回答的呈现。选中会话后启动或复用 Pi，通过原生 RPC 获取正文和 entries；加载时显示进度，失败时显示实际错误，不另行解析离线正文。Pi 当前发送给模型的上下文与用户可浏览历史有不同用途，不以 `get_messages` 的结果替代全部历史。

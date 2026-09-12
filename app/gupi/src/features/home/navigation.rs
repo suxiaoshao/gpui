@@ -413,6 +413,9 @@ pub(super) fn session_menu(
     let rename_key = key.clone();
     let reveal = path.clone();
     let copy = path.clone();
+    let delete_key = key.clone();
+    let delete_state = state.clone();
+    let can_delete = state.read(cx).can_delete(&key);
     let mut menu = menu
         .item(
             PopupMenuItem::new(t(cx, "conversation-rename"))
@@ -459,7 +462,13 @@ pub(super) fn session_menu(
             }),
         );
     }
-    menu
+    menu.separator().item(
+        PopupMenuItem::new(t(cx, "conversation-delete"))
+            .disabled(!can_delete)
+            .on_click(move |_, _, cx| {
+                delete_state.update(cx, |s, cx| s.delete(&delete_key, cx));
+            }),
+    )
 }
 pub(super) fn display_title(info: &SessionInfo, cx: &App) -> String {
     if info.title().is_empty() {

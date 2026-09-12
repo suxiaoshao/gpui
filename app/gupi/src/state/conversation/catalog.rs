@@ -1,6 +1,7 @@
 //! The catalog lifecycle owns its task. Progress is a message, never a second state machine.
 use crate::foundation::session_catalog::{Catalog, ScanProgress};
 use gpui_operation::Transition;
+use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -62,6 +63,7 @@ pub(crate) enum Message<T> {
     },
     QueueRefresh,
     Cancel,
+    RemoveSession(PathBuf),
 }
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Update {
@@ -111,6 +113,20 @@ impl<T> Transition<Message<T>> for &mut CatalogState<T> {
     type Output = Update;
     fn transition(self, message: Message<T>) -> Update {
         match message {
+            Message::RemoveSession(path) => {
+                // Discard any scan that may have read the file before deletion.
+                self.transition(Message::Cancel);
+                match self {
+                    CatalogState::Ready(data)
+                    | CatalogState::Failed {
+                        previous: Some(data),
+                        ..
+                    } => {
+                        data.sessions.retain(|info| info.path != path);
+                    }
+                    _ => {}
+                }
+            }
             Message::Start(work) => {
                 if self.running() {
                     return Update::Ignored;
