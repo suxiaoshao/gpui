@@ -124,7 +124,7 @@ impl HomeView {
                     }
                 },
             ),
-            cx.subscribe_in(&input, window, |this, input, event, _, cx| {
+            cx.subscribe_in(&input, window, |this, input, event, window, cx| {
                 let Some(key) = this.shown_key.clone() else {
                     return;
                 };
@@ -133,6 +133,10 @@ impl HomeView {
                 }
                 match event {
                     InputEvent::Change => {
+                        if this.state.read(cx).sessions[&key].submitting() {
+                            this.sync(false, window, cx);
+                            return;
+                        }
                         let value = input.read(cx).value().to_string();
                         this.state.update(cx, |s, cx| s.set_draft(&key, value, cx));
                     }
@@ -142,7 +146,8 @@ impl HomeView {
                     } => {
                         let preview = this.views.get(&key).and_then(|v| v.preview.as_deref());
                         let allowed = this.state.read(cx).current().is_some_and(|s| {
-                            preview.is_none_or(|id| s.history().on_current_path(id))
+                            !s.submitting()
+                                && preview.is_none_or(|id| s.history().on_current_path(id))
                         });
                         if allowed {
                             this.state.update(cx, |s, cx| {

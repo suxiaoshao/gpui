@@ -53,6 +53,14 @@ fn main() {
                 held = remaining;
                 reply(&id, &command, "null", true);
             }
+            "emit_editor" => {
+                println!("{{\"type\":\"extension_ui_request\",\"id\":\"submission-editor\",\"method\":\"set_editor_text\",\"text\":\"next extension draft\"}}");
+                reply(&id, &command, "null", true);
+            }
+            "emit_confirm" => {
+                println!("{{\"type\":\"extension_ui_request\",\"id\":\"submission-confirm\",\"method\":\"confirm\",\"title\":\"Continue?\",\"message\":\"Fixture confirmation\"}}");
+                reply(&id, &command, "null", true);
+            }
             "emit_newer" => {
                 newer = true;
                 println!("{{\"type\":\"agent_start\"}}");

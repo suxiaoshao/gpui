@@ -66,6 +66,19 @@ enum ConnectionPurpose {
     Conversation,
     ModelOptions,
 }
+#[derive(Default)]
+enum Submission {
+    #[default]
+    Idle,
+    Connecting {
+        text: String,
+        mode: StreamingBehavior,
+        revision: u64,
+    },
+    Sending {
+        _task: Task<()>,
+    },
+}
 pub(crate) struct Session {
     pub info: SessionInfo,
     pub draft: String,
@@ -89,8 +102,6 @@ pub(crate) struct Session {
     pub widgets: BTreeMap<String, Widget>,
     pub extension_title: Option<String>,
     pub error: Option<String>,
-    pub recovery: Option<String>,
-    pub accepted: bool,
     pub compacting: bool,
     pub retrying: bool,
     pub stopping: bool,
@@ -98,14 +109,12 @@ pub(crate) struct Session {
     pub draft_revision: u64,
     pub content_revision: u64,
     pub pending_count: usize,
-    inflight_prompts: usize,
-    submitted_revision: Option<u64>,
     pub command: SessionCommand,
     pub core_read: CoreRead,
     event_revision: u64,
     model_revision: u64,
     read_serial: u64,
-    pending_send: Option<(String, StreamingBehavior, u64)>,
+    submission: Submission,
 }
 impl Session {
     fn new(info: SessionInfo, draft: String) -> Self {
@@ -135,8 +144,6 @@ impl Session {
             widgets: BTreeMap::new(),
             extension_title: None,
             error: None,
-            recovery: None,
-            accepted: false,
             compacting: false,
             retrying: false,
             stopping: false,
@@ -144,14 +151,21 @@ impl Session {
             draft_revision: 0,
             content_revision: 0,
             pending_count: 0,
-            inflight_prompts: 0,
-            submitted_revision: None,
             command: SessionCommand::Idle,
             core_read: CoreRead::Idle,
             event_revision: 0,
             model_revision: 0,
             read_serial: 0,
-            pending_send: None,
+            submission: Submission::Idle,
+        }
+    }
+    fn fail_submission(&mut self, error: String, cx: &mut Context<ConversationState>) {
+        if self.submitting() {
+            self.submission = Submission::Idle;
+            cx.emit(ConversationEvent::Notify {
+                message: error,
+                error: true,
+            });
         }
     }
     pub fn active_messages(&self) -> Option<&HashSet<String>> {
@@ -160,13 +174,16 @@ impl Session {
     pub fn running(&self) -> bool {
         self.active_messages().is_some()
     }
+    pub fn submitting(&self) -> bool {
+        !matches!(self.submission, Submission::Idle)
+    }
     pub fn busy(&self) -> bool {
         self.running()
             || self.compacting
             || self.retrying
             || self.stopping
             || self.pending_count > 0
-            || self.inflight_prompts > 0
+            || self.submitting()
     }
     pub fn activity(&self) -> Activity {
         if !self.pending_ui.is_empty() {
@@ -445,7 +462,6 @@ impl ConversationState {
                 && s.history().entries.is_empty()
                 && s.live.is_empty()
                 && !s.busy()
-                && !s.accepted
             {
                 continue;
             }
@@ -578,8 +594,8 @@ impl ConversationState {
                         Ok(info) if info.cwd == expected_cwd && (info.id == expected_id || expected_id.starts_with("draft-") || expected_id == key) => {
                             s.info = info; this.launch(&key, cx);
                         }
-                        Ok(_) => { s.core_read.finish(Some("Session identity or working directory changed; refresh the session catalog.".into())); s.pending_send = None; }
-                        Err(error) => { s.core_read.finish(Some(error)); s.pending_send = None; }
+                        Ok(_) => { let error = "Session identity or working directory changed; refresh the session catalog.".to_owned(); s.core_read.finish(Some(error.clone())); s.fail_submission(error, cx); }
+                        Err(error) => { s.core_read.finish(Some(error.clone())); s.fail_submission(error, cx); }
                     }
                     cx.notify();
                 });
@@ -610,7 +626,10 @@ impl ConversationState {
                 s.error = None;
                 s.state = None;
             }
-            Err(error) => s.error = Some(error.to_string()),
+            Err(error) => {
+                s.error = Some(error.to_string());
+                s.fail_submission(error.to_string(), cx);
+            }
         };
         cx.notify();
     }
@@ -646,8 +665,7 @@ impl ConversationState {
                         s.reset_reads();
                         s.command.finish();
                         s.pending_count = 0;
-                        s.inflight_prompts = 0;
-                        s.submitted_revision = None;
+                        s.fail_submission(s.error.clone().unwrap(), cx);
                         s.binding += 1;
                         pi::global(cx)
                             .update(cx, |pi, cx| pi.close(id, cx))
@@ -674,6 +692,7 @@ impl ConversationState {
                 Err(error) => {
                     let s = self.sessions.get_mut(&key).unwrap();
                     s.error = Some(error.to_string());
+                    s.fail_submission(error.to_string(), cx);
                     s.instance = None;
                     s.reset_reads();
                     s.pending_ui.clear();
@@ -724,7 +743,9 @@ impl ConversationState {
                 if stale && result.is_ok() {
                     // A later settled event supplies another read while streaming;
                     // otherwise fetch once more now. Never erase newer live data.
-                    if !s.running() && !s.compacting && !s.retrying {
+                    if matches!(s.submission, Submission::Connecting { .. })
+                        || !s.running() && !s.compacting && !s.retrying
+                    {
                         this.refresh(&key, cx);
                     }
                     cx.notify();
@@ -733,19 +754,16 @@ impl ConversationState {
                 match result {
                     Ok(snapshot) => {
                         this.apply_snapshot(&key, snapshot, cx);
-                        let send = this
-                            .sessions
-                            .get_mut(&key)
-                            .and_then(|s| s.pending_send.take());
-                        if let Some((text, mode, revision)) = send {
-                            this.submit(&key, text, mode, revision, cx);
-                        }
+                        this.submit_pending(&key, cx);
                         if again {
                             this.refresh(&key, cx);
                         }
                     }
-                    Err(_) => {
-                        this.sessions.get_mut(&key).unwrap().pending_send = None;
+                    Err(error) => {
+                        let s = this.sessions.get_mut(&key).unwrap();
+                        if matches!(s.submission, Submission::Connecting { .. }) {
+                            s.fail_submission(error.to_string(), cx);
+                        }
                     }
                 }
                 cx.notify();
@@ -813,6 +831,7 @@ impl ConversationState {
     }
     pub fn set_draft(&mut self, key: &str, text: String, cx: &mut Context<Self>) {
         if let Some(s) = self.sessions.get_mut(key)
+            && !s.submitting()
             && s.draft != text
         {
             s.draft = text;
@@ -821,10 +840,14 @@ impl ConversationState {
         }
     }
     pub fn send(&mut self, key: &str, mode: StreamingBehavior, cx: &mut Context<Self>) {
+        if self.draining {
+            return;
+        }
         let Some(s) = self.sessions.get_mut(key) else {
             return;
         };
         if s.draft.trim().is_empty()
+            || s.submitting()
             || !s.pending_ui.is_empty()
             || s.command.running()
             || s.model_change.running()
@@ -832,52 +855,58 @@ impl ConversationState {
         {
             return;
         }
-        if s.submitted_revision == Some(s.draft_revision) {
-            return;
-        }
-        let text = s.draft.clone();
-        let revision = s.draft_revision;
+        s.submission = Submission::Connecting {
+            text: s.draft.clone(),
+            mode,
+            revision: s.draft_revision,
+        };
+        s.error = None;
         if self.client(key, cx).is_some() && self.sessions[key].state.is_some() {
-            self.submit(key, text, mode, revision, cx);
+            self.submit_pending(key, cx);
         } else {
-            self.sessions.get_mut(key).unwrap().pending_send = Some((text, mode, revision));
             self.connect(key, cx);
+            // A prior initial snapshot can fail while the process stays connected.
+            // Retrying submission must retry that read, not wait for another handshake.
+            if self.client(key, cx).is_some() && !self.sessions[key].core_read.running() {
+                self.refresh(key, cx);
+            }
         }
+        cx.notify();
     }
-    fn submit(
-        &mut self,
-        key: &str,
-        text: String,
-        mode: StreamingBehavior,
-        revision: u64,
-        cx: &mut Context<Self>,
-    ) {
+    fn submit_pending(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some(client) = self.client(key, cx) else {
             return;
         };
         let s = self.sessions.get_mut(key).unwrap();
+        if !matches!(s.submission, Submission::Connecting { .. }) {
+            return;
+        }
+        let Submission::Connecting {
+            text,
+            mode,
+            revision,
+        } = std::mem::take(&mut s.submission)
+        else {
+            unreachable!();
+        };
         let binding = s.binding;
-        s.inflight_prompts += 1;
-        s.submitted_revision = Some(revision);
-        s.error = None;
-        s.accepted = false;
         s.interrupted = false;
         let key = key.to_owned();
-        let mut prompt = Prompt::new(text.clone());
+        let mut prompt = Prompt::new(text);
         prompt.streaming_behavior = Some(mode);
-        cx.spawn(async move |owner, cx| {
+        let task = cx.spawn(async move |owner, cx| {
             let result = client.prompt(prompt).await;
             let _ = owner.update(cx, |this, cx| {
-                let Some(s) = this.sessions.get_mut(&key).filter(|s| s.binding == binding) else {
+                let Some(s) = this.sessions.get_mut(&key).filter(|s| {
+                    s.binding == binding && matches!(s.submission, Submission::Sending { .. })
+                }) else {
                     return;
                 };
-                s.inflight_prompts = s.inflight_prompts.saturating_sub(1);
-                if s.submitted_revision == Some(revision) {
-                    s.submitted_revision = None;
-                }
                 match result {
                     Ok(_) => {
-                        s.accepted = true;
+                        s.submission = Submission::Idle;
+                        // An extension can replace the editor while the prompt is pending.
+                        // Its new draft belongs to the next submission.
                         if s.draft_revision == revision {
                             s.draft.clear();
                             s.draft_revision += 1;
@@ -885,16 +914,14 @@ impl ConversationState {
                     }
                     Err(error) => {
                         s.error = Some(error.to_string());
-                        if s.draft_revision != revision {
-                            s.recovery = Some(text);
-                        }
+                        s.fail_submission(error.to_string(), cx);
                     }
                 }
                 this.changed(cx);
                 this.refresh(&key, cx);
             });
-        })
-        .detach();
+        });
+        s.submission = Submission::Sending { _task: task };
         cx.notify();
     }
     pub fn abort(&mut self, key: &str, cx: &mut Context<Self>) {
@@ -1161,7 +1188,6 @@ impl ConversationState {
                         s.run.start();
                         s.error = None;
                         s.interrupted = false;
-                        s.accepted = false;
                     }
                     "agent_end" => {
                         refresh = true;
@@ -1169,7 +1195,6 @@ impl ConversationState {
                     "agent_settled" => {
                         s.run = RunState::Idle;
                         s.stopping = false;
-                        s.accepted = false;
                         refresh = true;
                         scan = true;
                     }
@@ -1422,7 +1447,7 @@ impl ConversationState {
         let mut deletions = Vec::new();
         for s in self.sessions.values_mut() {
             s.reset_reads();
-            s.pending_send = None;
+            s.submission = Submission::Idle;
             if matches!(s.command, SessionCommand::Deleting { .. })
                 && let SessionCommand::Deleting { task } = std::mem::take(&mut s.command)
             {

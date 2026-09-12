@@ -92,38 +92,6 @@ impl HomeView {
                     .child(format!("{}: {error}", t(cx, "conversation-save-error"))),
             );
         }
-        if let Some(text) = session.recovery.clone() {
-            shell = shell.child(
-                Button::new("recover-draft")
-                    .ghost()
-                    .small()
-                    .label(t(cx, "conversation-recover-draft"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(key) = this.shown_key.clone() {
-                            this.state.update(cx, |s, cx| {
-                                let draft = s
-                                    .sessions
-                                    .get(&key)
-                                    .map(|s| s.draft.clone())
-                                    .unwrap_or_default();
-                                s.set_draft(
-                                    &key,
-                                    if draft.is_empty() {
-                                        text.clone()
-                                    } else {
-                                        format!("{draft}\n{text}")
-                                    },
-                                    cx,
-                                );
-                                if let Some(session) = s.sessions.get_mut(&key) {
-                                    session.recovery = None;
-                                }
-                                cx.notify();
-                            });
-                        }
-                    })),
-            );
-        }
         if session.interrupted {
             shell = shell.child(
                 div()
@@ -237,6 +205,7 @@ impl HomeView {
                     Textarea::new(&self.input)
                         .appearance(false)
                         .disabled(preview)
+                        .readonly(session.submitting())
                         .aria_label(t(cx, "conversation-input")),
                 ),
             );
@@ -254,7 +223,7 @@ impl HomeView {
             {
                 actions = actions.child(metrics::context(session, cx));
             }
-            if session.busy() {
+            if session.busy() && !session.submitting() {
                 actions = actions.child(
                     Button::new("stop-generation")
                         .small()
@@ -271,6 +240,14 @@ impl HomeView {
                         })),
                 );
             } else {
+                let label = t(
+                    cx,
+                    if session.submitting() {
+                        "conversation-sending"
+                    } else {
+                        "conversation-send"
+                    },
+                );
                 actions = actions.child(
                     Button::new("send-message")
                         .primary()
@@ -278,10 +255,12 @@ impl HomeView {
                         .size_8()
                         .rounded_full()
                         .icon(IconName::ArrowUp)
-                        .tooltip(t(cx, "conversation-send"))
-                        .accessibility_label(t(cx, "conversation-send"))
+                        .tooltip(label.clone())
+                        .accessibility_label(label)
+                        .loading(session.submitting())
                         .disabled(
                             preview
+                                || session.submitting()
                                 || session.draft.trim().is_empty()
                                 || session.command.running()
                                 || session.model_change.running()
@@ -328,19 +307,12 @@ impl HomeView {
                             .child(actions),
                     ),
             );
-            if session.pending_count > 0 || session.accepted {
+            if session.pending_count > 0 {
                 editor = editor.child(
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child(t(
-                            cx,
-                            if session.pending_count > 0 {
-                                "conversation-queued"
-                            } else {
-                                "conversation-accepted"
-                            },
-                        )),
+                        .child(t(cx, "conversation-queued")),
                 );
             }
         }
