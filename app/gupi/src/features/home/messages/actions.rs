@@ -7,6 +7,7 @@ use std::time::Duration;
 pub(super) struct MessageActions {
     pub id: String,
     pub message: DisplayMessage,
+    pub before_copy: Option<Button>,
 }
 impl RenderOnce for MessageActions {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -30,7 +31,7 @@ impl RenderOnce for MessageActions {
                     .child(timestamp),
             );
         }
-        row = row.child(CopyAction {
+        row = row.children(self.before_copy).child(CopyAction {
             state,
             id: format!("copy-{}", self.id),
             text: self.message.text(),

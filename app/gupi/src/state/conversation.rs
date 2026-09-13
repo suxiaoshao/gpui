@@ -1,12 +1,15 @@
 //! Conversation ownership and source-bound RPC routing; views never own a Pi process.
 pub(crate) mod catalog;
 mod command;
+mod compaction;
 pub(crate) mod content;
 mod deletion;
 pub(crate) mod execution;
+mod export;
 pub(crate) mod loading;
 mod model_change;
 mod reads;
+mod reconnect;
 mod renaming;
 use super::{
     history::DisplayMessage,
@@ -74,10 +77,12 @@ enum Submission {
     Connecting {
         text: String,
         mode: StreamingBehavior,
-        revision: u64,
+        revision: Option<u64>,
+        result: tokio::sync::oneshot::Sender<bool>,
     },
     Sending {
         _task: Task<()>,
+        result: tokio::sync::oneshot::Sender<bool>,
     },
 }
 pub(crate) struct Session {
@@ -94,6 +99,7 @@ pub(crate) struct Session {
     run: RunState,
     pub tools: Vec<ToolActivity>,
     pub models: ReadState<Vec<Model>>,
+    pub commands: ReadState<Vec<protocol::SlashCommand>>,
     pub thinking_levels: ReadState<ThinkingLevels>,
     pub stats: ReadState<protocol::SessionStats>,
     pub fork_messages: ReadState<Vec<protocol::ForkMessage>>,
@@ -136,6 +142,7 @@ impl Session {
             run: RunState::Idle,
             tools: vec![],
             models: ReadState::Idle,
+            commands: ReadState::Idle,
             thinking_levels: ReadState::Idle,
             stats: ReadState::Idle,
             fork_messages: ReadState::Idle,
@@ -160,9 +167,17 @@ impl Session {
             submission: Submission::Idle,
         }
     }
+    fn finish_submission(&mut self, accepted: bool) {
+        match std::mem::take(&mut self.submission) {
+            Submission::Connecting { result, .. } | Submission::Sending { result, .. } => {
+                let _ = result.send(accepted);
+            }
+            Submission::Idle => {}
+        }
+    }
     fn fail_submission(&mut self, error: String, cx: &mut Context<ConversationState>) {
         if self.submitting() {
-            self.submission = Submission::Idle;
+            self.finish_submission(false);
             cx.emit(ConversationEvent::Notify {
                 message: error,
                 error: true,
@@ -187,6 +202,7 @@ impl Session {
     pub fn busy(&self) -> bool {
         self.running()
             || self.compacting
+            || self.command.compacting()
             || self.retrying
             || self.stopping
             || self.pending_count > 0
@@ -207,6 +223,17 @@ impl Session {
         } else {
             Activity::Idle
         }
+    }
+    pub fn last_assistant_text(&self) -> Option<String> {
+        self.messages(None)
+            .into_iter()
+            .rev()
+            .find(|m| {
+                m.role() == "assistant"
+                    && !(m.value["stopReason"] == "aborted" && m.text().is_empty())
+            })
+            .map(|m| m.text())
+            .filter(|text| !text.is_empty())
     }
     pub fn messages(&self, preview: Option<&str>) -> Vec<DisplayMessage> {
         let leaf = preview
@@ -306,8 +333,9 @@ impl ConversationState {
     }
     pub fn load(&mut self, cx: &mut Context<Self>) {
         // The foreground starts blank; persisted drafts are restored in the
-        // background and must never replace this selection or start Pi.
+        // background and must never replace this selection or start background sessions.
         self.insert_draft(None);
+        self.connect_selected(cx);
         let task = cx.spawn(async move |owner, cx| {
             let saved = smol::unblock(|| -> Result<WorkspaceFile, String> {
                 let path = paths::config_dir()
@@ -451,6 +479,9 @@ impl ConversationState {
         // remains an explicit user action, including after a refresh.
         cx.notify();
     }
+    pub fn draining(&self) -> bool {
+        self.draining
+    }
     pub fn current(&self) -> Option<&Session> {
         self.selected.as_ref().and_then(|k| self.sessions.get(k))
     }
@@ -466,7 +497,7 @@ impl ConversationState {
         for (key, s) in &self.sessions {
             if s.info.path.as_os_str().is_empty()
                 && s.draft.is_empty()
-                && s.history().entries.is_empty()
+                && s.empty_conversation()
                 && s.live.is_empty()
                 && !s.busy()
             {
@@ -486,7 +517,13 @@ impl ConversationState {
             return;
         }
         self.insert_draft(cwd);
+        self.connect_selected(cx);
         self.changed(cx);
+    }
+    fn connect_selected(&mut self, cx: &mut Context<Self>) {
+        if let Some(key) = self.selected.clone() {
+            self.connect(&key, cx);
+        }
     }
     fn insert_draft(&mut self, cwd: Option<PathBuf>) {
         let cwd = cwd
@@ -539,7 +576,7 @@ impl ConversationState {
                         s.info.cwd == cwd
                             && s.info.path.as_os_str().is_empty()
                             && s.draft.is_empty()
-                            && s.history().entries.is_empty()
+                            && s.empty_conversation()
                             && s.live.is_empty()
                             && !s.busy()
                             && !s.command.running()
@@ -557,6 +594,7 @@ impl ConversationState {
         } else {
             self.insert_draft(Some(cwd));
         }
+        self.connect_selected(cx);
         self.changed(cx);
         self.request_scan(cx);
     }
@@ -585,9 +623,7 @@ impl ConversationState {
             }
         }
         self.selected = Some(key.clone());
-        if !self.sessions[&key].info.path.as_os_str().is_empty() {
-            self.connect(&key, cx);
-        }
+        self.connect(&key, cx);
         self.changed(cx);
     }
     pub fn connect(&mut self, key: &str, cx: &mut Context<Self>) {
@@ -797,6 +833,9 @@ impl ConversationState {
                     }
                     Err(error) => {
                         let s = this.sessions.get_mut(&key).unwrap();
+                        if s.command.reconnecting() {
+                            s.command.finish();
+                        }
                         if matches!(s.submission, Submission::Connecting { .. }) {
                             s.fail_submission(error.to_string(), cx);
                         }
@@ -820,7 +859,14 @@ impl ConversationState {
                 .as_ref()
                 .map(|model| (model.provider.clone(), model.id.clone()));
         s.info.id = snapshot.state.session_id.clone();
-        if let Some(path) = &snapshot.state.session_file {
+        if let Some(path) = &snapshot.state.session_file
+            && (!s.info.path.as_os_str().is_empty()
+                || snapshot.entries.entries.iter().any(|e| {
+                    e.data
+                        .get("message")
+                        .is_some_and(|m| m["role"] == "assistant")
+                }))
+        {
             s.info.path = PathBuf::from(path);
         }
         s.info.name = snapshot.state.session_name.clone();
@@ -857,6 +903,9 @@ impl ConversationState {
         }
         s.pending_count = snapshot.state.pending_message_count;
         s.state = Some(snapshot.state);
+        if s.command.reconnecting() {
+            s.command.finish();
+        }
         if model_changed {
             s.model_revision += 1;
             s.thinking_levels.reset();
@@ -875,26 +924,52 @@ impl ConversationState {
             self.changed(cx);
         }
     }
+    pub fn can_submit(&self, key: &str) -> bool {
+        !self.draining
+            && self.sessions.get(key).is_some_and(|s| {
+                !s.submitting()
+                    && s.pending_ui.is_empty()
+                    && !s.command.running()
+                    && !s.model_change.running()
+                    && !s.model_change.unconfirmed()
+            })
+    }
     pub fn send(&mut self, key: &str, mode: StreamingBehavior, cx: &mut Context<Self>) {
-        if self.draining {
-            return;
-        }
-        let Some(s) = self.sessions.get_mut(key) else {
+        let Some(s) = self.sessions.get(key) else {
             return;
         };
-        if s.draft.trim().is_empty()
-            || s.submitting()
-            || !s.pending_ui.is_empty()
-            || s.command.running()
-            || s.model_change.running()
-            || s.model_change.unconfirmed()
-        {
-            return;
+        let text = s.draft.clone();
+        let revision = s.draft_revision;
+        self.submit_text(key, text, Some(revision), mode, cx);
+    }
+    /// Submit transient command input without storing it in the conversation draft.
+    pub fn send_text(
+        &mut self,
+        key: &str,
+        text: String,
+        mode: StreamingBehavior,
+        cx: &mut Context<Self>,
+    ) -> Option<tokio::sync::oneshot::Receiver<bool>> {
+        self.submit_text(key, text, None, mode, cx)
+    }
+    fn submit_text(
+        &mut self,
+        key: &str,
+        text: String,
+        revision: Option<u64>,
+        mode: StreamingBehavior,
+        cx: &mut Context<Self>,
+    ) -> Option<tokio::sync::oneshot::Receiver<bool>> {
+        if text.trim().is_empty() || !self.can_submit(key) {
+            return None;
         }
+        let (result, receiver) = tokio::sync::oneshot::channel();
+        let s = self.sessions.get_mut(key)?;
         s.submission = Submission::Connecting {
-            text: s.draft.clone(),
+            text,
             mode,
-            revision: s.draft_revision,
+            revision,
+            result,
         };
         s.error = None;
         if self.client(key, cx).is_some() && self.sessions[key].state.is_some() {
@@ -908,6 +983,7 @@ impl ConversationState {
             }
         }
         cx.notify();
+        Some(receiver)
     }
     fn submit_pending(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some(client) = self.client(key, cx) else {
@@ -921,6 +997,7 @@ impl ConversationState {
             text,
             mode,
             revision,
+            result: reply,
         } = std::mem::take(&mut s.submission)
         else {
             unreachable!();
@@ -940,10 +1017,9 @@ impl ConversationState {
                 };
                 match result {
                     Ok(_) => {
-                        s.submission = Submission::Idle;
-                        // An extension can replace the editor while the prompt is pending.
-                        // Its new draft belongs to the next submission.
-                        if s.draft_revision == revision {
+                        s.finish_submission(true);
+                        // Extension editor updates belong to the next submission.
+                        if revision == Some(s.draft_revision) {
                             s.draft.clear();
                             s.draft_revision += 1;
                         }
@@ -957,7 +1033,10 @@ impl ConversationState {
                 this.refresh(&key, cx);
             });
         });
-        s.submission = Submission::Sending { _task: task };
+        s.submission = Submission::Sending {
+            _task: task,
+            result: reply,
+        };
         cx.notify();
     }
     pub fn abort(&mut self, key: &str, cx: &mut Context<Self>) {
@@ -1048,6 +1127,17 @@ impl ConversationState {
         self.change_model_setting(key, Some(protocol::Command::SetThinkingLevel { level }), cx);
     }
     pub fn fork(&mut self, key: &str, entry: String, cx: &mut Context<Self>) {
+        self.fork_session(key, Some(entry), cx);
+    }
+    pub fn can_clone(&self, key: &str, cx: &App) -> bool {
+        self.can_export(key, cx) && self.sessions[key].history().leaf.is_some()
+    }
+    pub fn clone_session(&mut self, key: &str, cx: &mut Context<Self>) {
+        if self.can_clone(key, cx) {
+            self.fork_session(key, None, cx);
+        }
+    }
+    fn fork_session(&mut self, key: &str, entry: Option<String>, cx: &mut Context<Self>) {
         let Some(client) = self.client(key, cx) else {
             return;
         };
@@ -1057,7 +1147,9 @@ impl ConversationState {
             || s.model_change.running()
             || s.model_change.unconfirmed()
             || !s.pending_ui.is_empty()
-            || !s.fork_options().iter().any(|m| m.entry_id == entry)
+            || entry
+                .as_ref()
+                .is_some_and(|entry| !s.fork_options().iter().any(|m| &m.entry_id == entry))
         {
             return;
         }
@@ -1068,7 +1160,10 @@ impl ConversationState {
         let task_key = target.clone();
         let task = cx.spawn(async move |owner, cx| {
             let key = task_key;
-            let result = client.fork(entry).await;
+            let result = match entry {
+                Some(entry) => client.fork(entry).await,
+                None => client.clone_session().await,
+            };
             let _ = owner.update(cx, |this, cx| {
                 let Some(source) = this.sessions.get_mut(&key).filter(|s| s.binding == binding)
                 else {
@@ -1085,8 +1180,8 @@ impl ConversationState {
                         let widgets = std::mem::take(&mut source.widgets);
                         let extension_title = source.extension_title.take();
                         source.state = None;
-                        // Like Pi TUI, a successful fork replaces the editor with
-                        // the selected message. Loading its history is independent.
+                        // Pi TUI uses the selected message for fork and an empty
+                        // editor for clone. Loading history is independent.
                         this.insert_draft(Some(cwd));
                         let new_key = this.selected.clone().unwrap();
                         let session = this.sessions.get_mut(&new_key).unwrap();
@@ -1414,10 +1509,18 @@ impl ConversationState {
         for s in self.sessions.values_mut() {
             s.reset_reads();
             s.submission = Submission::Idle;
-            if matches!(s.command, SessionCommand::Deleting { .. })
-                && let SessionCommand::Deleting { task } = std::mem::take(&mut s.command)
-            {
-                deletions.push(task);
+            if matches!(
+                s.command,
+                SessionCommand::Deleting { .. }
+                    | SessionCommand::Reconnecting { .. }
+                    | SessionCommand::Closing { .. }
+            ) {
+                match std::mem::take(&mut s.command) {
+                    SessionCommand::Deleting { task }
+                    | SessionCommand::Reconnecting { _task: task }
+                    | SessionCommand::Closing { _task: task } => deletions.push(task),
+                    _ => unreachable!(),
+                }
             }
         }
         let restore = self.restore_task.take();
@@ -1461,6 +1564,46 @@ mod tests {
     use gpui_kit as gpui;
     use gpui_kit::{AppContext, TestAppContext};
     use std::path::PathBuf;
+
+    #[test]
+    fn copy_last_answer_uses_execution_branch_and_skips_empty_aborted_output() {
+        let mut session = super::Session::new(
+            super::SessionInfo {
+                path: PathBuf::new(),
+                id: "copy".into(),
+                cwd: PathBuf::new(),
+                name: None,
+                first_message: String::new(),
+                activity: String::new(),
+                parent_session: None,
+            },
+            String::new(),
+        );
+        assert_eq!(session.last_assistant_text(), None);
+        session.transcript.replace(serde_json::from_value(serde_json::json!({
+            "leafId":"aborted", "entries":[
+                {"id":"user", "timestamp":"1", "type":"message", "message":{"role":"user", "content":"question"}},
+                {"id":"answer", "timestamp":"2", "parentId":"user", "type":"message", "message":{"role":"assistant", "content":[{"type":"text", "text":"current answer"}]}},
+                {"id":"aborted", "timestamp":"3", "parentId":"answer", "type":"message", "message":{"role":"assistant", "stopReason":"aborted", "content":[]}},
+                {"id":"other", "timestamp":"4", "parentId":"user", "type":"message", "message":{"role":"assistant", "content":"other branch"}}
+            ]
+        })).unwrap());
+        assert_eq!(
+            session.last_assistant_text().as_deref(),
+            Some("current answer")
+        );
+        // Previewing another branch must not retarget the command's source.
+        assert!(
+            session
+                .messages(Some("other"))
+                .iter()
+                .any(|m| m.text() == "other branch")
+        );
+        assert_eq!(
+            session.last_assistant_text().as_deref(),
+            Some("current answer")
+        );
+    }
 
     #[gpui::test]
     fn startup_ignores_legacy_selection_and_restores_only_nonempty_drafts(cx: &mut TestAppContext) {

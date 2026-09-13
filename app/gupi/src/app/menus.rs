@@ -1,6 +1,9 @@
 use crate::foundation::i18n::t;
 use gpui_kit::*;
-actions!(gupi, [Quit, ShowSettings, ShowMainWindow]);
+actions!(
+    gupi,
+    [Quit, ShowSettings, ShowMainWindow, ShowCommandPalette]
+);
 pub(crate) fn refresh(cx: &mut App) {
     cx.set_menus(vec![Menu {
         disabled: false,

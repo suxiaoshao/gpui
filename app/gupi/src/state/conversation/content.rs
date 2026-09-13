@@ -62,12 +62,34 @@ impl Session {
         self.transcript.history()
     }
 
+    pub fn empty_conversation(&self) -> bool {
+        self.live.is_empty()
+            && !self
+                .history()
+                .entries
+                .iter()
+                .any(|e| matches!(e.kind.as_str(), "message" | "custom_message"))
+    }
     pub fn body_state(&self) -> BodyState<'_> {
+        if (self.command.reconnecting() || self.instance.is_some() && self.state.is_none())
+            && matches!(self.core_read, CoreRead::Idle)
+            && self.error.is_none()
+        {
+            return if matches!(self.transcript, Transcript::Ready(_)) {
+                BodyState::Refreshing(LoadStage::Connecting)
+            } else {
+                BodyState::Loading(LoadStage::Connecting)
+            };
+        }
         match (&self.transcript, &self.core_read) {
-            (
-                Transcript::New,
-                CoreRead::Idle | CoreRead::CheckingFile { .. } | CoreRead::Reading { .. },
-            ) => BodyState::New,
+            (Transcript::New, CoreRead::Idle) => match self.error.as_deref() {
+                Some(error) => BodyState::Failed(error),
+                None => BodyState::New,
+            },
+            (Transcript::New, CoreRead::CheckingFile { .. }) => {
+                BodyState::Loading(LoadStage::CheckingFile)
+            }
+            (Transcript::New, CoreRead::Reading { .. }) => BodyState::Loading(LoadStage::History),
             (Transcript::New | Transcript::Unloaded, CoreRead::Failed(error)) => {
                 BodyState::Failed(error)
             }

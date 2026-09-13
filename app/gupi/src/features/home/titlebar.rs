@@ -1,3 +1,4 @@
+use super::actions::{Kind, Run};
 use super::*;
 use crate::features::chrome;
 use gpui_kit::base::animation::{EffectTransition, ease_in_out_cubic};
@@ -23,13 +24,10 @@ impl HomeView {
         let has_actions = current.is_some_and(|session| {
             !session.info.path.as_os_str().is_empty() || session.instance.is_some()
         });
-        let loading = current.is_some_and(|session| session.core_read.running());
-        let can_refresh = current.is_some_and(|session| {
-            !session.info.path.as_os_str().is_empty()
-                && !loading
-                && !session.command.running()
-                && !session.model_change.running()
-        });
+        let loading = current.is_some_and(|s| s.core_read.running() || s.command.reconnecting());
+        let can_refresh = key.as_ref().is_some_and(|key| state.can_reconnect(key));
+        let can_export = key.as_ref().is_some_and(|key| state.can_export(key, cx));
+        let exporting = current.is_some_and(|session| session.command.exporting());
         let leading = chrome::leading_space(window);
         let target_width = if self.show_sidebar {
             px(self.pane_layout.left)
@@ -69,11 +67,10 @@ impl HomeView {
                     } else {
                         gpui_kit::component::IconName::PanelLeftOpen
                     })
-                    .tooltip(sidebar_label.clone())
+                    .tooltip_with_action(sidebar_label.clone(), &Run(Kind::Sidebar), Some("Gupi"))
                     .accessibility_label(sidebar_label)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_sidebar = !this.show_sidebar;
-                        cx.notify();
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.run_action(&Run(Kind::Sidebar), window, cx)
                     })),
             ))
             .when(!self.show_sidebar, |view| {
@@ -81,7 +78,11 @@ impl HomeView {
                     "new-conversation-control",
                     chrome::button("titlebar-new-conversation")
                         .icon(IconName::SquarePen)
-                        .tooltip(t(cx, "conversation-new"))
+                        .tooltip_with_action(
+                            t(cx, "conversation-new"),
+                            &Run(Kind::New),
+                            Some("Gupi"),
+                        )
                         .accessibility_label(t(cx, "conversation-new"))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.new_conversation(window, cx);
@@ -142,19 +143,36 @@ impl HomeView {
         main = main
             .child(div().flex_1())
             .child(chrome::control(
+                "export-control",
+                chrome::button("export-session")
+                    .icon(IconName::Download)
+                    .loading(exporting)
+                    .disabled(!can_export)
+                    .tooltip_with_action(
+                        t(cx, "conversation-export"),
+                        &Run(Kind::Export),
+                        Some("Gupi"),
+                    )
+                    .accessibility_label(t(cx, "conversation-export"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.run_action(&Run(Kind::Export), window, cx);
+                    })),
+            ))
+            .child(chrome::control(
                 "refresh-control",
                 chrome::button("refresh-session")
                     .icon(IconName::RefreshCw)
                     .loading(loading)
                     .disabled(!can_refresh)
-                    .tooltip(t(cx, "conversation-refresh-current"))
+                    .tooltip_with_action(
+                        t(cx, "conversation-refresh-current"),
+                        &Run(Kind::Reconnect),
+                        Some("Gupi"),
+                    )
                     .accessibility_label(t(cx, "conversation-refresh-current"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(key) = &key {
-                            this.state.update(cx, |state, cx| {
-                                state.connect(key, cx);
-                                state.refresh(key, cx);
-                            });
+                            this.state.update(cx, |state, cx| state.reconnect(key, cx));
                         }
                     })),
             ))
@@ -162,30 +180,14 @@ impl HomeView {
                 "history-control",
                 chrome::button("toggle-history")
                     .icon(IconName::PanelRight)
-                    .tooltip(t(cx, "conversation-history"))
+                    .tooltip_with_action(
+                        t(cx, "conversation-history"),
+                        &Run(Kind::History),
+                        Some("Gupi"),
+                    )
                     .accessibility_label(t(cx, "conversation-history"))
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.show_history = !this.show_history;
-                        this.sync(true, window, cx);
-                        if !this.show_history
-                            && let Some(view) =
-                                this.shown_key.as_ref().and_then(|key| this.views.get(key))
-                        {
-                            view.history_canvas
-                                .update(cx, |canvas, cx| canvas.clear_pointer(cx));
-                        }
-                        if this.show_history && this.history_view != HistoryView::Tree {
-                            this.history_list.update(cx, |list, cx| {
-                                if let Some(last) = list.delegate().rows.len().checked_sub(1) {
-                                    list.scroll_to_item(
-                                        gpui_kit::component::IndexPath::new(last),
-                                        ScrollStrategy::Bottom,
-                                        window,
-                                        cx,
-                                    );
-                                }
-                            });
-                        }
+                        this.toggle_history(window, cx);
                     })),
             ));
         chrome::title_bar(cx).child(h_flex().size_full().min_w_0().child(left).child(main))

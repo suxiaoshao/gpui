@@ -179,7 +179,7 @@ Fixture 核心为在 `pi.on("session_start", ...)` 中 `await ctx.ui.confirm(...
 | custom、setEditorComponent、header/footer、working、原始终端按键与自定义补全 | TUI 组件或处理器不能经当前 RPC 搬入 GPUI；部分 API 不产生消息，宿主无法仅靠事件发现缺失 |
 | get_commands 与 prompt | 发现并调用扩展命令、templates、skills；不代表覆盖所有终端内置命令 |
 
-后续命令面板以 `/` 和 `Super+P`（macOS 为 `⌘P`）为共同入口；本阶段只提供协议。命令参数输入和提交行为在 UI 阶段设计。
+命令入口与补全规则见 [统一命令面板](../../../app/gupi/docs/dev/issue-226/command-palette.md)；本阶段只提供协议。
 
 已核对本机 `@juicesharp/rpiv-ask-user-question` 2.9.0：终端使用 custom overlay 和独立 Editor；RPC 模式进入 rpc-fallback.ts，以 select/input 依次询问，多选输入 `1,3`，没有 tabs、提交复核、备注和并排预览。取消任一对话会把整个问卷报告为用户拒绝；宿主不支持不能自动伪装为用户取消。该源码实例证明标准协议可承接简化交互，不承诺完整 TUI 外观兼容。
 

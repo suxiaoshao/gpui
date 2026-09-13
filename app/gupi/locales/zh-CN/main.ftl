@@ -90,6 +90,9 @@ conversation-rename = 重命名…
 conversation-delete = 移到废纸篓
 conversation-delete-failed = 无法删除会话：{ $error }
 conversation-copy-path = 复制路径
+conversation-clone = 复制会话
+conversation-export = 导出会话为 HTML…
+conversation-exported = 会话已导出至 { $path }
 conversation-stop = 停止生成
 conversation-close-run = 结束运行
 conversation-show-less = 收起
@@ -283,3 +286,38 @@ history-custom-record = 自定义记录
 
 history-content = 内容
 history-range = 范围
+
+command-palette = 命令面板
+command-focus-input = 聚焦对话输入
+command-model = 选择模型与思考等级…
+command-copy-last-answer = 复制最后回答
+command-compact = 压缩上下文
+conversation-compacting = 正在压缩上下文…
+command-history-description = 查看历史，或选择用户消息分叉
+command-show-history = 显示历史
+command-hide-history = 隐藏历史
+command-current-session = 当前会话：
+command-unavailable = 当前状态不可用
+command-scanning = 正在加载会话…
+command-loading = 正在加载 Pi 命令…
+command-no-matches = 没有匹配的 Pi 命令
+conversation-reconnect-unconfirmed = 无法确认 Pi 进程已退出，请重启 Gupi 后再连接。
+action-retry = 重试
+
+command-search-placeholder = 搜索操作或输入命令
+command-empty = 当前会话没有 Pi 命令
+
+command-group-app = 应用
+command-group-extensions = 插件命令
+command-group-skills = 技能
+command-group-prompts = 提示词模板
+command-scope-user = 个人
+command-scope-project = 项目
+command-scope-temporary = 临时
+command-connection-unavailable = Pi 尚未就绪
+command-dismiss = 退出
+command-complete = 补全
+command-send-text = 发送
+command-execute = 执行
+
+command-scope-current = 当前会话

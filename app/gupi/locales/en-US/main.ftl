@@ -90,6 +90,9 @@ conversation-rename = Rename…
 conversation-delete = Move to Trash
 conversation-delete-failed = Could not delete conversation: { $error }
 conversation-copy-path = Copy path
+conversation-clone = Duplicate conversation
+conversation-export = Export conversation as HTML…
+conversation-exported = Conversation exported to { $path }
 conversation-stop = Stop generation
 conversation-close-run = Close runtime
 conversation-show-less = Show less
@@ -283,3 +286,38 @@ history-custom-record = Custom record
 
 history-content = Content
 history-range = Scope
+
+command-palette = Command Palette
+command-focus-input = Focus Conversation Input
+command-model = Select Model and Thinking Level…
+command-copy-last-answer = Copy Last Answer
+command-compact = Compact Context
+conversation-compacting = Compacting context…
+command-history-description = View history or choose a user message to fork
+command-show-history = Show History
+command-hide-history = Hide History
+command-current-session = Current session:
+command-unavailable = Unavailable in the current state
+command-scanning = Loading conversations…
+command-loading = Loading Pi commands…
+command-no-matches = No matching Pi commands
+conversation-reconnect-unconfirmed = Pi process exit could not be confirmed. Restart Gupi before reconnecting.
+action-retry = Retry
+
+command-search-placeholder = Search actions or enter a command
+command-empty = No Pi commands available in this session
+
+command-group-app = Application
+command-group-extensions = Extension commands
+command-group-skills = Skills
+command-group-prompts = Prompt templates
+command-scope-user = Personal
+command-scope-project = Project
+command-scope-temporary = Temporary
+command-connection-unavailable = Pi is not ready
+command-dismiss = Close
+command-complete = Complete
+command-send-text = Send
+command-execute = Run
+
+command-scope-current = Current session

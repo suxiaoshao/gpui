@@ -2,7 +2,7 @@ use app_assets::{AppAssets, define_lucide_icons, define_svg_icons};
 use gpui_kit::{AssetSource, SharedString};
 use std::borrow::Cow;
 define_lucide_icons!(pub(crate) enum IconName {
-    Sparkles => "sparkles",
+    Sparkles => "sparkles", Puzzle => "puzzle",
     UserRound => "user-round", Bot => "bot",
     Settings => "settings", ArrowLeft => "arrow-left", ArrowRight => "arrow-right",
     Check => "check",
@@ -13,7 +13,7 @@ define_lucide_icons!(pub(crate) enum IconName {
     Ellipsis => "ellipsis", CircleAlert => "circle-alert", MessageCircle => "message-circle",
     List => "list", Tag => "tag",
     ZoomIn => "zoom-in", ZoomOut => "zoom-out", Scan => "scan", LocateFixed => "locate-fixed",
-    RefreshCw => "refresh-cw", FileText => "file-text",
+    RefreshCw => "refresh-cw", FileText => "file-text", Download => "download",
     X => "x", Folder => "folder",
     Terminal => "terminal", BookOpen => "book-open", FilePenLine => "file-pen-line",
     FilePlus => "file-plus", Wrench => "wrench", Brain => "brain", ChartNoAxesColumn => "chart-no-axes-column",

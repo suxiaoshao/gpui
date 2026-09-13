@@ -232,6 +232,9 @@ impl Picker {
         self.reset_slider(window, cx);
         cx.notify();
     }
+    pub(super) fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_open(true, window, cx);
+    }
     fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.open = open;
         self.models_page = false;
@@ -569,7 +572,11 @@ impl Render for Picker {
             .px_2()
             .accessibility_label(t(cx, "composer-model-thinking"))
             .when(!self.open, |button| {
-                button.tooltip(format!("{name}\n{level}"))
+                button.tooltip_with_action(
+                    format!("{}\n{name}\n{level}", t(cx, "composer-model-thinking")),
+                    &super::actions::Run(super::actions::Kind::Model),
+                    Some("Gupi"),
+                )
             })
             .child(
                 h_flex()

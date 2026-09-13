@@ -9,12 +9,18 @@ pub enum Command {
     GetCommands,
     Prompt(Prompt),
     Abort,
+    Compact,
     ClearQueue,
     GetEntries,
     GetForkMessages,
     Fork {
         #[serde(rename = "entryId")]
         entry_id: String,
+    },
+    Clone,
+    ExportHtml {
+        #[serde(rename = "outputPath")]
+        output_path: String,
     },
     SetSessionName {
         name: String,
@@ -38,10 +44,13 @@ impl Command {
             Self::GetCommands => "get_commands",
             Self::Prompt(_) => "prompt",
             Self::Abort => "abort",
+            Self::Compact => "compact",
             Self::ClearQueue => "clear_queue",
             Self::GetEntries => "get_entries",
             Self::GetForkMessages => "get_fork_messages",
             Self::Fork { .. } => "fork",
+            Self::Clone => "clone",
+            Self::ExportHtml { .. } => "export_html",
             Self::SetSessionName { .. } => "set_session_name",
             Self::GetAvailableModels => "get_available_models",
             Self::SetModel { .. } => "set_model",
@@ -135,6 +144,10 @@ pub struct ForkResult {
     #[serde(default)]
     pub text: String,
     pub cancelled: bool,
+}
+#[derive(Clone, Debug, Deserialize)]
+pub struct ExportResult {
+    pub path: String,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
