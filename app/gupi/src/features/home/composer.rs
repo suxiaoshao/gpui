@@ -1,3 +1,4 @@
+use super::actions::{Kind, Run};
 use super::*;
 use crate::state::conversation::content::BodyState;
 use gpui_kit::component::input::Textarea;
@@ -92,6 +93,16 @@ impl HomeView {
                     .child(format!("{}: {error}", t(cx, "conversation-save-error"))),
             );
         }
+        if session.compacting || session.command.compacting() {
+            shell = shell.child(
+                h_flex()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(gpui_kit::component::spinner::Spinner::new().small())
+                    .child(t(cx, "conversation-compacting")),
+            );
+        }
         if session.interrupted {
             shell = shell.child(
                 div()
@@ -114,14 +125,46 @@ impl HomeView {
         let mut editor = v_flex()
             .w_full()
             .min_w_0()
-            .p_2()
+            .pb_2()
             .rounded_2xl()
             .shadow_sm()
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().background);
         if let Some(pending) = session.pending_ui.front() {
-            editor = editor.p_3().gap_2();
+            editor = editor
+                .p_3()
+                .gap_2()
+                .key_context("GupiExtension")
+                .track_focus(&self.extension_focus)
+                .on_action(cx.listener(|this, _: &actions::CancelExtension, _, cx| {
+                    this.reply_extension(UiReply::cancelled(), cx)
+                }))
+                .on_action(
+                    cx.listener(|this, _: &gpui_kit::component::input::Escape, _, cx| {
+                        this.reply_extension(UiReply::cancelled(), cx)
+                    }),
+                )
+                .on_action(cx.listener(|this, _: &actions::ConfirmExtension, _, cx| {
+                    let reply = this
+                        .state
+                        .read(cx)
+                        .current()
+                        .and_then(|s| s.pending_ui.front())
+                        .and_then(|p| match &p.request.method {
+                            UiMethod::Select { options, .. } => options
+                                .first()
+                                .cloned()
+                                .map(|value| UiReply::Value { value }),
+                            UiMethod::Confirm { .. } => {
+                                Some(UiReply::Confirmed { confirmed: true })
+                            }
+                            _ => None,
+                        });
+                    if let Some(reply) = reply {
+                        this.reply_extension(reply, cx);
+                    }
+                }));
             let title = match &pending.request.method {
                 UiMethod::Select { title, .. }
                 | UiMethod::Confirm { title, .. }
@@ -201,11 +244,11 @@ impl HomeView {
                 );
         } else {
             editor = editor.child(
-                div().key_context("GupiComposer").child(
+                div().relative().key_context("GupiComposer").child(
                     Textarea::new(&self.input)
                         .appearance(false)
                         .disabled(preview)
-                        .readonly(session.submitting())
+                        .readonly(!session.can_edit_draft())
                         .aria_label(t(cx, "conversation-input")),
                 ),
             );
@@ -230,7 +273,11 @@ impl HomeView {
                         .size_8()
                         .rounded_full()
                         .icon(IconName::Square)
-                        .tooltip(t(cx, "conversation-stop"))
+                        .tooltip_with_action(
+                            t(cx, "conversation-stop"),
+                            &Run(Kind::Stop),
+                            Some("Gupi"),
+                        )
                         .accessibility_label(t(cx, "conversation-stop"))
                         .disabled(session.stopping)
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -260,11 +307,8 @@ impl HomeView {
                         .loading(session.submitting())
                         .disabled(
                             preview
-                                || session.submitting()
                                 || session.draft.trim().is_empty()
-                                || session.command.running()
-                                || session.model_change.running()
-                                || session.model_change.unconfirmed(),
+                                || !self.state.read(cx).can_submit(&key, cx),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             if let Some(key) = this.shown_key.clone() {
@@ -281,6 +325,7 @@ impl HomeView {
                     .items_center()
                     .flex_wrap()
                     .gap_2()
+                    .px_2()
                     .pt_1()
                     .when(session.stats.data().is_some(), |row| {
                         row.child(div().flex_none().child(metrics::tokens(session, cx)))
@@ -310,6 +355,7 @@ impl HomeView {
             if session.pending_count > 0 {
                 editor = editor.child(
                     div()
+                        .px_2()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
                         .child(t(cx, "conversation-queued")),

@@ -4,6 +4,8 @@ A Rust client for one local Pi CLI process and its JSONL RPC connection. It has 
 
 Validated with Pi 0.85.1. Unknown events and extension fields retain their raw JSON; this is not a guarantee that older Pi releases implement the same semantics.
 
+`compact()` invokes Pi’s default manual compaction and waits for completion; `abort()` can interrupt it. Pi stops an active agent turn before compacting and emits `compaction_start` / `compaction_end`.
+
 ## Usage
 
 Call `Client::spawn` from an entered Tokio runtime. Spawn returns a client and event stream before the protocol is ready, so the host can handle extension requests during startup. The automatic `get_state` response establishes readiness; `state()` / `subscribe()` describe connection lifecycle, and the Ready payload is the initial snapshot. Use `get_state()` when a current Pi session snapshot is needed.
@@ -45,7 +47,7 @@ The example sends a model request when run with a configured Pi; tests below do 
 
 `probe::probe(command, deadline)` locates a command and checks `--version`. Its existing 15-second application budget, bounded output and cancellation behavior are independent of a long-running RPC request. `LaunchOptions` accepts an executable, cwd, extra argument vector, environment overrides and startup timeout; use the resolved probe path when available. Arguments are passed through `Command::args`, not concatenated into a shell string. On Windows the Rust standard library handles `.cmd`/`.bat` launching and quoting ([Rust process documentation](https://doc.rust-lang.org/stable/std/process/index.html#windows-argument-splitting)); the host still supplies the actual shim path.
 
-Typed commands cover state, command discovery, prompt, abort, clear_queue, entries, fork messages/fork, session names, available models/model selection, thinking levels and session statistics. `get_entries` returns Pi parent links and the execution leaf; `fork` switches that client to an independent session and returns draft text, so the host must update its session binding after success. `request_raw` is an escape hatch for other Pi commands: it owns the request ID and applies the same limits and response association. `reply` uses the extension UI envelope and ID, without adding a command-response waiter. Dropping a request future removes only the local waiter; it does not abort Pi or replay the request.
+Typed commands cover state, command discovery, prompt, abort, clear_queue, entries, fork messages/fork, clone, HTML export, session names, available models/model selection, thinking levels and session statistics. `get_entries` returns Pi parent links and the execution leaf; `fork` switches that client to an independent session and returns draft text, so the host must update its session binding after success. `clone_session` copies through the current execution leaf and switches the client to the new session, returning an empty draft. `export_html` writes to the chosen path and returns the resulting path without switching sessions. `request_raw` is an escape hatch for other Pi commands: it owns the request ID and applies the same limits and response association. `reply` uses the extension UI envelope and ID, without adding a command-response waiter. Dropping a request future removes only the local waiter; it does not abort Pi or replay the request.
 
 ## Limits and failure behavior
 

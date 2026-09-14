@@ -323,6 +323,12 @@ impl Client {
     pub async fn fork(&self, entry_id: String) -> Result<ForkResult, Error> {
         self.data(Command::Fork { entry_id }).await
     }
+    pub async fn clone_session(&self) -> Result<ForkResult, Error> {
+        self.data(Command::Clone).await
+    }
+    pub async fn export_html(&self, output_path: String) -> Result<ExportResult, Error> {
+        self.data(Command::ExportHtml { output_path }).await
+    }
     pub async fn set_session_name(&self, name: String) -> Result<Response, Error> {
         self.request(Command::SetSessionName { name }).await
     }
@@ -349,6 +355,9 @@ impl Client {
     }
     pub async fn abort(&self) -> Result<Response, Error> {
         self.request(Command::Abort).await
+    }
+    pub async fn compact(&self) -> Result<Response, Error> {
+        self.request(Command::Compact).await
     }
     async fn data<T: DeserializeOwned>(&self, command: Command) -> Result<T, Error> {
         Ok(serde_json::from_value(self.request(command).await?.data)?)

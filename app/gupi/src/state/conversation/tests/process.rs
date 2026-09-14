@@ -15,11 +15,23 @@ fn reply(id: &str, command: &str, data: &str, success: bool) {
 fn model(id: &str) -> String {
     format!("{{\"id\":\"{id}\",\"name\":\"{id}\",\"provider\":\"fixture\",\"reasoning\":true}}")
 }
+fn end_compaction(compacting: &mut bool, compacted: &mut bool, success: bool, aborted: bool) {
+    *compacting = false;
+    *compacted |= success;
+    let result = if success { "{\"summary\":\"compressed context\"}" } else { "null" };
+    println!("{{\"type\":\"compaction_end\",\"reason\":\"manual\",\"aborted\":{aborted},\"result\":{result}}}");
+}
 fn main() {
-    let mut selected = "alpha".to_owned();
-    let mut thinking = "high".to_owned();
+    let args = std::env::args().collect::<Vec<_>>();
+    let option = |name: &str| args.windows(2).find(|pair| pair[0] == name).map(|pair| pair[1].clone());
+    let mut selected = option("--model").unwrap_or_else(|| "alpha".to_owned());
+    let mut thinking = option("--thinking").unwrap_or_else(|| "high".to_owned());
+    let session_file = option("--session").or_else(|| Path::new("preallocated-file").exists().then(|| std::env::current_dir().unwrap().join("never-written.jsonl").to_string_lossy().into_owned()));
+    let mut lifecycle = std::fs::OpenOptions::new().create(true).append(true).open("process.log").unwrap();
+    writeln!(lifecycle, "start {} {:?}", std::process::id(), &args[1..]).unwrap();
     let mut newer = false;
     let mut compacted = false;
+    let mut compacting = false;
     let mut held = Vec::<(String, String, String, bool)>::new();
     let mut waiters = Vec::<(String, String, usize)>::new();
     let mut counts = HashMap::<String, usize>::new();
@@ -30,15 +42,29 @@ fn main() {
         *counts.entry(command.clone()).or_default() += 1;
         let mut log = std::fs::OpenOptions::new().create(true).append(true).open("commands.log").unwrap();
         writeln!(log, "{command}").unwrap();
+        if command == "prompt" {
+            let mut inputs = std::fs::OpenOptions::new().create(true).append(true).open("inputs.jsonl").unwrap();
+            writeln!(inputs, "{line}").unwrap();
+        }
         match command.as_str() {
             "disconnect" => break,
             "compact_start" => {
+                compacting = true;
                 println!("{{\"type\":\"compaction_start\",\"reason\":\"manual\"}}");
                 reply(&id, &command, "null", true);
             }
             "compact_end" => {
-                compacted = true;
-                println!("{{\"type\":\"compaction_end\",\"reason\":\"manual\",\"aborted\":false,\"result\":{{\"summary\":\"compressed context\"}}}}");
+                end_compaction(&mut compacting, &mut compacted, true, false);
+                reply(&id, &command, "null", true);
+            }
+            "abort" if compacting => {
+                end_compaction(&mut compacting, &mut compacted, false, true);
+                let mut remaining = vec![];
+                for (held_id, held_command, data, success) in held.drain(..) {
+                    if held_command == "compact" { reply(&held_id, &held_command, "null", false); }
+                    else { remaining.push((held_id, held_command, data, success)); }
+                }
+                held = remaining;
                 reply(&id, &command, "null", true);
             }
             "wait_for" => waiters.push((id, field(&line, "command"), field(&line, "count").parse().unwrap())),
@@ -47,7 +73,10 @@ fn main() {
                 let _ = std::fs::remove_file(format!("hold-{target}"));
                 let mut remaining = vec![];
                 for (held_id, held_command, data, success) in held.drain(..) {
-                    if held_command == target { reply(&held_id, &held_command, &data, success); }
+                    if held_command == target {
+                        if held_command == "compact" { end_compaction(&mut compacting, &mut compacted, success, false); }
+                        reply(&held_id, &held_command, &data, success);
+                    }
                     else { remaining.push((held_id, held_command, data, success)); }
                 }
                 held = remaining;
@@ -80,8 +109,14 @@ fn main() {
                 reply(&id, &command, "null", true);
             }
             _ => {
+                if command == "compact" {
+                    compacting = true;
+                    println!("{{\"type\":\"agent_settled\"}}");
+                    println!("{{\"type\":\"compaction_start\",\"reason\":\"manual\"}}");
+                }
                 let data = match command.as_str() {
-                    "get_state" => format!("{{\"sessionId\":\"fixture\",\"isStreaming\":false,\"isCompacting\":false,\"model\":{},\"thinkingLevel\":\"{thinking}\"}}", model(&selected)),
+                    "get_commands" => "{\"commands\":[{\"name\":\"help\",\"description\":\"Fixture command\",\"source\":\"extension\",\"sourceInfo\":null}]}".into(),
+                    "get_state" => format!("{{\"sessionId\":\"fixture\",\"isStreaming\":false,\"isCompacting\":{compacting},\"model\":{},\"thinkingLevel\":\"{thinking}\"}}", model(&selected)).trim_end_matches('}').to_owned() + &session_file.as_ref().map(|path| format!(",\"sessionFile\":{path:?}}}")).unwrap_or_else(|| "}".into()),
                     "get_entries" => if Path::new("empty-entries").exists() {
                         "{\"entries\":[],\"leafId\":null}".into()
                     } else if compacted {
@@ -97,6 +132,11 @@ fn main() {
                     "get_fork_messages" => "{\"messages\":[{\"entryId\":\"old\",\"text\":\"hello\"}]}".into(),
                     "set_model" => { selected = field(&line, "modelId"); "null".into() }
                     "set_thinking_level" => { thinking = field(&line, "level"); "null".into() }
+                    "clone" => format!("{{\"cancelled\":{}}}", Path::new("cancel-clone").exists()),
+                    "export_html" => {
+                        std::fs::write("export-request.json", &line).unwrap();
+                        std::fs::read_to_string("export-result.json").unwrap()
+                    },
                     "fork" => {
                         if !Path::new("skip-fork-editor").exists() {
                             println!("{{\"type\":\"extension_ui_request\",\"id\":\"fork-editor\",\"method\":\"set_editor_text\",\"text\":\"extension fork draft\"}}");
@@ -107,7 +147,10 @@ fn main() {
                 };
                 let success = !Path::new(&format!("fail-{command}")).exists();
                 if Path::new(&format!("hold-{command}")).exists() { held.push((id, command.clone(), data, success)); }
-                else { reply(&id, &command, &data, success); }
+                else {
+                    if command == "compact" { end_compaction(&mut compacting, &mut compacted, success, false); }
+                    reply(&id, &command, &data, success);
+                }
             }
         }
         let mut remaining = vec![];
@@ -117,4 +160,5 @@ fn main() {
         }
         waiters = remaining;
     }
+    writeln!(lifecycle, "exit {}", std::process::id()).unwrap();
 }

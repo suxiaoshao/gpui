@@ -1,4 +1,5 @@
 use super::{chrome, home, settings::SettingsView};
+mod palette;
 use crate::pi::ProbeFailureKey;
 use crate::{
     app::menus,
@@ -15,7 +16,7 @@ use crate::{
 };
 use gpui_form::Form;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Root, button::Button, h_flex, spinner::Spinner, v_flex,
+    ActiveTheme, Disableable, Root, WindowExt, button::Button, h_flex, spinner::Spinner, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -51,6 +52,7 @@ pub(crate) struct StartupView {
     log_warning: bool,
     _subscriptions: Vec<Subscription>,
     quit_task: Option<Task<()>>,
+    palette: Option<Entity<super::command_palette::CommandPalette>>,
 }
 impl StartupView {
     pub fn new(log_warning: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -116,6 +118,7 @@ impl StartupView {
             log_warning,
             _subscriptions: vec![config_sub, pi_sub, form_sub, appearance, accent],
             quit_task: None,
+            palette: None,
         }
     }
     pub fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -165,6 +168,30 @@ impl StartupView {
             tracing::info!("managed quit completed");
             cx.update(|cx| cx.quit());
         }));
+        cx.notify();
+    }
+    pub fn set_settings_visible(
+        &mut self,
+        visible: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.show_settings != visible {
+            if let Some(home) = &self.home {
+                home.update(cx, |home, cx| home.close_commands(window, cx));
+            }
+            if self.palette.take().is_some_and(|p| p.read(cx).is_open)
+                && window.has_active_dialog(cx)
+            {
+                window.close_dialog(cx);
+            }
+        }
+        self.show_settings = visible;
+        if !visible && let Some(home) = &self.home {
+            home.update(cx, |home, cx| home.focus_composer(window, cx));
+        } else {
+            self.focus_handle.focus(window, cx);
+        }
         cx.notify();
     }
     pub fn is_quitting(&self) -> bool {
@@ -362,9 +389,7 @@ impl Render for StartupView {
                                         .tooltip(t(cx, "menu-show-main"))
                                         .disabled(self.is_quitting() || !configured)
                                         .on_click(cx.listener(|this, _, window, cx| {
-                                            this.focus_handle.focus(window, cx);
-                                            this.show_settings = false;
-                                            cx.notify();
+                                            this.set_settings_visible(false, window, cx);
                                         })),
                                 ))
                             })
@@ -389,6 +414,12 @@ impl Render for StartupView {
                     } else {
                         content.into_any_element()
                     }),
+            )
+            .key_context("GupiApplication")
+            .on_action(
+                cx.listener(|this, _: &menus::ShowCommandPalette, window, cx| {
+                    this.open_palette(window, cx)
+                }),
             )
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))

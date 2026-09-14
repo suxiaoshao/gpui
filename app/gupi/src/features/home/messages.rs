@@ -2,7 +2,6 @@ use super::*;
 use crate::state::{conversation::Session, history::DisplayMessage};
 use gpui_kit::component::{
     bubble::{Bubble, BubbleContent, BubbleVariant},
-    menu::{ContextMenuExt, PopupMenuItem},
     message::{Message, MessageAlignment, MessageContent, MessageFooter},
     message_scroller::MessageScroller,
     text::TextView,
@@ -194,6 +193,26 @@ impl HomeView {
                     .child(self.render_content_error("retry-messages", error, cx))
                     .into_any_element();
             }
+            BodyState::Ready
+                if session.empty_conversation() && session.info.path.as_os_str().is_empty() =>
+            {
+                return body
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .justify_center()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_xl().child(t(cx, "conversation-welcome")))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t(cx, "conversation-welcome-hint")),
+                            ),
+                    )
+                    .into_any_element();
+            }
             BodyState::Ready => {}
             BodyState::Refreshing(stage) => body = body.child(content::refreshing(stage, cx)),
             BodyState::RefreshFailed(error) => {
@@ -310,25 +329,29 @@ impl HomeView {
                                     ),
                                 ),
                             )
-                            .footer(MessageFooter::new().child(actions::MessageActions {
-                                id: format!("{key}-{}", m.id),
-                                message: m.clone(),
-                            })),
-                    )
-                    .context_menu(move |menu, _, _| {
-                        let state = state.clone();
-                        let key = target.clone();
-                        let entry = entry.clone();
-                        menu.item(
-                            PopupMenuItem::new(label.clone())
-                                .disabled(!can_fork)
-                                .on_click(move |_, _, cx| {
-                                    if let Some(entry) = entry.clone() {
-                                        state.update(cx, |s, cx| s.fork(&key, entry, cx));
-                                    }
+                            .footer(
+                                MessageFooter::new().child(actions::MessageActions {
+                                    id: format!("{key}-{}", m.id),
+                                    message: m.clone(),
+                                    before_copy: Some(
+                                        Button::new(format!("fork-{key}-{}", m.id))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(IconName::GitBranch)
+                                            .disabled(!can_fork)
+                                            .tooltip(label.clone())
+                                            .accessibility_label(label)
+                                            .on_click(move |_, _, cx| {
+                                                if let Some(entry) = entry.clone() {
+                                                    state.update(cx, |s, cx| {
+                                                        s.fork(&target, entry, cx)
+                                                    });
+                                                }
+                                            }),
+                                    ),
                                 }),
-                        )
-                    })
+                            ),
+                    )
                     .into_any_element()
             }
             RowKind::Compaction(m) => Message::new()
@@ -416,6 +439,7 @@ impl HomeView {
                                 actions::MessageActions {
                                     id: format!("{key}-{}", m.id),
                                     message: m.clone(),
+                                    before_copy: None,
                                 },
                             )),
                     );

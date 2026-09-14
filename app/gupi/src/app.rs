@@ -41,8 +41,13 @@ pub(crate) fn run() {
         i18n::apply(Default::default(), cx);
         menus::refresh(cx);
         cx.bind_keys([
+            KeyBinding::new(
+                "secondary-shift-p",
+                menus::ShowCommandPalette,
+                Some("GupiApplication"),
+            ),
             KeyBinding::new("cmd-q", menus::Quit, None),
-            KeyBinding::new("cmd-,", menus::ShowSettings, None),
+            KeyBinding::new("secondary-,", menus::ShowSettings, None),
         ]);
         cx.on_action(|_: &menus::ShowSettings, cx| cx.defer(|cx| show(Some(true), cx)));
         cx.on_action(|_: &menus::ShowMainWindow, cx| cx.defer(|cx| show(Some(false), cx)));
@@ -136,7 +141,7 @@ fn show(settings: Option<bool>, cx: &mut App) {
                 if !view.is_quitting()
                     && let Some(settings) = settings
                 {
-                    view.show_settings = settings;
+                    view.set_settings_visible(settings, window, cx);
                 }
                 cx.notify();
             });

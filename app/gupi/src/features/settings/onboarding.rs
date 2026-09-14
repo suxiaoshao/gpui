@@ -257,16 +257,8 @@ impl SettingsView {
                     }),
             );
         let store = self.controller.read(cx).store.clone();
-        let problem = store.read(cx, |op| {
-            op.problem().map(|problem| {
-                (
-                    problem.key(),
-                    problem.is_conflict(),
-                    problem.needs_reconcile(),
-                )
-            })
-        });
-        if let Some(key) = self.error.as_deref().or(problem.map(|p| p.0)) {
+        let problem = store.read(cx, |op| op.problem().map(|problem| problem.key()));
+        if let Some(key) = self.error.as_deref().or(problem) {
             view = view.child(
                 div()
                     .text_sm()
@@ -274,32 +266,14 @@ impl SettingsView {
                     .child(t(cx, key)),
             );
         }
-        // Preserve explicit recovery choices if a file appeared or saving failed during setup.
-        if let Some((_, conflict, reconcile)) = problem {
-            view =
-                view.child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Button::new("setup-reload")
-                                .icon(IconName::RotateCw)
-                                .label(t(cx, "settings-reload"))
-                                .disabled(busy)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.request(ConfigRepair::Reload, cx)
-                                })),
-                        )
-                        .when(conflict && !reconcile, |view| {
-                            view.child(
-                                Button::new("setup-overwrite")
-                                    .label(t(cx, "action-overwrite"))
-                                    .disabled(busy)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.request(ConfigRepair::BackupAndWrite, cx)
-                                    })),
-                            )
-                        }),
-                );
+        if problem.is_some() {
+            view = view.child(
+                Button::new("setup-reload")
+                    .icon(IconName::RotateCw)
+                    .label(t(cx, "settings-reload"))
+                    .disabled(busy)
+                    .on_click(cx.listener(|this, _, _, cx| this.request(ConfigRepair::Reload, cx))),
+            );
         }
         if self.confirmation.is_some() {
             view = view.child(
@@ -337,7 +311,7 @@ impl SettingsView {
                     .icon(IconName::Check)
                     .primary()
                     .label(t(cx, if busy { "setup-saving" } else { "setup-finish" }))
-                    .disabled(busy || !self.probe_ready(cx) || problem.is_some_and(|p| p.1 || p.2))
+                    .disabled(busy || !self.probe_ready(cx))
                     .on_click(cx.listener(|this, _, window, cx| {
                         if !this.controller.read(cx).busy(cx) && this.probe_ready(cx) {
                             this.submit(window, cx);

@@ -1,10 +1,13 @@
+pub(crate) mod actions;
 mod composer;
 mod content;
 mod history;
 mod messages;
 mod navigation;
+pub(crate) mod palette;
 mod panes;
 mod pickers;
+mod slash;
 mod titlebar;
 use crate::{
     foundation::{assets::IconName, i18n::t},
@@ -43,7 +46,7 @@ struct SessionView {
 }
 pub(crate) struct HomeView {
     pub state: Entity<ConversationState>,
-    input: Entity<TextareaState>,
+    pub(crate) input: Entity<TextareaState>,
     extension_input: Entity<TextareaState>,
     shown_key: Option<String>,
     shown_request: Option<(String, String)>,
@@ -59,28 +62,36 @@ pub(crate) struct HomeView {
     layout_save: Option<Task<()>>,
     pane_layout: panes::PaneLayout,
     pane_drag: Option<panes::Drag>,
+    palette: Option<(bool, Entity<palette::Palette>)>,
+    slash: slash::Completion,
+    pub(crate) command_panel: Option<Entity<super::command_palette::CommandPalette>>,
+    focus_handle: FocusHandle,
+    extension_focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 impl HomeView {
     pub fn new(command: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        cx.bind_keys([
-            KeyBinding::new(
-                "alt-enter",
-                Enter {
-                    secondary: true,
-                    shift: false,
-                },
-                Some("GupiComposer"),
-            ),
-            KeyBinding::new(
-                "super-enter",
-                Enter {
-                    secondary: false,
-                    shift: true,
-                },
-                Some("GupiComposer"),
-            ),
-        ]);
+        actions::init(cx);
+        for context in ["GupiComposer > Input", "GupiPalette > Input"] {
+            cx.bind_keys([
+                KeyBinding::new(
+                    "alt-enter",
+                    Enter {
+                        secondary: true,
+                        shift: false,
+                    },
+                    Some(context),
+                ),
+                KeyBinding::new(
+                    "super-enter",
+                    Enter {
+                        secondary: false,
+                        shift: true,
+                    },
+                    Some(context),
+                ),
+            ]);
+        }
         let state = cx.new(|cx| ConversationState::new(command, cx));
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -97,6 +108,7 @@ impl HomeView {
             ListState::new(history::HistoryDelegate::new(owner), window, cx).searchable(false)
         });
         let subscriptions = vec![
+            cx.observe(&input, |_, _, cx| cx.notify()),
             cx.observe(&history_list, |_, _, cx| cx.notify()),
             cx.observe_in(&state, window, |this, _, window, cx| {
                 this.sync(false, window, cx)
@@ -138,7 +150,9 @@ impl HomeView {
                             return;
                         }
                         let value = input.read(cx).value().to_string();
-                        this.state.update(cx, |s, cx| s.set_draft(&key, value, cx));
+                        this.state
+                            .update(cx, |s, cx| s.set_draft(&key, value.clone(), cx));
+                        this.open_slash_if_needed(&value, window, cx);
                     }
                     InputEvent::PressEnter {
                         secondary,
@@ -146,7 +160,7 @@ impl HomeView {
                     } => {
                         let preview = this.views.get(&key).and_then(|v| v.preview.as_deref());
                         let allowed = this.state.read(cx).current().is_some_and(|s| {
-                            !s.submitting()
+                            this.state.read(cx).can_submit(&key, cx)
                                 && preview.is_none_or(|id| s.history().on_current_path(id))
                         });
                         if allowed {
@@ -214,14 +228,23 @@ impl HomeView {
             layout_save: None,
             pane_layout: panes::PaneLayout::default(),
             pane_drag: None,
+            palette: None,
+            slash: Default::default(),
+            command_panel: None,
+            focus_handle: cx.focus_handle(),
+            extension_focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         };
         view.sync(false, window, cx);
+        view.focus_composer(window, cx);
         view
     }
     fn sync(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
         let key = self.state.read(cx).selected.clone();
         let changed = self.shown_key != key;
+        if changed {
+            self.slash = Default::default();
+        }
         if changed && let Some(view) = self.shown_key.as_ref().and_then(|key| self.views.get(key)) {
             view.history_canvas
                 .update(cx, |canvas, cx| canvas.clear_pointer(cx));
@@ -603,7 +626,7 @@ impl Render for HomeView {
             .child(self.render_composer(window, cx));
         // Keep the component mounted: Offcanvas owns the closing animation and
         // removes its contents from the tab order after the transition finishes.
-        let mut columns = h_flex().size_full().child(self.render_sidebar(cx));
+        let mut columns = h_flex().size_full().child(self.render_sidebar(window, cx));
         let mut center_panel = div().relative().flex_1().min_w_0().h_full().child(center);
         if self.show_sidebar {
             center_panel = center_panel.child(self.pane_handle(panes::Side::Left, cx));
@@ -637,6 +660,12 @@ impl Render for HomeView {
             );
         }
         shell = shell.child(panes::ResizeEvents(cx.weak_entity()));
-        v_flex().size_full().child(titlebar).child(shell)
+        v_flex()
+            .key_context("Gupi")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::run_action))
+            .size_full()
+            .child(titlebar)
+            .child(shell)
     }
 }

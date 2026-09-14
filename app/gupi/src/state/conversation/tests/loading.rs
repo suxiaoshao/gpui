@@ -303,21 +303,23 @@ fn begin(
     cx: &mut TestAppContext,
     flags: &[&str],
 ) -> (tempfile::TempDir, Entity<ConversationState>, String) {
-    begin_with_prompt(cx, flags, None)
+    let result = prepare(cx, flags);
+    result
+        .1
+        .update(cx, |state, cx| state.connect(&result.2, cx));
+    result
 }
-fn begin_with_prompt(
+async fn begin_with_prompt(
     cx: &mut TestAppContext,
     flags: &[&str],
-    prompt: Option<&str>,
+    prompt: &str,
 ) -> (tempfile::TempDir, Entity<ConversationState>, String) {
-    let (dir, owner, key) = prepare(cx, flags);
+    let (dir, owner, key) = begin(cx, flags);
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
     owner.update(cx, |state, cx| {
-        if let Some(prompt) = prompt {
-            state.set_draft(&key, prompt.into(), cx);
-            state.send(&key, StreamingBehavior::Steer, cx);
-        } else {
-            state.connect(&key, cx);
-        }
+        state.set_draft(&key, prompt.into(), cx);
+        state.send(&key, StreamingBehavior::Steer, cx);
     });
     (dir, owner, key)
 }
@@ -329,6 +331,7 @@ fn prepare(
     cx.update(|cx| {
         gpui_tokio::init(cx);
         pi::init(cx);
+        crate::foundation::i18n::apply(crate::state::config::AppLanguage::English, cx);
     });
     let dir = tempfile::tempdir().unwrap();
     for flag in flags {
@@ -405,9 +408,10 @@ async fn new_conversation_model_options_and_catalog_have_independent_lifecycles(
 
 #[gpui_kit::test]
 async fn project_switch_reuses_empty_sessions_and_their_model_connections(cx: &mut TestAppContext) {
-    let (dir, owner, a) = prepare(cx, &[]);
+    let (dir, owner, a) = prepare(cx, &["empty-entries"]);
     let project_b = dir.path().join("project-b");
     std::fs::create_dir(&project_b).unwrap();
+    std::fs::write(project_b.join("empty-entries"), "").unwrap();
     owner.update(cx, |state, cx| state.refresh_models(&a, cx));
     cx.condition(&owner, |state, _| {
         state.sessions[&a].models.data().is_some()
@@ -467,11 +471,15 @@ async fn project_switch_reuses_empty_sessions_and_their_model_connections(cx: &m
         });
     }
     assert_eq!(count(dir.path(), "get_state"), reads_a);
-    assert_eq!(count(&project_b, "get_state"), 1);
+    assert_eq!(count(&project_b, "get_state"), 2);
     for project in [dir.path(), project_b.as_path()] {
         assert_eq!(count(project, "get_available_models"), 1);
-        assert_eq!(count(project, "get_entries"), 0);
+        assert_eq!(
+            count(project, "get_entries"),
+            usize::from(project == project_b.as_path())
+        );
     }
+    std::fs::remove_file(dir.path().join("empty-entries")).unwrap();
     // Sending after returning uses A's retained client and promotes it to a conversation.
     owner.update(cx, |state, cx| {
         state.set_cwd(&b, dir.path().into(), cx);
@@ -512,7 +520,7 @@ async fn project_switch_from_unconnected_draft_rejoins_pending_model_load(cx: &m
         let instance = state.sessions[&a].instance;
         state.set_cwd(&a, project_b.clone(), cx);
         let b = state.selected.clone().unwrap();
-        assert!(state.sessions[&b].instance.is_none());
+        assert!(state.sessions[&b].instance.is_some());
         state.set_cwd(&b, dir.path().into(), cx);
         assert_eq!(state.selected.as_deref(), Some(a.as_str()));
         assert_eq!(state.sessions[&b].info.cwd, project_b);
@@ -532,44 +540,50 @@ async fn project_switch_from_unconnected_draft_rejoins_pending_model_load(cx: &m
 
 #[gpui_kit::test]
 async fn project_switch_preserves_nonempty_drafts(cx: &mut TestAppContext) {
-    let (dir, owner, a) = prepare(cx, &[]);
+    let (dir, owner, a) = prepare(cx, &["empty-entries"]);
     let project_b = dir.path().join("project-b");
     std::fs::create_dir(&project_b).unwrap();
+    std::fs::write(project_b.join("empty-entries"), "").unwrap();
     owner.update(cx, |state, cx| {
         state.set_draft(&a, "keep A's draft".into(), cx);
         state.new_draft(Some(project_b.clone()), cx);
         let b = state.selected.clone().unwrap();
+        assert!(state.sessions[&b].instance.is_some());
         state.set_cwd(&b, dir.path().into(), cx);
-        assert_eq!(state.selected.as_deref(), Some(b.as_str()));
+        let next_a = state.selected.clone().unwrap();
+        assert_ne!(next_a, a);
+        assert_ne!(next_a, b);
         assert_eq!(state.sessions[&a].draft, "keep A's draft");
-        assert!(state.sessions[&b].draft.is_empty());
-        state.new_draft(Some(project_b.clone()), cx);
-        let empty_b = state.selected.clone().unwrap();
-        state.selected = Some(b.clone());
-        state.set_draft(&b, "carry this input to B".into(), cx);
-        state.set_cwd(&b, project_b.clone(), cx);
-        assert_eq!(state.selected.as_deref(), Some(b.as_str()));
-        assert_eq!(state.sessions[&b].draft, "carry this input to B");
         assert_eq!(state.sessions[&b].info.cwd, project_b);
-        assert!(state.sessions[&empty_b].draft.is_empty());
+        state.set_draft(&next_a, "keep the connected A draft".into(), cx);
+        state.set_cwd(&next_a, project_b.clone(), cx);
+        assert_eq!(state.sessions[&next_a].draft, "keep the connected A draft");
+        assert_eq!(state.current().unwrap().info.cwd, project_b);
+        assert!(state.current().unwrap().draft.is_empty());
     });
     close(&owner, cx).await;
 }
 
 #[gpui_kit::test]
-async fn sending_can_join_a_connection_started_only_for_model_options(cx: &mut TestAppContext) {
+async fn sending_waits_for_model_connection_without_queuing(cx: &mut TestAppContext) {
     let (dir, owner, key) = prepare(cx, &[]);
     owner.update(cx, |state, cx| {
         state.refresh_models(&key, cx);
-        state.set_draft(&key, "send while model connection starts".into(), cx);
+        state.set_draft(&key, "send after model connection starts".into(), cx);
         state.send(&key, StreamingBehavior::Steer, cx);
+        assert!(!state.sessions[&key].submitting());
+    });
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
+    assert_eq!(count(dir.path(), "prompt"), 0);
+    owner.update(cx, |state, cx| {
+        state.send(&key, StreamingBehavior::Steer, cx)
     });
     cx.condition(&owner, |state, _| {
-        state.sessions[&key].state.is_some() && state.sessions[&key].draft.is_empty()
+        state.sessions[&key].draft.is_empty() && !state.sessions[&key].history().entries.is_empty()
     })
     .await;
     assert_eq!(count(dir.path(), "prompt"), 1);
-    assert!(count(dir.path(), "get_entries") >= 1);
     close(&owner, cx).await;
 }
 
@@ -767,6 +781,75 @@ async fn model_refresh_reconnects_even_when_a_cached_snapshot_survives(cx: &mut 
 }
 
 #[gpui_kit::test]
+async fn manual_compaction_releases_command_and_preserves_draft(cx: &mut TestAppContext) {
+    for outcome in ["success", "fail-compact", "abort"] {
+        let (dir, owner, key) = begin(cx, &["hold-compact", outcome]);
+        cx.condition(&owner, |state, cx| state.can_compact(&key, cx))
+            .await;
+        let notifications = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = notifications.clone();
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&owner, move |_, event, _| {
+                if let super::super::ConversationEvent::Notify { message, error } = event {
+                    captured.borrow_mut().push((message.clone(), *error));
+                }
+            })
+        });
+        let client = owner.read_with(cx, |state, cx| state.client(&key, cx).unwrap());
+        // Compaction is allowed while the agent is running, as in Pi TUI.
+        control(&client, "emit_newer", "", 0).await;
+        cx.condition(&owner, |s, _| s.sessions[&key].running())
+            .await;
+        let instance = owner.read_with(cx, |s, _| s.sessions[&key].instance);
+        owner.update(cx, |state, cx| {
+            state.set_draft(&key, "keep input".into(), cx);
+            assert!(state.can_compact(&key, cx));
+            state.compact(&key, cx);
+            state.compact(&key, cx);
+            assert!(state.sessions[&key].busy());
+            assert!(!state.can_compact(&key, cx));
+        });
+        control(&client, "wait_for", "compact", 1).await;
+        cx.condition(&owner, |s, _| s.sessions[&key].compacting)
+            .await;
+        assert_eq!(count(dir.path(), "compact"), 1);
+        if outcome == "abort" {
+            owner.update(cx, |s, cx| s.abort(&key, cx));
+        } else {
+            control(&client, "release", "compact", 0).await;
+        }
+        cx.condition(&owner, |s, _| {
+            let session = &s.sessions[&key];
+            !session.command.running() && !session.busy() && !session.core_read.running()
+        })
+        .await;
+        owner.read_with(cx, |state, cx| {
+            let session = &state.sessions[&key];
+            assert_eq!(session.draft, "keep input");
+            assert_eq!(session.instance, instance);
+            assert_eq!(state.selected.as_ref(), Some(&key));
+            assert_eq!(
+                session.history().entry("compact").is_some(),
+                outcome == "success"
+            );
+            assert!(state.can_compact(&key, cx));
+        });
+        assert_eq!(count(dir.path(), "abort"), usize::from(outcome == "abort"));
+        {
+            let notices = notifications.borrow();
+            if outcome == "success" {
+                assert!(notices.is_empty());
+            } else {
+                assert_eq!(notices.len(), 1);
+                assert!(notices[0].1);
+                assert!(notices[0].0.contains("fixture read failed"));
+            }
+        }
+        close(&owner, cx).await;
+    }
+}
+
+#[gpui_kit::test]
 async fn compaction_events_refresh_history_and_release_busy_state(cx: &mut TestAppContext) {
     let (_dir, owner, key) = begin(cx, &[]);
     cx.condition(&owner, |state, _| state.sessions[&key].state.is_some())
@@ -836,6 +919,114 @@ async fn uncertain_model_settings_block_send_until_readback_succeeds(cx: &mut Te
     assert_eq!(count(dir.path(), "set_model"), 1);
     assert_eq!(count(dir.path(), "prompt"), 1);
     close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn clone_transfers_connection_only_after_success(cx: &mut TestAppContext) {
+    for outcome in ["success", "cancel-clone", "fail-clone"] {
+        let (dir, owner, key) = begin(cx, &["hold-clone", outcome]);
+        cx.condition(&owner, |s, _| !s.sessions[&key].fork_options().is_empty())
+            .await;
+        let client = owner.read_with(cx, |s, cx| s.client(&key, cx).unwrap());
+        let instance = owner.read_with(cx, |s, _| s.sessions[&key].instance);
+        owner.update(cx, |s, cx| {
+            s.sessions.get_mut(&key).unwrap().info.path = dir.path().join("source.jsonl");
+            s.set_draft(&key, "source draft".into(), cx);
+            assert!(s.can_clone(&key, cx));
+            s.clone_session(&key, cx);
+            s.clone_session(&key, cx);
+            assert!(!s.can_clone(&key, cx));
+        });
+        control(&client, "wait_for", "clone", 1).await;
+        assert_eq!(count(dir.path(), "clone"), 1);
+        owner.read_with(cx, |s, _| assert_eq!(s.selected.as_ref(), Some(&key)));
+        control(&client, "release", "clone", 0).await;
+        cx.condition(&owner, |s, _| !s.sessions[&key].command.running())
+            .await;
+        owner.read_with(cx, |s, _| {
+            assert_eq!(s.sessions[&key].draft, "source draft");
+            assert!(s.sessions[&key].history().entry("old").is_some());
+            if outcome == "success" {
+                assert_ne!(s.selected.as_ref(), Some(&key));
+                assert_eq!(s.current().unwrap().instance, instance);
+                assert!(s.current().unwrap().draft.is_empty());
+                assert!(s.sessions[&key].instance.is_none());
+            } else {
+                assert_eq!(s.selected.as_ref(), Some(&key));
+                assert_eq!(s.sessions[&key].instance, instance);
+                assert_eq!(s.sessions[&key].error.is_some(), outcome == "fail-clone");
+            }
+        });
+        close(&owner, cx).await;
+    }
+}
+
+#[gpui_kit::test]
+async fn export_picker_cancel_and_rpc_results_leave_session_unchanged(cx: &mut TestAppContext) {
+    for outcome in ["cancel", "success", "fail-export_html"] {
+        let (dir, owner, key) = begin(cx, &[outcome]);
+        cx.update(|cx| {
+            crate::foundation::i18n::apply(crate::state::config::AppLanguage::English, cx)
+        });
+        cx.condition(&owner, |s, _| !s.sessions[&key].fork_options().is_empty())
+            .await;
+        let notifications = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = notifications.clone();
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&owner, move |_, event, _| {
+                if let super::super::ConversationEvent::Notify { message, error } = event {
+                    captured.borrow_mut().push((message.clone(), *error));
+                }
+            })
+        });
+        let instance = owner.read_with(cx, |s, _| s.sessions[&key].instance);
+        owner.update(cx, |s, cx| {
+            s.sessions.get_mut(&key).unwrap().info.path = dir.path().join("source.jsonl");
+            s.set_draft(&key, "keep draft".into(), cx);
+            assert!(s.can_export(&key, cx));
+            s.export_html(&key, cx);
+            s.export_html(&key, cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.did_prompt_for_new_path());
+        let path = dir.path().join("chosen.html");
+        std::fs::write(
+            dir.path().join("export-result.json"),
+            serde_json::json!({"path": path}).to_string(),
+        )
+        .unwrap();
+        cx.simulate_new_path_selection(|_| (outcome != "cancel").then(|| path.clone()));
+        cx.condition(&owner, |s, _| !s.sessions[&key].command.running())
+            .await;
+        assert!(!cx.did_prompt_for_new_path());
+        assert_eq!(
+            count(dir.path(), "export_html"),
+            usize::from(outcome != "cancel")
+        );
+        owner.read_with(cx, |s, _| {
+            assert_eq!(s.selected.as_ref(), Some(&key));
+            assert_eq!(s.sessions[&key].instance, instance);
+            assert_eq!(s.sessions[&key].draft, "keep draft");
+        });
+        {
+            let notices = notifications.borrow();
+            if outcome == "cancel" {
+                assert!(notices.is_empty());
+            } else {
+                let request: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(dir.path().join("export-request.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(request["outputPath"], path.to_str().unwrap());
+                assert_eq!(notices.len(), 1);
+                assert_eq!(notices[0].1, outcome == "fail-export_html");
+                if outcome == "success" {
+                    assert!(notices[0].0.contains(path.to_str().unwrap()));
+                }
+            }
+        }
+        close(&owner, cx).await;
+    }
 }
 
 #[gpui_kit::test]
@@ -997,8 +1188,11 @@ async fn cancelled_or_failed_fork_does_not_replace_current_editor(cx: &mut TestA
             state.set_draft(&key, "original input".into(), cx);
             state.fork(&key, "old".into(), cx);
         });
-        cx.condition(&owner, |state, _| !state.sessions[&key].command.running())
-            .await;
+        cx.condition(&owner, |state, _| {
+            !state.sessions[&key].command.running()
+                && (skip_editor || state.sessions[&key].draft == "extension fork draft")
+        })
+        .await;
         owner.read_with(cx, |state, _| {
             assert_eq!(state.selected.as_ref(), Some(&key));
             assert_eq!(state.sessions[&key].instance, instance);
@@ -1155,17 +1349,82 @@ async fn model_change_waits_for_readback_and_failed_command_reads_actual_value(
 }
 
 #[gpui_kit::test]
-async fn first_send_survives_connection_start_and_does_not_wait_for_models(
+async fn persisted_session_cannot_reload_during_launch(cx: &mut TestAppContext) {
+    let (dir, owner, key) = prepare(cx, &[]);
+    let path = dir.path().join("existing.jsonl");
+    let header =
+        serde_json::json!({"type":"session", "version":3, "id":"fixture", "cwd":dir.path()});
+    std::fs::write(&path, format!("{header}\n")).unwrap();
+    owner.update(cx, |state, cx| {
+        state.sessions.get_mut(&key).unwrap().info =
+            crate::foundation::session_catalog::read_metadata(&path).unwrap();
+        assert!(state.can_reconnect(&key, cx)); // Disconnected history can still reconnect.
+        state.launch(&key, cx);
+        let instance = state.sessions[&key].instance;
+        assert!(instance.is_some());
+        assert!(state.client(&key, cx).is_none());
+        assert!(!state.sessions[&key].can_edit_draft());
+        assert!(!state.can_reconnect(&key, cx));
+        state.reconnect(&key, cx);
+        assert_eq!(state.sessions[&key].instance, instance);
+        assert!(!state.sessions[&key].command.running());
+    });
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
+    owner.read_with(cx, |state, cx| {
+        assert!(state.sessions[&key].can_edit_draft());
+        assert!(state.can_reconnect(&key, cx));
+        assert!(state.sessions[&key].error.is_none());
+    });
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn editing_and_sending_require_ready_connection_and_snapshot_without_queuing(
     cx: &mut TestAppContext,
 ) {
-    let (dir, owner, key) =
-        begin_with_prompt(cx, &["hold-get_available_models"], Some("first message"));
-    cx.condition(&owner, |state, _| {
-        state.sessions[&key].state.is_some() && state.sessions[&key].draft.is_empty()
-    })
-    .await;
+    let (dir, owner, key) = prepare(cx, &["hold-get_entries", "hold-get_available_models"]);
+    owner.update(cx, |state, cx| {
+        state.set_draft(&key, "first message".into(), cx);
+        state.send(&key, StreamingBehavior::Steer, cx);
+        assert!(state.sessions[&key].instance.is_none());
+        assert!(!state.sessions[&key].submitting());
+        state.connect(&key, cx);
+        assert!(!state.can_submit(&key, cx));
+        assert!(!state.can_reconnect(&key, cx));
+        assert!(!state.sessions[&key].can_edit_draft());
+        state.send(&key, StreamingBehavior::Steer, cx);
+        assert!(
+            state
+                .send_text(&key, "/help".into(), StreamingBehavior::Steer, cx)
+                .is_none()
+        );
+        assert!(!state.sessions[&key].submitting());
+    });
+    cx.condition(&owner, |state, cx| state.client(&key, cx).is_some())
+        .await;
+    let client = owner.read_with(cx, |state, cx| state.client(&key, cx).unwrap());
+    control(&client, "wait_for", "get_entries", 1).await;
+    owner.update(cx, |state, cx| {
+        assert!(!state.can_submit(&key, cx));
+        assert!(!state.can_reconnect(&key, cx));
+        assert!(!state.sessions[&key].can_edit_draft());
+        state.send(&key, StreamingBehavior::Steer, cx);
+        assert!(!state.sessions[&key].submitting());
+    });
+    control(&client, "release", "get_entries", 0).await;
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
+    assert_eq!(count(dir.path(), "prompt"), 0);
+    owner.update(cx, |state, cx| {
+        assert_eq!(state.sessions[&key].draft, "first message");
+        assert!(state.sessions[&key].can_edit_draft());
+        assert!(state.sessions[&key].models.running());
+        state.send(&key, StreamingBehavior::Steer, cx);
+    });
+    cx.condition(&owner, |state, _| state.sessions[&key].draft.is_empty())
+        .await;
     assert_eq!(count(dir.path(), "prompt"), 1);
-    assert!(owner.read_with(cx, |state, _| state.sessions[&key].models.running()));
     close(&owner, cx).await;
 }
 
@@ -1206,7 +1465,7 @@ async fn snapshot_cannot_replace_events_delivered_during_its_read(cx: &mut TestA
 async fn submission_keeps_draft_until_ack_blocks_duplicates_and_is_session_local(
     cx: &mut TestAppContext,
 ) {
-    let (dir, owner, key) = begin_with_prompt(cx, &["hold-prompt"], Some("submitted draft"));
+    let (dir, owner, key) = begin_with_prompt(cx, &["hold-prompt"], "submitted draft").await;
     owner.update(cx, |state, cx| {
         assert!(state.sessions[&key].submitting());
         state.set_draft(&key, "must not replace pending draft".into(), cx);
@@ -1262,7 +1521,9 @@ async fn submission_keeps_draft_until_ack_blocks_duplicates_and_is_session_local
 async fn submission_failure_notifies_preserves_draft_and_allows_retry(cx: &mut TestAppContext) {
     use super::super::ConversationEvent;
     use std::{cell::RefCell, rc::Rc};
-    let (dir, owner, key) = prepare(cx, &["fail-prompt"]);
+    let (dir, owner, key) = begin(cx, &["fail-prompt"]);
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
     let notifications = Rc::new(RefCell::new(Vec::new()));
     let output = notifications.clone();
     let _subscription = cx.update(|cx| {
@@ -1301,50 +1562,58 @@ async fn submission_failure_notifies_preserves_draft_and_allows_retry(cx: &mut T
 }
 
 #[gpui_kit::test]
-async fn submission_initial_connection_failure_unlocks_draft_and_can_retry(
-    cx: &mut TestAppContext,
-) {
+async fn failed_connection_rejects_send_until_explicit_reconnect(cx: &mut TestAppContext) {
     let (dir, owner, key) = prepare(cx, &[]);
     owner.update(cx, |state, cx| {
         state.set_command(dir.path().join("missing-pi"));
         state.set_draft(&key, "first send".into(), cx);
-        state.send(&key, StreamingBehavior::Steer, cx);
-        assert!(state.sessions[&key].submitting());
+        state.connect(&key, cx);
     });
-    cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
+    cx.condition(&owner, |state, _| state.sessions[&key].error.is_some())
         .await;
     owner.update(cx, |state, cx| {
-        assert!(state.sessions[&key].instance.is_none());
-        assert_eq!(state.sessions[&key].draft, "first send");
-        state.set_draft(&key, "corrected first send".into(), cx);
-        state.set_command(fixture());
         state.send(&key, StreamingBehavior::Steer, cx);
+        assert!(!state.sessions[&key].submitting());
+        assert_eq!(state.sessions[&key].draft, "first send");
+        assert!(!state.sessions[&key].can_edit_draft());
+        state.set_command(fixture());
+        state.connect(&key, cx);
     });
-    cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
         .await;
-    assert!(owner.read_with(cx, |state, _| state.sessions[&key].draft.is_empty()));
+    assert_eq!(count(dir.path(), "prompt"), 0);
+    owner.update(cx, |state, cx| {
+        state.send(&key, StreamingBehavior::Steer, cx)
+    });
+    cx.condition(&owner, |state, _| state.sessions[&key].draft.is_empty())
+        .await;
     assert_eq!(count(dir.path(), "prompt"), 1);
     close(&owner, cx).await;
 }
 
 #[gpui_kit::test]
-async fn submission_initial_snapshot_failure_unlocks_without_sending(cx: &mut TestAppContext) {
-    let (dir, owner, key) =
-        begin_with_prompt(cx, &["fail-get_entries"], Some("keep initial draft"));
-    cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
-        .await;
-    owner.read_with(cx, |state, _| {
-        assert_eq!(state.sessions[&key].draft, "keep initial draft");
-        assert!(state.sessions[&key].core_read.error().is_some());
+async fn failed_initial_snapshot_rejects_send_until_read_retry(cx: &mut TestAppContext) {
+    let (dir, owner, key) = begin(cx, &["fail-get_entries"]);
+    cx.condition(&owner, |state, _| {
+        state.sessions[&key].core_read.error().is_some()
+    })
+    .await;
+    owner.update(cx, |state, cx| {
+        state.set_draft(&key, "keep initial draft".into(), cx);
+        state.send(&key, StreamingBehavior::Steer, cx);
+        assert!(!state.sessions[&key].submitting());
     });
     assert_eq!(count(dir.path(), "prompt"), 0);
     std::fs::remove_file(dir.path().join("fail-get_entries")).unwrap();
+    owner.update(cx, |state, cx| state.refresh(&key, cx));
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
+    assert_eq!(count(dir.path(), "prompt"), 0);
     owner.update(cx, |state, cx| {
         state.send(&key, StreamingBehavior::Steer, cx)
     });
-    cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
+    cx.condition(&owner, |state, _| state.sessions[&key].draft.is_empty())
         .await;
-    assert!(owner.read_with(cx, |state, _| state.sessions[&key].draft.is_empty()));
     close(&owner, cx).await;
 }
 
@@ -1352,7 +1621,7 @@ async fn submission_initial_snapshot_failure_unlocks_without_sending(cx: &mut Te
 async fn submission_allows_extension_reply_and_preserves_replacement_editor(
     cx: &mut TestAppContext,
 ) {
-    let (dir, owner, key) = begin_with_prompt(cx, &["hold-prompt"], Some("/extension"));
+    let (dir, owner, key) = begin_with_prompt(cx, &["hold-prompt"], "/extension").await;
     cx.condition(&owner, |state, cx| {
         state.client(&key, cx).is_some() && state.sessions[&key].state.is_some()
     })
@@ -1403,7 +1672,7 @@ async fn submission_disconnect_and_flush_release_pending_tasks_without_clearing_
     cx: &mut TestAppContext,
 ) {
     let (_dir, owner, key) =
-        begin_with_prompt(cx, &["hold-prompt"], Some("preserve on disconnect"));
+        begin_with_prompt(cx, &["hold-prompt"], "preserve on disconnect").await;
     cx.condition(&owner, |state, cx| {
         state.client(&key, cx).is_some() && state.sessions[&key].state.is_some()
     })
@@ -1422,11 +1691,16 @@ async fn submission_disconnect_and_flush_release_pending_tasks_without_clearing_
         assert!(!state.sessions[&key].submitting());
         assert_eq!(state.sessions[&key].draft, "preserve on disconnect");
         state.send(&key, StreamingBehavior::Steer, cx);
+        assert!(!state.sessions[&key].submitting());
+        state.connect(&key, cx);
     });
     cx.condition(&owner, |state, cx| {
         state.client(&key, cx).is_some() && state.sessions[&key].state.is_some()
     })
     .await;
+    owner.update(cx, |state, cx| {
+        state.send(&key, StreamingBehavior::Steer, cx)
+    });
     let client = owner.read_with(cx, |state, cx| state.client(&key, cx).unwrap());
     control(&client, "wait_for", "prompt", 1).await;
     control(&client, "emit_confirm", "", 0).await;
@@ -1440,5 +1714,318 @@ async fn submission_disconnect_and_flush_release_pending_tasks_without_clearing_
         assert!(!state.sessions[&key].submitting());
         assert_eq!(state.sessions[&key].draft, "preserve on disconnect");
     });
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn manual_reload_preserves_empty_session_choices_and_other_connections(
+    cx: &mut TestAppContext,
+) {
+    let (dir, owner, key) = begin(cx, &["empty-entries", "preallocated-file"]);
+    cx.condition(&owner, |s, _| {
+        s.sessions[&key].commands.data().is_some()
+            && s.sessions[&key].models.data().is_some()
+            && s.sessions[&key].thinking_levels.data().is_some()
+    })
+    .await;
+    owner.update(cx, |s, cx| {
+        assert!(s.sessions[&key].info.path.as_os_str().is_empty());
+        s.set_model(&key, s.sessions[&key].model_options()[1].clone(), cx);
+    });
+    cx.condition(&owner, |s, _| {
+        !s.sessions[&key].model_change.running() && !s.sessions[&key].thinking_levels.running()
+    })
+    .await;
+    owner.update(cx, |s, cx| s.set_thinking(&key, "off".into(), cx));
+    cx.condition(&owner, |s, _| !s.sessions[&key].model_change.running())
+        .await;
+    let old = owner.read_with(cx, |s, _| s.sessions[&key].instance);
+    let other_dir = dir.path().join("other");
+    std::fs::create_dir(&other_dir).unwrap();
+    std::fs::write(other_dir.join("empty-entries"), "").unwrap();
+    let other = owner.update(cx, |s, cx| {
+        s.set_draft(&key, "unsent 中文 draft".into(), cx);
+        s.new_draft(Some(other_dir), cx);
+        s.selected.clone().unwrap()
+    });
+    cx.condition(&owner, |s, _| s.sessions[&other].state.is_some())
+        .await;
+    let other_instance = owner.read_with(cx, |s, _| s.sessions[&other].instance);
+    owner.update(cx, |s, cx| {
+        assert!(s.can_reconnect(&key, cx));
+        s.reconnect(&key, cx);
+        assert!(!s.can_reconnect(&key, cx));
+        assert!(!s.can_submit(&key, cx));
+        assert!(!s.sessions[&key].can_edit_draft());
+        s.reconnect(&key, cx); // duplicate is ignored
+    });
+    cx.condition(&owner, |s, _| {
+        !s.sessions[&key].command.running() && s.sessions[&key].commands.data().is_some()
+    })
+    .await;
+    owner.read_with(cx, |s, _| {
+        assert_ne!(s.sessions[&key].instance, old);
+        assert_eq!(s.sessions[&other].instance, other_instance);
+        assert_eq!(s.selected.as_ref(), Some(&other));
+        assert_eq!(s.sessions[&key].draft, "unsent 中文 draft");
+        assert!(s.sessions[&key].can_edit_draft());
+        assert_eq!(
+            s.sessions[&key].model_identity(),
+            Some(("fixture".into(), "beta".into()))
+        );
+        assert_eq!(
+            s.sessions[&key].state.as_ref().unwrap().thinking_level,
+            "off"
+        );
+        assert!(s.sessions[&key].info.path.as_os_str().is_empty());
+    });
+    let log = std::fs::read_to_string(dir.path().join("process.log")).unwrap();
+    let lines = log.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 3, "{log}");
+    assert!(
+        lines[0].starts_with("start ")
+            && lines[1].starts_with("exit ")
+            && lines[2].starts_with("start ")
+    );
+    assert!(lines[2].contains("beta") && lines[2].contains("off"));
+    assert!(!lines[2].contains("--session"));
+    assert_eq!(count(dir.path(), "prompt"), 0);
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn commands_failure_keeps_cached_commands_and_retries_without_reconnecting(
+    cx: &mut TestAppContext,
+) {
+    let (dir, owner, key) = begin(cx, &["empty-entries"]);
+    cx.condition(&owner, |s, _| s.sessions[&key].commands.data().is_some())
+        .await;
+    let instance = owner.read_with(cx, |s, _| s.sessions[&key].instance);
+    std::fs::write(dir.path().join("fail-get_commands"), "").unwrap();
+    owner.update(cx, |s, cx| s.read_commands(&key, cx));
+    cx.condition(&owner, |s, _| s.sessions[&key].commands.error().is_some())
+        .await;
+    owner.read_with(cx, |s, _| {
+        assert_eq!(s.sessions[&key].commands.data().unwrap()[0].name, "help")
+    });
+    std::fs::remove_file(dir.path().join("fail-get_commands")).unwrap();
+    owner.update(cx, |s, cx| s.read_commands(&key, cx));
+    cx.condition(&owner, |s, _| {
+        !s.sessions[&key].commands.running() && s.sessions[&key].commands.error().is_none()
+    })
+    .await;
+    owner.read_with(cx, |s, _| assert_eq!(s.sessions[&key].instance, instance));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("process.log"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn reload_restores_persisted_file_and_rejects_replaced_identity(cx: &mut TestAppContext) {
+    let (dir, owner, key) = begin(cx, &[]);
+    cx.condition(&owner, |s, _| s.sessions[&key].commands.data().is_some())
+        .await;
+    let path = dir.path().join("session.jsonl");
+    let header =
+        serde_json::json!({"type":"session", "version":3, "id":"fixture", "cwd":dir.path()});
+    std::fs::write(&path, format!("{header}\n")).unwrap();
+    owner.update(cx, |s, cx| {
+        s.sessions.get_mut(&key).unwrap().info.path = path.clone();
+        s.set_draft(&key, "retain draft".into(), cx);
+        s.reconnect(&key, cx);
+    });
+    cx.condition(&owner, |s, _| {
+        !s.sessions[&key].command.running() && s.sessions[&key].commands.data().is_some()
+    })
+    .await;
+    owner.read_with(cx, |s, _| {
+        assert_eq!(s.sessions[&key].info.path, path);
+        assert_eq!(
+            s.sessions[&key]
+                .state
+                .as_ref()
+                .unwrap()
+                .session_file
+                .as_deref(),
+            path.to_str()
+        );
+        assert_eq!(s.sessions[&key].draft, "retain draft");
+    });
+    let log = std::fs::read_to_string(dir.path().join("process.log")).unwrap();
+    assert!(log.lines().last().unwrap().contains("--session"));
+    let mut changed = header.clone();
+    changed["id"] = "replaced".into();
+    std::fs::write(&path, format!("{changed}\n")).unwrap();
+    owner.update(cx, |s, cx| s.reconnect(&key, cx));
+    cx.condition(&owner, |s, _| {
+        !s.sessions[&key].command.running() && s.sessions[&key].error.is_some()
+    })
+    .await;
+    owner.read_with(cx, |s, _| {
+        assert!(s.sessions[&key].instance.is_none());
+        assert_eq!(s.sessions[&key].draft, "retain draft");
+        assert!(!s.sessions[&key].history().entries.is_empty());
+    });
+    let log = std::fs::read_to_string(dir.path().join("process.log")).unwrap();
+    assert_eq!(log.lines().filter(|l| l.starts_with("start ")).count(), 2);
+    std::fs::write(&path, format!("{header}\n")).unwrap();
+    owner.update(cx, |s, cx| s.reconnect(&key, cx));
+    cx.condition(&owner, |s, _| {
+        !s.sessions[&key].command.running() && s.sessions[&key].commands.data().is_some()
+    })
+    .await;
+    owner.read_with(cx, |s, _| assert!(s.sessions[&key].error.is_none()));
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn draining_awaits_reload_close_without_starting_replacement(cx: &mut TestAppContext) {
+    for hold_abort in [false, true] {
+        let flags = if hold_abort {
+            vec!["empty-entries", "hold-abort"]
+        } else {
+            vec!["empty-entries"]
+        };
+        let (dir, owner, key) = begin(cx, &flags);
+        cx.condition(&owner, |s, _| s.sessions[&key].commands.data().is_some())
+            .await;
+        let client = owner.read_with(cx, |s, cx| s.client(&key, cx).unwrap());
+        let flush = owner.update(cx, |s, cx| {
+            s.reconnect(&key, cx);
+            s.flush(cx)
+        });
+        flush.await;
+        let pi_rpc::ConnectionState::Closed(report) = client.state() else {
+            panic!("flush returned before Pi closed: {:?}", client.state());
+        };
+        let log = std::fs::read_to_string(dir.path().join("process.log")).unwrap();
+        assert_eq!(log.lines().filter(|l| l.starts_with("start ")).count(), 1);
+        if report.status.is_some() {
+            assert!(!hold_abort, "{report:?}");
+            assert!(
+                log.lines().last().unwrap().starts_with("exit "),
+                "{report:?}"
+            );
+        } else {
+            // Close has a bounded deadline; draining must also await its timeout
+            // result without claiming a normal exit or launching a replacement.
+            assert!(
+                matches!(report.reason, Some(pi_rpc::Error::ShutdownTimeout)),
+                "{report:?}"
+            );
+            owner.read_with(cx, |s, _| {
+                assert!(matches!(
+                    s.sessions[&key].command,
+                    super::super::SessionCommand::ReconnectUnconfirmed
+                ));
+                assert!(!s.sessions[&key].can_edit_draft());
+                assert!(s.sessions[&key].error.is_some());
+            });
+        }
+        owner.read_with(cx, |s, _| assert!(s.sessions[&key].instance.is_none()));
+        close(&owner, cx).await;
+    }
+}
+
+#[gpui_kit::test]
+async fn command_submission_does_not_modify_conversation_drafts(cx: &mut TestAppContext) {
+    let (dir, owner, key) = begin(cx, &["hold-prompt"]);
+    cx.condition(&owner, |s, _| s.sessions[&key].state.is_some())
+        .await;
+    let client = owner.read_with(cx, |s, cx| s.client(&key, cx).unwrap());
+    let result = owner.update(cx, |s, cx| {
+        s.set_draft(&key, "original message".into(), cx);
+        let result = s
+            .send_text(
+                &key,
+                "/review 参数\n第二行".into(),
+                StreamingBehavior::Steer,
+                cx,
+            )
+            .unwrap();
+        assert!(
+            s.send_text(&key, "duplicate".into(), StreamingBehavior::Steer, cx)
+                .is_none()
+        );
+        result
+    });
+    control(&client, "wait_for", "prompt", 1).await;
+    let other = owner.update(cx, |s, cx| {
+        s.insert_draft(Some(dir.path().into()));
+        let other = s.selected.clone().unwrap();
+        s.set_draft(&other, "other message".into(), cx);
+        other
+    });
+    control(&client, "release", "prompt", 0).await;
+    cx.condition(&owner, |s, _| !s.sessions[&key].submitting())
+        .await;
+    assert!(result.await.unwrap());
+    owner.read_with(cx, |s, _| {
+        assert_eq!(s.sessions[&key].draft, "original message");
+        assert_eq!(s.sessions[&other].draft, "other message");
+    });
+    let inputs = std::fs::read_to_string(dir.path().join("inputs.jsonl")).unwrap();
+    let inputs: Vec<serde_json::Value> = inputs
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0]["message"], "/review 参数\n第二行");
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn command_submission_reports_failure_and_acceptance_without_saving_input(
+    cx: &mut TestAppContext,
+) {
+    let (dir, owner, key) = begin(cx, &["fail-prompt"]);
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
+    let submit = |s: &mut ConversationState, cx: &mut gpui_kit::Context<ConversationState>| {
+        s.send_text(
+            &key,
+            "ordinary text with no slash".into(),
+            StreamingBehavior::FollowUp,
+            cx,
+        )
+        .unwrap()
+    };
+    let result = owner.update(cx, |s, cx| {
+        s.set_draft(&key, "keep original".into(), cx);
+        submit(s, cx)
+    });
+    cx.condition(&owner, |s, _| !s.sessions[&key].submitting())
+        .await;
+    assert!(!result.await.unwrap());
+    owner.read_with(cx, |s, _| {
+        assert_eq!(s.sessions[&key].draft, "keep original");
+        assert!(s.sessions[&key].error.is_some());
+        assert!(
+            !toml::to_string(&s.file())
+                .unwrap()
+                .contains("ordinary text")
+        );
+    });
+    std::fs::remove_file(dir.path().join("fail-prompt")).unwrap();
+    let result = owner.update(cx, submit);
+    cx.condition(&owner, |s, _| !s.sessions[&key].submitting())
+        .await;
+    assert!(result.await.unwrap());
+    owner.read_with(cx, |s, _| {
+        assert_eq!(s.sessions[&key].draft, "keep original")
+    });
+    let inputs = std::fs::read_to_string(dir.path().join("inputs.jsonl")).unwrap();
+    let inputs: Vec<serde_json::Value> = inputs
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(inputs.len(), 2);
+    assert_eq!(inputs[1]["message"], "ordinary text with no slash");
+    assert_eq!(inputs[1]["streamingBehavior"], "followUp");
     close(&owner, cx).await;
 }

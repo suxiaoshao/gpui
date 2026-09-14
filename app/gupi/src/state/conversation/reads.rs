@@ -56,6 +56,7 @@ impl Session {
     pub(super) fn reset_reads(&mut self) {
         self.core_read.finish(None);
         self.models.reset();
+        self.commands.reset();
         self.thinking_levels.reset();
         self.stats.reset();
         self.fork_messages.reset();
@@ -67,8 +68,12 @@ impl ConversationState {
         let Some(s) = self.sessions.get(key) else {
             return;
         };
+        let commands = matches!(s.commands, ReadState::Idle);
         let models = matches!(s.models, ReadState::Idle);
         let thinking = matches!(s.thinking_levels, ReadState::Idle);
+        if commands {
+            self.read_commands(key, cx);
+        }
         if models {
             self.read_models(key, cx);
         }
@@ -77,6 +82,42 @@ impl ConversationState {
         }
         self.refresh_stats(key, cx);
         self.refresh_fork_messages(key, cx);
+    }
+    pub fn read_commands(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(client) = self.client(key, cx) else {
+            return;
+        };
+        let s = self.sessions.get_mut(key).unwrap();
+        if self.draining || s.commands.running() || s.state.is_none() {
+            return;
+        }
+        let binding = s.binding;
+        let id = s.next_read();
+        let key = key.to_owned();
+        let target = key.clone();
+        let task = cx.spawn(async move |owner, cx| {
+            let result = client
+                .get_commands()
+                .await
+                .map(|v| v.commands)
+                .map_err(|e| e.to_string());
+            let _ = owner.update(cx, |this, cx| {
+                if let Some(s) = this
+                    .sessions
+                    .get_mut(&target)
+                    .filter(|s| s.binding == binding)
+                {
+                    s.commands.transition(ReadMessage::Finish { id, result });
+                    cx.notify();
+                }
+            });
+        });
+        self.sessions
+            .get_mut(&key)
+            .unwrap()
+            .commands
+            .transition(ReadMessage::Start { id, task });
+        cx.notify();
     }
     pub fn refresh_models(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some(s) = self.sessions.get(key) else {

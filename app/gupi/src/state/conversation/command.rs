@@ -13,11 +13,30 @@ pub(crate) enum SessionCommand {
     Closing {
         _task: Task<()>,
     },
+    Reconnecting {
+        _task: Task<()>,
+    },
+    ReconnectUnconfirmed,
     Forking {
+        _task: Task<()>,
+    },
+    Exporting {
+        _task: Task<()>,
+    },
+    Compacting {
         _task: Task<()>,
     },
 }
 impl SessionCommand {
+    pub fn compacting(&self) -> bool {
+        matches!(self, Self::Compacting { .. })
+    }
+    pub fn exporting(&self) -> bool {
+        matches!(self, Self::Exporting { .. })
+    }
+    pub fn reconnecting(&self) -> bool {
+        matches!(self, Self::Reconnecting { .. })
+    }
     pub fn running(&self) -> bool {
         !matches!(self, Self::Idle)
     }

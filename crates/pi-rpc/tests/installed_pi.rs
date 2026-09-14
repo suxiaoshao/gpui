@@ -127,6 +127,19 @@ async fn installed_pi_restores_renames_and_forks_without_rewriting_the_source() 
         client.set_session_name("renamed fixture".into()).await.unwrap();
         assert_eq!(client.get_state().await.unwrap().session_name.as_deref(),Some("renamed fixture"));
         let source = std::fs::read(&path).unwrap();
+        let output = dir.path().join("export.html");
+        let exported = client.export_html(output.to_string_lossy().into_owned()).await.unwrap();
+        assert_eq!(exported.path, output.to_string_lossy());
+        let html = std::fs::read_to_string(&output).unwrap();
+        // Pi embeds session JSON as base64 rather than literal message text.
+        assert!(html.to_ascii_lowercase().contains("<!doctype html>"));
+        assert_eq!(client.get_state().await.unwrap().session_id, "gupi-fork-fixture");
+        assert!(!client.clone_session().await.unwrap().cancelled);
+        let cloned = client.get_state().await.unwrap();
+        assert_ne!(cloned.session_id, "gupi-fork-fixture");
+        assert_ne!(cloned.session_file.as_deref(), path.to_str());
+        assert!(client.get_entries().await.unwrap().entries.iter().any(|e| e.id == "answer-1"));
+        assert_eq!(std::fs::read(&path).unwrap(), source);
         assert_eq!(client.get_fork_messages().await.unwrap().messages[0].entry_id,"user-1");
         let fork = client.fork("user-1".into()).await.unwrap();
         assert!(!fork.cancelled);

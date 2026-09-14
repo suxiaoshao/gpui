@@ -146,7 +146,7 @@ Jaco 在 Linux 分支允许窗口实际关闭，不能仅凭该回调推断进�
 | ID | 权威来源与参与者 | 本阶段契约 | 兼容与验证 |
 | --- | --- | --- | --- |
 | C-01 | Pi CLI；Gupi `pi.rs` 调用 | 已应用命令加独立参数 `--version`，捕获输出和退出码；不执行 shell 拼接，不发 RPC/模型请求 | 本地 Pi 0.85.1 源码确认版本入口；本阶段不设置未经验证的最低版本、不声称 RPC 兼容；应用 T-104 |
-| C-02 | 操作系统文件系统；Gupi persistence/controller | 配置与布局独立；配置使用快照冲突检查、显式备份覆盖、成功后发布；锁不保证外部编辑器参与；布局直接替换 | 无 Jaco 数据迁移；无数据库；应用 T-100 至 T-103 |
+| C-02 | 操作系统文件系统；Gupi persistence/controller | 配置与布局独立；配置保存前重读、按修改字段合并并原子写入，成功后发布；损坏配置支持备份重置；布局直接替换 | 无 Jaco 数据迁移；无数据库；应用 T-100 至 T-103 |
 | C-03 | xtask CLI 和 app Cargo metadata | `bundle gupi` 定位 `app/gupi`；运行时与 bundle 资产分开；不打包 Pi | xtask T-200 与 Finder 启动 |
 
 ### 错误语义与恢复
@@ -157,15 +157,11 @@ Jaco 在 Linux 分支允许窗口实际关闭，不能仅凭该回调推断进�
 pub(crate) enum StartupProblem {
     ConfigRead { path: PathBuf, kind: std::io::ErrorKind }, // ERR-01
     ConfigInvalid { path: PathBuf, detail: String },       // ERR-02
-    ConfigConflict { path: PathBuf, write_source: ConfigWriteSource }, // ERR-03
-    ConfigWrite { path: PathBuf, outcome: WriteOutcome,
-        stage: ConfigWriteStage, write_source: ConfigWriteSource,
+    ConfigWrite { path: PathBuf,
         backup_path: Option<PathBuf>, kind: std::io::ErrorKind }, // ERR-04
     PiProbe { kind: ProbeFailure },                       // ERR-05
     Layout { path: PathBuf, detail: String },              // ERR-06
 }
-pub(crate) enum WriteOutcome { Unchanged, NeedsReconcile }
-pub(crate) enum ConfigWriteStage { Lock, Backup, Stage, Commit, Sync }
 pub(crate) enum ProbeFailure {
     NotFound, Spawn, Timeout, OutputLimit, Exit, InvalidVersion,
 }
@@ -175,8 +171,7 @@ pub(crate) enum ProbeFailure {
 | --- | --- | --- | --- |
 | ERR-01 | 文件读取失败 → config owner | 无有效配置进配置恢复；已有值在设置页定位文件/重试 | 保留内存和草稿；日志只含路径、错误码 |
 | ERR-02 | TOML/字段校验 → config owner | 修正后重读、重新设置或明确备份重置 | 原文件不动；detail 必须清理配置内容和控制字符 |
-| ERR-03 | 写入前磁盘快照不符 → config owner | 重读或明确备份覆盖 | 本次未写入；不循环自动重试 |
-| ERR-04 | 写入/备份/提交失败 → config owner | 修正文件系统条件后，用原保存入口提交当前草稿 | 提交前失败保留旧值；提交后结果不明先重读协调，禁止假报成功；不重放旧草稿 |
+| ERR-04 | 写入/备份/提交失败 → config owner | 修正文件系统条件后，用原保存入口提交当前草稿 | 失败保留已应用值与草稿；下一次保存重读并应用当前修改，不重放旧草稿或假报成功 |
 | ERR-05 | 命令解析/进程/版本检查 → Pi owner | Pi 环境设置页修正命令并重试 | 回收探测进程；受限诊断，无凭据/环境全量日志 |
 | ERR-06 | 布局读取/解析失败 | 使用默认窗口继续启动，尝试删除失效状态 | 不影响用户配置；删除、保存失败只记日志 |
 
@@ -236,7 +231,7 @@ WP-01（根）：依赖门解决且设计 Ready、获得实施授权后，增加
 5. 分别模拟配置损坏、布局损坏、Pi 路径失效：配置恢复保留原文件，布局失效自动丢弃且不阻塞启动，Pi 失败提供修正入口。
 6. 基础打包应用可从桌面启动并定位 Pi，不能仅凭终端运行成功认定通过。
 7. 外部编辑配置后主动重新读取；失败保留有效内存配置，成功才统一发布。存在未保存草稿时不会静默丢弃。
-8. 验证当前内存配置写回、重新设置、备份重置及保存失败；磁盘冲突与权限问题不会导致虚报保存成功或静默丢失数据。
+8. 验证当前内存配置写回、重新设置、备份重置及保存失败；外部修改按字段合并，读写失败不虚报保存成功。
 
 ## 实现与验证
 
@@ -254,4 +249,4 @@ WP-01（根）：依赖门解决且设计 Ready、获得实施授权后，增加
 
 ### 配置重试需要的数据说明
 
-这里的“提交数据”只是用户这次想保存的客户端设置。例如磁盘是 A，用户在表单改为 B，保存失败后点重试，应继续尝试 B，不能误写回 A。持有 B 的提交快照、目标文件与比较所需的原始字节，是 controller 内部职责，无需用户选择字段或结构。检测到外部把磁盘改成 C 时，重试不能自动覆盖 C；只有明确覆盖后才备份 C 并提交 B。不会因此保存 Pi 认证、对话或模型数据。P-02 的错误/修复 payload 已补入 ERR-03/04 与运行时 L-114，实施验证按相同不变量执行。
+这里的“提交数据”是用户这次想保存的客户端设置。controller 捕获当前草稿和已加载配置的差异，写入前重读磁盘，保留未修改字段的最新值；同一字段以本次提交为准。失败后保留表单，下一次保存重新取值，不增加失败快照恢复、冲突覆盖或文件监听。不会因此保存 Pi 认证、对话或模型数据。实现与验证见运行时 L-114。

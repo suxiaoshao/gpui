@@ -18,7 +18,7 @@ app/gupi/
 ├── src/app.rs                       # F-102 新增；初始化、窗口和退出编排
 ├── src/foundation.rs                # F-103 新增；基础模块声明
 ├── src/foundation/paths.rs          # F-103 新增；应用目录与环境覆盖
-├── src/foundation/persistence.rs    # F-103 新增；读取、冲突检测、备份与原子写入
+├── src/foundation/persistence.rs    # F-103 新增；读取、备份与原子写入
 ├── src/foundation/i18n.rs           # F-104 新增；Fluent、语言检测与菜单更新
 ├── src/foundation/assets.rs         # F-105 新增；app-local runtime 资源入口
 ├── src/state.rs                     # F-106 新增；状态模块声明
@@ -75,30 +75,26 @@ pub(crate) struct LayoutState {
 
 ## L-101 / ST-100：配置 owner 与发布
 
-配置 owner 统一协调读取、保存、重读和修复，以 gpui-operation 的完整 Operation 为权威状态；Data 持有配置读取结果与磁盘快照，运行态持有任务。持久化状态由界面读取，外观从同一 Form 草稿即时投影，不再复制一份可修改的 Store<AppConfig>。数据明确区分 Missing 与 Configured(AppConfig)：初次读取 NotFound 可成功得到 Missing；它允许呈现初始设置，但不能作为已应用配置启动 Pi。运行中已有 Configured 后重读失败或文件消失保留有效数据。
+配置 owner 统一协调读取、保存、重读和修复，以 gpui-operation 的完整 Operation 为权威状态；Data 持有配置读取结果和备份路径，运行态持有任务。持久化状态由界面读取，外观从同一 Form 草稿即时投影，不再复制一份可修改的 Store<AppConfig>。数据明确区分 Missing 与 Configured(AppConfig)：初次读取 NotFound 可成功得到 Missing；它允许呈现初始设置，但不能作为已应用配置启动 Pi。运行中已有 Configured 后重读失败或文件消失保留有效数据。
 
-配置读取/重读与用户选择的修复采用 `repair::Operation`：首次失败对应 Unavailable，保留已应用值的重读失败对应 Degraded。SettingsView 持有单个 Form<AppConfig> 编辑草稿；控件是其绑定投影，不另存一份 settings 值。每次保存由 controller 调用 Form::prepare 生成当前提交快照。配置操作运行期间禁止修改表单及再次保存、重读、写回和重置；UI 禁用与事件入口状态检查同时生效。保存草稿成功后更新表单基线；明确确认的重读成功后替换表单；内存写回成功只更新磁盘快照，保留操作开始前已有的草稿。失败保留草稿，通过原保存按钮再次提交当前内容，不提供独立重试写入入口；冲突覆盖也在确认时重新取值。
+配置读取/重读与用户选择的修复采用 `repair::Operation`：首次失败对应 Unavailable，保留已应用值的重读失败对应 Degraded。SettingsView 持有单个 Form<AppConfig> 编辑草稿；控件是其绑定投影，不另存一份 settings 值。每次保存由 controller 调用 Form::prepare 生成当前提交快照。配置操作运行期间禁止修改表单及再次保存、重读、写回和重置；UI 禁用与事件入口状态检查同时生效。保存草稿成功后更新表单基线；明确确认的重读成功后替换表单；内存写回成功只更新磁盘快照，保留操作开始前已有的草稿。失败保留草稿，通过原保存按钮再次提交当前内容，不提供独立重试写入入口。
 
-目标 controller 入口：`load`、`reload`、`save_draft`、`write_committed`、`reset_with_backup`。持久化返回完整成功结果后才发布已应用配置与磁盘快照，按操作类型处理表单。重读成功与保存成功共用配置发布入口，语言/主题订阅由应用 owner 持有，设置页关闭不会丢失它们。
+目标 controller 入口：`load`、`reload`、`save_draft`、`write_committed`、`reset_with_backup`。持久化返回完整成功结果后才发布已应用配置，按操作类型处理表单。重读成功与保存成功共用配置发布入口，语言/主题订阅由应用 owner 持有，设置页关闭不会丢失它们。
 
 同一配置 owner 的读写互斥，运行期间不启动另一操作；先检查合法状态，再构造并安装 Task，通过 Complete 发布结果，不依靠忽略非法消息处理正常交互。运行态是任务的唯一所有者。写入期间不提供取消，应用退出等待提交收尾；丢弃 Task 不能回滚文件。正常 abort-on-drop 完成链不额外维护 generation。Operation 的精确 Data/Repair、保存任务接入与退出收尾签名在 Ready 前定稿，不增加第二套同构状态枚举。
 
 ### L-102：文件操作不变量
 
 ```text
-保存表单 -> 完整校验 -> 对照上次磁盘字节快照
-  相同/预期不存在 -> 同目录临时文件 -> flush/sync -> 提交替换
-  发生变化 -> 返回冲突 -> 用户选择重读或明确覆盖
-明确覆盖/重置 -> 重新读取当前文件 -> 独立不覆盖备份
-  -> 再核对待覆盖版本 -> 提交；任何前置失败停止替换
-提交成功 -> 返回已写入配置与新快照 -> 发布内存 -> 按操作类型处理表单
+保存表单 -> 完整校验 -> 读取最新配置
+  -> 仅应用本次相对已加载设置修改的字段
+  -> 同目录临时文件 -> sync -> 原子替换
+提交成功 -> 发布实际写入配置 -> 用 FormVersion 校验后更新表单基线
 ```
 
-Jaco `foundation/persistence.rs` 的 FileLock、atomic_replace 和 copy_new_synced 是参考证据。锁只能协调遵守协议的写入者；普通编辑器可能不遵守锁，检查与 rename 之间不承诺跨进程绝对 CAS。覆盖前保留版本、检测已知冲突，文案不宣称可排除一切并发竞争。不能直接跨 app 引用私有实现；仅移植当前必要的短小基础逻辑及相关不变量。
+未修改字段保留最新磁盘值；同一字段发生外部修改时，本次提交值生效。首次保存以默认值为比较基线，期间出现的配置文件也按同一规则处理。文件读取或解析失败停止保存并提示，不覆盖损坏内容。配置操作仍由同一个 owner 串行执行，不提供冲突、备份覆盖或提交结果待核对的专用状态。
 
-重读存在 dirty 表单时，先确认成功重读后舍弃草稿；若重读失败，草稿仍保留。内存写回使用已应用值，界面展示该来源；没有有效已应用值时不显示此按钮。备份名称使用不覆盖创建，失败停止覆盖；权限/目录错误给出定位与重试，不推荐反复重置。
-
-rename 已成功但后续 durability 操作失败时，返回“提交结果待核对”，重新读取磁盘以协调状态；不声称磁盘未修改，不盲目重试覆盖。临时文件失败清理，备份保留并展示位置。
+重读存在 dirty 表单时，先确认舍弃；失败则保留草稿。显式“写回已应用配置”使用完整已应用值，不修改表单及其基线。配置损坏时可明确备份并重置：备份不覆盖已有文件，失败停止重置，成功的备份保留并展示路径。普通读写失败保留草稿并允许再次保存；不自动重试，也不保证原子替换后的同步错误代表磁盘完全未修改。
 
 ## L-103 / ST-101：Pi 环境探测
 
@@ -136,7 +132,7 @@ ShowSettings、ShowMainWindow、Quit actions 在 app 层注册；macOS/Windows �
 
 复用 app-theme 的系统外观能力；语言检测与菜单刷新参考 Jaco 的 foundation/i18n.rs。仅应用本地配置类型，所有用户文字从 Fluent 获取；zh 系统语言选中文，其余英文，手动选择覆盖系统检测。语言切换同时更新页面、菜单、校验与后续错误消息，错误值保存语义和参数，不保存翻译后的字符串。
 
-Fluent 两份文件同步维护以下键组：`app-title`；`menu-{settings,show-main,quit}`；`startup-{checking,welcome,continue}`；`settings-{pi-command,theme,language,save,reload,write-current}`；`recovery-{config,pi}-title`；`action-{retry,locate,reset,cancel,confirm}`；`error-{config-read,config-parse,config-validation,config-conflict,config-write,pi-probe}`。错误参数只包含已筛选的路径、状态或版本，不嵌入整份配置和 stderr。界面采用 Form 布局、Stepper、可搜索语言 Combobox 与真实主题预览网格；Input 和语言控件通过 Form 的 typed control binding 连接。主题和语言草稿立即投影到整个窗口和菜单，亮暗主题独立保存，系统外观与强调色变化重新应用当前草稿。Fluent 完整键位于应用 locales。
+Fluent 两份文件同步维护以下键组：`app-title`；`menu-{settings,show-main,quit}`；`startup-{checking,welcome,continue}`；`settings-{pi-command,theme,language,save,reload,write-current}`；`recovery-{config,pi}-title`；`action-{retry,locate,reset,cancel,confirm}`；`error-{config-read,config-parse,config-validation,config-write,pi-probe}`。错误参数只包含已筛选的路径、状态或版本，不嵌入整份配置和 stderr。界面采用 Form 布局、Stepper、可搜索语言 Combobox 与真实主题预览网格；Input 和语言控件通过 Form 的 typed control binding 连接。主题和语言草稿立即投影到整个窗口和菜单，亮暗主题独立保存，系统外观与强调色变化重新应用当前草稿。Fluent 完整键位于应用 locales。
 
 日志记录操作种类、耗时、结果分类和操作系统错误码；不记录配置原文、环境变量全表或 Pi 认证。用户可主动展开有限诊断，控制字符清理后显示。日志初始化失败保留 stderr 诊断与界面提示，不连带使设置不可访问。
 
@@ -153,7 +149,7 @@ Fluent 两份文件同步维护以下键组：`app-title`；`menu-{settings,show
 
 | 不变量 | 验证 | 场景与断言 |
 | --- | --- | --- |
-| R-100 失败不丢数据 | T-100，config/persistence 单元测试 | 缺失、损坏、权限失败、冲突、备份失败；原文件与草稿保留，不发布假成功 |
+| R-100 失败不丢数据 | T-100，config/persistence 单元测试 | 缺失、损坏、权限失败、外部修改合并、备份失败；原文件与草稿保留，不发布假成功 |
 | R-101 提交版本一致 | T-101，config controller 测试 | 保存期间编辑与其他配置操作均被拒绝；重读失败保留草稿；内存写回不 rebase 已有草稿 |
 | R-102 内存写回来源明确 | T-102，设置交互 | 草稿与已应用值不同；写回写入已应用值；无有效内存时按钮不存在 |
 | R-103 布局失效不阻塞 | T-103，布局测试与手工 | 无效状态自动丢弃；退出写入当前窗口数据；删除/写入失败只记日志；显示器移除后可见；用户配置不受影响 |

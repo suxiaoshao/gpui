@@ -1,3 +1,4 @@
+use super::actions::{Kind, Run};
 use super::*;
 use crate::{
     app::menus,
@@ -10,7 +11,6 @@ use crate::{
 use fluent_bundle::FluentArgs;
 use gpui_kit::component::{
     Collapsible as CollapsibleTrait, Icon, StyledExt,
-    command::{Command, CommandItem, CommandState},
     input::{Input, InputState},
     label::Label,
     menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
@@ -417,6 +417,9 @@ pub(super) fn session_menu(
     let delete_state = state.clone();
     let can_delete = state.read(cx).can_delete(&key);
     let can_rename = state.read(cx).can_rename(&key, cx);
+    let can_clone = state.read(cx).can_clone(&key, cx);
+    let clone_key = key.clone();
+    let clone_state = state.clone();
     let mut menu = menu
         .item(
             PopupMenuItem::new(t(cx, "conversation-rename"))
@@ -425,6 +428,13 @@ pub(super) fn session_menu(
                     let _ = owner.update(cx, |this, cx| {
                         this.rename_dialog(rename_key.clone(), window, cx)
                     });
+                }),
+        )
+        .item(
+            PopupMenuItem::new(t(cx, "conversation-clone"))
+                .disabled(!can_clone)
+                .on_click(move |_, _, cx| {
+                    clone_state.update(cx, |s, cx| s.clone_session(&clone_key, cx));
                 }),
         )
         .separator()
@@ -520,7 +530,7 @@ impl HomeView {
         self.input.update(cx, |input, cx| input.focus(window, cx));
     }
 
-    pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let state = self.state.read(cx);
         let mut projects: Vec<(PathBuf, Vec<SessionRow>)> = vec![];
         for (key, info) in state.infos() {
@@ -600,7 +610,11 @@ impl HomeView {
                             .ghost()
                             .small()
                             .icon(IconName::Search)
-                            .tooltip(t(cx, "conversation-search"))
+                            .tooltip_with_action(
+                                t(cx, "conversation-search"),
+                                &Run(Kind::QuickOpen),
+                                Some("Gupi"),
+                            )
                             .accessibility_label(t(cx, "conversation-search"))
                             .on_click(move |_, window, cx| {
                                 let _ = search_owner
@@ -608,16 +622,20 @@ impl HomeView {
                             }),
                     ),
             )
-            .child(navigation_row(
-                "new-conversation",
-                t(cx, "conversation-new"),
-                Some(IconName::Plus),
-                false,
-                cx,
-                move |window, cx| {
-                    let _ = owner.update(cx, |this, cx| this.new_conversation(window, cx));
-                },
-            ));
+            .child(
+                navigation_row(
+                    "new-conversation",
+                    t(cx, "conversation-new"),
+                    Some(IconName::Plus),
+                    false,
+                    cx,
+                    move |window, cx| {
+                        let _ = owner
+                            .update(cx, |this, cx| this.run_action(&Run(Kind::New), window, cx));
+                    },
+                )
+                .children(crate::features::command_palette::binding(Kind::New, window)),
+            );
         if state.catalog.running() && state.catalog.data().is_some() {
             header = header.child(catalog_loading(state.catalog.progress(), true, cx));
         }
@@ -625,14 +643,20 @@ impl HomeView {
         let mut footer = v_flex()
             .w_full()
             .gap_1()
-            .child(navigation_row(
-                "sidebar-settings",
-                t(cx, "menu-settings"),
-                Some(IconName::Settings),
-                false,
-                cx,
-                |window, cx| window.dispatch_action(Box::new(menus::ShowSettings), cx),
-            ))
+            .child(
+                navigation_row(
+                    "sidebar-settings",
+                    t(cx, "menu-settings"),
+                    Some(IconName::Settings),
+                    false,
+                    cx,
+                    |window, cx| window.dispatch_action(Box::new(menus::ShowSettings), cx),
+                )
+                .children(crate::features::command_palette::binding(
+                    Kind::Settings,
+                    window,
+                )),
+            )
             .child(
                 navigation_row(
                     "refresh-sessions",
@@ -642,6 +666,10 @@ impl HomeView {
                     cx,
                     move |_, cx| refresh.update(cx, |s, cx| s.scan(cx)),
                 )
+                .children(crate::features::command_palette::binding(
+                    Kind::Scan,
+                    window,
+                ))
                 .when(state.scanning(), |row| {
                     row.opacity(0.5).cursor_default().tab_stop(false)
                 }),
@@ -684,42 +712,14 @@ impl HomeView {
             .into_any_element()
     }
     fn search_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let infos = self.state.read(cx).infos();
-        let items = infos
-            .iter()
-            .map(|(_, i)| {
-                CommandItem::new().label(display_title(i, cx)).keywords([
-                    i.cwd.to_string_lossy().into_owned(),
-                    i.first_message.clone(),
-                ])
-            })
-            .collect::<Vec<_>>();
-        let keys = infos.into_iter().map(|(k, _)| k).collect::<Vec<_>>();
-        let state = self.state.clone();
-        let search = cx.new(|cx| CommandState::new(window, cx));
-        let search_focus = search.clone();
-        window.open_dialog(cx, move |dialog, _, cx| {
-            let keys = keys.clone();
-            let state = state.clone();
-            dialog
-                .title(t(cx, "conversation-search"))
-                .w(px(560.))
-                .child(
-                    Command::new(&search)
-                        .items(items.clone())
-                        .placeholder(t(cx, "conversation-search-placeholder"))
-                        .empty(|_, _, cx| div().p_4().child(t(cx, "conversation-search-empty")))
-                        .on_confirm(move |ix, window, cx| {
-                            if let Some(key) = keys.get(ix.row) {
-                                state.update(cx, |s, cx| s.open(key, cx));
-                                window.close_dialog(cx);
-                            }
-                        }),
-                )
-        });
-        search_focus.update(cx, |search, cx| search.focus(window, cx));
+        self.open_palette(true, window, cx);
     }
-    fn rename_dialog(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn rename_dialog(
+        &mut self,
+        key: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let title = self
             .state
             .read(cx)
