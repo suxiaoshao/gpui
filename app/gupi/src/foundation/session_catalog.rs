@@ -334,6 +334,27 @@ fn read_header(path: &Path, reader: &mut impl BufRead) -> io::Result<SessionInfo
             .map(str::to_owned),
     })
 }
+// Derived structs also accept JSON arrays. Metadata fields have always been
+// extracted from objects, so require a map before delegating to the derive.
+struct JsonObject<T>(T);
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for JsonObject<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor<T>(std::marker::PhantomData<T>);
+        impl<'de, T: serde::Deserialize<'de>> serde::de::Visitor<'de> for Visitor<T> {
+            type Value = JsonObject<T>;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an object")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                map: M,
+            ) -> Result<Self::Value, M::Error> {
+                T::deserialize(serde::de::value::MapAccessDeserializer::new(map)).map(JsonObject)
+            }
+        }
+        deserializer.deserialize_map(Visitor(std::marker::PhantomData))
+    }
+}
 fn read_metadata_cancelled(
     path: &Path,
     cancel: &AtomicBool,
@@ -341,28 +362,76 @@ fn read_metadata_cancelled(
 ) -> io::Result<SessionInfo> {
     check_cancel(cancel)?;
     let file = fs::File::open(path)?;
-    let mut reader = BufReader::new(file);
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
     let mut info = read_header(path, &mut reader)?;
-    for line in reader.lines() {
+    #[derive(serde::Deserialize)]
+    struct Record {
+        #[serde(rename = "type")]
+        kind: Option<String>,
+        name: Option<String>,
+        timestamp: Option<String>,
+        message: Option<JsonObject<Role>>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Role {
+        role: Option<String>,
+    }
+    let mut line = Vec::new();
+    loop {
         check_cancel(cancel)?;
         check_cancel(stopped)?;
-        let line = line?;
-        if line.trim().is_empty() {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        // Preserve trim()'s Unicode whitespace handling without validating every
+        // ordinary JSON line as a String before sonic-rs validates its bytes.
+        let first = line.iter().find(|byte| !byte.is_ascii_whitespace());
+        if first.is_none()
+            || (first.is_some_and(|byte| !byte.is_ascii())
+                && std::str::from_utf8(&line).is_ok_and(|text| text.trim().is_empty()))
+        {
             continue;
         }
-        let entry: Value = serde_json::from_str(&line).map_err(io::Error::other)?;
-        match entry.get("type").and_then(Value::as_str) {
+        let entry = sonic_rs::from_slice::<JsonObject<Record>>(&line)
+            .map(|entry| entry.0)
+            .or_else(|_| {
+                // Value accepted non-string fields and duplicate keys. Keep that
+                // behavior on unusual records without allocating their full DOM on
+                // the normal path.
+                let value: Value = serde_json::from_slice(&line)?;
+                Ok::<_, serde_json::Error>(Record {
+                    kind: value.get("type").and_then(Value::as_str).map(str::to_owned),
+                    name: value.get("name").and_then(Value::as_str).map(str::to_owned),
+                    timestamp: value
+                        .get("timestamp")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    message: Some(JsonObject(Role {
+                        role: value
+                            .get("message")
+                            .and_then(|message| message.get("role"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                    })),
+                })
+            })
+            .map_err(io::Error::other)?;
+        match entry.kind.as_deref() {
             Some("session_info") => {
-                info.name = entry.get("name").and_then(Value::as_str).map(str::to_owned);
+                info.name = entry.name;
             }
             Some("message") => {
-                let message = &entry["message"];
-                let role = message.get("role").and_then(Value::as_str);
+                let role = entry
+                    .message
+                    .as_ref()
+                    .and_then(|message| message.0.role.as_deref());
                 if role == Some("user") && info.first_message.is_empty() {
-                    info.first_message = summary(&text_content(message));
+                    let value: Value = sonic_rs::from_slice(&line).map_err(io::Error::other)?;
+                    info.first_message = summary(&text_content(&value["message"]));
                 }
                 if matches!(role, Some("user" | "assistant"))
-                    && let Some(timestamp) = entry.get("timestamp").and_then(Value::as_str)
+                    && let Some(timestamp) = entry.timestamp.as_deref()
                     && timestamp > info.activity.as_str()
                 {
                     info.activity = timestamp.to_owned();
@@ -378,6 +447,79 @@ fn read_metadata_cancelled(
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn metadata_keeps_last_title_first_text_and_maximum_activity() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("session.jsonl");
+        let header = json!({"type":"session","id":"id","cwd":"/project","parentSession":"parent"});
+        let text = "你好 ".repeat(80);
+        let records = [
+            json!({"type":"session_info","name":"old"}),
+            json!({"type":"message","timestamp":"2026-09-14","message":{"role":"user","content":[{"type":"image"}]}}),
+            json!({"type":"message","timestamp":"2026-09-12","message":{"role":"user","content":[{"type":"text","text":text}]}}),
+            json!({"type":"message","timestamp":"2099-01-01","message":{"role":"toolResult","content":"ignored"}}),
+            json!({"type":"message","timestamp":"2026-09-13","message":{"role":"assistant","content":"answer"}}),
+            json!({"type":"session_info","name":"new"}),
+        ];
+        let contents = format!(
+            "\u{feff}{header}\r\n \t\u{2003}\r\n{}",
+            records
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\r\n")
+        );
+        fs::write(&path, contents).unwrap();
+        let info = read_metadata(&path).unwrap();
+        assert_eq!(info.name.as_deref(), Some("new"));
+        assert_eq!(info.first_message, summary(&text));
+        assert_eq!(info.first_message.chars().count(), 120);
+        assert_eq!(info.activity, "2026-09-14");
+        assert_eq!(info.parent_session.as_deref(), Some("parent"));
+    }
+    #[test]
+    fn metadata_preserves_loose_fields_and_duplicate_keys() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("session.jsonl");
+        let header = json!({"type":"session","id":"id","cwd":"/project"});
+        for last_title in [
+            r#"{"type":"session_info"}"#,
+            r#"{"type":"session_info","name":123}"#,
+        ] {
+            fs::write(&path, format!(
+                "{header}\nnull\n42\n[]\n{{\"type\":false}}\n{{\"type\":\"message\",\"message\":[]}}\n{{\"type\":\"message\",\"timestamp\":12,\"message\":{{\"role\":false}}}}\n{{\"type\":\"message\",\"message\":{{\"role\":\"assistant\",\"role\":\"user\",\"content\":\"first\"}}}}\n{{\"type\":\"session_info\",\"name\":\"old\"}}\n{last_title}"
+            )).unwrap();
+            let info = read_metadata(&path).unwrap();
+            assert_eq!(info.name, None);
+            assert_eq!(info.first_message, "first");
+            assert_eq!(info.activity, "");
+        }
+    }
+    #[test]
+    fn metadata_rejects_invalid_json_and_utf8_in_unused_content() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("session.jsonl");
+        let header = json!({"type":"session","id":"id","cwd":"/project"});
+        for invalid in [
+            br#"{"type":"custom","data":[1,]}"#.as_slice(),
+            br#"{"type":"custom","data":"\q"}"#.as_slice(),
+            b"{\"type\":\"custom\",\"data\":\"\xff\"}",
+        ] {
+            let mut contents = format!("{header}\n").into_bytes();
+            contents.extend_from_slice(invalid);
+            fs::write(&path, contents).unwrap();
+            assert!(read_metadata(&path).is_err());
+        }
+    }
+    #[test]
+    fn metadata_does_not_interpret_arrays_as_record_or_message_objects() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("session.jsonl");
+        let header = json!({"type":"session","id":"id","cwd":"/project"});
+        fs::write(&path, format!("{header}\n[\"message\",null,\"2099-01-01\",{{\"role\":\"assistant\"}}]\n{{\"type\":\"message\",\"timestamp\":\"2099-01-02\",\"message\":[\"assistant\"]}}")).unwrap();
+        let info = read_metadata(&path).unwrap();
+        assert_eq!(info.activity, "");
+    }
     #[test]
     fn discover_default_custom_and_deduplicate_without_using_file_mtime() {
         let root = tempfile::tempdir().unwrap();
