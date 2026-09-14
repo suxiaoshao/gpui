@@ -28,12 +28,6 @@ pub(crate) enum SessionCommand {
     },
 }
 impl SessionCommand {
-    pub fn blocks_draft_edit(&self) -> bool {
-        !matches!(
-            self,
-            Self::Idle | Self::Reconnecting { .. } | Self::ReconnectUnconfirmed
-        )
-    }
     pub fn compacting(&self) -> bool {
         matches!(self, Self::Compacting { .. })
     }

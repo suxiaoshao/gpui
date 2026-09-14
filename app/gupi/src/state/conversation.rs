@@ -193,6 +193,12 @@ impl Session {
     pub fn submitting(&self) -> bool {
         !matches!(self.submission, Submission::Idle)
     }
+    pub fn can_edit_draft(&self) -> bool {
+        !self.submitting()
+            && !self.command.running()
+            && self.state.is_some()
+            && !matches!(self.core_read, CoreRead::CheckingFile { .. })
+    }
     pub fn busy(&self) -> bool {
         self.running()
             || self.compacting

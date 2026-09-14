@@ -3,18 +3,23 @@ use super::*;
 use crate::foundation::i18n::t;
 
 impl ConversationState {
-    pub fn can_reconnect(&self, key: &str) -> bool {
+    pub fn can_reconnect(&self, key: &str, cx: &App) -> bool {
         !self.draining
             && self.sessions.get(key).is_some_and(|s| {
                 !s.settings_busy()
                     && !s.core_read.running()
                     && !s.model_change.unconfirmed()
+                    && (s.instance.is_none()
+                        || (s.state.is_some() || s.core_read.error().is_some())
+                            && self.client(key, cx).is_some_and(|client| {
+                                matches!(client.state(), ConnectionState::Ready(_))
+                            }))
                     && (s.state.is_some() || !s.info.path.as_os_str().is_empty())
             })
     }
 
     pub fn reconnect(&mut self, key: &str, cx: &mut Context<Self>) {
-        if !self.can_reconnect(key) {
+        if !self.can_reconnect(key, cx) {
             return;
         }
         // A live connection with a failed core query only needs another read.

@@ -248,7 +248,7 @@ impl HomeView {
                     Textarea::new(&self.input)
                         .appearance(false)
                         .disabled(preview)
-                        .readonly(session.submitting() || session.command.blocks_draft_edit())
+                        .readonly(!session.can_edit_draft())
                         .aria_label(t(cx, "conversation-input")),
                 ),
             );

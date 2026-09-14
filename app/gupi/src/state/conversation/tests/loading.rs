@@ -1349,7 +1349,40 @@ async fn model_change_waits_for_readback_and_failed_command_reads_actual_value(
 }
 
 #[gpui_kit::test]
-async fn sending_requires_ready_connection_and_snapshot_without_queuing(cx: &mut TestAppContext) {
+async fn persisted_session_cannot_reload_during_launch(cx: &mut TestAppContext) {
+    let (dir, owner, key) = prepare(cx, &[]);
+    let path = dir.path().join("existing.jsonl");
+    let header =
+        serde_json::json!({"type":"session", "version":3, "id":"fixture", "cwd":dir.path()});
+    std::fs::write(&path, format!("{header}\n")).unwrap();
+    owner.update(cx, |state, cx| {
+        state.sessions.get_mut(&key).unwrap().info =
+            crate::foundation::session_catalog::read_metadata(&path).unwrap();
+        assert!(state.can_reconnect(&key, cx)); // Disconnected history can still reconnect.
+        state.launch(&key, cx);
+        let instance = state.sessions[&key].instance;
+        assert!(instance.is_some());
+        assert!(state.client(&key, cx).is_none());
+        assert!(!state.sessions[&key].can_edit_draft());
+        assert!(!state.can_reconnect(&key, cx));
+        state.reconnect(&key, cx);
+        assert_eq!(state.sessions[&key].instance, instance);
+        assert!(!state.sessions[&key].command.running());
+    });
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
+    owner.read_with(cx, |state, cx| {
+        assert!(state.sessions[&key].can_edit_draft());
+        assert!(state.can_reconnect(&key, cx));
+        assert!(state.sessions[&key].error.is_none());
+    });
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn editing_and_sending_require_ready_connection_and_snapshot_without_queuing(
+    cx: &mut TestAppContext,
+) {
     let (dir, owner, key) = prepare(cx, &["hold-get_entries", "hold-get_available_models"]);
     owner.update(cx, |state, cx| {
         state.set_draft(&key, "first message".into(), cx);
@@ -1358,7 +1391,8 @@ async fn sending_requires_ready_connection_and_snapshot_without_queuing(cx: &mut
         assert!(!state.sessions[&key].submitting());
         state.connect(&key, cx);
         assert!(!state.can_submit(&key, cx));
-        assert!(!state.sessions[&key].command.blocks_draft_edit());
+        assert!(!state.can_reconnect(&key, cx));
+        assert!(!state.sessions[&key].can_edit_draft());
         state.send(&key, StreamingBehavior::Steer, cx);
         assert!(
             state
@@ -1366,7 +1400,6 @@ async fn sending_requires_ready_connection_and_snapshot_without_queuing(cx: &mut
                 .is_none()
         );
         assert!(!state.sessions[&key].submitting());
-        state.set_draft(&key, "edited while connecting".into(), cx);
     });
     cx.condition(&owner, |state, cx| state.client(&key, cx).is_some())
         .await;
@@ -1374,7 +1407,8 @@ async fn sending_requires_ready_connection_and_snapshot_without_queuing(cx: &mut
     control(&client, "wait_for", "get_entries", 1).await;
     owner.update(cx, |state, cx| {
         assert!(!state.can_submit(&key, cx));
-        assert!(!state.sessions[&key].command.blocks_draft_edit());
+        assert!(!state.can_reconnect(&key, cx));
+        assert!(!state.sessions[&key].can_edit_draft());
         state.send(&key, StreamingBehavior::Steer, cx);
         assert!(!state.sessions[&key].submitting());
     });
@@ -1383,7 +1417,8 @@ async fn sending_requires_ready_connection_and_snapshot_without_queuing(cx: &mut
         .await;
     assert_eq!(count(dir.path(), "prompt"), 0);
     owner.update(cx, |state, cx| {
-        assert_eq!(state.sessions[&key].draft, "edited while connecting");
+        assert_eq!(state.sessions[&key].draft, "first message");
+        assert!(state.sessions[&key].can_edit_draft());
         assert!(state.sessions[&key].models.running());
         state.send(&key, StreamingBehavior::Steer, cx);
     });
@@ -1540,7 +1575,7 @@ async fn failed_connection_rejects_send_until_explicit_reconnect(cx: &mut TestAp
         state.send(&key, StreamingBehavior::Steer, cx);
         assert!(!state.sessions[&key].submitting());
         assert_eq!(state.sessions[&key].draft, "first send");
-        assert!(!state.sessions[&key].command.blocks_draft_edit());
+        assert!(!state.sessions[&key].can_edit_draft());
         state.set_command(fixture());
         state.connect(&key, cx);
     });
@@ -1717,12 +1752,11 @@ async fn manual_reload_preserves_empty_session_choices_and_other_connections(
         .await;
     let other_instance = owner.read_with(cx, |s, _| s.sessions[&other].instance);
     owner.update(cx, |s, cx| {
-        assert!(s.can_reconnect(&key));
+        assert!(s.can_reconnect(&key, cx));
         s.reconnect(&key, cx);
-        assert!(!s.can_reconnect(&key));
+        assert!(!s.can_reconnect(&key, cx));
         assert!(!s.can_submit(&key, cx));
-        assert!(!s.sessions[&key].command.blocks_draft_edit());
-        s.set_draft(&key, "edited during reconnect".into(), cx);
+        assert!(!s.sessions[&key].can_edit_draft());
         s.reconnect(&key, cx); // duplicate is ignored
     });
     cx.condition(&owner, |s, _| {
@@ -1733,7 +1767,8 @@ async fn manual_reload_preserves_empty_session_choices_and_other_connections(
         assert_ne!(s.sessions[&key].instance, old);
         assert_eq!(s.sessions[&other].instance, other_instance);
         assert_eq!(s.selected.as_ref(), Some(&other));
-        assert_eq!(s.sessions[&key].draft, "edited during reconnect");
+        assert_eq!(s.sessions[&key].draft, "unsent 中文 draft");
+        assert!(s.sessions[&key].can_edit_draft());
         assert_eq!(
             s.sessions[&key].model_identity(),
             Some(("fixture".into(), "beta".into()))
@@ -1888,7 +1923,7 @@ async fn draining_awaits_reload_close_without_starting_replacement(cx: &mut Test
                     s.sessions[&key].command,
                     super::super::SessionCommand::ReconnectUnconfirmed
                 ));
-                assert!(!s.sessions[&key].command.blocks_draft_edit());
+                assert!(!s.sessions[&key].can_edit_draft());
                 assert!(s.sessions[&key].error.is_some());
             });
         }

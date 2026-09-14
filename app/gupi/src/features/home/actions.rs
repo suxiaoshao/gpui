@@ -110,7 +110,7 @@ impl HomeView {
             Kind::Reconnect => state
                 .selected
                 .as_ref()
-                .is_some_and(|key| state.can_reconnect(key)),
+                .is_some_and(|key| state.can_reconnect(key, cx)),
             Kind::Rename => {
                 state
                     .selected
