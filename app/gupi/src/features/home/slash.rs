@@ -41,10 +41,7 @@ impl HomeView {
             return false;
         };
         let preview = self.views.get(key).and_then(|v| v.preview.as_deref());
-        state.can_submit(key)
-            && s.instance.is_some()
-            && s.state.is_some()
-            && preview.is_none_or(|id| s.history().on_current_path(id))
+        state.can_submit(key, cx) && preview.is_none_or(|id| s.history().on_current_path(id))
     }
     pub(crate) fn command_label(&self, kind: actions::Kind, cx: &App) -> String {
         palette::label(kind, self.show_sidebar, self.show_history, cx)

@@ -303,21 +303,23 @@ fn begin(
     cx: &mut TestAppContext,
     flags: &[&str],
 ) -> (tempfile::TempDir, Entity<ConversationState>, String) {
-    begin_with_prompt(cx, flags, None)
+    let result = prepare(cx, flags);
+    result
+        .1
+        .update(cx, |state, cx| state.connect(&result.2, cx));
+    result
 }
-fn begin_with_prompt(
+async fn begin_with_prompt(
     cx: &mut TestAppContext,
     flags: &[&str],
-    prompt: Option<&str>,
+    prompt: &str,
 ) -> (tempfile::TempDir, Entity<ConversationState>, String) {
-    let (dir, owner, key) = prepare(cx, flags);
+    let (dir, owner, key) = begin(cx, flags);
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
     owner.update(cx, |state, cx| {
-        if let Some(prompt) = prompt {
-            state.set_draft(&key, prompt.into(), cx);
-            state.send(&key, StreamingBehavior::Steer, cx);
-        } else {
-            state.connect(&key, cx);
-        }
+        state.set_draft(&key, prompt.into(), cx);
+        state.send(&key, StreamingBehavior::Steer, cx);
     });
     (dir, owner, key)
 }
@@ -329,6 +331,7 @@ fn prepare(
     cx.update(|cx| {
         gpui_tokio::init(cx);
         pi::init(cx);
+        crate::foundation::i18n::apply(crate::state::config::AppLanguage::English, cx);
     });
     let dir = tempfile::tempdir().unwrap();
     for flag in flags {
@@ -562,19 +565,25 @@ async fn project_switch_preserves_nonempty_drafts(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-async fn sending_can_join_a_connection_started_only_for_model_options(cx: &mut TestAppContext) {
+async fn sending_waits_for_model_connection_without_queuing(cx: &mut TestAppContext) {
     let (dir, owner, key) = prepare(cx, &[]);
     owner.update(cx, |state, cx| {
         state.refresh_models(&key, cx);
-        state.set_draft(&key, "send while model connection starts".into(), cx);
+        state.set_draft(&key, "send after model connection starts".into(), cx);
         state.send(&key, StreamingBehavior::Steer, cx);
+        assert!(!state.sessions[&key].submitting());
+    });
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
+    assert_eq!(count(dir.path(), "prompt"), 0);
+    owner.update(cx, |state, cx| {
+        state.send(&key, StreamingBehavior::Steer, cx)
     });
     cx.condition(&owner, |state, _| {
-        state.sessions[&key].state.is_some() && state.sessions[&key].draft.is_empty()
+        state.sessions[&key].draft.is_empty() && !state.sessions[&key].history().entries.is_empty()
     })
     .await;
     assert_eq!(count(dir.path(), "prompt"), 1);
-    assert!(count(dir.path(), "get_entries") >= 1);
     close(&owner, cx).await;
 }
 
@@ -981,6 +990,11 @@ async fn export_picker_cancel_and_rpc_results_leave_session_unchanged(cx: &mut T
         cx.run_until_parked();
         assert!(cx.did_prompt_for_new_path());
         let path = dir.path().join("chosen.html");
+        std::fs::write(
+            dir.path().join("export-result.json"),
+            serde_json::json!({"path": path}).to_string(),
+        )
+        .unwrap();
         cx.simulate_new_path_selection(|_| (outcome != "cancel").then(|| path.clone()));
         cx.condition(&owner, |s, _| !s.sessions[&key].command.running())
             .await;
@@ -999,6 +1013,11 @@ async fn export_picker_cancel_and_rpc_results_leave_session_unchanged(cx: &mut T
             if outcome == "cancel" {
                 assert!(notices.is_empty());
             } else {
+                let request: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(dir.path().join("export-request.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(request["outputPath"], path.to_str().unwrap());
                 assert_eq!(notices.len(), 1);
                 assert_eq!(notices[0].1, outcome == "fail-export_html");
                 if outcome == "success" {
@@ -1169,8 +1188,11 @@ async fn cancelled_or_failed_fork_does_not_replace_current_editor(cx: &mut TestA
             state.set_draft(&key, "original input".into(), cx);
             state.fork(&key, "old".into(), cx);
         });
-        cx.condition(&owner, |state, _| !state.sessions[&key].command.running())
-            .await;
+        cx.condition(&owner, |state, _| {
+            !state.sessions[&key].command.running()
+                && (skip_editor || state.sessions[&key].draft == "extension fork draft")
+        })
+        .await;
         owner.read_with(cx, |state, _| {
             assert_eq!(state.selected.as_ref(), Some(&key));
             assert_eq!(state.sessions[&key].instance, instance);
@@ -1327,17 +1349,45 @@ async fn model_change_waits_for_readback_and_failed_command_reads_actual_value(
 }
 
 #[gpui_kit::test]
-async fn first_send_survives_connection_start_and_does_not_wait_for_models(
-    cx: &mut TestAppContext,
-) {
-    let (dir, owner, key) =
-        begin_with_prompt(cx, &["hold-get_available_models"], Some("first message"));
-    cx.condition(&owner, |state, _| {
-        state.sessions[&key].state.is_some() && state.sessions[&key].draft.is_empty()
-    })
-    .await;
+async fn sending_requires_ready_connection_and_snapshot_without_queuing(cx: &mut TestAppContext) {
+    let (dir, owner, key) = prepare(cx, &["hold-get_entries", "hold-get_available_models"]);
+    owner.update(cx, |state, cx| {
+        state.set_draft(&key, "first message".into(), cx);
+        state.send(&key, StreamingBehavior::Steer, cx);
+        assert!(state.sessions[&key].instance.is_none());
+        assert!(!state.sessions[&key].submitting());
+        state.connect(&key, cx);
+        assert!(!state.can_submit(&key, cx));
+        state.send(&key, StreamingBehavior::Steer, cx);
+        assert!(
+            state
+                .send_text(&key, "/help".into(), StreamingBehavior::Steer, cx)
+                .is_none()
+        );
+        assert!(!state.sessions[&key].submitting());
+        state.set_draft(&key, "edited while connecting".into(), cx);
+    });
+    cx.condition(&owner, |state, cx| state.client(&key, cx).is_some())
+        .await;
+    let client = owner.read_with(cx, |state, cx| state.client(&key, cx).unwrap());
+    control(&client, "wait_for", "get_entries", 1).await;
+    owner.update(cx, |state, cx| {
+        assert!(!state.can_submit(&key, cx));
+        state.send(&key, StreamingBehavior::Steer, cx);
+        assert!(!state.sessions[&key].submitting());
+    });
+    control(&client, "release", "get_entries", 0).await;
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
+    assert_eq!(count(dir.path(), "prompt"), 0);
+    owner.update(cx, |state, cx| {
+        assert_eq!(state.sessions[&key].draft, "edited while connecting");
+        assert!(state.sessions[&key].models.running());
+        state.send(&key, StreamingBehavior::Steer, cx);
+    });
+    cx.condition(&owner, |state, _| state.sessions[&key].draft.is_empty())
+        .await;
     assert_eq!(count(dir.path(), "prompt"), 1);
-    assert!(owner.read_with(cx, |state, _| state.sessions[&key].models.running()));
     close(&owner, cx).await;
 }
 
@@ -1378,7 +1428,7 @@ async fn snapshot_cannot_replace_events_delivered_during_its_read(cx: &mut TestA
 async fn submission_keeps_draft_until_ack_blocks_duplicates_and_is_session_local(
     cx: &mut TestAppContext,
 ) {
-    let (dir, owner, key) = begin_with_prompt(cx, &["hold-prompt"], Some("submitted draft"));
+    let (dir, owner, key) = begin_with_prompt(cx, &["hold-prompt"], "submitted draft").await;
     owner.update(cx, |state, cx| {
         assert!(state.sessions[&key].submitting());
         state.set_draft(&key, "must not replace pending draft".into(), cx);
@@ -1434,7 +1484,9 @@ async fn submission_keeps_draft_until_ack_blocks_duplicates_and_is_session_local
 async fn submission_failure_notifies_preserves_draft_and_allows_retry(cx: &mut TestAppContext) {
     use super::super::ConversationEvent;
     use std::{cell::RefCell, rc::Rc};
-    let (dir, owner, key) = prepare(cx, &["fail-prompt"]);
+    let (dir, owner, key) = begin(cx, &["fail-prompt"]);
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
     let notifications = Rc::new(RefCell::new(Vec::new()));
     let output = notifications.clone();
     let _subscription = cx.update(|cx| {
@@ -1473,50 +1525,57 @@ async fn submission_failure_notifies_preserves_draft_and_allows_retry(cx: &mut T
 }
 
 #[gpui_kit::test]
-async fn submission_initial_connection_failure_unlocks_draft_and_can_retry(
-    cx: &mut TestAppContext,
-) {
+async fn failed_connection_rejects_send_until_explicit_reconnect(cx: &mut TestAppContext) {
     let (dir, owner, key) = prepare(cx, &[]);
     owner.update(cx, |state, cx| {
         state.set_command(dir.path().join("missing-pi"));
         state.set_draft(&key, "first send".into(), cx);
-        state.send(&key, StreamingBehavior::Steer, cx);
-        assert!(state.sessions[&key].submitting());
+        state.connect(&key, cx);
     });
-    cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
+    cx.condition(&owner, |state, _| state.sessions[&key].error.is_some())
         .await;
     owner.update(cx, |state, cx| {
-        assert!(state.sessions[&key].instance.is_none());
-        assert_eq!(state.sessions[&key].draft, "first send");
-        state.set_draft(&key, "corrected first send".into(), cx);
-        state.set_command(fixture());
         state.send(&key, StreamingBehavior::Steer, cx);
+        assert!(!state.sessions[&key].submitting());
+        assert_eq!(state.sessions[&key].draft, "first send");
+        state.set_command(fixture());
+        state.connect(&key, cx);
     });
-    cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
         .await;
-    assert!(owner.read_with(cx, |state, _| state.sessions[&key].draft.is_empty()));
+    assert_eq!(count(dir.path(), "prompt"), 0);
+    owner.update(cx, |state, cx| {
+        state.send(&key, StreamingBehavior::Steer, cx)
+    });
+    cx.condition(&owner, |state, _| state.sessions[&key].draft.is_empty())
+        .await;
     assert_eq!(count(dir.path(), "prompt"), 1);
     close(&owner, cx).await;
 }
 
 #[gpui_kit::test]
-async fn submission_initial_snapshot_failure_unlocks_without_sending(cx: &mut TestAppContext) {
-    let (dir, owner, key) =
-        begin_with_prompt(cx, &["fail-get_entries"], Some("keep initial draft"));
-    cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
-        .await;
-    owner.read_with(cx, |state, _| {
-        assert_eq!(state.sessions[&key].draft, "keep initial draft");
-        assert!(state.sessions[&key].core_read.error().is_some());
+async fn failed_initial_snapshot_rejects_send_until_read_retry(cx: &mut TestAppContext) {
+    let (dir, owner, key) = begin(cx, &["fail-get_entries"]);
+    cx.condition(&owner, |state, _| {
+        state.sessions[&key].core_read.error().is_some()
+    })
+    .await;
+    owner.update(cx, |state, cx| {
+        state.set_draft(&key, "keep initial draft".into(), cx);
+        state.send(&key, StreamingBehavior::Steer, cx);
+        assert!(!state.sessions[&key].submitting());
     });
     assert_eq!(count(dir.path(), "prompt"), 0);
     std::fs::remove_file(dir.path().join("fail-get_entries")).unwrap();
+    owner.update(cx, |state, cx| state.refresh(&key, cx));
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
+    assert_eq!(count(dir.path(), "prompt"), 0);
     owner.update(cx, |state, cx| {
         state.send(&key, StreamingBehavior::Steer, cx)
     });
-    cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
+    cx.condition(&owner, |state, _| state.sessions[&key].draft.is_empty())
         .await;
-    assert!(owner.read_with(cx, |state, _| state.sessions[&key].draft.is_empty()));
     close(&owner, cx).await;
 }
 
@@ -1524,7 +1583,7 @@ async fn submission_initial_snapshot_failure_unlocks_without_sending(cx: &mut Te
 async fn submission_allows_extension_reply_and_preserves_replacement_editor(
     cx: &mut TestAppContext,
 ) {
-    let (dir, owner, key) = begin_with_prompt(cx, &["hold-prompt"], Some("/extension"));
+    let (dir, owner, key) = begin_with_prompt(cx, &["hold-prompt"], "/extension").await;
     cx.condition(&owner, |state, cx| {
         state.client(&key, cx).is_some() && state.sessions[&key].state.is_some()
     })
@@ -1575,7 +1634,7 @@ async fn submission_disconnect_and_flush_release_pending_tasks_without_clearing_
     cx: &mut TestAppContext,
 ) {
     let (_dir, owner, key) =
-        begin_with_prompt(cx, &["hold-prompt"], Some("preserve on disconnect"));
+        begin_with_prompt(cx, &["hold-prompt"], "preserve on disconnect").await;
     cx.condition(&owner, |state, cx| {
         state.client(&key, cx).is_some() && state.sessions[&key].state.is_some()
     })
@@ -1594,11 +1653,16 @@ async fn submission_disconnect_and_flush_release_pending_tasks_without_clearing_
         assert!(!state.sessions[&key].submitting());
         assert_eq!(state.sessions[&key].draft, "preserve on disconnect");
         state.send(&key, StreamingBehavior::Steer, cx);
+        assert!(!state.sessions[&key].submitting());
+        state.connect(&key, cx);
     });
     cx.condition(&owner, |state, cx| {
         state.client(&key, cx).is_some() && state.sessions[&key].state.is_some()
     })
     .await;
+    owner.update(cx, |state, cx| {
+        state.send(&key, StreamingBehavior::Steer, cx)
+    });
     let client = owner.read_with(cx, |state, cx| state.client(&key, cx).unwrap());
     control(&client, "wait_for", "prompt", 1).await;
     control(&client, "emit_confirm", "", 0).await;
@@ -1780,19 +1844,50 @@ async fn reload_restores_persisted_file_and_rejects_replaced_identity(cx: &mut T
 
 #[gpui_kit::test]
 async fn draining_awaits_reload_close_without_starting_replacement(cx: &mut TestAppContext) {
-    let (dir, owner, key) = begin(cx, &["empty-entries"]);
-    cx.condition(&owner, |s, _| s.sessions[&key].commands.data().is_some())
-        .await;
-    let flush = owner.update(cx, |s, cx| {
-        s.reconnect(&key, cx);
-        s.flush(cx)
-    });
-    flush.await;
-    let log = std::fs::read_to_string(dir.path().join("process.log")).unwrap();
-    assert_eq!(log.lines().filter(|l| l.starts_with("start ")).count(), 1);
-    assert!(log.lines().last().unwrap().starts_with("exit "));
-    owner.read_with(cx, |s, _| assert!(s.sessions[&key].instance.is_none()));
-    close(&owner, cx).await;
+    for hold_abort in [false, true] {
+        let flags = if hold_abort {
+            vec!["empty-entries", "hold-abort"]
+        } else {
+            vec!["empty-entries"]
+        };
+        let (dir, owner, key) = begin(cx, &flags);
+        cx.condition(&owner, |s, _| s.sessions[&key].commands.data().is_some())
+            .await;
+        let client = owner.read_with(cx, |s, cx| s.client(&key, cx).unwrap());
+        let flush = owner.update(cx, |s, cx| {
+            s.reconnect(&key, cx);
+            s.flush(cx)
+        });
+        flush.await;
+        let pi_rpc::ConnectionState::Closed(report) = client.state() else {
+            panic!("flush returned before Pi closed: {:?}", client.state());
+        };
+        let log = std::fs::read_to_string(dir.path().join("process.log")).unwrap();
+        assert_eq!(log.lines().filter(|l| l.starts_with("start ")).count(), 1);
+        if report.status.is_some() {
+            assert!(!hold_abort, "{report:?}");
+            assert!(
+                log.lines().last().unwrap().starts_with("exit "),
+                "{report:?}"
+            );
+        } else {
+            // Close has a bounded deadline; draining must also await its timeout
+            // result without claiming a normal exit or launching a replacement.
+            assert!(
+                matches!(report.reason, Some(pi_rpc::Error::ShutdownTimeout)),
+                "{report:?}"
+            );
+            owner.read_with(cx, |s, _| {
+                assert!(matches!(
+                    s.sessions[&key].command,
+                    super::super::SessionCommand::ReconnectUnconfirmed
+                ));
+                assert!(s.sessions[&key].error.is_some());
+            });
+        }
+        owner.read_with(cx, |s, _| assert!(s.sessions[&key].instance.is_none()));
+        close(&owner, cx).await;
+    }
 }
 
 #[gpui_kit::test]
@@ -1846,7 +1941,9 @@ async fn command_submission_does_not_modify_conversation_drafts(cx: &mut TestApp
 async fn command_submission_reports_failure_and_acceptance_without_saving_input(
     cx: &mut TestAppContext,
 ) {
-    let (dir, owner, key) = prepare(cx, &["fail-prompt"]);
+    let (dir, owner, key) = begin(cx, &["fail-prompt"]);
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
     let submit = |s: &mut ConversationState, cx: &mut gpui_kit::Context<ConversationState>| {
         s.send_text(
             &key,

@@ -133,7 +133,10 @@ fn main() {
                     "set_model" => { selected = field(&line, "modelId"); "null".into() }
                     "set_thinking_level" => { thinking = field(&line, "level"); "null".into() }
                     "clone" => format!("{{\"cancelled\":{}}}", Path::new("cancel-clone").exists()),
-                    "export_html" => format!("{{\"path\":{:?}}}", field(&line, "outputPath")),
+                    "export_html" => {
+                        std::fs::write("export-request.json", &line).unwrap();
+                        std::fs::read_to_string("export-result.json").unwrap()
+                    },
                     "fork" => {
                         if !Path::new("skip-fork-editor").exists() {
                             println!("{{\"type\":\"extension_ui_request\",\"id\":\"fork-editor\",\"method\":\"set_editor_text\",\"text\":\"extension fork draft\"}}");

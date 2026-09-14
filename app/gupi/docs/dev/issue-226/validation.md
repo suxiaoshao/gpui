@@ -4,6 +4,7 @@
 
 - 快捷键、会话快速打开、统一命令面板与按钮/侧栏键位提示已接入。
 - 两个命令入口共用面板；面板使用独立的临时 Textarea，不同步正文、不保存命令草稿。Enter 执行选中项，Tab 仅补全；无候选时在有效会话中提交完整文本。发送确认前不清空，失败通知并保留原框文字。
+- Pi 连接及初始会话状态就绪前禁止发送，正文仍可编辑；发送按钮、快捷键和命令面板共用提交条件，不保留等待连接后自动发送的请求。
 - 面板复用 CommandState 处理选择与滚动，使用紧凑单行候选、分类图标、说明截断和右侧操作按钮。Dialog 默认遮罩处理外部点击关闭；命令与主输入区使用 Textarea 自身内边距。
 - Cmd/Ctrl+R 关闭旧 Pi 后重连，保留当前模型、思考等级及未发送正文；命令查询失败可独立重试。
 - 14 个 Pi 原始名称映射到 12 个本地候选。模型/思考共用选择器，tree/fork 共用打开历史入口；HTML 导出、复制会话、最后回答复制和默认手动压缩已接入。用户消息下的 fork 按钮位于复制按钮之前。
@@ -17,6 +18,8 @@
 | `cargo clippy -p gupi -p pi-rpc --all-targets --all-features --locked --quiet -- -D warnings` | 通过 |
 | `cargo fmt --all -- --check` | 通过 |
 | `git diff --check` | 通过 |
+
+连接门禁调整后，受影响的 `cargo test -p gupi --locked --quiet` 通过 113 项测试，Gupi 严格 Clippy 和 workspace 格式检查通过。回归补充连接期间拒绝提交、就绪后不自动发送；修正 fork 测试对扩展输入事件的异步等待、导出 fixture 的 Windows 路径转义，以及关闭测试的 I18n 初始化。关闭回归同时检查正常退出和受控超时，均须等待终态且不得启动替代进程。Windows/Linux 的修正仍需对应 CI runner 确认。
 
 面向 `main` 的整体集成另完成 `cargo build --workspace --locked --quiet`、`cargo test --workspace --locked --quiet` 与 `cargo clippy --workspace --all-targets --all-features --locked --quiet -- -D warnings`，均通过。首次测试因沙箱禁止本地端口绑定导致 HTTP 测试失败；在允许回环测试服务器的环境中重跑 workspace 测试通过，无代码修改。macOS 链接器有 unwind 表大小警告，依赖 `block 0.1.6` 有 future-incompat 提示；不影响本次构建和测试结果。默认忽略的测试未启用。
 

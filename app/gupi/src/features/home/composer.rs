@@ -311,11 +311,8 @@ impl HomeView {
                         .loading(session.submitting())
                         .disabled(
                             preview
-                                || session.submitting()
                                 || session.draft.trim().is_empty()
-                                || session.command.running()
-                                || session.model_change.running()
-                                || session.model_change.unconfirmed(),
+                                || !self.state.read(cx).can_submit(&key, cx),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             if let Some(key) = this.shown_key.clone() {

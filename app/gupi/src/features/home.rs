@@ -160,7 +160,7 @@ impl HomeView {
                     } => {
                         let preview = this.views.get(&key).and_then(|v| v.preview.as_deref());
                         let allowed = this.state.read(cx).current().is_some_and(|s| {
-                            !s.submitting()
+                            this.state.read(cx).can_submit(&key, cx)
                                 && preview.is_none_or(|id| s.history().on_current_path(id))
                         });
                         if allowed {

@@ -74,12 +74,6 @@ enum ConnectionPurpose {
 enum Submission {
     #[default]
     Idle,
-    Connecting {
-        text: String,
-        mode: StreamingBehavior,
-        revision: Option<u64>,
-        result: tokio::sync::oneshot::Sender<bool>,
-    },
     Sending {
         _task: Task<()>,
         result: tokio::sync::oneshot::Sender<bool>,
@@ -169,7 +163,7 @@ impl Session {
     }
     fn finish_submission(&mut self, accepted: bool) {
         match std::mem::take(&mut self.submission) {
-            Submission::Connecting { result, .. } | Submission::Sending { result, .. } => {
+            Submission::Sending { result, .. } => {
                 let _ = result.send(accepted);
             }
             Submission::Idle => {}
@@ -637,7 +631,7 @@ impl ConversationState {
             return;
         };
         // Conversation work can join a connection started for model options.
-        // A model read never downgrades a pending conversation open/send.
+        // A model read never downgrades a pending conversation open.
         if purpose == ConnectionPurpose::Conversation
             || s.instance.is_none() && !s.core_read.running()
         {
@@ -815,9 +809,7 @@ impl ConversationState {
                 if stale && result.is_ok() {
                     // A later settled event supplies another read while streaming;
                     // otherwise fetch once more now. Never erase newer live data.
-                    if matches!(s.submission, Submission::Connecting { .. })
-                        || !s.running() && !s.compacting && !s.retrying
-                    {
+                    if !s.running() && !s.compacting && !s.retrying {
                         this.refresh(&key, cx);
                     }
                     cx.notify();
@@ -826,18 +818,14 @@ impl ConversationState {
                 match result {
                     Ok(snapshot) => {
                         this.apply_snapshot(&key, snapshot, cx);
-                        this.submit_pending(&key, cx);
                         if again {
                             this.refresh(&key, cx);
                         }
                     }
-                    Err(error) => {
+                    Err(_) => {
                         let s = this.sessions.get_mut(&key).unwrap();
                         if s.command.reconnecting() {
                             s.command.finish();
-                        }
-                        if matches!(s.submission, Submission::Connecting { .. }) {
-                            s.fail_submission(error.to_string(), cx);
                         }
                     }
                 }
@@ -924,10 +912,14 @@ impl ConversationState {
             self.changed(cx);
         }
     }
-    pub fn can_submit(&self, key: &str) -> bool {
+    pub fn can_submit(&self, key: &str, cx: &App) -> bool {
         !self.draining
+            && self
+                .client(key, cx)
+                .is_some_and(|client| matches!(client.state(), ConnectionState::Ready(_)))
             && self.sessions.get(key).is_some_and(|s| {
-                !s.submitting()
+                s.state.is_some()
+                    && !s.submitting()
                     && s.pending_ui.is_empty()
                     && !s.command.running()
                     && !s.model_change.running()
@@ -960,48 +952,13 @@ impl ConversationState {
         mode: StreamingBehavior,
         cx: &mut Context<Self>,
     ) -> Option<tokio::sync::oneshot::Receiver<bool>> {
-        if text.trim().is_empty() || !self.can_submit(key) {
+        if text.trim().is_empty() || !self.can_submit(key, cx) {
             return None;
         }
-        let (result, receiver) = tokio::sync::oneshot::channel();
+        let client = self.client(key, cx)?;
+        let (reply, receiver) = tokio::sync::oneshot::channel();
         let s = self.sessions.get_mut(key)?;
-        s.submission = Submission::Connecting {
-            text,
-            mode,
-            revision,
-            result,
-        };
         s.error = None;
-        if self.client(key, cx).is_some() && self.sessions[key].state.is_some() {
-            self.submit_pending(key, cx);
-        } else {
-            self.connect(key, cx);
-            // A prior initial snapshot can fail while the process stays connected.
-            // Retrying submission must retry that read, not wait for another handshake.
-            if self.client(key, cx).is_some() && !self.sessions[key].core_read.running() {
-                self.refresh(key, cx);
-            }
-        }
-        cx.notify();
-        Some(receiver)
-    }
-    fn submit_pending(&mut self, key: &str, cx: &mut Context<Self>) {
-        let Some(client) = self.client(key, cx) else {
-            return;
-        };
-        let s = self.sessions.get_mut(key).unwrap();
-        if !matches!(s.submission, Submission::Connecting { .. }) {
-            return;
-        }
-        let Submission::Connecting {
-            text,
-            mode,
-            revision,
-            result: reply,
-        } = std::mem::take(&mut s.submission)
-        else {
-            unreachable!();
-        };
         let binding = s.binding;
         s.interrupted = false;
         let key = key.to_owned();
@@ -1038,6 +995,7 @@ impl ConversationState {
             result: reply,
         };
         cx.notify();
+        Some(receiver)
     }
     pub fn abort(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some(client) = self.client(key, cx) else {
