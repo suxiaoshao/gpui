@@ -1358,6 +1358,7 @@ async fn sending_requires_ready_connection_and_snapshot_without_queuing(cx: &mut
         assert!(!state.sessions[&key].submitting());
         state.connect(&key, cx);
         assert!(!state.can_submit(&key, cx));
+        assert!(!state.sessions[&key].command.blocks_draft_edit());
         state.send(&key, StreamingBehavior::Steer, cx);
         assert!(
             state
@@ -1373,6 +1374,7 @@ async fn sending_requires_ready_connection_and_snapshot_without_queuing(cx: &mut
     control(&client, "wait_for", "get_entries", 1).await;
     owner.update(cx, |state, cx| {
         assert!(!state.can_submit(&key, cx));
+        assert!(!state.sessions[&key].command.blocks_draft_edit());
         state.send(&key, StreamingBehavior::Steer, cx);
         assert!(!state.sessions[&key].submitting());
     });
@@ -1538,6 +1540,7 @@ async fn failed_connection_rejects_send_until_explicit_reconnect(cx: &mut TestAp
         state.send(&key, StreamingBehavior::Steer, cx);
         assert!(!state.sessions[&key].submitting());
         assert_eq!(state.sessions[&key].draft, "first send");
+        assert!(!state.sessions[&key].command.blocks_draft_edit());
         state.set_command(fixture());
         state.connect(&key, cx);
     });
@@ -1717,6 +1720,9 @@ async fn manual_reload_preserves_empty_session_choices_and_other_connections(
         assert!(s.can_reconnect(&key));
         s.reconnect(&key, cx);
         assert!(!s.can_reconnect(&key));
+        assert!(!s.can_submit(&key, cx));
+        assert!(!s.sessions[&key].command.blocks_draft_edit());
+        s.set_draft(&key, "edited during reconnect".into(), cx);
         s.reconnect(&key, cx); // duplicate is ignored
     });
     cx.condition(&owner, |s, _| {
@@ -1727,7 +1733,7 @@ async fn manual_reload_preserves_empty_session_choices_and_other_connections(
         assert_ne!(s.sessions[&key].instance, old);
         assert_eq!(s.sessions[&other].instance, other_instance);
         assert_eq!(s.selected.as_ref(), Some(&other));
-        assert_eq!(s.sessions[&key].draft, "unsent 中文 draft");
+        assert_eq!(s.sessions[&key].draft, "edited during reconnect");
         assert_eq!(
             s.sessions[&key].model_identity(),
             Some(("fixture".into(), "beta".into()))
@@ -1882,6 +1888,7 @@ async fn draining_awaits_reload_close_without_starting_replacement(cx: &mut Test
                     s.sessions[&key].command,
                     super::super::SessionCommand::ReconnectUnconfirmed
                 ));
+                assert!(!s.sessions[&key].command.blocks_draft_edit());
                 assert!(s.sessions[&key].error.is_some());
             });
         }
