@@ -156,10 +156,8 @@ impl SettingsView {
         if self.controller.read(cx).busy(cx) {
             return;
         }
-        if matches!(
-            action,
-            ConfigRepair::BackupAndWrite | ConfigRepair::BackupAndReset
-        ) || (matches!(action, ConfigRepair::Reload) && self.form.read(cx).is_dirty())
+        if matches!(action, ConfigRepair::BackupAndReset)
+            || (matches!(action, ConfigRepair::Reload) && self.form.read(cx).is_dirty())
         {
             self.confirmation = Some(action);
             cx.notify();
@@ -179,19 +177,16 @@ impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.controller.read(cx).busy(cx);
         let store = self.controller.read(cx).store.clone();
-        let (problem, can_write, conflict, reconcile, write_failed, backup) =
-            store.read(cx, |op| {
-                (
-                    op.problem().map(|p| p.key()),
-                    op.data().and_then(|d| d.configured()).is_some(),
-                    op.problem().is_some_and(|p| p.is_conflict()),
-                    op.problem().is_some_and(|p| p.needs_reconcile()),
-                    op.problem().is_some_and(|p| p.write_source().is_some()),
-                    op.problem()
-                        .and_then(|p| p.backup().cloned())
-                        .or_else(|| op.data().and_then(|d| d.backup.clone())),
-                )
-            });
+        let (problem, can_write, write_failed, backup) = store.read(cx, |op| {
+            (
+                op.problem().map(|p| p.key()),
+                op.data().and_then(|d| d.configured()).is_some(),
+                op.problem().is_some_and(|p| p.is_write()),
+                op.problem()
+                    .and_then(|p| p.backup().cloned())
+                    .or_else(|| op.data().and_then(|d| d.backup.clone())),
+            )
+        });
         let onboarding = store.read(cx, |op| {
             op.data().is_some_and(|data| data.configured().is_none())
         });
@@ -220,7 +215,7 @@ impl Render for SettingsView {
                                 "settings-save"
                             },
                         ))
-                        .disabled(busy || conflict || reconcile)
+                        .disabled(busy)
                         .on_click(cx.listener(|this, _, window, cx| {
                             if this.controller.read(cx).busy(cx) {
                                 return;
@@ -252,7 +247,7 @@ impl Render for SettingsView {
             view = view.child(
                 Button::new("write-current")
                     .label(t(cx, "settings-write-current"))
-                    .disabled(busy || conflict || reconcile)
+                    .disabled(busy)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.controller
                             .update(cx, |owner, cx| owner.write_committed(cx))
@@ -261,28 +256,15 @@ impl Render for SettingsView {
         }
         if let Some(key) = self.error.as_deref().or(problem) {
             view = view.child(div().text_color(cx.theme().danger).child(t(cx, key)));
-            if !reconcile {
-                let mut repairs = h_flex().gap_2();
-                if conflict {
-                    repairs = repairs.child(
-                        Button::new("overwrite")
-                            .label(t(cx, "action-overwrite"))
-                            .disabled(busy)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.request(ConfigRepair::BackupAndWrite, cx)
-                            })),
-                    );
-                } else if !write_failed {
-                    repairs = repairs.child(
-                        Button::new("reset")
-                            .label(t(cx, "action-reset"))
-                            .disabled(busy)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.request(ConfigRepair::BackupAndReset, cx)
-                            })),
-                    );
-                }
-                view = view.child(repairs);
+            if !write_failed {
+                view = view.child(
+                    Button::new("reset")
+                        .label(t(cx, "action-reset"))
+                        .disabled(busy)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.request(ConfigRepair::BackupAndReset, cx)
+                        })),
+                );
             }
         }
         if let Some(backup) = backup {

@@ -5,7 +5,7 @@
 ## E-110：已核对的 API
 
 - `crates/gpui-operation/src/{lib,message,repair,refresh}.rs`：完整 Operation 接受 Transition 消息；Ready 可 Refresh，问题态通过显式 Repair 恢复；Complete 只用于运行态。Operation 拥有 Task，不负责启动或磁盘回滚。
-- `app/jaco/src/state/config.rs`：ConfigOperation 放在 Store 中，数据携带配置与源字节，修复选择包括重读、重试写入与备份覆盖。
+- `app/gupi/src/state/config.rs`：ConfigOperation 放在 Store 中，配置写入前重读最新文件并应用本次修改的字段；普通失败重试和损坏配置的备份重置由应用处理。
 - `app/jaco/src/features/home/root.rs`：JacoRoot 订阅资源状态，根据数据可用性呈现内容，保留 HomeView Entity。
 - `crates/gpui-form-gpui-component/src/{input,select}.rs`：实际适配器为 FormInput、FormSelect，通过 new 接收 owner、typed path 和 control builder。最终泛型调用受依赖升级后的类型一致性检查约束。
 
@@ -21,7 +21,7 @@ pub(crate) enum ConfigContents {
 pub(crate) struct ConfigData {
     path: PathBuf,
     contents: ConfigContents,
-    source_bytes: Option<Vec<u8>>,
+    backup: Option<PathBuf>,
 }
 pub(crate) type ConfigOperation =
     repair::Operation<ConfigData, ConfigProblem, ConfigRepair, Task<()>>;
@@ -32,15 +32,14 @@ pub(crate) enum ConfigRepair {
     SaveDraft,
     WriteCommitted,
     BackupAndReset,
-    BackupAndWrite,
 }
 ```
 
-Missing 必须对应 source_bytes=None；Configured 对应成功读入或写入的完整字节。初次文件不存在可返回 Ready(Missing)，表示读取事实可靠，不代表配置已应用。运行时主题和语言从唯一 Form 草稿投影，立即预览；持久化权威仍为 Configured。引导末页可显式检测草稿中的 Pi，完成按钮要求检测结果与当前命令匹配且成功；正常启动从 Configured 检测。运行中已有 Configured 后的 NotFound 返回错误，保留旧数据，不能完成为 Missing。
+Configured 保存成功读入或写入的配置值，不保留用于冲突比较的文件字节。初次文件不存在可返回 Ready(Missing)，表示读取事实可靠，不代表配置已应用。运行时主题和语言从唯一 Form 草稿投影，立即预览；持久化权威仍为 Configured。引导末页可显式检测草稿中的 Pi，完成按钮要求检测结果与当前命令匹配且成功；正常启动从 Configured 检测。运行中已有 Configured 后的 NotFound 返回错误，保留旧数据，不能完成为 Missing。
 
 ConfigController 是唯一命令入口，持有 ConfigStore 及设置表单弱引用；根组件/主题持有订阅。Store 按应用寿命存活，完成回调更新同一个 Store，不由 Task 强引用 Store 形成环。features/settings.rs 的 SettingsView 只拥有编辑 Form；关闭窗口不销毁配置任务。
 
-ConfigRepair 只记录操作意图；提交快照由运行任务持有，失败后释放。错误上下文保留写入来源、冲突及备份结果，不保存可重放的旧草稿。具体定义和准入见 L-114。
+ConfigRepair 只记录操作意图；提交快照由运行任务持有，失败后释放。错误上下文保留读写错误及备份结果，不保存可重放的旧草稿。具体定义和准入见 L-114。
 
 ## L-111：操作准入、转移与表单结果
 
@@ -62,12 +61,12 @@ Degraded(Missing) 仍无可用配置，初次保存失败可能落到此状态�
 
 | 操作 | 成功后的表单 | 失败后的表单 |
 | --- | --- | --- |
-| 保存草稿 | 以实际提交值 rebase；运行期间禁止编辑 | 保留草稿 |
+| 保存草稿 | 以实际写入值通过 rebase_if_current 更新；运行期间禁止编辑 | 保留草稿 |
 | 主动重读 | 若 dirty，开始前确认舍弃；成功才用读入值 rebase | 保留草稿 |
 | 当前内存写回 | 草稿和值/基线都保留 | 保留草稿 |
 | 备份重置 | 明确确认后以新配置 rebase | 保留草稿，显示已完成的备份等部分结果 |
 
-保存失败后继续编辑，使用同一个保存入口提交当前表单。问题态的保存使用 Repair { repair: SaveDraft, task }，不能向 Degraded 发送 Refresh；按 L-114 检查冲突与备份要求。
+保存失败后继续编辑，使用同一个保存入口提交当前表单。问题态的保存使用 Repair { repair: SaveDraft, task }，不能向 Degraded 发送 Refresh。
 
 ## L-112 / ST-112：Pi 数据与页面投影
 
@@ -109,29 +108,11 @@ features/startup.rs 的根视图持有已有页面 Entity 并订阅配置、Pi�
 
 ## L-114：写入失败后的再次保存
 
-```rust
-pub(crate) enum ConfigWriteSource { Draft, Committed }
-struct PendingConfig {
-    value: AppConfig,
-    bytes: Vec<u8>,
-    expected_source: Option<Vec<u8>>,
-    source: ConfigWriteSource,
-}
-```
+每次保存由 Form::prepare 捕获当前值与 FormVersion，并以已加载配置（首次为默认值）为比较基线。运行任务重新读取配置，只应用本次改变的字段，再调用现有 write_atomic。成功发布实际写入配置，并使用 rebase_if_current 更新表单。未修改字段使用最新磁盘值，同一字段以本次提交为准；不维护文件字节快照、写入锁或冲突覆盖状态。
 
-PendingConfig 位于 state/config.rs，只表示本次运行任务的不可变输入。每次保存都重新 prepare、校验并捕获当前草稿；失败后保留表单，不提供独立的重试写入按钮。错误只记录 Draft/Committed 来源与备份结果。发生冲突后，备份覆盖在用户确认时重新捕获当前来源：Draft 使用当前表单，Committed 使用已应用配置并保留草稿；不能恢复失败前的旧表单快照。
+保存失败保留当前表单，用户再次保存时重新校验、读取和合并。显式写回已应用配置使用完整已应用值并保留草稿；损坏配置只能经用户确认的备份重置替换。备份成功后其他步骤失败时仍展示备份路径。普通错误不伪造磁盘回滚，也不建立专门的提交结果核对状态。
 
-| 问题 | 可用动作 | 约束 |
-| --- | --- | --- |
-| 配置读取/解析失败 | Reload；明确的重新设置/备份重置 | 原文件存在时替换前备份；目录/权限不满足则停止 |
-| 写入前失败，outcome=Unchanged | 保存当前草稿、写回已应用配置、Reload | 原有数据仍有效；每次写入重新取值并比较 expected_source |
-| 外部版本冲突 | Reload、明确 BackupAndWrite | 不提供绕过版本检查的普通重试 |
-| 备份成功后写入失败 | 保存当前草稿、写回已应用配置、Reload | 保留并展示已有备份结果；再次核对磁盘，不虚报整个操作未产生效果 |
-| outcome=NeedsReconcile | Reload | 禁用保存/覆盖；先核对当前磁盘，结果明确后再开放提交 |
-
-未返回的写入继续处于 Refreshing 或 Repairing…，Task 和旧数据由 Operation 持有，控件禁用。不能因 UI 等待超时直接发 Complete(Err) 后放开重试，留下后台旧写入继续竞争。提交返回但结果需核对时，Complete(Err(NeedsReconcile)) 转为问题态；下一步用户选 Reload 经 Repair 收敛实际磁盘结果。
-
-Jaco `database/operation.rs` 的 Retiring 是专门的数据库会话退役阶段，证明需要收尾的业务资源应在收尾完成后才允许修复；Gupi 配置本阶段可用现有 repair 家族和上述错误上下文表达，不新增同构 Operation。若后续确有共享家族无法表达的生产状态，再基于具体资源设计，不能因“复杂”先扩充状态数。
+未返回的写入继续处于 Refreshing 或 Repairing…，任务和旧数据由 Operation 持有；应用退出等待任务结束，不另加超时或后台自动重试。
 
 ## L-115：超时先于执行建立
 
@@ -141,4 +122,4 @@ Pi 探测在创建任务前确定 15 秒 deadline，统一约束排队、查找�
 
 后续 Pi RPC 自身返回的模型/工具错误按原意展示，宿主探测超时、进程退出和通信中断保持独立来源；“还在执行”本身不等于 Pi 已报错。本轮不实现第二阶段行为。
 
-验证补充：T-111 覆盖冲突无普通重试、NeedsReconcile 只允许核对、备份成功后的失败保留结果；T-112 覆盖先建立 deadline、超时释放资源并发布错误；T-113 覆盖布局保存失败静默退出。合并到原测试场景，不增加重复门禁。
+验证补充：T-111 覆盖外部修改合并、失败后按当前草稿重试、已应用值写回保留草稿、损坏配置备份重置；T-112 覆盖先建立 deadline、超时释放资源并发布错误；T-113 覆盖布局保存失败静默退出。合并到原测试场景，不增加重复门禁。
