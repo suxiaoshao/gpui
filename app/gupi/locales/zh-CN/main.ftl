@@ -146,8 +146,8 @@ conversation-graph-message = 消息
 conversation-catalog-empty = 暂无会话
 
 conversation-thinking-content = 思考过程
+conversation-thinking-running = 正在思考
 conversation-tool-group = 工具调用（{ $count }）
-conversation-tool-group-running = 正在处理 { $count } 项工具调用
 conversation-tool-group-read = 读取文件（{ $count }）
 conversation-tool-group-bash = 运行命令（{ $count }）
 conversation-tool-group-search = 查找内容（{ $count }）
@@ -195,8 +195,6 @@ conversation-tool-action-other =
         [failed] 调用失败 { $name }
         *[unfinished] 未完成调用 { $name }
     }
-conversation-tool-group-explore = 查找并读取文件
-conversation-tool-group-explore-commands = 读取文件并运行命令
 
 conversation-processed = 已处理 { $duration }
 conversation-processed-failed = 处理失败 { $duration }
@@ -320,3 +318,14 @@ command-send-text = 发送
 command-execute = 执行
 
 command-scope-current = 当前会话
+
+conversation-working-duration = 正在处理 { $duration }
+conversation-tool-group-skill = 读取技能（{ $count }）
+conversation-shell-line = { $shell } · { $action } { $summary }
+conversation-tool-action-skill =
+    { $state ->
+        [running] 正在读取技能
+        [complete] 已读取技能
+        [failed] 技能读取失败
+       *[unfinished] 技能读取未完成
+    }

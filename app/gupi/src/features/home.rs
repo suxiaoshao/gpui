@@ -60,6 +60,7 @@ pub(crate) struct HomeView {
     projects_with_more: HashSet<PathBuf>,
     open_projects: HashSet<PathBuf>,
     layout_save: Option<Task<()>>,
+    runtime_tick: Option<Task<()>>,
     pane_layout: panes::PaneLayout,
     pane_drag: Option<panes::Drag>,
     palette: Option<(bool, Entity<palette::Palette>)>,
@@ -226,6 +227,7 @@ impl HomeView {
             projects_with_more: HashSet::new(),
             open_projects: HashSet::new(),
             layout_save: None,
+            runtime_tick: None,
             pane_layout: panes::PaneLayout::default(),
             pane_drag: None,
             palette: None,
@@ -252,6 +254,34 @@ impl HomeView {
                 .update(cx, |picker, cx| picker.close(window, cx));
         }
         self.shown_key = key.clone();
+        let running = key
+            .as_ref()
+            .and_then(|key| self.state.read(cx).sessions.get(key))
+            .is_some_and(|s| s.running());
+        if !running {
+            self.runtime_tick = None;
+        } else if self.runtime_tick.is_none() {
+            self.runtime_tick = Some(cx.spawn(async |this, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(1))
+                        .await;
+                    if this
+                        .update(cx, |this, cx| {
+                            if let Some(view) =
+                                this.shown_key.as_ref().and_then(|key| this.views.get(key))
+                            {
+                                view.scroller.update(cx, |s, cx| s.remeasure(cx));
+                            }
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }));
+        }
         let Some(key) = key else {
             cx.notify();
             return;

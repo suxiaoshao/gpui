@@ -8,7 +8,7 @@ fn rows(parents: &[Option<usize>]) -> Vec<HistoryRow> {
             id: i.to_string(),
             title: format!("node {i}"),
             kind: HistoryKind::AssistantProgress,
-            tool: None,
+            tool_kind: None,
             timestamp: String::new(),
             label: None,
             parent: p.map(|i| i.to_string()),

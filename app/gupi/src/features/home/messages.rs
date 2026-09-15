@@ -2,14 +2,16 @@ use super::*;
 use crate::state::{conversation::Session, history::DisplayMessage};
 use gpui_kit::component::{
     bubble::{Bubble, BubbleContent, BubbleVariant},
-    message::{Message, MessageAlignment, MessageContent, MessageFooter},
+    marker::{Marker, MarkerContent, MarkerLoadingStyle},
+    message::{
+        Message, MessageAlignment, MessageContent, MessageFooter, MessageGroup, MessageHeader,
+    },
     message_scroller::MessageScroller,
-    text::TextView,
 };
-use gpui_kit::prelude::FluentBuilder;
 
 mod actions;
 mod activity;
+mod markdown;
 mod metadata;
 mod presentation;
 mod viewport;
@@ -25,12 +27,12 @@ pub(super) struct ChatRow {
 impl ChatRow {
     fn spacing_before(&self, previous: Option<&Self>) -> Rems {
         let Some(previous) = previous else {
-            return rems(0.5);
+            return rems(0.);
         };
         match (&previous.kind, &self.kind) {
             (RowKind::Run { .. } | RowKind::Compaction(_), RowKind::Compaction(_))
             | (RowKind::Compaction(_), RowKind::Run { .. }) => rems(0.75),
-            _ => rems(3.),
+            _ => rems(2.),
         }
     }
 
@@ -68,6 +70,7 @@ enum RowKind {
     Run {
         messages: Vec<DisplayMessage>,
         active: bool,
+        started_at: Option<i64>,
     },
     Compaction(DisplayMessage),
     BranchSummary(DisplayMessage),
@@ -76,22 +79,36 @@ pub(super) fn project(session: &Session, preview: Option<&str>) -> Vec<ChatRow> 
     let active = session
         .active_messages()
         .filter(|_| preview.is_none_or(|id| session.history().on_current_path(id)));
-    project_rows(session.messages(preview), active)
+    let mut rows = project_rows(session.messages(preview), active);
+    for row in &mut rows {
+        if let RowKind::Run {
+            active: true,
+            started_at,
+            ..
+        } = &mut row.kind
+        {
+            *started_at = started_at.or(session.run_started_at());
+        }
+    }
+    rows
 }
 fn project_rows(
     messages: Vec<DisplayMessage>,
     active_messages: Option<&HashSet<String>>,
 ) -> Vec<ChatRow> {
     let mut rows: Vec<ChatRow> = vec![];
+    let mut started_at = None;
     for m in messages {
         let entries = m.entry.iter().cloned().collect();
         if m.role() == "user" {
+            started_at = m.value["timestamp"].as_i64();
             rows.push(ChatRow {
                 id: m.id.clone(),
                 entries,
                 kind: RowKind::User(m),
             });
         } else if matches!(m.role(), "compaction" | "branch_summary") {
+            started_at = None;
             // A compaction is a chronological assistant activity, not a container
             // for earlier messages. Keep both adjacent runs' answers intact.
             rows.push(ChatRow {
@@ -113,9 +130,13 @@ fn project_rows(
             messages.push(m);
         } else {
             rows.push(ChatRow {
-                id: format!("run-{}", m.id),
+                id: rows
+                    .last()
+                    .map(|r| format!("run-after-{}", r.id))
+                    .unwrap_or_else(|| format!("run-{}", m.id)),
                 entries,
                 kind: RowKind::Run {
+                    started_at: started_at.or_else(|| m.value["timestamp"].as_i64()),
                     messages: vec![m],
                     active: false,
                 },
@@ -123,11 +144,32 @@ fn project_rows(
         }
     }
     if let Some(active_messages) = active_messages {
+        if rows
+            .last()
+            .is_none_or(|row| !matches!(row.kind, RowKind::Run { .. }))
+        {
+            rows.push(ChatRow {
+                id: rows
+                    .last()
+                    .map(|row| format!("run-after-{}", row.id))
+                    .unwrap_or_else(|| "run-pending".into()),
+                entries: vec![],
+                kind: RowKind::Run {
+                    messages: vec![],
+                    active: true,
+                    started_at,
+                },
+            });
+        }
         for row in &mut rows {
-            if let RowKind::Run { messages, active } = &mut row.kind {
-                *active = messages
-                    .iter()
-                    .any(|m| active_messages.contains(&m.signature()));
+            if let RowKind::Run {
+                messages, active, ..
+            } = &mut row.kind
+            {
+                *active = messages.is_empty()
+                    || messages
+                        .iter()
+                        .any(|m| active_messages.contains(&m.signature()));
             }
         }
         // A reconnected streaming session may precede our first delivered event.
@@ -142,10 +184,14 @@ fn project_rows(
     }
     rows
 }
-fn text_view(id: String, text: String) -> TextView {
-    TextView::markdown(id, text).selectable(true)
-}
 impl HomeView {
+    fn text_view(&self, key: &str, id: String, text: String) -> markdown::Markdown {
+        markdown::Markdown::new(
+            format!("{key}-{id}"),
+            text,
+            self.views[key].scroller.downgrade(),
+        )
+    }
     pub(super) fn render_messages(
         &self,
         _window: &mut Window,
@@ -270,11 +316,9 @@ impl HomeView {
                                     .w_full()
                                     .flex()
                                     .justify_center()
-                                    .px_5()
                                     .pt(row.spacing_before(
                                         index.checked_sub(1).and_then(|i| rows.get(i)),
                                     ))
-                                    .when(index + 1 == rows.len(), |row| row.pb_2())
                                     .child(
                                         div()
                                             .w_full()
@@ -321,18 +365,20 @@ impl HomeView {
                     .child(
                         Message::new()
                             .alignment(MessageAlignment::End)
-                            .content(
-                                MessageContent::new().bubble(
-                                    Bubble::new().with_variant(BubbleVariant::Muted).content(
-                                        BubbleContent::new()
-                                            .child(text_view(format!("text-{}", m.id), m.text())),
-                                    ),
+                            .content(MessageContent::new().bubble(
+                                Bubble::new().with_variant(BubbleVariant::Muted).content(
+                                    BubbleContent::new().child(self.text_view(
+                                        key,
+                                        format!("text-{}", m.id),
+                                        m.text(),
+                                    )),
                                 ),
-                            )
+                            ))
                             .footer(
                                 MessageFooter::new().child(actions::MessageActions {
                                     id: format!("{key}-{}", m.id),
                                     message: m.clone(),
+                                    text: m.text(),
                                     before_copy: Some(
                                         Button::new(format!("fork-{key}-{}", m.id))
                                             .ghost()
@@ -364,24 +410,30 @@ impl HomeView {
                             false,
                             div()
                                 .pl_6()
-                                .child(text_view(format!("text-{}", m.id), m.text()))
+                                .child(self.text_view(key, format!("text-{}", m.id), m.text()))
                                 .into_any_element(),
                             cx,
                         ),
                     ),
                 )
                 .into_any_element(),
-            RowKind::BranchSummary(m) => v_flex()
-                .gap_2()
-                .text_sm()
-                .child(
-                    div()
-                        .text_color(cx.theme().muted_foreground)
+            RowKind::BranchSummary(m) => Message::new()
+                .header(
+                    MessageHeader::new()
+                        .content_inset(false)
                         .child(t(cx, "conversation-branch-summary")),
                 )
-                .child(text_view(format!("text-{}", m.id), m.text()))
+                .content(MessageContent::new().child(self.text_view(
+                    key,
+                    format!("text-{}", m.id),
+                    m.text(),
+                )))
                 .into_any_element(),
-            RowKind::Run { messages, active } => {
+            RowKind::Run {
+                messages,
+                active,
+                started_at,
+            } => {
                 let live = self
                     .state
                     .read(cx)
@@ -391,54 +443,62 @@ impl HomeView {
                     .map(|session| session.tools.as_slice())
                     .unwrap_or_default();
                 let content = RunContent::project(messages, live, *active);
-                let mut result = v_flex().w_full().min_w_0().gap_3();
-                let has_process = !content.activities.is_empty();
-                if has_process {
-                    let process = v_flex()
+                let mut result = MessageGroup::new().w_full();
+                if content.has_process() {
+                    let title = metadata::process_title(messages, *active, *started_at, cx);
+                    let blocks = content.blocks();
+                    let last = blocks.len().saturating_sub(1);
+                    let process = MessageGroup::new()
                         .w_full()
-                        .min_w_0()
-                        .gap_3()
-                        .children(
-                            content
-                                .blocks()
-                                .into_iter()
-                                .map(|block| self.render_block(key, block, cx)),
-                        )
+                        .children(blocks.into_iter().enumerate().map(|(i, block)| {
+                            self.render_block(
+                                key,
+                                block,
+                                *active && !content.final_started && i == last,
+                                cx,
+                            )
+                        }))
                         .into_any_element();
                     result = result.child(
                         self.fold(
                             key,
                             &row.id,
-                            Disclosure::run(metadata::process_title(messages, *active, cx))
-                                .loading(*active),
+                            Disclosure::run(title)
+                                .locked((*active && !content.final_started) || content.interrupted),
                             *active || content.interrupted || content.answer.is_none(),
                             process,
                             cx,
                         ),
                     );
-                } else if *active && content.answer.is_none() {
+                } else if *active
+                    && !content.interrupted
+                    && !content.final_started
+                    && content.answer_text.is_empty()
+                {
                     result = result.child(
-                        gpui_kit::component::marker::Marker::new()
+                        Marker::new()
                             .loading(true)
+                            .with_loading_style(MarkerLoadingStyle::Shimmer)
                             .content(
-                                gpui_kit::component::marker::MarkerContent::new()
-                                    .text(t(cx, "conversation-working")),
+                                MarkerContent::new().text(t(cx, "conversation-thinking-running")),
                             ),
                     );
                 }
                 if let Some(index) = content.answer {
                     let m = &messages[index];
-                    let text = m.text();
+                    let text = content.answer_text.clone();
                     result = result.child(
                         Message::new()
-                            .content(
-                                MessageContent::new()
-                                    .child(text_view(format!("text-{}", m.id), text)),
-                            )
+                            .content(MessageContent::new().child(self.text_view(
+                                key,
+                                format!("text-{}", m.id),
+                                text,
+                            )))
                             .footer(MessageFooter::new().content_inset(false).child(
                                 actions::MessageActions {
                                     id: format!("{key}-{}", m.id),
                                     message: m.clone(),
+                                    text: content.answer_text.clone(),
                                     before_copy: None,
                                 },
                             )),
@@ -474,11 +534,163 @@ mod tests {
     use super::{RowKind, RunContent, project_rows};
     use crate::state::history::DisplayMessage;
     use std::collections::{HashMap, HashSet};
+    #[test]
+    fn installed_pi_recording_updates_the_projection_during_each_message() {
+        use super::{Activity, project};
+        use crate::state::conversation::Session;
+        let events: Vec<serde_json::Value> =
+            include_str!("../../../tests/fixtures/rpc-message-stream.jsonl")
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+        let mut thinking_updates = 0;
+        let mut text_updates = 0;
+        let mut call_starts = 0;
+        for (index, event) in events.iter().enumerate() {
+            if event["type"] != "message_update" {
+                continue;
+            }
+            assert!(event.get("message").is_none());
+            let session = Session::from_rpc_messages(&events[..=index]);
+            let rows = project(&session, None);
+            let RowKind::Run {
+                messages, active, ..
+            } = &rows.last().unwrap().kind
+            else {
+                panic!("missing run")
+            };
+            assert!(messages.last().unwrap().completed_at.is_none());
+            let content = RunContent::project(messages, &session.tools, *active);
+            let delta = &event["assistantMessageEvent"];
+            match delta["type"].as_str() {
+                Some("thinking_delta") => {
+                    thinking_updates += 1;
+                    assert!(
+                        matches!(content.activities.last(), Some(Activity::Text { text, running: true, .. })
+                        if text.ends_with(delta["delta"].as_str().unwrap()))
+                    );
+                }
+                Some("text_delta") => {
+                    text_updates += 1;
+                    assert!(
+                        content
+                            .answer_text
+                            .ends_with(delta["delta"].as_str().unwrap())
+                    );
+                }
+                Some("toolcall_start") => {
+                    call_starts += 1;
+                    assert!(
+                        matches!(content.activities.last(), Some(Activity::Tool(tool))
+                        if tool.name == delta["toolName"].as_str().unwrap())
+                    );
+                }
+                _ => {}
+            }
+        }
+        assert_eq!((thinking_updates, text_updates, call_starts), (18, 6, 2));
+        let session = Session::from_rpc_messages(&events);
+        assert_eq!(
+            session
+                .messages(None)
+                .iter()
+                .filter(|m| m.role() == "assistant")
+                .count(),
+            3
+        );
+        assert!(session.interrupted);
+    }
+
+    #[test]
+    fn rpc_deltas_reach_visible_rows_before_message_end() {
+        use super::{Activity, ActivityBlock, ToolStatus, project};
+        use crate::state::conversation::Session;
+        use serde_json::json;
+
+        let mut wire = vec![
+            json!({"type":"message_start", "message":{"role":"user", "timestamp":1, "content":[{"type":"text", "text":"检查文件"}]}}),
+            json!({"type":"message_start", "message":{"role":"assistant", "timestamp":2, "stopReason":"pending", "content":[]}}),
+            json!({"type":"message_update", "assistantMessageEvent":{"type":"thinking_start", "contentIndex":0}}),
+        ];
+        let project_run = |wire: &[serde_json::Value]| {
+            let session = Session::from_rpc_messages(wire);
+            let rows = project(&session, None);
+            let RowKind::Run {
+                messages, active, ..
+            } = &rows.last().unwrap().kind
+            else {
+                panic!("missing run")
+            };
+            assert!(*active);
+            RunContent::project(messages, &session.tools, *active)
+        };
+        assert!(
+            matches!(project_run(&wire).activities.last(), Some(Activity::Text {
+            text, thinking: true, running: true, ..
+        }) if text.is_empty())
+        );
+
+        wire.extend([
+            json!({"type":"message_update", "assistantMessageEvent":{"type":"thinking_delta", "contentIndex":0, "delta":"先检查"}}),
+            json!({"type":"message_update", "assistantMessageEvent":{"type":"thinking_delta", "contentIndex":0, "delta":"目录"}}),
+        ]);
+        assert!(
+            matches!(project_run(&wire).activities.last(), Some(Activity::Text {
+            text, thinking: true, running: true, ..
+        }) if text == "先检查目录")
+        );
+
+        wire.extend([
+            json!({"type":"message_update", "assistantMessageEvent":{"type":"thinking_end", "contentIndex":0, "content":"先检查目录。"}}),
+            json!({"type":"message_update", "assistantMessageEvent":{"type":"text_start", "contentIndex":1}}),
+            json!({"type":"message_update", "usage":{"output":8}, "assistantMessageEvent":{"type":"text_delta", "contentIndex":1, "delta":"我来读取"}}),
+        ]);
+        let content = project_run(&wire);
+        assert_eq!(content.answer_text, "我来读取");
+        assert!(!content.final_started);
+        assert!(
+            matches!(&content.activities[0], Activity::Text { text, running: false, .. } if text == "先检查目录。")
+        );
+        assert_eq!(
+            Session::from_rpc_messages(&wire).live[1].value["usage"]["output"],
+            8
+        );
+
+        wire.extend([
+            json!({"type":"message_update", "assistantMessageEvent":{"type":"text_end", "contentIndex":1, "content":"我来读取技能"}}),
+            json!({"type":"message_update", "assistantMessageEvent":{"type":"toolcall_start", "contentIndex":2, "id":"read-1", "toolName":"read"}}),
+            json!({"type":"message_update", "assistantMessageEvent":{"type":"toolcall_delta", "contentIndex":2, "delta":"{\"path\":\"skills/"}}),
+        ]);
+        assert!(
+            matches!(project_run(&wire).activities.last(), Some(Activity::Tool(tool)) if tool.name == "read" && tool.status == ToolStatus::Running)
+        );
+        wire.push(json!({"type":"message_update", "assistantMessageEvent":{
+            "type":"toolcall_delta", "contentIndex":2, "delta":"review/SKILL.md\"}"
+        }}));
+        assert!(
+            matches!(project_run(&wire).activities.last(), Some(Activity::Tool(tool))
+            if tool.summary() == Some("review"))
+        );
+        wire.push(json!({"type":"message_update", "assistantMessageEvent":{
+            "type":"toolcall_end", "contentIndex":2,
+            "toolCall":{"type":"toolCall", "id":"read-1", "name":"read", "arguments":{"path":"skills/final/SKILL.md"}}
+        }}));
+        let content = project_run(&wire);
+        assert!(content.answer.is_none());
+        assert!(
+            matches!(content.blocks()[1], ActivityBlock::Message(Activity::Text { text, .. }) if text == "我来读取技能")
+        );
+        assert!(
+            matches!(content.activities.last(), Some(Activity::Tool(tool)) if tool.summary() == Some("final"))
+        );
+        assert!(wire.iter().all(|e| e["type"] != "message_end"));
+    }
     fn message(id: &str, role: &str) -> DisplayMessage {
         DisplayMessage {
             id: id.into(),
             entry: Some(id.into()),
             value: serde_json::json!({"role":role,"content":id,"timestamp":id}),
+            final_answer_part: None,
             completed_at: None,
         }
     }
@@ -549,5 +761,29 @@ mod tests {
             row.reveal("u", &mut open);
         }
         assert!(open.is_empty());
+    }
+    #[test]
+    fn first_message_has_a_stable_working_row_before_assistant_output() {
+        let mut user = message("user", "user");
+        user.value["timestamp"] = serde_json::json!(1000);
+        let before = project_rows(vec![user.clone()], Some(&HashSet::new()));
+        assert_eq!(before.len(), 2);
+        assert!(
+            matches!(&before[1].kind, RowKind::Run { active: true, messages, started_at: Some(1000) } if messages.is_empty())
+        );
+        let reply = message("reply", "assistant");
+        let after = project_rows(
+            vec![user, reply.clone()],
+            Some(&HashSet::from([reply.signature()])),
+        );
+        assert_eq!(before[1].id, after[1].id);
+        assert!(matches!(
+            after[1].kind,
+            RowKind::Run {
+                active: true,
+                started_at: Some(1000),
+                ..
+            }
+        ));
     }
 }

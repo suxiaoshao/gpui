@@ -1,5 +1,7 @@
 # 会话目录读取优化
 
+同一问题下的运行展示工作另见[实施计划](runtime-display-plan.md)与[对照报告](runtime-display-research.md)；本页保留目录读取优化与 Gallery 使用说明。
+
 状态：读取优化已实现，受影响构建和目录回归已通过。保留现有搜索，采用顺序字节读取与 sonic-rs 按字段解析；本计划只覆盖这项读取优化。运行时 loading、消息展示的其他反馈另按具体问题确定范围。
 
 ## 目标与范围
@@ -105,3 +107,19 @@ Pi session 是 JSONL 文件，首行是 session header，后续消息与元数�
 验证命令：`cargo build -p gupi --locked --offline`、`cargo test -p gupi session_catalog --locked --offline`（7 个通过）、`cargo clippy -p gupi --all-targets --locked --offline -- -D warnings`、`cargo fmt --all -- --check`。没有启动或注册测试 .app，真实窗口呈现不属于本次计时。
 
 前期目录与 Codex 时间来源证据见[扫描调研记录](../session-catalog-scan-draft.md)。
+
+## 运行场景体验
+
+用户体验反馈及 Codex Electron / Pi TUI 对照见[运行中状态与过程展示调研](runtime-display-research.md)。报告记录了首字前反馈、第一级折叠、计时动效、多工具汇总、Skill 读取，以及实际 Gallery 样本中时间戳碰撞造成旧过程覆盖的原因；当前实现与验证结果见实施计划。
+
+在仓库根目录运行 `node script/gupi-runtime-gallery --no-build`，使用当前 `target/debug/gupi`；省略 `--no-build` 会先构建。脚本创建隔离配置、Pi agent/session 目录与测试项目，直接启动原有 Gupi 可执行文件，不创建或注册新的 `.app`。`--prepare-only` 只准备环境，不启动窗口。退出后保留临时目录，路径在终端输出，便于检查会话文件。
+
+默认模型是 **Runtime Gallery · 慢速运行**。发送任意文字会重播以下完整场景：慢速思考、过程说明、ls、第一份 SKILL.md 读取、find/grep、write/edit、bash、通用工具的进度更新，再进入第二轮思考、过程说明、另一份 SKILL.md 读取、报告读取/修改、bash 和进度检查，最后输出最终回答。工具实际操作测试项目的文件；每次执行前暂停 2.5 秒，通用工具每 2 秒更新进度。中间回答的 stopReason 为 toolUse，只有末条是 stop。
+
+覆盖消息区的 Brain、BookOpen（技能）、FileText（普通读取）、FilePlus、FilePenLine、Terminal、Search、Folder、Wrench，历史树同步读取和技能图标。Skill 读取仍属于 read，没有额外编造一种 Skill RPC 消息。此场景用于观察 #229 的实际表现，不表示这些类型已发现缺陷。
+
+插件位于 `app/gupi/tests/fixtures/runtime-gallery.mjs`。使用 Pi 自带 fauxProvider，`tokensPerSecond: 2`、固定小块输出，便于中途停止、切走再切回，以及对比历史折叠。只在测试项目和测试模型下执行。项目路径用 realpath 比较，兼容 macOS `/var` 与 `/private/var` 指向同一目录；此前字符串路径比较误报会导致 before_agent_start 未填充响应队列，随后出现 `No more faux responses queued`，现已复现并修复。
+
+已完成 JavaScript 语法检查、隔离环境准备和安装版 Pi 的模型注册检查，并在实际 RPC 发送中确认能收到思考输出。另用临时副本仅加速输出和工具等待，连续完整运行两次：26 次工具调用、10 段思考、2 次最终回答、无工具或扩展错误。正式插件仍保留慢速参数；未自动操作 Gupi 窗口，实际界面展示由用户体验。
+
+2026-09-15 修复：Gallery 改用响应工厂，在每次实际请求时构造回答时间戳，避免批量创建的 13 条 assistant 共用时间戳。此前两次加速 RPC 检查未覆盖此问题或实际界面；本轮做语法与消息投影回归，完整慢速场景留给用户体验。

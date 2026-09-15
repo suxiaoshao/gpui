@@ -7,6 +7,7 @@ use std::time::Duration;
 pub(super) struct MessageActions {
     pub id: String,
     pub message: DisplayMessage,
+    pub text: String,
     pub before_copy: Option<Button>,
 }
 impl RenderOnce for MessageActions {
@@ -34,7 +35,7 @@ impl RenderOnce for MessageActions {
         row = row.children(self.before_copy).child(CopyAction {
             state,
             id: format!("copy-{}", self.id),
-            text: self.message.text(),
+            text: self.text,
         });
         if !user {
             let fields = metadata::usage_fields(&self.message, cx);

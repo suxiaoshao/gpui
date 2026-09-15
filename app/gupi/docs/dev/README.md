@@ -2,6 +2,7 @@
 
 - [Pi RPC 能力缺口与社区调研](pi-rpc-gaps.md)：原生协议限制、可替代方案及上游公开进展。
 - [会话目录读取优化](issue-229/README.md)：顺序字节读取、sonic-rs 按字段解析；保留现有加载、排序与搜索，含性能依据和实施步骤。
+- [运行状态与过程展示](issue-229/runtime-display-plan.md)：工作计时、过程折叠、工具组摘要、技能图标统一与待确定边界；[Electron / Pi TUI 调研](issue-229/runtime-display-research.md)。
 
 - [第一阶段：应用骨架、启动引导与恢复入口](issue-218/README.md)
 - [第二阶段：Pi RPC 与进程生命周期](../../../../docs/dev/issue-219/README.md)：独立 crate、应用多实例管理、退出接入与集成验证计划。
