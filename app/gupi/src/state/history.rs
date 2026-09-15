@@ -45,7 +45,7 @@ pub(crate) struct HistoryRow {
     pub id: String,
     pub title: String,
     pub kind: HistoryKind,
-    pub tool: Option<String>,
+    pub tool_kind: Option<crate::foundation::tool_presentation::ToolKind>,
     pub timestamp: String,
     pub label: Option<String>,
     pub parent: Option<String>,
@@ -218,7 +218,7 @@ impl History {
             id: e.id.clone(),
             title: description.title.clone(),
             kind: description.kind,
-            tool: description.tool.clone(),
+            tool_kind: description.tool_kind,
             timestamp: e.timestamp.clone(),
             label: self.labels.get(&e.id).cloned(),
             parent: None,
@@ -233,6 +233,7 @@ pub(crate) struct DisplayMessage {
     pub entry: Option<String>,
     pub value: Value,
     pub completed_at: Option<i64>,
+    pub final_answer_part: Option<usize>,
 }
 impl DisplayMessage {
     pub fn from_entry(e: &SessionEntry) -> Option<Self> {
@@ -247,6 +248,7 @@ impl DisplayMessage {
             id: e.id.clone(),
             entry: Some(e.id.clone()),
             value,
+            final_answer_part: None,
             completed_at: time::OffsetDateTime::parse(
                 &e.timestamp,
                 &time::format_description::well_known::Rfc3339,
@@ -260,6 +262,16 @@ impl DisplayMessage {
     }
     pub fn text(&self) -> String {
         text_content(&self.value)
+    }
+    pub fn final_part(&self) -> Option<usize> {
+        self.final_answer_part.or_else(|| {
+            self.value["content"].as_array()?.iter().position(|part| {
+                part["textSignature"]
+                    .as_str()
+                    .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                    .is_some_and(|s| s["v"] == 1 && s["phase"] == "final_answer")
+            })
+        })
     }
     pub fn signature(&self) -> String {
         format!(

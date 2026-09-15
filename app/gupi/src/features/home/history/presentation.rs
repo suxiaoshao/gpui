@@ -84,12 +84,16 @@ pub(super) fn role(row: &HistoryRow, cx: &App) -> (IconName, Hsla, String) {
             "conversation-history-thinking",
         ),
         HistoryKind::ToolCall => (
-            IconName::Wrench,
+            row.tool_kind
+                .unwrap_or(crate::foundation::tool_presentation::ToolKind::Other)
+                .icon(),
             cx.theme().muted_foreground,
             "conversation-history-calls",
         ),
         HistoryKind::ToolResult => (
-            tool_icon(row.tool.as_deref()),
+            row.tool_kind
+                .unwrap_or(crate::foundation::tool_presentation::ToolKind::Other)
+                .icon(),
             cx.theme().muted_foreground,
             "conversation-role-tool",
         ),
@@ -150,18 +154,6 @@ pub(super) fn role(row: &HistoryRow, cx: &App) -> (IconName, Hsla, String) {
         ),
     };
     (icon, color, t(cx, label))
-}
-
-fn tool_icon(name: Option<&str>) -> IconName {
-    match name {
-        Some("read") => IconName::BookOpen,
-        Some("bash") => IconName::Terminal,
-        Some("edit") => IconName::FilePenLine,
-        Some("write") => IconName::FilePlus,
-        Some("grep" | "find") => IconName::Search,
-        Some("ls") => IconName::Folder,
-        _ => IconName::Wrench,
-    }
 }
 
 pub(super) fn is_process(kind: HistoryKind) -> bool {

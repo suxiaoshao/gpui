@@ -7,6 +7,7 @@ mod deletion;
 pub(crate) mod execution;
 mod export;
 pub(crate) mod loading;
+mod messages;
 mod model_change;
 mod reads;
 mod reconnect;
@@ -90,6 +91,7 @@ pub(crate) struct Session {
     pub state: Option<protocol::SessionState>,
     transcript: Transcript,
     pub live: Vec<DisplayMessage>,
+    message_stream: Option<messages::MessageStream>,
     run: RunState,
     pub tools: Vec<ToolActivity>,
     pub models: ReadState<Vec<Model>>,
@@ -133,6 +135,7 @@ impl Session {
             state: None,
             transcript,
             live: vec![],
+            message_stream: None,
             run: RunState::Idle,
             tools: vec![],
             models: ReadState::Idle,
@@ -186,6 +189,9 @@ impl Session {
     }
     pub fn active_messages(&self) -> Option<&HashSet<String>> {
         self.run.active_messages()
+    }
+    pub fn run_started_at(&self) -> Option<i64> {
+        self.run.started_at()
     }
     pub fn running(&self) -> bool {
         self.active_messages().is_some()
@@ -245,6 +251,8 @@ impl Session {
                 let signature = message.signature();
                 if let Some(existing) = messages.iter_mut().find(|m| m.signature() == signature) {
                     existing.value = message.value.clone();
+                    existing.final_answer_part =
+                        message.final_answer_part.or(existing.final_answer_part);
                 } else {
                     messages.push(message.clone());
                 }
@@ -1213,6 +1221,7 @@ impl ConversationState {
             Event::Agent { kind, raw } => {
                 match kind.as_str() {
                     "agent_start" => {
+                        s.message_stream = None;
                         s.tools.clear();
                         s.run.start();
                         s.error = None;
@@ -1222,6 +1231,7 @@ impl ConversationState {
                         refresh = true;
                     }
                     "agent_settled" => {
+                        s.message_stream = None;
                         s.run = RunState::Idle;
                         s.stopping = false;
                         refresh = true;
@@ -1244,45 +1254,7 @@ impl ConversationState {
                         }
                     }
                     "message_start" | "message_update" | "message_end" => {
-                        if let Some(message) = raw.get("message") {
-                            s.transcript.receive_message();
-                            let candidate = DisplayMessage {
-                                id: format!(
-                                    "live-{}-{}",
-                                    message["role"].as_str().unwrap_or("message"),
-                                    message
-                                        .get("timestamp")
-                                        .map(Value::to_string)
-                                        .unwrap_or_default()
-                                ),
-                                entry: None,
-                                value: message.clone(),
-                                completed_at: (kind == "message_end").then(|| {
-                                    (time::OffsetDateTime::now_utc().unix_timestamp_nanos()
-                                        / 1_000_000) as i64
-                                }),
-                            };
-                            let signature = candidate.signature();
-                            s.run.record_message(signature.clone());
-                            if let Some(existing) =
-                                s.live.iter_mut().find(|m| m.signature() == signature)
-                            {
-                                existing.value = message.clone();
-                                existing.completed_at =
-                                    candidate.completed_at.or(existing.completed_at);
-                            } else {
-                                s.live.push(candidate);
-                            }
-                            if message["stopReason"] == "error" {
-                                s.error = message
-                                    .get("errorMessage")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_owned);
-                            }
-                            if message["stopReason"] == "aborted" {
-                                s.interrupted = true;
-                            }
-                        }
+                        s.receive_message(kind, raw);
                     }
                     "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
                         let id = raw["toolCallId"].as_str().unwrap_or_default();

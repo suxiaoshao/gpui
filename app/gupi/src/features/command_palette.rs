@@ -332,7 +332,10 @@ impl CommandPalette {
                 .filter(|c| seen.insert(c.name.clone()))
             {
                 let (group, icon) = match c.source.as_str() {
-                    "skill" => (3, IconName::BookOpen),
+                    "skill" => (
+                        3,
+                        crate::foundation::tool_presentation::ToolKind::Skill.icon(),
+                    ),
                     "prompt" => (4, IconName::FileText),
                     _ => (2, IconName::Puzzle),
                 };

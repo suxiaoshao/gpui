@@ -108,6 +108,27 @@ conversation-branch-summary = Branch summary
 conversation-working = Working…
 conversation-process = View process
 conversation-details = Toggle details
+tool-detail-offset = Starting line:
+tool-detail-line-limit = Requested line limit:
+tool-detail-timeout = Timeout (seconds):
+tool-detail-output = Output
+tool-detail-input = Input
+tool-detail-additional = Additional information
+tool-detail-error = Error
+tool-detail-glob = File pattern:
+tool-detail-ignore-case = Ignore case:
+tool-detail-literal = Literal search:
+tool-detail-context = Context lines:
+tool-detail-result-limit = Requested result limit:
+tool-detail-old-text = Requested original text
+tool-detail-new-text = Requested replacement text
+tool-detail-truncated = Pi truncated this output; the content shown is not the full result.
+tool-detail-lines-truncated = Pi shortened some result lines.
+tool-detail-match-limit = Match limit reached:
+tool-detail-results-limited = Result limit reached:
+tool-detail-entries-limited = Directory entry limit reached:
+tool-detail-full-output = Full output file:
+tool-detail-image-unavailable = Unable to display this image.
 conversation-role-user = User message
 conversation-role-assistant = Assistant message
 conversation-role-tool = Tool result
@@ -146,8 +167,8 @@ conversation-graph-message = Message
 conversation-catalog-empty = No conversations yet
 
 conversation-thinking-content = Thinking
+conversation-thinking-running = Thinking…
 conversation-tool-group = Tool calls ({ $count })
-conversation-tool-group-running = Working on { $count } tool calls
 conversation-tool-group-read = Read files ({ $count })
 conversation-tool-group-bash = Commands ({ $count })
 conversation-tool-group-search = Searches ({ $count })
@@ -195,8 +216,6 @@ conversation-tool-action-other =
         [failed] Failed call to { $name }
         *[unfinished] Unfinished call to { $name }
     }
-conversation-tool-group-explore = Searched and read files
-conversation-tool-group-explore-commands = Read files and ran commands
 
 conversation-processed = Worked for { $duration }
 conversation-processed-failed = Failed after { $duration }
@@ -320,3 +339,14 @@ command-send-text = Send
 command-execute = Run
 
 command-scope-current = Current session
+
+conversation-working-duration = Working { $duration }
+conversation-tool-group-skill = Skills read ({ $count })
+conversation-shell-line = { $shell } · { $action } { $summary }
+conversation-tool-action-skill =
+    { $state ->
+        [running] Reading skill
+        [complete] Read skill
+        [failed] Failed to read skill
+       *[unfinished] Skill read unfinished
+    }

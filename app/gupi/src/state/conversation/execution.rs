@@ -8,18 +8,26 @@ pub(super) enum RunState {
     Idle,
     Active {
         messages: HashSet<String>,
+        started_at: i64,
     },
 }
 impl RunState {
     pub fn active_messages(&self) -> Option<&HashSet<String>> {
         match self {
             Self::Idle => None,
-            Self::Active { messages } => Some(messages),
+            Self::Active { messages, .. } => Some(messages),
+        }
+    }
+    pub fn started_at(&self) -> Option<i64> {
+        match self {
+            Self::Idle => None,
+            Self::Active { started_at, .. } => Some(*started_at),
         }
     }
     pub fn start(&mut self) {
         *self = Self::Active {
             messages: HashSet::new(),
+            started_at: (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64,
         };
     }
     pub fn observe_streaming(&mut self, streaming: bool) {
@@ -29,7 +37,7 @@ impl RunState {
         }
     }
     pub fn record_message(&mut self, signature: String) {
-        if let Self::Active { messages } = self {
+        if let Self::Active { messages, .. } = self {
             messages.insert(signature);
         }
     }

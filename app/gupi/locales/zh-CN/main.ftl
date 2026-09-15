@@ -108,6 +108,27 @@ conversation-branch-summary = 分支摘要
 conversation-working = 正在处理…
 conversation-process = 查看处理过程
 conversation-details = 展开或收起细节
+tool-detail-offset = 起始行：
+tool-detail-line-limit = 请求的行数上限：
+tool-detail-timeout = 超时（秒）：
+tool-detail-output = 输出
+tool-detail-input = 输入
+tool-detail-additional = 附加信息
+tool-detail-error = 错误
+tool-detail-glob = 文件匹配模式：
+tool-detail-ignore-case = 忽略大小写：
+tool-detail-literal = 按字面文本搜索：
+tool-detail-context = 上下文行数：
+tool-detail-result-limit = 请求的结果数量上限：
+tool-detail-old-text = 请求匹配的原文
+tool-detail-new-text = 请求替换的内容
+tool-detail-truncated = Pi 已截断输出，当前显示的内容并非完整结果。
+tool-detail-lines-truncated = Pi 已缩短部分结果行。
+tool-detail-match-limit = 已达到匹配数量上限：
+tool-detail-results-limited = 已达到结果数量上限：
+tool-detail-entries-limited = 已达到目录条目数量上限：
+tool-detail-full-output = 完整输出文件：
+tool-detail-image-unavailable = 无法显示此图片。
 conversation-role-user = 用户消息
 conversation-role-assistant = 助手消息
 conversation-role-tool = 工具结果
@@ -146,8 +167,8 @@ conversation-graph-message = 消息
 conversation-catalog-empty = 暂无会话
 
 conversation-thinking-content = 思考过程
+conversation-thinking-running = 正在思考
 conversation-tool-group = 工具调用（{ $count }）
-conversation-tool-group-running = 正在处理 { $count } 项工具调用
 conversation-tool-group-read = 读取文件（{ $count }）
 conversation-tool-group-bash = 运行命令（{ $count }）
 conversation-tool-group-search = 查找内容（{ $count }）
@@ -195,8 +216,6 @@ conversation-tool-action-other =
         [failed] 调用失败 { $name }
         *[unfinished] 未完成调用 { $name }
     }
-conversation-tool-group-explore = 查找并读取文件
-conversation-tool-group-explore-commands = 读取文件并运行命令
 
 conversation-processed = 已处理 { $duration }
 conversation-processed-failed = 处理失败 { $duration }
@@ -320,3 +339,14 @@ command-send-text = 发送
 command-execute = 执行
 
 command-scope-current = 当前会话
+
+conversation-working-duration = 正在处理 { $duration }
+conversation-tool-group-skill = 读取技能（{ $count }）
+conversation-shell-line = { $shell } · { $action } { $summary }
+conversation-tool-action-skill =
+    { $state ->
+        [running] 正在读取技能
+        [complete] 已读取技能
+        [failed] 技能读取失败
+       *[unfinished] 技能读取未完成
+    }

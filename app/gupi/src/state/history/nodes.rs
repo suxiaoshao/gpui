@@ -1,4 +1,5 @@
 use super::*;
+use crate::foundation::tool_presentation::{ToolKind, skill_name};
 use markdown::mdast::Node;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,7 +27,7 @@ pub(crate) enum HistoryKind {
 pub(super) struct Description {
     pub kind: HistoryKind,
     pub title: String,
-    pub tool: Option<String>,
+    pub tool_kind: Option<ToolKind>,
 }
 
 pub(super) fn describe(entries: &[SessionEntry]) -> HashMap<String, Description> {
@@ -70,7 +71,20 @@ pub(super) fn describe(entries: &[SessionEntry]) -> HashMap<String, Description>
         .filter_map(|message| message["content"].as_array())
         .flatten()
         .filter(|part| part["type"] == "toolCall")
-        .filter_map(|call| call["id"].as_str().map(|id| (id, tool_summary(call))))
+        .filter_map(|call| {
+            call["id"].as_str().map(|id| {
+                (
+                    id,
+                    (
+                        tool_summary(call),
+                        ToolKind::classify(
+                            call["name"].as_str().unwrap_or_default(),
+                            call.get("arguments"),
+                        ),
+                    ),
+                )
+            })
+        })
         .collect();
     entries
         .iter()
@@ -83,7 +97,8 @@ pub(super) fn describe(entries: &[SessionEntry]) -> HashMap<String, Description>
                     .and_then(|message| message["toolCallId"].as_str())
                     .and_then(|id| tool_summaries.get(id))
             {
-                description.title = title.clone();
+                description.title = title.0.clone();
+                description.tool_kind = Some(title.1);
             }
             (entry.id.clone(), description)
         })
@@ -176,12 +191,25 @@ fn describe_entry(entry: &SessionEntry, continued: bool) -> Description {
                 .join(" · "),
         );
     }
-    Description { kind, title, tool }
+    let tool_kind = tool
+        .as_deref()
+        .filter(|_| calls.len() <= 1)
+        .map(|name| ToolKind::classify(name, calls.first().and_then(|call| call.get("arguments"))));
+    Description {
+        kind,
+        title,
+        tool_kind,
+    }
 }
 
 fn tool_summary(call: &Value) -> String {
     let name = call["name"].as_str().unwrap_or_default();
     let args = &call["arguments"];
+    if name == "read"
+        && let Some(skill) = skill_name(args)
+    {
+        return crate::foundation::session_catalog::summary(&format!("read · {skill}"));
+    }
     let target = ["path", "file_path", "command", "pattern", "query"]
         .iter()
         .find_map(|key| args[*key].as_str());
@@ -290,5 +318,28 @@ mod tests {
             assert_eq!(describe_entry(&entry, false).kind, kind);
             assert_ne!(describe_entry(&entry, false).title, "assistant");
         }
+    }
+    #[test]
+    fn history_preserves_skill_target_classification_and_shell_identity() {
+        let entries: Entries = serde_json::from_value(serde_json::json!({"leafId":"ps-result", "entries":[
+            {"id":"call","type":"message","timestamp":"t","message":{"role":"assistant","content":[
+                {"type":"toolCall","id":"s","name":"read","arguments":{"path":"C:\\skills\\review\\SKILL.md"}},
+                {"type":"toolCall","id":"f","name":"read","arguments":{"path":"notes.md"}},
+                {"type":"toolCall","id":"ps","name":"powershell","arguments":{"command":"Get-ChildItem"}}
+            ]}},
+            {"id":"skill","parentId":"call","type":"message","timestamp":"t","message":{"role":"toolResult","toolCallId":"s","toolName":"read","content":"ok"}},
+            {"id":"file","parentId":"skill","type":"message","timestamp":"t","message":{"role":"toolResult","toolCallId":"f","toolName":"read","content":"ok"}},
+            {"id":"ps-result","parentId":"file","type":"message","timestamp":"t","message":{"role":"toolResult","toolCallId":"ps","toolName":"powershell","content":"ok"}}
+        ]})).unwrap();
+        let descriptions = describe(&entries.entries);
+        assert_eq!(descriptions["call"].tool_kind, None);
+        assert_eq!(descriptions["skill"].tool_kind, Some(ToolKind::Skill));
+        assert_eq!(descriptions["skill"].title, "read · review");
+        assert_eq!(descriptions["file"].tool_kind, Some(ToolKind::Read));
+        assert_eq!(descriptions["ps-result"].tool_kind, Some(ToolKind::Shell));
+        assert_eq!(
+            descriptions["ps-result"].title,
+            "powershell · Get-ChildItem"
+        );
     }
 }

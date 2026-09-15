@@ -1,19 +1,19 @@
 //! Pi content projection for the conversation activity stream.
 use std::collections::{HashMap, HashSet};
 
+use crate::foundation::tool_presentation::{ToolKind, read_path, skill_name};
 use serde_json::Value;
 
-use crate::{
-    foundation::session_catalog::text_content,
-    state::{
-        conversation::{ToolActivity, execution::ToolExecution},
-        history::DisplayMessage,
-    },
+use crate::state::{
+    conversation::{ToolActivity, execution::ToolExecution},
+    history::DisplayMessage,
 };
 
 pub(super) struct RunContent {
     pub activities: Vec<Activity>,
     pub answer: Option<usize>,
+    pub answer_text: String,
+    pub final_started: bool,
     pub interrupted: bool,
 }
 
@@ -22,6 +22,7 @@ pub(super) enum Activity {
         id: String,
         text: String,
         thinking: bool,
+        running: bool,
     },
     Tool(Tool),
 }
@@ -36,7 +37,7 @@ pub(super) struct Tool {
     pub entries: Vec<String>,
     pub name: String,
     pub args: Option<Value>,
-    pub output: String,
+    pub result: Value,
     pub status: ToolStatus,
 }
 
@@ -49,6 +50,19 @@ pub(super) enum ToolStatus {
 }
 
 impl RunContent {
+    pub fn has_process(&self) -> bool {
+        self.activities.iter().any(|activity| {
+            matches!(
+                activity,
+                Activity::Tool(_)
+                    | Activity::Text {
+                        thinking: false,
+                        ..
+                    }
+            )
+        })
+    }
+
     /// Assistant prose separates activity groups. Tool results and private
     /// thinking blocks continue the same group, including across message_end.
     pub fn blocks(&self) -> Vec<ActivityBlock<'_>> {
@@ -76,15 +90,35 @@ impl RunContent {
     }
 
     pub fn project(messages: &[DisplayMessage], live: &[ToolActivity], active: bool) -> Self {
-        // Pi has no commentary/final channel. Only a trailing assistant text can
-        // be the answer; never promote an older progress message across a tool.
         let answer = messages.len().checked_sub(1).filter(|&i| {
             let m = &messages[i];
             m.role() == "assistant"
-                && !m.text().is_empty()
-                && !m.value["content"]
-                    .as_array()
-                    .is_some_and(|parts| parts.iter().any(|part| part["type"] == "toolCall"))
+                && (m.final_part().is_some() || (!m.text().is_empty() && !has_calls(&m.value)))
+        });
+        let final_part = answer.and_then(|i| messages[i].final_part());
+        let answer_text = answer
+            .map(|i| {
+                let m = &messages[i];
+                if let Some(parts) = m.value["content"].as_array() {
+                    parts
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, part)| {
+                            part["type"] == "text" && final_part.is_none_or(|start| *index >= start)
+                        })
+                        .filter_map(|(_, part)| part["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                } else {
+                    m.text()
+                }
+            })
+            .unwrap_or_default();
+        let final_started = answer.is_some_and(|i| {
+            let m = &messages[i];
+            // `stop` may arrive during text_start, or only at message_end.
+            // Pending prose remains visible but must not unlock the outer disclosure.
+            m.value["stopReason"] == "stop" || (!active && m.value.get("stopReason").is_none())
         });
         let interrupted = messages
             .iter()
@@ -115,7 +149,7 @@ impl RunContent {
                     entries: m.entry.iter().cloned().collect(),
                     name: m.value["toolName"].as_str().unwrap_or("tool").to_owned(),
                     args: None,
-                    output: m.text(),
+                    result: m.value.clone(),
                     status: result_status(m),
                 }));
                 continue;
@@ -130,12 +164,12 @@ impl RunContent {
                             let update = call_id.and_then(|id| live.get(id)).copied();
                             let mut entries: Vec<_> = m.entry.iter().cloned().collect();
                             entries.extend(result.and_then(|m| m.entry.clone()));
-                            let (output, status) = if let Some(result) = result {
-                                (result.text(), result_status(result))
+                            let (tool_result, status) = if let Some(result) = result {
+                                (result.value.clone(), result_status(result))
                             } else if let Some(update) = update {
                                 match &update.execution {
                                     ToolExecution::Running(output) => (
-                                        text_content(output),
+                                        output.clone(),
                                         if active {
                                             ToolStatus::Running
                                         } else {
@@ -143,15 +177,15 @@ impl RunContent {
                                         },
                                     ),
                                     ToolExecution::Complete(output) => {
-                                        (text_content(output), ToolStatus::Complete)
+                                        (output.clone(), ToolStatus::Complete)
                                     }
                                     ToolExecution::Failed(output) => {
-                                        (text_content(output), ToolStatus::Failed)
+                                        (output.clone(), ToolStatus::Failed)
                                     }
                                 }
                             } else {
                                 (
-                                    String::new(),
+                                    Value::Null,
                                     if active {
                                         ToolStatus::Running
                                     } else {
@@ -168,23 +202,35 @@ impl RunContent {
                                 args: update
                                     .map(|tool| tool.args.clone())
                                     .or_else(|| part.get("arguments").cloned()),
-                                output,
+                                result: tool_result,
                                 status,
                             }));
                         }
                         Some("text" | "thinking") => {
                             let thinking = part["type"] == "thinking";
-                            if !thinking && Some(index) == answer {
+                            if !thinking
+                                && Some(index) == answer
+                                && final_part.is_none_or(|start| i >= start)
+                            {
                                 continue;
                             }
                             let text = part[if thinking { "thinking" } else { "text" }]
                                 .as_str()
                                 .unwrap_or_default();
-                            if !text.is_empty() {
+                            let running = thinking
+                                && active
+                                && index + 1 == messages.len()
+                                && i + 1 == parts.len()
+                                && m.completed_at.is_none()
+                                && m.value["stopReason"] == "pending";
+                            // Pi emits thinking_start with an empty block before
+                            // its first delta. Keep that activity visible too.
+                            if !text.is_empty() || running {
                                 activities.push(Activity::Text {
                                     id,
                                     text: text.to_owned(),
                                     thinking,
+                                    running,
                                 });
                             }
                         }
@@ -196,12 +242,15 @@ impl RunContent {
                     id: m.id.clone(),
                     text: m.text(),
                     thinking: false,
+                    running: false,
                 });
             }
         }
         Self {
             activities,
             answer,
+            answer_text,
+            final_started,
             interrupted,
         }
     }
@@ -224,6 +273,12 @@ fn activity_group(items: &[Activity]) -> ActivityBlock<'_> {
     }
 }
 
+fn has_calls(message: &Value) -> bool {
+    message["content"]
+        .as_array()
+        .is_some_and(|parts| parts.iter().any(|p| p["type"] == "toolCall"))
+}
+
 fn result_status(result: &DisplayMessage) -> ToolStatus {
     if result.value["isError"] == true {
         ToolStatus::Failed
@@ -233,10 +288,16 @@ fn result_status(result: &DisplayMessage) -> ToolStatus {
 }
 
 impl Tool {
+    pub fn kind(&self) -> ToolKind {
+        ToolKind::classify(&self.name, self.args.as_ref())
+    }
     pub fn summary(&self) -> Option<&str> {
         let args = self.args.as_ref()?;
+        if self.name == "read" {
+            return skill_name(args).or_else(|| read_path(args));
+        }
         let field = match self.name.as_str() {
-            "bash" => "command",
+            "bash" | "powershell" => "command",
             "read" | "write" | "edit" => "path",
             "grep" | "find" => "pattern",
             "ls" => "path",
@@ -249,6 +310,7 @@ impl Tool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foundation::session_catalog::text_content;
     use serde_json::json;
 
     fn message(id: &str, value: Value) -> DisplayMessage {
@@ -256,6 +318,7 @@ mod tests {
             id: id.into(),
             entry: Some(id.into()),
             value,
+            final_answer_part: None,
             completed_at: None,
         }
     }
@@ -288,27 +351,103 @@ mod tests {
     }
 
     #[test]
+    fn thinking_alone_does_not_create_a_process_before_or_after_a_direct_answer() {
+        let mut reply = message(
+            "reply",
+            json!({"role":"assistant", "stopReason":"pending", "content":[
+                {"type":"thinking", "thinking":"First thought"},
+                {"type":"thinking", "thinking":"Second thought"}
+            ]}),
+        );
+        assert!(!RunContent::project(&[], &[], true).has_process());
+        let project = |reply: &DisplayMessage, active| {
+            RunContent::project(std::slice::from_ref(reply), &[], active)
+        };
+        assert!(!project(&reply, true).has_process());
+        reply.value["content"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type":"text", "text":"Direct answer"}));
+        let pending = project(&reply, true);
+        assert_eq!(pending.answer_text, "Direct answer");
+        assert!(!pending.has_process());
+        reply.value["stopReason"] = json!("stop");
+        for active in [true, false] {
+            let content = project(&reply, active);
+            assert!(content.final_started);
+            assert_eq!(content.answer_text, "Direct answer");
+            assert!(!content.has_process());
+        }
+    }
+
+    #[test]
+    fn tools_or_intermediate_prose_reveal_the_process_and_preserve_thinking() {
+        let thought = message(
+            "thought",
+            json!({"role":"assistant", "stopReason":"pending", "content":[
+                {"type":"thinking", "thinking":"Initial thought"}
+            ]}),
+        );
+        let with_tool = RunContent::project(&[thought.clone(), call()], &[], true);
+        assert!(with_tool.has_process());
+        assert!(matches!(&with_tool.activities[0], Activity::Text {
+            thinking: true, text, ..
+        } if text == "Initial thought"));
+
+        let progress = message(
+            "progress",
+            json!({"role":"assistant", "content":"Let me check."}),
+        );
+        let mut messages = vec![thought.clone(), progress, thought];
+        assert!(RunContent::project(&messages, &[], true).has_process());
+        messages.push(message(
+            "answer",
+            json!({"role":"assistant", "stopReason":"stop", "content":"Done"}),
+        ));
+        let completed = RunContent::project(&messages, &[], false);
+        assert!(completed.has_process());
+        assert!(completed.final_started);
+        assert_eq!(completed.answer_text, "Done");
+    }
+
+    #[test]
     fn call_updates_in_place_and_persisted_result_replaces_live_output() {
         let live = ToolActivity {
             id: "read-1".into(),
             name: "read".into(),
             args: json!({"path":"a.rs"}),
             execution: ToolExecution::Running(
-                json!({"content":[{"type":"text", "text":"partial"}]}),
+                json!({"content":[{"type":"text", "text":"partial"}], "details":{"truncation":{"truncated":true}}}),
             ),
         };
         let running = RunContent::project(&[call()], std::slice::from_ref(&live), true);
         let running_tool = tools(&running)[0];
-        assert_eq!(running_tool.output, "partial");
+        assert_eq!(text_content(&running_tool.result), "partial");
         assert_eq!(running_tool.status, ToolStatus::Running);
-        let settled = RunContent::project(&[call(), tool_result("complete", false)], &[live], true);
+        assert_eq!(
+            running_tool.result["details"]["truncation"]["truncated"],
+            true
+        );
+        let mut result = tool_result("complete", false);
+        result.value["details"] = json!({"patch":"actual patch"});
+        result.value["content"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type":"image", "mimeType":"image/png", "data":"bytes"}));
+        let settled = RunContent::project(&[call(), result.clone()], &[live], true);
         assert_eq!(tools(&settled).len(), 1);
         let settled_tool = tools(&settled)[0];
         assert_eq!(settled_tool.id, running_tool.id);
-        assert_eq!(settled_tool.output, "complete");
+        assert_eq!(text_content(&settled_tool.result), "complete");
         assert_eq!(settled_tool.status, ToolStatus::Complete);
+        assert_eq!(settled_tool.result["details"]["patch"], "actual patch");
+        assert_eq!(settled_tool.result["content"][1]["data"], "bytes");
         assert_eq!(settled_tool.entries, ["call", "result"]);
         assert_eq!(settled_tool.summary(), Some("a.rs"));
+        let history = RunContent::project(&[call(), result.clone()], &[], false);
+        assert_eq!(tools(&history)[0].result, settled_tool.result);
+        let orphan = RunContent::project(&[result], &[], false);
+        assert_eq!(tools(&orphan)[0].result, settled_tool.result);
     }
 
     #[test]
@@ -373,6 +512,76 @@ mod tests {
     }
 
     #[test]
+    fn thinking_start_is_visible_before_text_and_does_not_mark_old_work_as_running() {
+        let mut messages = vec![
+            call(),
+            tool_result("File contents", false),
+            message(
+                "next",
+                json!({"role":"assistant", "stopReason":"pending", "content":[]}),
+            ),
+        ];
+        let has_running_thought = |content: &RunContent| {
+            content.activities.iter().any(|item| {
+                matches!(
+                    item,
+                    Activity::Text {
+                        thinking: true,
+                        running: true,
+                        ..
+                    }
+                )
+            })
+        };
+        assert!(!has_running_thought(&RunContent::project(
+            &messages,
+            &[],
+            true
+        )));
+
+        messages[2].value["content"] = json!([{"type":"thinking", "thinking":""}]);
+        let content = RunContent::project(&messages, &[], true);
+        assert!(matches!(content.activities.last(), Some(Activity::Text {
+            id, text, thinking: true, running: true,
+        }) if id == "part-next-0" && text.is_empty()));
+        assert!(
+            matches!(content.blocks().last(), Some(ActivityBlock::Group { items, .. })
+            if items.len() == 2 && matches!(items.last(), Some(Activity::Text { running: true, .. })))
+        );
+
+        messages[2].value["content"][0]["thinking"] = json!("Checking the next step");
+        assert!(has_running_thought(&RunContent::project(
+            &messages,
+            &[],
+            true
+        )));
+        assert!(!has_running_thought(&RunContent::project(
+            &messages,
+            &[],
+            false
+        )));
+
+        messages[2].completed_at = Some(1);
+        assert!(!has_running_thought(&RunContent::project(
+            &messages,
+            &[],
+            true
+        )));
+        messages[2].completed_at = None;
+        messages[2].value["content"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "type":"text", "text":"Here is the next step"
+            }));
+        let content = RunContent::project(&messages, &[], true);
+        assert!(!has_running_thought(&content));
+        assert!(matches!(content.activities.last(), Some(Activity::Text {
+            text, thinking: true, running: false, ..
+        }) if text == "Checking the next step"));
+    }
+
+    #[test]
     fn only_assistant_prose_splits_tool_groups() {
         let tool = |id: &str| {
             Activity::Tool(Tool {
@@ -380,7 +589,7 @@ mod tests {
                 entries: vec![],
                 name: "read".into(),
                 args: None,
-                output: String::new(),
+                result: Value::Null,
                 status: ToolStatus::Complete,
             })
         };
@@ -391,16 +600,20 @@ mod tests {
                     id: "thought".into(),
                     text: "Thinking".into(),
                     thinking: true,
+                    running: false,
                 },
                 tool("second"),
                 Activity::Text {
                     id: "progress".into(),
                     text: "Next step".into(),
                     thinking: false,
+                    running: false,
                 },
                 tool("third"),
             ],
             answer: None,
+            answer_text: String::new(),
+            final_started: false,
             interrupted: false,
         };
         let blocks = content.blocks();
@@ -416,5 +629,65 @@ mod tests {
         assert!(
             matches!(content.blocks().last(), Some(ActivityBlock::Group { id, items }) if id == "group-third" && items.len() == 2)
         );
+    }
+    #[test]
+    fn final_phase_unlocks_without_hiding_earlier_text_in_the_same_message() {
+        let mut m = message(
+            "stream",
+            json!({"role":"assistant", "stopReason":"pending", "content":[
+                {"type":"text", "text":"Checking files"},
+                {"type":"toolCall", "id":"r", "name":"read", "arguments":{"path":"a"}},
+                {"type":"thinking", "thinking":"Consider the result"},
+                {"type":"text", "text":""}
+            ]}),
+        );
+        assert!(!RunContent::project(&[m.clone()], &[], true).final_started);
+        m.value["stopReason"] = json!("stop");
+        m.final_answer_part = Some(3);
+        let content = RunContent::project(&[m.clone()], &[], true);
+        assert!(content.final_started); // text_start arrives before any final text delta.
+        assert!(content.answer_text.is_empty());
+        assert!(
+            matches!(&content.activities[0], Activity::Text { text, .. } if text == "Checking files")
+        );
+        m.value["content"][3]["text"] = json!("The result");
+        let content = RunContent::project(&[m.clone()], &[], true);
+        assert_eq!(content.answer_text, "The result");
+        m.final_answer_part = None;
+        m.value["content"][3]["textSignature"] =
+            json!(r#"{"v":1,"id":"final","phase":"final_answer"}"#);
+        assert_eq!(
+            RunContent::project(&[m.clone()], &[], false).answer_text,
+            "The result"
+        );
+        m.value["stopReason"] = json!("error");
+        let failed = RunContent::project(&[m], &[], true);
+        assert!(!failed.final_started);
+        assert!(failed.interrupted);
+    }
+
+    #[test]
+    fn pending_text_remains_visible_but_only_confirmed_answer_unlocks() {
+        let mut m = message(
+            "stream",
+            json!({"role":"assistant", "stopReason":"pending", "content":[
+                {"type":"thinking", "thinking":"Reasoning"}, {"type":"text", "text":"Reply"}
+            ]}),
+        );
+        let pending = RunContent::project(&[m.clone()], &[], true);
+        assert_eq!(pending.answer_text, "Reply");
+        assert!(!pending.final_started);
+        m.value["stopReason"] = json!("toolUse");
+        m.value["content"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type":"toolCall", "id":"next", "name":"ls", "arguments":{}}));
+        let continued = RunContent::project(&[m.clone()], &[], true);
+        assert_eq!(continued.answer, None);
+        assert!(!continued.final_started);
+        m.value["content"].as_array_mut().unwrap().pop();
+        m.value["stopReason"] = json!("stop");
+        m.completed_at = Some(123);
+        assert!(RunContent::project(&[m], &[], true).final_started);
     }
 }
