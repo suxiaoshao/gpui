@@ -14,6 +14,7 @@ mod activity;
 mod markdown;
 mod metadata;
 mod presentation;
+mod tool_details;
 mod viewport;
 use activity::{Activity, ActivityBlock, RunContent, ToolStatus};
 use presentation::Disclosure;

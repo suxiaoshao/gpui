@@ -114,7 +114,6 @@ impl HomeView {
                     .min_w_0()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .when(tool, |c| c.flex_1())
                     .text(heading.title.clone()),
             )
             .when(!heading.locked, |m| m.child(arrow));
@@ -281,30 +280,12 @@ impl HomeView {
             failed: tool.status == ToolStatus::Failed,
             locked: false,
         };
-        let mut details = v_flex().w_full().min_w_0().gap_2().pl_6().py_1();
-        if let Some(args) = &tool.args {
-            details = details.child(self.text_view(
-                key,
-                format!("args-{}", tool.id),
-                fenced(
-                    "json",
-                    &serde_json::to_string_pretty(args).unwrap_or_default(),
-                ),
-            ));
-        }
-        if !tool.output.is_empty() {
-            details = details.child(self.text_view(
-                key,
-                format!("output-{}", tool.id),
-                fenced("text", &tool.output),
-            ));
-        }
         self.fold(
             key,
             &tool.id,
             heading,
             false,
-            details.into_any_element(),
+            self.tool_details(key, tool, cx),
             cx,
         )
     }
@@ -338,8 +319,12 @@ fn tool_title(tool: &Tool, cx: &App) -> String {
             },
         );
         t_with_args(cx, "conversation-shell-line", &args)
+            .trim()
+            .to_owned()
     } else {
         t_with_args(cx, "conversation-tool-line", &args)
+            .trim()
+            .to_owned()
     }
 }
 
@@ -370,7 +355,7 @@ fn group_summary(tools: &[&Tool], cx: &App) -> String {
     // Independent category labels, not fragments of a translated sentence.
     parts.join(" · ")
 }
-fn fenced(language: &str, text: &str) -> String {
+pub(super) fn fenced(language: &str, text: &str) -> String {
     // Tool output may contain Markdown fences itself.
     let fence = "`".repeat(
         text.split(|c| c != '`')

@@ -4,12 +4,9 @@ use std::collections::{HashMap, HashSet};
 use crate::foundation::tool_presentation::{ToolKind, read_path, skill_name};
 use serde_json::Value;
 
-use crate::{
-    foundation::session_catalog::text_content,
-    state::{
-        conversation::{ToolActivity, execution::ToolExecution},
-        history::DisplayMessage,
-    },
+use crate::state::{
+    conversation::{ToolActivity, execution::ToolExecution},
+    history::DisplayMessage,
 };
 
 pub(super) struct RunContent {
@@ -40,7 +37,7 @@ pub(super) struct Tool {
     pub entries: Vec<String>,
     pub name: String,
     pub args: Option<Value>,
-    pub output: String,
+    pub result: Value,
     pub status: ToolStatus,
 }
 
@@ -152,7 +149,7 @@ impl RunContent {
                     entries: m.entry.iter().cloned().collect(),
                     name: m.value["toolName"].as_str().unwrap_or("tool").to_owned(),
                     args: None,
-                    output: m.text(),
+                    result: m.value.clone(),
                     status: result_status(m),
                 }));
                 continue;
@@ -167,12 +164,12 @@ impl RunContent {
                             let update = call_id.and_then(|id| live.get(id)).copied();
                             let mut entries: Vec<_> = m.entry.iter().cloned().collect();
                             entries.extend(result.and_then(|m| m.entry.clone()));
-                            let (output, status) = if let Some(result) = result {
-                                (result.text(), result_status(result))
+                            let (tool_result, status) = if let Some(result) = result {
+                                (result.value.clone(), result_status(result))
                             } else if let Some(update) = update {
                                 match &update.execution {
                                     ToolExecution::Running(output) => (
-                                        text_content(output),
+                                        output.clone(),
                                         if active {
                                             ToolStatus::Running
                                         } else {
@@ -180,15 +177,15 @@ impl RunContent {
                                         },
                                     ),
                                     ToolExecution::Complete(output) => {
-                                        (text_content(output), ToolStatus::Complete)
+                                        (output.clone(), ToolStatus::Complete)
                                     }
                                     ToolExecution::Failed(output) => {
-                                        (text_content(output), ToolStatus::Failed)
+                                        (output.clone(), ToolStatus::Failed)
                                     }
                                 }
                             } else {
                                 (
-                                    String::new(),
+                                    Value::Null,
                                     if active {
                                         ToolStatus::Running
                                     } else {
@@ -205,7 +202,7 @@ impl RunContent {
                                 args: update
                                     .map(|tool| tool.args.clone())
                                     .or_else(|| part.get("arguments").cloned()),
-                                output,
+                                result: tool_result,
                                 status,
                             }));
                         }
@@ -313,6 +310,7 @@ impl Tool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foundation::session_catalog::text_content;
     use serde_json::json;
 
     fn message(id: &str, value: Value) -> DisplayMessage {
@@ -419,21 +417,37 @@ mod tests {
             name: "read".into(),
             args: json!({"path":"a.rs"}),
             execution: ToolExecution::Running(
-                json!({"content":[{"type":"text", "text":"partial"}]}),
+                json!({"content":[{"type":"text", "text":"partial"}], "details":{"truncation":{"truncated":true}}}),
             ),
         };
         let running = RunContent::project(&[call()], std::slice::from_ref(&live), true);
         let running_tool = tools(&running)[0];
-        assert_eq!(running_tool.output, "partial");
+        assert_eq!(text_content(&running_tool.result), "partial");
         assert_eq!(running_tool.status, ToolStatus::Running);
-        let settled = RunContent::project(&[call(), tool_result("complete", false)], &[live], true);
+        assert_eq!(
+            running_tool.result["details"]["truncation"]["truncated"],
+            true
+        );
+        let mut result = tool_result("complete", false);
+        result.value["details"] = json!({"patch":"actual patch"});
+        result.value["content"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type":"image", "mimeType":"image/png", "data":"bytes"}));
+        let settled = RunContent::project(&[call(), result.clone()], &[live], true);
         assert_eq!(tools(&settled).len(), 1);
         let settled_tool = tools(&settled)[0];
         assert_eq!(settled_tool.id, running_tool.id);
-        assert_eq!(settled_tool.output, "complete");
+        assert_eq!(text_content(&settled_tool.result), "complete");
         assert_eq!(settled_tool.status, ToolStatus::Complete);
+        assert_eq!(settled_tool.result["details"]["patch"], "actual patch");
+        assert_eq!(settled_tool.result["content"][1]["data"], "bytes");
         assert_eq!(settled_tool.entries, ["call", "result"]);
         assert_eq!(settled_tool.summary(), Some("a.rs"));
+        let history = RunContent::project(&[call(), result.clone()], &[], false);
+        assert_eq!(tools(&history)[0].result, settled_tool.result);
+        let orphan = RunContent::project(&[result], &[], false);
+        assert_eq!(tools(&orphan)[0].result, settled_tool.result);
     }
 
     #[test]
@@ -575,7 +589,7 @@ mod tests {
                 entries: vec![],
                 name: "read".into(),
                 args: None,
-                output: String::new(),
+                result: Value::Null,
                 status: ToolStatus::Complete,
             })
         };

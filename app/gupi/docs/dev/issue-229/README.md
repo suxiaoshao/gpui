@@ -1,6 +1,6 @@
 # 会话目录读取优化
 
-同一问题下的运行展示工作另见[实施计划](runtime-display-plan.md)与[对照报告](runtime-display-research.md)；本页保留目录读取优化与 Gallery 使用说明。
+同一问题下的运行展示工作另见[实施计划](runtime-display-plan.md)、[对照报告](runtime-display-research.md)、[工具详情调研](tool-details-research.md)与[Zed / Codex / Gupi 工具卡片布局对比](tool-card-layout-research.md)；本页保留目录读取优化与 Gallery 使用说明。
 
 状态：读取优化已实现，受影响构建和目录回归已通过。保留现有搜索，采用顺序字节读取与 sonic-rs 按字段解析；本计划只覆盖这项读取优化。运行时 loading、消息展示的其他反馈另按具体问题确定范围。
 

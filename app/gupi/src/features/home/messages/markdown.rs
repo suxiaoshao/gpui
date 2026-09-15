@@ -1,10 +1,11 @@
 //! Adapt Pi text snapshots to the component's incremental Markdown parser.
 use gpui_kit::component::{
     message_scroller::MessageScrollerState,
-    text::{TextView, TextViewState},
+    text::{TextView, TextViewState, TextViewStyle},
 };
 use gpui_kit::{
-    App, AppContext, Entity, IntoElement, RenderOnce, Subscription, WeakEntity, Window,
+    App, AppContext, Entity, IntoElement, RenderOnce, StyleRefinement, Styled, Subscription,
+    WeakEntity, Window, rems, transparent_black,
 };
 
 /// No extra layout surface: this renders the managed TextView directly.
@@ -13,11 +14,22 @@ pub(super) struct Markdown {
     id: String,
     text: String,
     scroller: WeakEntity<MessageScrollerState>,
+    embedded: bool,
 }
 
 impl Markdown {
     pub fn new(id: String, text: String, scroller: WeakEntity<MessageScrollerState>) -> Self {
-        Self { id, text, scroller }
+        Self {
+            id,
+            text,
+            scroller,
+            embedded: false,
+        }
+    }
+
+    pub fn embedded(mut self) -> Self {
+        self.embedded = true;
+        self
     }
 }
 
@@ -63,7 +75,26 @@ impl RenderOnce for Markdown {
             MarkdownState::new(self.text.clone(), self.scroller, cx)
         });
         state.update(cx, |state, cx| state.sync(self.text, cx));
-        TextView::new(&state.read(cx).view).selectable(true)
+        let view = TextView::new(&state.read(cx).view).selectable(true);
+        if self.embedded {
+            view.style(
+                TextViewStyle::default()
+                    .paragraph_gap(rems(0.5))
+                    .code_block(
+                        StyleRefinement::default()
+                            .p_0()
+                            .border_0()
+                            .rounded_none()
+                            .bg(transparent_black()),
+                    )
+                    .inline_code(gpui_kit::HighlightStyle {
+                        background_color: Some(transparent_black()),
+                        ..Default::default()
+                    }),
+            )
+        } else {
+            view
+        }
     }
 }
 

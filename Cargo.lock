@@ -6427,6 +6427,7 @@ version = "0.1.0"
 dependencies = [
  "app-assets",
  "app-theme",
+ "base64 0.22.1",
  "dirs-next",
  "fluent-bundle",
  "glob",
