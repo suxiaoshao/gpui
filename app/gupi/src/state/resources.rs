@@ -26,6 +26,10 @@ pub(crate) struct ResourceController {
 }
 pub(crate) enum ResourceEvent {
     Saved(PathBuf, String),
+    Finished {
+        target: String,
+        result: Result<(), Error>,
+    },
 }
 impl EventEmitter<ResourceEvent> for ResourceController {}
 impl ResourceController {
@@ -71,6 +75,15 @@ impl ResourceController {
         let Some(root) = self.catalog.data().map(|c| c.root.clone()) else {
             return;
         };
+        let target = match &change {
+            Change::Package { source, .. } => source.clone(),
+            Change::Toggle(resource, _) | Change::Delete(resource) => resource.name.clone(),
+            Change::RegisterSkill(path) | Change::Save { path, .. } => path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+        };
         let saved = match &change {
             Change::Save { path, text, .. } => Some((path.clone(), text.clone())),
             _ => None,
@@ -105,7 +118,8 @@ impl ResourceController {
             let result = worker.await.unwrap_or_else(|e| Err(Error(e.to_string())));
             let _ = owner.update(cx, |owner, cx| {
                 let success = result.is_ok();
-                owner.mutation.transition(Complete(result));
+                owner.mutation.transition(Complete(result.clone()));
+                cx.emit(ResourceEvent::Finished { target, result });
                 if success && let Some((path, text)) = saved {
                     cx.emit(ResourceEvent::Saved(path, text));
                 }

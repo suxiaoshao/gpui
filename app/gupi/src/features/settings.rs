@@ -6,6 +6,7 @@ mod resources;
 mod sticky;
 #[cfg(test)]
 mod tests;
+mod theme_grid;
 
 use crate::foundation::assets::IconName;
 use crate::pi::PiProbeController;
@@ -37,6 +38,7 @@ pub(crate) struct SettingsView {
     controller: Entity<ConfigController>,
     input: Entity<InputState>,
     pi_input: Entity<InputState>,
+    config_path: Entity<InputState>,
     _binding: ControlBinding,
     _pi_binding: ControlBinding,
     _subscriptions: Vec<Subscription>,
@@ -67,12 +69,25 @@ impl SettingsView {
             resources::ResourcesView::new(controller.clone(), applied_pi.clone(), window, cx)
         });
         let keys = cx.new(|cx| keys::KeysView::new(controller.clone(), window, cx));
+        let config_path = cx.new(|cx| {
+            InputState::new(window, cx).default_value(
+                controller
+                    .read(cx)
+                    .path()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            )
+        });
         let resources_sub = cx.observe(&resources, |_, _, cx| cx.notify());
         let resource_controller = resources.read(cx).controller.clone();
         let resource_controller_sub = cx.observe(&resource_controller, |_, _, cx| cx.notify());
         let keys_sub = cx.observe(&keys, |_, _, cx| cx.notify());
         let applied_sub = cx.observe(&applied_pi, |_, _, cx| cx.notify());
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("pi"));
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("pi")
+                .default_value(AppConfig::PI_COMMAND.get(&form, cx).unwrap_or_default())
+        });
         let (binding, writer) = AppConfig::PI_COMMAND.bind_control_in(
             &form,
             &input,
@@ -105,7 +120,11 @@ impl SettingsView {
         let language = cx
             .new(|cx| ComboboxState::new(language_items(cx), vec![], window, cx).searchable(true));
         let pi_form = controller.read(cx).pi_form.clone();
-        let pi_input = cx.new(|cx| InputState::new(window, cx).placeholder("pi"));
+        let pi_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("pi")
+                .default_value(PiSettings::COMMAND.get(&pi_form, cx).unwrap_or_default())
+        });
         let (pi_binding, pi_writer) = PiSettings::COMMAND.bind_control_in(
             &pi_form,
             &pi_input,
@@ -169,6 +188,7 @@ impl SettingsView {
             controller,
             input,
             pi_input,
+            config_path,
             _binding: binding,
             _pi_binding: pi_binding,
             _subscriptions: vec![
@@ -290,7 +310,11 @@ impl SettingsView {
             .clone()
             .update(cx, |owner, cx| owner.refresh(cx));
     }
-    fn render_config_actions(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_config_actions(
+        &self,
+        options: &gpui_kit::component::setting::RenderOptions,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let store = self.controller.read(cx).store.clone();
         let (busy, problem, write_failed, can_write, backup) = store.read(cx, |op| {
             (
@@ -303,21 +327,47 @@ impl SettingsView {
                     .or_else(|| op.data().and_then(|d| d.backup.clone())),
             )
         });
-        let mut view = v_flex().gap_3().child(
-            Button::new("reload-config")
-                .label(t(cx, "settings-reload"))
-                .disabled(busy)
-                .on_click(cx.listener(|this, _, _, cx| this.request(ConfigRepair::Reload, cx))),
-        );
-        view = view.child(
-            Button::new("locate-config")
-                .icon(IconName::FolderOpen)
-                .label(t(cx, "action-locate"))
-                .on_click(|_, _, cx| {
-                    if let Ok(path) = crate::foundation::paths::config_dir() {
-                        cx.reveal_path(&path);
-                    }
-                }),
+        let path = self
+            .controller
+            .read(cx)
+            .path()
+            .map(std::path::Path::to_path_buf);
+        let mut view = v_flex().gap_2().child(
+            h_flex()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .debug_selector(|| "settings-config-path".into())
+                        .child(Input::new(&self.config_path).readonly(true)),
+                )
+                .child(
+                    Button::new("reload-config")
+                        .debug_selector(|| "settings-config-reload".into())
+                        .ghost()
+                        .icon(IconName::RotateCw)
+                        .tooltip(t(cx, "settings-reload"))
+                        .accessibility_label(t(cx, "settings-reload"))
+                        .disabled(busy)
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.request(ConfigRepair::Reload, cx)),
+                        ),
+                )
+                .child(
+                    Button::new("open-config")
+                        .debug_selector(|| "settings-config-open".into())
+                        .ghost()
+                        .icon(IconName::FileText)
+                        .tooltip(t(cx, "settings-config-open"))
+                        .accessibility_label(t(cx, "settings-config-open"))
+                        .disabled(path.is_none())
+                        .on_click(move |_, _, cx| {
+                            if let Some(path) = &path {
+                                cx.open_with_system(path);
+                            }
+                        }),
+                ),
         );
         if can_write {
             view = view.child(
@@ -378,6 +428,10 @@ impl SettingsView {
                 ),
             );
         }
-        view.into_any_element()
+        if options.layout() == Axis::Horizontal {
+            view.w(px(360.)).into_any_element()
+        } else {
+            view.w_full().into_any_element()
+        }
     }
 }

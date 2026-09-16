@@ -2,10 +2,10 @@ use app_assets::{AppAssets, define_lucide_icons, define_svg_icons};
 use gpui_kit::{AssetSource, SharedString};
 use std::borrow::Cow;
 define_lucide_icons!(pub(crate) enum IconName {
-    Sparkles => "sparkles", Puzzle => "puzzle",
+    Sparkles => "sparkles", Puzzle => "puzzle", Palette => "palette", Eye => "eye", LockKeyhole => "lock-keyhole",
     UserRound => "user-round", Bot => "bot",
     Settings => "settings", ArrowLeft => "arrow-left", ArrowRight => "arrow-right",
-    Check => "check", Keyboard => "keyboard", Info => "info",
+    Check => "check", Keyboard => "keyboard", Info => "info", Eraser => "eraser", Undo2 => "undo-2",
     RotateCw => "rotate-cw", FolderOpen => "folder-open", Save => "save", Search => "search",
     Plus => "plus", SquarePen => "square-pen", PanelRight => "panel-right",
     ArrowUp => "arrow-up", ArrowDown => "arrow-down", Database => "database", CircleDashed => "circle-dashed", Square => "square", ChevronDown => "chevron-down",
@@ -14,7 +14,7 @@ define_lucide_icons!(pub(crate) enum IconName {
     List => "list", Tag => "tag",
     ZoomIn => "zoom-in", ZoomOut => "zoom-out", Scan => "scan", LocateFixed => "locate-fixed",
     RefreshCw => "refresh-cw", FileText => "file-text", Download => "download",
-    X => "x", Folder => "folder",
+    X => "x", Folder => "folder", Trash2 => "trash-2",
     Terminal => "terminal", BookOpen => "book-open", FilePenLine => "file-pen-line",
     FilePlus => "file-plus", Wrench => "wrench", Brain => "brain", ChartNoAxesColumn => "chart-no-axes-column",
 });

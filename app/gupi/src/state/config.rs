@@ -76,6 +76,7 @@ impl PiSettings {
 #[derive(Clone, Debug)]
 pub(crate) enum PreferenceChange {
     Keybinding(String, Option<String>),
+    ResetKeybindings,
     Language(AppLanguage),
     Theme(ThemeMode),
     LightTheme(Option<String>),
@@ -84,6 +85,7 @@ pub(crate) enum PreferenceChange {
 impl PreferenceChange {
     fn apply(self, config: &mut AppConfig) {
         match self {
+            Self::ResetKeybindings => config.keybindings.clear(),
             Self::Keybinding(id, binding) => match binding {
                 Some(binding) => {
                     config.keybindings.insert(id, binding);
@@ -197,9 +199,10 @@ fn write_config(
     path: PathBuf,
     pending: PendingConfig,
     reset: bool,
+    reset_keybindings: bool,
     mut backup: Option<PathBuf>,
 ) -> Result<ConfigData, ConfigProblem> {
-    let value = if reset {
+    let mut value = if reset {
         if let Some(bytes) =
             persistence::read(&path).map_err(|e| ConfigProblem::Read(e.to_string()))?
         {
@@ -248,6 +251,9 @@ fn write_config(
             pending.value
         }
     };
+    if reset_keybindings {
+        value.keybindings.clear();
+    }
     let bytes =
         toml::to_string_pretty(&value).map_err(|e| ConfigProblem::Validation(e.to_string()))?;
     persistence::write_atomic(&path, bytes.as_bytes()).map_err(|failure| ConfigProblem::Write {
@@ -293,6 +299,9 @@ impl ConfigController {
     }
     pub fn busy(&self, cx: &App) -> bool {
         self.draining || self.store.read(cx, |op| op.is_running())
+    }
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref().ok()
     }
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.start(ConfigRepair::Reload, None, cx);
@@ -448,6 +457,10 @@ impl ConfigController {
             .then_some(version)
             .flatten();
         let reset = matches!(action, ConfigRepair::BackupAndReset);
+        let reset_keybindings = matches!(
+            action,
+            ConfigRepair::SavePreference(PreferenceChange::ResetKeybindings)
+        );
         let backup = self
             .store
             .read(cx, |op| op.problem().and_then(|p| p.backup().cloned()));
@@ -464,7 +477,7 @@ impl ConfigController {
             let result = smol::unblock(move || {
                 let path = path.map_err(ConfigProblem::Read)?;
                 match pending {
-                    Some(pending) => write_config(path, pending, reset, backup),
+                    Some(pending) => write_config(path, pending, reset, reset_keybindings, backup),
                     None => read_config(path, require_configured),
                 }
             })
@@ -592,13 +605,30 @@ mod tests {
             owner.set_preference(PreferenceChange::Keybinding("new".into(), None), cx)
         });
         settled(&owner, cx).await;
-        let saved = read_config(path, true)
+        let saved = read_config(path.clone(), true)
             .unwrap()
             .configured()
             .unwrap()
             .clone();
         assert!(!saved.keybindings.contains_key("new"));
         assert!(saved.keybindings.contains_key("quick_open"));
+        // Reset every override, including changes written externally since the last read.
+        std::fs::write(
+            &path,
+            "theme = 'light'\n[keybindings]\nquick_open = 'secondary-alt-p'\nnew = ''\n",
+        )
+        .unwrap();
+        owner.update(cx, |owner, cx| {
+            owner.set_preference(PreferenceChange::ResetKeybindings, cx);
+        });
+        settled(&owner, cx).await;
+        let saved = read_config(path, true)
+            .unwrap()
+            .configured()
+            .unwrap()
+            .clone();
+        assert_eq!(saved.theme, ThemeMode::Light);
+        assert!(saved.keybindings.is_empty());
     }
 
     #[gpui::test]

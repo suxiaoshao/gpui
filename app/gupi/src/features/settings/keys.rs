@@ -1,38 +1,266 @@
 use super::*;
-use crate::state::keybindings::{self, COMMANDS};
-use gpui_kit::component::kbd::Kbd;
+use crate::{
+    features::home::actions::Kind,
+    state::keybindings::{self, COMMANDS},
+};
+use gpui_kit::component::{
+    Selectable, Sizable, WindowExt,
+    dialog::DialogButtonProps,
+    input::Escape,
+    setting::{RenderOptions, SettingField, SettingGroup, SettingItem},
+};
 use gpui_kit::prelude::FluentBuilder;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Group {
+    Application,
+    Conversation,
+    Files,
+}
+impl Group {
+    pub fn of(kind: Kind) -> Self {
+        match kind {
+            Kind::Palette
+            | Kind::QuickOpen
+            | Kind::New
+            | Kind::Settings
+            | Kind::Sidebar
+            | Kind::Scan
+            | Kind::ShowMain
+            | Kind::Quit => Self::Application,
+            Kind::Export | Kind::Reveal | Kind::CopyPath | Kind::Delete => Self::Files,
+            _ => Self::Conversation,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Application => "settings-key-group-app",
+            Self::Conversation => "settings-key-group-conversation",
+            Self::Files => "settings-key-group-files",
+        }
+    }
+}
 
 pub(super) struct KeysView {
     controller: Entity<ConfigController>,
-    input: Entity<InputState>,
+    inputs: Vec<Entity<InputState>>,
     editing: Option<usize>,
     error: Option<String>,
     capture: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 impl KeysView {
+    pub fn actions(owner: &Entity<Self>) -> SettingGroup {
+        let owner = owner.clone();
+        SettingGroup::new().border_0().p_0().item(
+            SettingItem::render(move |_, _, cx| Self::render_actions(&owner, cx))
+                .keywords(["快捷键 keys keyboard shortcut 恢复默认 reset defaults"]),
+        )
+    }
+
+    fn render_actions(owner: &Entity<Self>, cx: &App) -> AnyElement {
+        let disabled = owner.read(cx).controller.read(cx).busy(cx)
+            || owner
+                .read(cx)
+                .controller
+                .read(cx)
+                .preferences(cx)
+                .keybindings
+                .is_empty();
+        let owner = owner.downgrade();
+        h_flex()
+            .w_full()
+            .justify_end()
+            .child(
+                Button::new("key-reset-all")
+                    .small()
+                    .label(t(cx, "settings-key-reset-all"))
+                    .disabled(disabled)
+                    .debug_selector(|| "key-reset-all".into())
+                    .on_click(move |_, window, cx| {
+                        let owner = owner.clone();
+                        window.open_dialog(cx, move |dialog, _, cx| {
+                            let owner = owner.clone();
+                            dialog
+                                .title(t(cx, "settings-key-reset-all"))
+                                .child(t(cx, "settings-key-reset-all-confirm"))
+                                .button_props(
+                                    DialogButtonProps::default()
+                                        .show_cancel(true)
+                                        .ok_text(t(cx, "settings-key-reset-all"))
+                                        .cancel_text(t(cx, "action-cancel")),
+                                )
+                                .on_ok(move |_, window, cx| {
+                                    owner
+                                        .update(cx, |this, cx| this.reset_all(window, cx))
+                                        .unwrap_or(false)
+                                })
+                        });
+                    }),
+            )
+            .into_any_element()
+    }
+
+    fn reset_all(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.controller.read(cx).busy(cx) {
+            return false;
+        }
+        self.cancel(window, cx);
+        self.controller.update(cx, |controller, cx| {
+            controller.set_preference(PreferenceChange::ResetKeybindings, cx);
+        });
+        self.sync(window, cx);
+        true
+    }
+
+    pub fn item(owner: &Entity<Self>, index: usize, cx: &App) -> SettingItem {
+        let command = &COMMANDS[index];
+        let owner = owner.downgrade();
+        SettingItem::new(
+            t(cx, command.label),
+            SettingField::render(move |options, _, cx| {
+                owner
+                    .update(cx, |this, cx| this.render_binding(index, options, cx))
+                    .unwrap_or_else(|_| div().into_any_element())
+            }),
+        )
+        .keywords([command.id, "快捷键 keys keyboard shortcut"])
+    }
+
     pub fn new(
         controller: Entity<ConfigController>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx));
-        let focus = input.focus_handle(cx);
-        let blur = cx.on_focus_out(&focus, window, |this, _, _, cx| {
-            this.capture = None;
-            cx.notify();
-        });
+        let config = controller.read(cx).preferences(cx);
+        let inputs: Vec<_> = COMMANDS
+            .iter()
+            .map(|command| {
+                cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .default_value(command.value(&config.keybindings))
+                        .placeholder(t(cx, "settings-key-unbound"))
+                })
+            })
+            .collect();
+        let mut subscriptions = Vec::new();
+        for (index, input) in inputs.iter().enumerate() {
+            let focus = input.focus_handle(cx);
+            subscriptions.push(cx.on_focus_in(&focus, window, move |this, window, cx| {
+                this.activate(index, window, cx);
+            }));
+            subscriptions.push(cx.on_focus_out(&focus, window, move |this, _, _, cx| {
+                if this.editing == Some(index) {
+                    this.capture = None;
+                    cx.notify();
+                }
+            }));
+            subscriptions.push(cx.subscribe_in(
+                input,
+                window,
+                move |this, input, event, window, cx| match event {
+                    InputEvent::Focus | InputEvent::Blur => {}
+                    InputEvent::Change => {
+                        let config = this.controller.read(cx).preferences(cx);
+                        if input.read(cx).value().as_ref()
+                            != COMMANDS[index].value(&config.keybindings)
+                        {
+                            this.activate(index, window, cx);
+                        }
+                        if this.editing == Some(index) {
+                            this.error = None;
+                        }
+                        cx.notify();
+                    }
+                    InputEvent::PressEnter { .. } => {
+                        this.confirm(index, window, cx);
+                    }
+                },
+            ));
+        }
+        let store = controller.read(cx).store.clone();
+        subscriptions.push(store.observe_in(cx, window, |this, _, window, cx| {
+            this.sync(window, cx);
+        }));
+        subscriptions.push(cx.observe_global_in::<crate::foundation::i18n::I18n>(
+            window,
+            |this, window, cx| {
+                let placeholder = t(cx, "settings-key-unbound");
+                for input in &this.inputs {
+                    input.update(cx, |input, cx| {
+                        input.set_placeholder(placeholder.clone(), window, cx)
+                    });
+                }
+                cx.notify();
+            },
+        ));
         Self {
             controller,
-            input,
+            inputs,
             editing: None,
             error: None,
             capture: None,
-            _subscriptions: vec![blur],
+            _subscriptions: subscriptions,
         }
     }
-    fn save(&mut self, index: usize, value: Option<String>, cx: &mut Context<Self>) {
+
+    fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.controller.read(cx).busy(cx) {
+            return;
+        }
+        let config = self.controller.read(cx).preferences(cx);
+        for (index, input) in self.inputs.iter().enumerate() {
+            if self.editing != Some(index) {
+                let value = COMMANDS[index].value(&config.keybindings);
+                if input.read(cx).value().as_ref() != value {
+                    input.update(cx, |input, cx| input.set_value(value, window, cx));
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing != Some(index) {
+            self.cancel(window, cx);
+            self.editing = Some(index);
+        }
+    }
+
+    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture = None;
+        self.error = None;
+        if let Some(index) = self.editing.take() {
+            let config = self.controller.read(cx).preferences(cx);
+            self.inputs[index].update(cx, |input, cx| {
+                input.set_value(COMMANDS[index].value(&config.keybindings), window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    fn clear(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.controller.read(cx).busy(cx) {
+            return;
+        }
+        self.activate(index, window, cx);
+        self.capture = None;
+        self.error = None;
+        self.inputs[index].update(cx, |input, cx| input.set_value("", window, cx));
+        cx.notify();
+    }
+
+    fn save(
+        &mut self,
+        index: usize,
+        value: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.controller.read(cx).busy(cx) || self.capture.is_some() {
+            return false;
+        }
+        self.activate(index, window, cx);
         let command = &COMMANDS[index];
         let config = self.controller.read(cx).preferences(cx);
         match keybindings::validate(
@@ -42,123 +270,536 @@ impl KeysView {
             cx,
         ) {
             Ok(()) => {
+                self.editing = None;
+                self.error = None;
                 self.controller.update(cx, |owner, cx| {
                     owner.set_preference(PreferenceChange::Keybinding(command.id.into(), value), cx)
                 });
-                self.editing = None;
-                self.error = None;
-                self.capture = None;
+                self.sync(window, cx);
+                true
             }
             Err(error) => {
                 self.error = Some(format!(
                     "{}: {}",
                     t(cx, "settings-key-conflict"),
                     t(cx, &error)
-                ))
+                ));
+                cx.notify();
+                false
             }
         }
+    }
+
+    fn confirm(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.capture.is_some() || self.controller.read(cx).busy(cx) {
+            return false;
+        }
+        let value = self.inputs[index].read(cx).value().trim().to_owned();
+        let config = self.controller.read(cx).preferences(cx);
+        if value == COMMANDS[index].value(&config.keybindings) {
+            self.cancel(window, cx);
+            return true;
+        }
+        self.save(index, Some(value), window, cx)
+    }
+
+    fn start_recording(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.controller.read(cx).busy(cx) {
+            return;
+        }
+        self.activate(index, window, cx);
+        self.inputs[index].focus_handle(cx).focus(window, cx);
+        self.error = None;
+        let listener = cx.listener(move |this, event: &KeystrokeEvent, window, cx| {
+            if !this.inputs[index].focus_handle(cx).is_focused(window)
+                || this.controller.read(cx).busy(cx)
+            {
+                this.capture = None;
+                cx.notify();
+                return;
+            }
+            cx.stop_propagation();
+            if event.keystroke.key != "escape" {
+                this.inputs[index].update(cx, |input, cx| {
+                    input.set_value(event.keystroke.unparse(), window, cx)
+                });
+            }
+            this.capture = None;
+            cx.notify();
+        });
+        self.capture = Some(cx.intercept_keystrokes(listener));
         cx.notify();
     }
-    pub fn render_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+
+    fn render_binding(
+        &self,
+        index: usize,
+        options: &RenderOptions,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let command = &COMMANDS[index];
         let config = self.controller.read(cx).preferences(cx);
+        let input = &self.inputs[index];
         let busy = self.controller.read(cx).busy(cx);
-        let value = command.value(&config.keybindings);
-        let mut row = h_flex()
-            .gap_2()
-            .child(div().flex_1().child(t(cx, command.label)));
-        if self.editing == Some(index) {
-            row = row
-                .child(Input::new(&self.input).w(px(210.)).disabled(busy))
-                .child(
-                    Button::new(("key-record", index))
-                        .label(t(
-                            cx,
-                            if self.capture.is_some() {
-                                "settings-key-recording"
-                            } else {
-                                "settings-key-record"
-                            },
-                        ))
+        let editing = self.editing == Some(index);
+        let recording = editing && self.capture.is_some();
+        let dirty = input.read(cx).value().as_ref() != command.value(&config.keybindings);
+        let suffix = h_flex()
+            .when(!input.read(cx).value().is_empty(), |row| {
+                row.child(
+                    Button::new(("key-clear", index))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Eraser)
+                        .tooltip(t(cx, "settings-key-clear"))
+                        .accessibility_label(t(cx, "settings-key-clear"))
                         .disabled(busy)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.input.focus_handle(cx).focus(window, cx);
-                            let listener =
-                                cx.listener(|this, event: &KeystrokeEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    if event.keystroke.key == "escape" {
-                                        this.capture = None;
-                                        cx.notify();
-                                        return;
-                                    }
-                                    this.input.update(cx, |input, cx| {
-                                        input.set_value(event.keystroke.unparse(), window, cx)
-                                    });
-                                    this.capture = None;
-                                    cx.notify();
-                                });
-                            this.capture = Some(cx.intercept_keystrokes(listener));
-                            cx.notify();
+                        .debug_selector(move || format!("key-clear-{index}"))
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.clear(index, window, cx)),
+                        ),
+                )
+            })
+            .child(
+                Button::new(("key-record", index))
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Keyboard)
+                    .selected(recording)
+                    .tooltip(t(
+                        cx,
+                        if recording {
+                            "settings-key-recording"
+                        } else {
+                            "settings-key-record"
+                        },
+                    ))
+                    .accessibility_label(t(cx, "settings-key-record"))
+                    .disabled(busy)
+                    .debug_selector(move || format!("key-record-{index}"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.start_recording(index, window, cx)
+                    })),
+            );
+        let row = h_flex()
+            .gap_1()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .debug_selector(move || format!("key-binding-{index}"))
+                    .child(
+                        Input::new(input)
+                            .with_size(options.size())
+                            .disabled(busy)
+                            .readonly(recording)
+                            .suffix(suffix),
+                    ),
+            )
+            .when(config.keybindings.contains_key(command.id), |row| {
+                row.child(
+                    Button::new(("key-reset", index))
+                        .ghost()
+                        .with_size(options.size())
+                        .icon(IconName::Undo2)
+                        .tooltip(t(cx, "settings-key-reset"))
+                        .accessibility_label(t(cx, "settings-key-reset"))
+                        .disabled(busy || recording)
+                        .debug_selector(move || format!("key-reset-{index}"))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.save(index, None, window, cx);
                         })),
                 )
-                .child(
-                    Button::new(("key-save", index))
-                        .label(t(cx, "action-confirm"))
-                        .disabled(busy)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.save(index, Some(this.input.read(cx).value().trim().into()), cx)
+            })
+            .when(editing && (dirty || recording), |row| {
+                row.child(
+                    Button::new(("key-confirm", index))
+                        .ghost()
+                        .with_size(options.size())
+                        .icon(IconName::Check)
+                        .tooltip(t(cx, "action-confirm"))
+                        .accessibility_label(t(cx, "action-confirm"))
+                        .disabled(busy || recording)
+                        .debug_selector(move || format!("key-confirm-{index}"))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.confirm(index, window, cx);
                         })),
                 )
                 .child(
                     Button::new(("key-cancel", index))
-                        .label(t(cx, "action-cancel"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.editing = None;
-                            this.error = None;
-                            this.capture = None;
-                            cx.notify();
-                        })),
-                );
-        } else {
-            for stroke in value
-                .split_whitespace()
-                .filter_map(|s| Keystroke::parse(s).ok())
-            {
-                row = row.child(Kbd::new(stroke));
-            }
-            row = row.child(
-                Button::new(("key-edit", index))
-                    .label(t(cx, "settings-key-edit"))
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        let config = this.controller.read(cx).preferences(cx);
-                        let value = COMMANDS[index].value(&config.keybindings).to_owned();
-                        this.input
-                            .update(cx, |input, cx| input.set_value(value, window, cx));
-                        this.editing = Some(index);
-                        this.error = None;
-                        cx.notify();
-                    })),
-            );
-        }
-        if config.keybindings.contains_key(command.id) {
-            row = row.child(
-                Button::new(("key-reset", index))
-                    .label(t(cx, "settings-key-reset"))
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, _, cx| this.save(index, None, cx))),
-            );
-        }
+                        .ghost()
+                        .with_size(options.size())
+                        .icon(IconName::X)
+                        .tooltip(t(cx, "settings-key-cancel"))
+                        .accessibility_label(t(cx, "settings-key-cancel"))
+                        .disabled(busy)
+                        .debug_selector(move || format!("key-cancel-{index}"))
+                        .on_click(cx.listener(|this, _, window, cx| this.cancel(window, cx))),
+                )
+            });
         v_flex()
-            .gap_2()
+            .id(("key-field", index))
+            .gap_1()
+            .map(|field| {
+                if options.layout() == Axis::Horizontal {
+                    field.w(px(360.))
+                } else {
+                    field.w_full()
+                }
+            })
+            .on_action(cx.listener(|this, _: &Escape, window, cx| {
+                this.cancel(window, cx);
+            }))
             .child(row)
-            .when(self.editing == Some(index), |view| {
-                view.children(
-                    self.error
-                        .as_ref()
-                        .map(|error| div().text_color(cx.theme().danger).child(error.clone())),
+            .when(recording, |field| {
+                field.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t(cx, "settings-key-recording")),
                 )
             })
+            .when(editing, |field| {
+                field.children(self.error.as_ref().map(|error| {
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(error.clone())
+                }))
+            })
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppConfig, AppLanguage, ConfigController, KeysView};
+    use crate::state::config::{ConfigContents, ConfigData};
+    use gpui_form::Form;
+    use gpui_kit::component::{
+        Root, WindowExt,
+        group_box::GroupBoxVariant,
+        setting::{SettingGroup, SettingPage, Settings},
+    };
+    use gpui_kit::{
+        AppContext, Context, Entity, Focusable, InteractiveElement, IntoElement, KeyBinding,
+        Modifiers, ParentElement, Render, Styled, Task, TestAppContext, VisualTestContext, Window,
+        div, point, px,
+    };
+    use gpui_operation::{Complete, Load, Transition};
+    use std::{cell::Cell, rc::Rc};
+
+    gpui_kit::actions!(keys_test, [UnrelatedAction]);
+
+    struct Fixture {
+        keys: Entity<KeysView>,
+        _form: Entity<Form<AppConfig>>,
+        dispatched: Rc<Cell<bool>>,
+    }
+    impl Render for Fixture {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let keys = self.keys.clone();
+            div()
+                .id("keys-fixture-root")
+                .size_full()
+                .on_action(cx.listener(|this, _: &UnrelatedAction, _, _| this.dispatched.set(true)))
+                .child(
+                    Settings::new("keys-fixture")
+                        .with_group_variant(GroupBoxVariant::Normal)
+                        .page(
+                            SettingPage::new("快捷键")
+                                .group(KeysView::actions(&keys))
+                                .group(
+                                    SettingGroup::new()
+                                        .title("应用")
+                                        .item(KeysView::item(&self.keys, 0, cx))
+                                        .item(KeysView::item(&self.keys, 1, cx)),
+                                ),
+                        ),
+                )
+                .children(Root::render_dialog_layer(window, cx))
+        }
+    }
+    fn setup(
+        cx: &mut TestAppContext,
+    ) -> (Entity<KeysView>, Rc<Cell<bool>>, &mut VisualTestContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            app_theme::init(cx);
+            crate::state::theme::init(cx);
+            crate::foundation::i18n::apply(AppLanguage::Chinese, cx);
+            cx.bind_keys([KeyBinding::new("ctrl-alt-9", UnrelatedAction, None)]);
+        });
+        let mut keys = None;
+        let dispatched = Rc::new(Cell::new(false));
+        let flag = dispatched.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let form = cx.new(|_| Form::new(AppConfig::default()));
+            let controller = cx.new(|cx| ConfigController::new(&form, cx));
+            // Use the onboarding form as an in-memory preference store. No user files are written.
+            controller.read(cx).store.clone().update(cx, |op| {
+                op.transition(Load(Task::ready(())));
+                op.transition(Complete(Ok(ConfigData {
+                    path: "/tmp/keys-fixture/config.toml".into(),
+                    contents: ConfigContents::Missing,
+                    backup: None,
+                })));
+            });
+            let owner = cx.new(|cx| KeysView::new(controller, window, cx));
+            keys = Some(owner.clone());
+            let fixture = cx.new(|_| Fixture {
+                keys: owner,
+                _form: form,
+                dispatched: flag,
+            });
+            Root::new(fixture, window, cx)
+        });
+        cx.simulate_resize(gpui_kit::size(px(1000.), px(640.)));
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        (keys.unwrap(), dispatched, cx)
+    }
+    fn click(cx: &mut VisualTestContext, selector: &'static str) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let bounds = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {selector}"));
+        cx.simulate_click(bounds.center(), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    fn edit(cx: &mut VisualTestContext, keys: &Entity<KeysView>, index: usize, value: &str) {
+        cx.update(|window, cx| {
+            keys.read(cx).inputs[index]
+                .focus_handle(cx)
+                .focus(window, cx)
+        });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-a"
+        } else {
+            "ctrl-a"
+        });
+        cx.simulate_input(value);
+    }
+
+    #[gpui_kit::test]
+    fn reset_all_requires_confirmation_and_restores_every_input(cx: &mut TestAppContext) {
+        let (keys, _, cx) = setup(cx);
+        let button = cx.debug_bounds("key-reset-all").unwrap();
+        assert!(
+            button.left() > px(800.) && button.right() <= px(1000.),
+            "{button:?}"
+        );
+        assert!(button.bottom() < px(120.));
+        click(cx, "key-reset-all");
+        cx.update(|window, cx| assert!(!window.has_active_dialog(cx)));
+        cx.update(|window, cx| {
+            keys.update(cx, |this, cx| {
+                assert!(this.save(0, Some("ctrl-alt-7".into()), window, cx));
+                assert!(this.save(1, Some(String::new()), window, cx));
+            });
+        });
+        edit(cx, &keys, 0, "ctrl-alt-8");
+        click(cx, "key-reset-all");
+        cx.update(|window, cx| {
+            assert!(window.has_active_dialog(cx));
+            assert_eq!(
+                keys.read(cx)
+                    .controller
+                    .read(cx)
+                    .preferences(cx)
+                    .keybindings
+                    .len(),
+                2
+            );
+        });
+        cx.simulate_keystrokes("escape");
+        cx.update(|window, cx| {
+            assert!(!window.has_active_dialog(cx));
+            assert_eq!(
+                keys.read(cx)
+                    .controller
+                    .read(cx)
+                    .preferences(cx)
+                    .keybindings
+                    .len(),
+                2
+            );
+            assert_eq!(keys.read(cx).inputs[0].read(cx).value(), "ctrl-alt-8");
+        });
+        click(cx, "key-reset-all");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert!(!window.has_active_dialog(cx));
+            let keys = keys.read(cx);
+            assert!(
+                keys.controller
+                    .read(cx)
+                    .preferences(cx)
+                    .keybindings
+                    .is_empty()
+            );
+            for (input, command) in keys.inputs.iter().zip(super::COMMANDS) {
+                assert_eq!(input.read(cx).value(), command.default);
+            }
+        });
+        click(cx, "key-reset-all");
+        cx.update(|window, cx| assert!(!window.has_active_dialog(cx)));
+    }
+
+    #[gpui_kit::test]
+    fn clearing_requires_confirmation_and_cancel_restores_binding(cx: &mut TestAppContext) {
+        let (keys, _, cx) = setup(cx);
+        cx.update(|window, cx| keys.read(cx).inputs[0].focus_handle(cx).focus(window, cx));
+        cx.simulate_keystrokes("enter");
+        cx.update(|_, cx| {
+            assert!(
+                keys.read(cx)
+                    .controller
+                    .read(cx)
+                    .preferences(cx)
+                    .keybindings
+                    .is_empty()
+            );
+        });
+        click(cx, "key-clear-0");
+        cx.update(|window, cx| {
+            assert!(!window.has_active_dialog(cx));
+            let keys = keys.read(cx);
+            assert!(keys.inputs[0].read(cx).value().is_empty());
+            assert!(
+                keys.controller
+                    .read(cx)
+                    .preferences(cx)
+                    .keybindings
+                    .is_empty()
+            );
+        });
+        click(cx, "key-cancel-0");
+        cx.update(|_, cx| {
+            assert_eq!(
+                keys.read(cx).inputs[0].read(cx).value(),
+                "secondary-shift-p"
+            );
+        });
+        click(cx, "key-clear-0");
+        click(cx, "key-confirm-0");
+        cx.update(|_, cx| {
+            assert_eq!(
+                keys.read(cx)
+                    .controller
+                    .read(cx)
+                    .preferences(cx)
+                    .keybindings
+                    .get("palette")
+                    .map(String::as_str),
+                Some("")
+            );
+        });
+        click(cx, "key-reset-0");
+        cx.update(|_, cx| {
+            assert!(
+                keys.read(cx)
+                    .controller
+                    .read(cx)
+                    .preferences(cx)
+                    .keybindings
+                    .is_empty()
+            );
+            assert_eq!(
+                keys.read(cx).inputs[0].read(cx).value(),
+                "secondary-shift-p"
+            );
+        });
+        edit(cx, &keys, 0, "secondary-p");
+        click(cx, "key-confirm-0");
+        cx.update(|_, cx| {
+            assert!(
+                keys.read(cx).error.is_some(),
+                "conflicting shortcut stays in the item"
+            );
+            assert!(
+                keys.read(cx)
+                    .controller
+                    .read(cx)
+                    .preferences(cx)
+                    .keybindings
+                    .is_empty()
+            );
+        });
+        click(cx, "key-cancel-0");
+        edit(cx, &keys, 0, "ctrl-alt-7 ctrl-alt-8");
+        click(cx, "key-confirm-0");
+        cx.update(|_, cx| {
+            assert_eq!(
+                keys.read(cx)
+                    .controller
+                    .read(cx)
+                    .preferences(cx)
+                    .keybindings
+                    .get("palette")
+                    .map(String::as_str),
+                Some("ctrl-alt-7 ctrl-alt-8")
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn inline_recording_intercepts_keys_and_search_filters_each_item(cx: &mut TestAppContext) {
+        let (keys, dispatched, cx) = setup(cx);
+        click(cx, "key-record-0");
+        cx.simulate_keystrokes("ctrl-alt-9");
+        assert!(
+            !dispatched.get(),
+            "recording must not execute application shortcuts"
+        );
+        cx.update(|window, cx| {
+            assert!(!window.has_active_dialog(cx));
+            let keys = keys.read(cx);
+            assert!(keys.capture.is_none());
+            assert_eq!(keys.inputs[0].read(cx).value(), "ctrl-alt-9");
+            assert!(
+                keys.controller
+                    .read(cx)
+                    .preferences(cx)
+                    .keybindings
+                    .is_empty()
+            );
+        });
+        click(cx, "key-record-0");
+        cx.simulate_keystrokes("escape");
+        cx.update(|_, cx| {
+            assert!(keys.read(cx).capture.is_none());
+            assert_eq!(keys.read(cx).inputs[0].read(cx).value(), "ctrl-alt-9");
+        });
+        cx.simulate_keystrokes("escape");
+        cx.update(|_, cx| {
+            assert_eq!(
+                keys.read(cx).inputs[0].read(cx).value(),
+                "secondary-shift-p"
+            );
+        });
+        click(cx, "key-record-0");
+        // Moving focus to another field must release the recorder before the next keystroke.
+        cx.update(|window, cx| keys.read(cx).inputs[1].focus_handle(cx).focus(window, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let keys = keys.read(cx);
+            assert!(
+                keys.capture.is_none(),
+                "editing={:?}, first={}, second={}",
+                keys.editing,
+                keys.inputs[0].focus_handle(cx).is_focused(window),
+                keys.inputs[1].focus_handle(cx).is_focused(window)
+            );
+        });
+        cx.simulate_click(point(px(100.), px(24.)), Modifiers::default());
+        cx.simulate_input("palette");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("key-binding-0").is_some());
+        assert!(cx.debug_bounds("key-binding-1").is_none());
     }
 }

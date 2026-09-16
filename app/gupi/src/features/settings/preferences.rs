@@ -126,7 +126,7 @@ impl SettingsView {
                             ("light-themes", Mode::Light, light),
                             &draft,
                             &controller,
-                            columns,
+                            Some(columns),
                             busy,
                             cx,
                         ))
@@ -134,7 +134,7 @@ impl SettingsView {
                             ("dark-themes", Mode::Dark, dark),
                             &draft,
                             &controller,
-                            columns,
+                            Some(columns),
                             busy,
                             cx,
                         )),
@@ -158,7 +158,16 @@ impl SettingsView {
     pub(super) fn render_pi(&self, cx: &Context<Self>) -> AnyElement {
         let pi = self.draft_pi.read(cx);
         let matching = self.probe_matches(cx);
-        let busy = self.controller.read(cx).busy(cx);
+        let busy = self.controller.read(cx).busy(cx)
+            || self
+                .resources
+                .read(cx)
+                .controller
+                .read(cx)
+                .mutation
+                .is_running();
+        let onboarding = self.controller.read(cx).is_onboarding(cx);
+        let dirty = self.controller.read(cx).pi_form.read(cx).is_dirty();
         let mut view = v_flex().gap_4().child(
             v_form().child(
                 field()
@@ -173,7 +182,7 @@ impl SettingsView {
                     ),
             ),
         );
-        view = view.child(
+        let actions = h_flex().gap_2().child(
             Button::new("check-draft-pi")
                 .icon(IconName::RotateCw)
                 .loading(pi.operation.is_running())
@@ -202,6 +211,31 @@ impl SettingsView {
                     cx.notify();
                 })),
         );
+        view = view.child(actions.when(!onboarding, |actions| {
+            actions.child(
+                Button::new("save-pi")
+                    .primary()
+                    .label(t(cx, "settings-save-pi"))
+                    .disabled(busy || !dirty)
+                    .loading(self.controller.read(cx).busy(cx))
+                    .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
+            )
+        }));
+        if !onboarding {
+            view = view.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t(
+                        cx,
+                        if dirty {
+                            "settings-pi-unsaved"
+                        } else {
+                            "settings-pi-saved"
+                        },
+                    )),
+            );
+        }
         if matching && !pi.operation.is_running() {
             if let Some(problem) = pi.operation.problem() {
                 view = view.child(
@@ -253,6 +287,34 @@ pub(super) fn theme_grid(
     group: (&'static str, Mode, Vec<app_theme::ThemeChoice>),
     draft: &AppConfig,
     controller: &Entity<ConfigController>,
+    columns: Option<u16>,
+    busy: bool,
+    cx: &App,
+) -> AnyElement {
+    let Some(columns) = columns else {
+        return super::theme_grid::ThemeGrid {
+            group,
+            draft: draft.clone(),
+            controller: controller.clone(),
+            busy,
+        }
+        .into_any_element();
+    };
+    v_flex()
+        .w_full()
+        .flex_shrink_0()
+        .gap_3()
+        .child(super::sticky::heading(group.0, cx))
+        .child(theme_grid_content(
+            group, draft, controller, columns, busy, cx,
+        ))
+        .into_any_element()
+}
+
+pub(super) fn theme_grid_content(
+    group: (&'static str, Mode, Vec<app_theme::ThemeChoice>),
+    draft: &AppConfig,
+    controller: &Entity<ConfigController>,
     columns: u16,
     busy: bool,
     cx: &App,
@@ -289,6 +351,7 @@ pub(super) fn theme_grid(
                 .tooltip(move |window, cx| Tooltip::new(tooltip_name.clone()).build(window, cx))
                 .set_position(index + 1, count)
                 .w_full()
+                .debug_selector(move || format!("{id}-tile-{index}"))
                 .min_w_0()
                 .rounded_lg()
                 .border_2()
@@ -425,11 +488,5 @@ pub(super) fn theme_grid(
                 ),
         );
     }
-    v_flex()
-        .w_full()
-        .flex_shrink_0()
-        .gap_3()
-        .child(super::sticky::heading(id, cx))
-        .child(grid)
-        .into_any_element()
+    grid.into_any_element()
 }

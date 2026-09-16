@@ -48,7 +48,7 @@ pub(crate) struct Catalog {
     pub resources: Vec<Resource>,
     pub warnings: Vec<String>,
 }
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 #[error("{0}")]
 pub(crate) struct Error(pub String);
 impl From<std::io::Error> for Error {

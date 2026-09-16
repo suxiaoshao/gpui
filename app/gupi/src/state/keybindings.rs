@@ -129,7 +129,7 @@ pub(crate) const COMMANDS: &[Command] = &[
     },
     Command {
         id: "reveal",
-        label: "action-locate",
+        label: "settings-key-reveal-session",
         kind: Kind::Reveal,
         default: "",
     },
