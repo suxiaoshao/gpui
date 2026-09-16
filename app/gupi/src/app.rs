@@ -40,15 +40,7 @@ pub(crate) fn run() {
         crate::state::theme::init(cx);
         i18n::apply(Default::default(), cx);
         menus::refresh(cx);
-        cx.bind_keys([
-            KeyBinding::new(
-                "secondary-shift-p",
-                menus::ShowCommandPalette,
-                Some("GupiApplication"),
-            ),
-            KeyBinding::new("cmd-q", menus::Quit, None),
-            KeyBinding::new("secondary-,", menus::ShowSettings, None),
-        ]);
+        crate::state::keybindings::apply(&Default::default(), cx);
         cx.on_action(|_: &menus::ShowSettings, cx| cx.defer(|cx| show(Some(true), cx)));
         cx.on_action(|_: &menus::ShowMainWindow, cx| cx.defer(|cx| show(Some(false), cx)));
         cx.on_action(|_: &menus::Quit, cx| cx.defer(quit));

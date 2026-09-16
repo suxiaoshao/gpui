@@ -67,23 +67,6 @@ pub(super) fn init(cx: &mut App) {
         KeyBinding::new("enter", ConfirmExtension, Some("GupiExtension")),
         KeyBinding::new("escape", CancelExtension, Some("GupiExtension")),
     ]);
-    for context in ["Gupi", "GupiPalette"] {
-        cx.bind_keys(
-            [
-                ("secondary-shift-p", Kind::Palette),
-                ("secondary-p", Kind::QuickOpen),
-                ("secondary-n", Kind::New),
-                ("secondary-l", Kind::FocusInput),
-                ("secondary-b", Kind::Sidebar),
-                ("secondary-alt-b", Kind::History),
-                ("secondary-r", Kind::Reconnect),
-                ("secondary-shift-r", Kind::Scan),
-                ("secondary-alt-/", Kind::Model),
-            ]
-            .map(|(key, action)| KeyBinding::new(key, Run(action), Some(context))),
-        );
-    }
-    cx.bind_keys([KeyBinding::new("escape", Run(Kind::Stop), Some("Gupi"))]);
 }
 impl HomeView {
     pub(crate) fn action_enabled(&self, kind: Kind, cx: &App) -> bool {

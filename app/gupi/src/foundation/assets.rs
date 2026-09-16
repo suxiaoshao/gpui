@@ -5,7 +5,7 @@ define_lucide_icons!(pub(crate) enum IconName {
     Sparkles => "sparkles", Puzzle => "puzzle",
     UserRound => "user-round", Bot => "bot",
     Settings => "settings", ArrowLeft => "arrow-left", ArrowRight => "arrow-right",
-    Check => "check",
+    Check => "check", Keyboard => "keyboard", Info => "info",
     RotateCw => "rotate-cw", FolderOpen => "folder-open", Save => "save", Search => "search",
     Plus => "plus", SquarePen => "square-pen", PanelRight => "panel-right",
     ArrowUp => "arrow-up", ArrowDown => "arrow-down", Database => "database", CircleDashed => "circle-dashed", Square => "square", ChevronDown => "chevron-down",

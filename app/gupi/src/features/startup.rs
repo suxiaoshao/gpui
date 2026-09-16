@@ -66,43 +66,40 @@ impl StartupView {
                 form.clone(),
                 config.clone(),
                 draft_pi.clone(),
+                applied_pi.clone(),
                 focus_handle.clone(),
                 window,
                 cx,
             )
         });
         let store = config.read(cx).store.clone();
-        let config_sub = store.observe_in(cx, window, |this, op, _window, cx| {
+        let config_sub = store.observe_in(cx, window, |this, op, window, cx| {
             if let Some(value) = op.data().and_then(|d| d.configured()) {
+                i18n::apply(value.language, cx);
+                theme::apply(value, window, cx);
+                crate::state::keybindings::apply(&value.keybindings, cx);
+                menus::refresh(cx);
                 this.applied_pi
                     .update(cx, |pi, cx| pi.request(value.pi_command.clone(), false, cx));
             }
             cx.notify();
         });
         let pi_sub = cx.observe(&applied_pi, |_, _, cx| cx.notify());
-        let preview_form = form.clone();
-        let form_sub = cx.observe_in(&form, window, move |_, form, window, cx| {
-            let draft = crate::state::config::AppConfig::ROOT.get(&form, cx);
+        let form_sub = cx.observe_in(&form, window, move |this, _, window, cx| {
+            let draft = this.config.read(cx).preferences(cx);
             i18n::apply(draft.language, cx);
             theme::apply(&draft, window, cx);
             menus::refresh(cx);
         });
+        let preview_config = config.clone();
         let appearance = window.observe_window_appearance(move |window, cx| {
-            theme::apply(
-                &crate::state::config::AppConfig::ROOT.get(&preview_form, cx),
-                window,
-                cx,
-            );
+            theme::apply(&preview_config.read(cx).preferences(cx), window, cx);
         });
-        let accent_form = form.clone();
+        let accent_config = config.clone();
         let accent = cx.observe_global_in::<app_theme::SystemAccentThemeState>(
             window,
             move |_, window, cx| {
-                theme::apply(
-                    &crate::state::config::AppConfig::ROOT.get(&accent_form, cx),
-                    window,
-                    cx,
-                );
+                theme::apply(&accent_config.read(cx).preferences(cx), window, cx);
             },
         );
         config.update(cx, |owner, cx| owner.reload(cx));
@@ -129,6 +126,8 @@ impl StartupView {
         self.config.update(cx, |owner, _| owner.draining = true);
         self.applied_pi.update(cx, |pi, _| pi.stop());
         self.draft_pi.update(cx, |pi, _| pi.stop());
+        self.settings
+            .update(cx, |settings, cx| settings.stop_resources(cx));
         let pi = crate::state::pi::global(cx);
         let close_pi = pi.update(cx, |state, cx| state.close_all(cx));
         let flush_home = self
@@ -186,6 +185,10 @@ impl StartupView {
                 window.close_dialog(cx);
             }
         }
+        if visible && !self.show_settings {
+            self.settings
+                .update(cx, |settings, cx| settings.activate(cx));
+        }
         self.show_settings = visible;
         if !visible && let Some(home) = &self.home {
             home.update(cx, |home, cx| home.focus_composer(window, cx));
@@ -239,6 +242,7 @@ impl Render for StartupView {
         let configured = screen.configured();
         let main = matches!(screen, StartupScreen::Home(_));
         let onboarding = matches!(screen, StartupScreen::Onboarding);
+        let settings_page = matches!(screen, StartupScreen::Settings);
         let page_title = match &screen {
             StartupScreen::Settings => t(cx, "menu-settings"),
             StartupScreen::ConfigFailure(_) => t(cx, "recovery-config-title"),
@@ -265,7 +269,8 @@ impl Render for StartupView {
         let mut content = v_flex()
             .gap_5()
             .w_full()
-            .when(!onboarding, |view| view.max_w(px(800.)))
+            .when(!onboarding && !settings_page, |view| view.max_w(px(800.)))
+            .when(settings_page, |view| view.h_full().min_h_0())
             .when(!configured, |view| view.h_full().min_h_0());
         if self.log_warning {
             content = content.child(t(cx, "error-log"));
@@ -349,7 +354,7 @@ impl Render for StartupView {
             }
             StartupScreen::Home(_) => {}
         }
-        if configured && !main {
+        if configured && !main && !settings_page {
             let pi = self.applied_pi.read(cx);
             if let Some(problem) = pi.operation.problem() {
                 content = content.child(div().text_sm().child(t(cx, problem.key())));
@@ -402,10 +407,14 @@ impl Render for StartupView {
                     .id("content")
                     .flex_1()
                     .min_h_0()
-                    .when(configured && !main, |view| view.overflow_y_scroll())
-                    .when(!configured || main, |view| view.overflow_hidden())
-                    .when(!main, |view| view.py_8())
-                    .when(!onboarding && !main, |view| view.px_8())
+                    .when(configured && !main && !settings_page, |view| {
+                        view.overflow_y_scroll()
+                    })
+                    .when(!configured || main || settings_page, |view| {
+                        view.overflow_hidden()
+                    })
+                    .when(!main && !settings_page, |view| view.py_8())
+                    .when(!onboarding && !main && !settings_page, |view| view.px_8())
                     .flex()
                     .justify_center()
                     .when(configured, |view| view.items_start())
