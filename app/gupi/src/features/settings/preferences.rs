@@ -58,7 +58,9 @@ impl SettingsView {
                     field().label(t(cx, "settings-language")).child(
                         Combobox::new(&self.language)
                             .w_full()
-                            .large()
+                            .when(self.controller.read(cx).is_onboarding(cx), |control| {
+                                control.large()
+                            })
                             .cleanable(false)
                             .disabled(self.controller.read(cx).busy(cx))
                             .search_placeholder(t(cx, "setup-search-language")),
@@ -81,7 +83,7 @@ impl SettingsView {
             .into_any_element()
     }
     pub(super) fn render_appearance(&self, _window: &Window, cx: &Context<Self>) -> AnyElement {
-        let draft = AppConfig::ROOT.get(&self.form, cx);
+        let draft = self.controller.read(cx).preferences(cx);
         let busy = self.controller.read(cx).busy(cx);
         let modes = [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark];
         let mode_control = gpui_kit::component::radio::RadioGroup::horizontal("color-mode")
@@ -96,9 +98,10 @@ impl SettingsView {
                 if this.controller.read(cx).busy(cx) {
                     return;
                 }
-                AppConfig::THEME.set(&this.form, modes[*index], cx);
+                this.controller.update(cx, |owner, cx| {
+                    owner.set_preference(PreferenceChange::Theme(modes[*index]), cx)
+                });
             }));
-        let form = self.form.clone();
         let controller = self.controller.clone();
         let light = app_theme::theme_choices(ThemeRegistry::global(cx), Mode::Light, &[]);
         let dark = app_theme::theme_choices(ThemeRegistry::global(cx), Mode::Dark, &[]);
@@ -122,18 +125,16 @@ impl SettingsView {
                         .child(theme_grid(
                             ("light-themes", Mode::Light, light),
                             &draft,
-                            &form,
                             &controller,
-                            columns,
+                            Some(columns),
                             busy,
                             cx,
                         ))
                         .child(theme_grid(
                             ("dark-themes", Mode::Dark, dark),
                             &draft,
-                            &form,
                             &controller,
-                            columns,
+                            Some(columns),
                             busy,
                             cx,
                         )),
@@ -144,11 +145,11 @@ impl SettingsView {
         .into_any_element()
     }
     pub(super) fn probe_matches(&self, cx: &App) -> bool {
-        let command = AppConfig::PI_COMMAND.get(&self.form, cx);
+        let command = self.pi_command(cx);
         self.draft_pi.read(cx).matches_command(command.as_deref())
     }
     pub(super) fn probe_ready(&self, cx: &App) -> bool {
-        let command = AppConfig::PI_COMMAND.get(&self.form, cx);
+        let command = self.pi_command(cx);
         self.draft_pi
             .read(cx)
             .ready_for(command.as_deref())
@@ -157,16 +158,31 @@ impl SettingsView {
     pub(super) fn render_pi(&self, cx: &Context<Self>) -> AnyElement {
         let pi = self.draft_pi.read(cx);
         let matching = self.probe_matches(cx);
-        let busy = self.controller.read(cx).busy(cx);
+        let busy = self.controller.read(cx).busy(cx)
+            || self
+                .resources
+                .read(cx)
+                .controller
+                .read(cx)
+                .mutation
+                .is_running();
+        let onboarding = self.controller.read(cx).is_onboarding(cx);
+        let dirty = self.controller.read(cx).pi_form.read(cx).is_dirty();
         let mut view = v_flex().gap_4().child(
             v_form().child(
                 field()
                     .label(t(cx, "settings-pi-command"))
                     .description(t(cx, "settings-path-help"))
-                    .child(Input::new(&self.input).large().disabled(busy)),
+                    .child(
+                        Input::new(self.pi_input(cx))
+                            .when(self.controller.read(cx).is_onboarding(cx), |input| {
+                                input.large()
+                            })
+                            .disabled(busy),
+                    ),
             ),
         );
-        view = view.child(
+        let actions = h_flex().gap_2().child(
             Button::new("check-draft-pi")
                 .icon(IconName::RotateCw)
                 .loading(pi.operation.is_running())
@@ -180,17 +196,46 @@ impl SettingsView {
                 ))
                 .disabled(busy || pi.operation.is_running())
                 .on_click(cx.listener(|this, _, _, cx| {
-                    match AppConfig::ROOT.get(&this.form, cx).normalized() {
+                    match (PiSettings {
+                        command: this.pi_command(cx),
+                    })
+                    .normalized()
+                    {
                         Ok(config) => {
                             this.error = None;
                             this.draft_pi
-                                .update(cx, |pi, cx| pi.request(config.pi_command, true, cx));
+                                .update(cx, |pi, cx| pi.request(config.command, true, cx));
                         }
                         Err(error) => this.error = Some(error),
                     }
                     cx.notify();
                 })),
         );
+        view = view.child(actions.when(!onboarding, |actions| {
+            actions.child(
+                Button::new("save-pi")
+                    .primary()
+                    .label(t(cx, "settings-save-pi"))
+                    .disabled(busy || !dirty)
+                    .loading(self.controller.read(cx).busy(cx))
+                    .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
+            )
+        }));
+        if !onboarding {
+            view = view.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t(
+                        cx,
+                        if dirty {
+                            "settings-pi-unsaved"
+                        } else {
+                            "settings-pi-saved"
+                        },
+                    )),
+            );
+        }
         if matching && !pi.operation.is_running() {
             if let Some(problem) = pi.operation.problem() {
                 view = view.child(
@@ -224,7 +269,7 @@ impl SettingsView {
 
 // Match Jaco's equal-width grid: choose columns from the available width,
 // then let grid tracks share all remaining space after the gaps.
-fn theme_columns(width: f32) -> u16 {
+pub(super) fn theme_columns(width: f32) -> u16 {
     if !width.is_finite() || width <= 178. {
         return 1;
     }
@@ -238,10 +283,37 @@ fn theme_columns(width: f32) -> u16 {
     }
 }
 
-fn theme_grid(
+pub(super) fn theme_grid(
     group: (&'static str, Mode, Vec<app_theme::ThemeChoice>),
     draft: &AppConfig,
-    form: &Entity<Form<AppConfig>>,
+    controller: &Entity<ConfigController>,
+    columns: Option<u16>,
+    busy: bool,
+    cx: &App,
+) -> AnyElement {
+    let Some(columns) = columns else {
+        return super::theme_grid::ThemeGrid {
+            group,
+            draft: draft.clone(),
+            controller: controller.clone(),
+            busy,
+        }
+        .into_any_element();
+    };
+    v_flex()
+        .w_full()
+        .flex_shrink_0()
+        .gap_3()
+        .child(super::sticky::heading(group.0, cx))
+        .child(theme_grid_content(
+            group, draft, controller, columns, busy, cx,
+        ))
+        .into_any_element()
+}
+
+pub(super) fn theme_grid_content(
+    group: (&'static str, Mode, Vec<app_theme::ThemeChoice>),
+    draft: &AppConfig,
     controller: &Entity<ConfigController>,
     columns: u16,
     busy: bool,
@@ -266,9 +338,7 @@ fn theme_grid(
         } else {
             choice.name
         };
-        let form = form.clone();
         let theme_id = choice.id.clone();
-        let key_form = form.clone();
         let key_controller = controller.clone();
         let change_controller = controller.clone();
         let key_id = theme_id.clone();
@@ -281,6 +351,7 @@ fn theme_grid(
                 .tooltip(move |window, cx| Tooltip::new(tooltip_name.clone()).build(window, cx))
                 .set_position(index + 1, count)
                 .w_full()
+                .debug_selector(move || format!("{id}-tile-{index}"))
                 .min_w_0()
                 .rounded_lg()
                 .border_2()
@@ -297,14 +368,17 @@ fn theme_grid(
                     if !key_controller.read(cx).busy(cx)
                         && matches!(event.keystroke.key.as_str(), "space" | "enter")
                     {
-                        match mode {
-                            Mode::Light => {
-                                AppConfig::LIGHT_THEME.set(&key_form, Some(key_id.clone()), cx)
-                            }
-                            Mode::Dark => {
-                                AppConfig::DARK_THEME.set(&key_form, Some(key_id.clone()), cx)
-                            }
-                        };
+                        key_controller.update(cx, |owner, cx| {
+                            owner.set_preference(
+                                match mode {
+                                    Mode::Light => {
+                                        PreferenceChange::LightTheme(Some(key_id.clone()))
+                                    }
+                                    Mode::Dark => PreferenceChange::DarkTheme(Some(key_id.clone())),
+                                },
+                                cx,
+                            )
+                        });
                         cx.stop_propagation();
                     }
                 })
@@ -312,12 +386,15 @@ fn theme_grid(
                     if change_controller.read(cx).busy(cx) {
                         return;
                     }
-                    match mode {
-                        Mode::Light => {
-                            AppConfig::LIGHT_THEME.set(&form, Some(theme_id.clone()), cx)
-                        }
-                        Mode::Dark => AppConfig::DARK_THEME.set(&form, Some(theme_id.clone()), cx),
-                    };
+                    change_controller.update(cx, |owner, cx| {
+                        owner.set_preference(
+                            match mode {
+                                Mode::Light => PreferenceChange::LightTheme(Some(theme_id.clone())),
+                                Mode::Dark => PreferenceChange::DarkTheme(Some(theme_id.clone())),
+                            },
+                            cx,
+                        )
+                    });
                 })
                 .child(
                     v_flex()
@@ -411,11 +488,5 @@ fn theme_grid(
                 ),
         );
     }
-    v_flex()
-        .w_full()
-        .flex_shrink_0()
-        .gap_3()
-        .child(super::sticky::heading(id, cx))
-        .child(grid)
-        .into_any_element()
+    grid.into_any_element()
 }

@@ -25,6 +25,8 @@ pub(crate) enum AppLanguage {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, FormSchema)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct AppConfig {
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub keybindings: super::keybindings::Overrides,
     pub pi_command: Option<String>,
     pub theme: ThemeMode,
     pub light_theme: Option<String>,
@@ -33,11 +35,32 @@ pub(crate) struct AppConfig {
 }
 impl AppConfig {
     pub fn normalized(mut self) -> Result<Self, String> {
-        self.pi_command = self
-            .pi_command
+        for (id, binding) in &self.keybindings {
+            if !super::keybindings::COMMANDS.iter().any(|c| c.id == id) {
+                return Err("error-config-validation".into());
+            }
+            super::keybindings::syntax(binding).map_err(str::to_owned)?;
+        }
+        self.pi_command = PiSettings {
+            command: self.pi_command,
+        }
+        .normalized()?
+        .command;
+        Ok(self)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, FormSchema)]
+pub(crate) struct PiSettings {
+    pub command: Option<String>,
+}
+impl PiSettings {
+    pub fn normalized(mut self) -> Result<Self, String> {
+        self.command = self
+            .command
             .map(|v| v.trim().to_owned())
             .filter(|v| !v.is_empty());
-        if let Some(command) = &self.pi_command {
+        if let Some(command) = &self.command {
             let path = std::path::Path::new(command);
             if command.chars().any(char::is_control)
                 || (!path.is_absolute()
@@ -47,6 +70,35 @@ impl AppConfig {
             }
         }
         Ok(self)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum PreferenceChange {
+    Keybinding(String, Option<String>),
+    ResetKeybindings,
+    Language(AppLanguage),
+    Theme(ThemeMode),
+    LightTheme(Option<String>),
+    DarkTheme(Option<String>),
+}
+impl PreferenceChange {
+    fn apply(self, config: &mut AppConfig) {
+        match self {
+            Self::ResetKeybindings => config.keybindings.clear(),
+            Self::Keybinding(id, binding) => match binding {
+                Some(binding) => {
+                    config.keybindings.insert(id, binding);
+                }
+                None => {
+                    config.keybindings.remove(&id);
+                }
+            },
+            Self::Language(value) => config.language = value,
+            Self::Theme(value) => config.theme = value,
+            Self::LightTheme(value) => config.light_theme = value,
+            Self::DarkTheme(value) => config.dark_theme = value,
+        }
     }
 }
 #[derive(Clone, Debug)]
@@ -110,6 +162,8 @@ impl ConfigProblem {
 pub(crate) enum ConfigRepair {
     Reload,
     SaveDraft,
+    SavePi,
+    SavePreference(PreferenceChange),
     WriteCommitted,
     BackupAndReset,
 }
@@ -145,9 +199,10 @@ fn write_config(
     path: PathBuf,
     pending: PendingConfig,
     reset: bool,
+    reset_keybindings: bool,
     mut backup: Option<PathBuf>,
 ) -> Result<ConfigData, ConfigProblem> {
-    let value = if reset {
+    let mut value = if reset {
         if let Some(bytes) =
             persistence::read(&path).map_err(|e| ConfigProblem::Read(e.to_string()))?
         {
@@ -181,12 +236,24 @@ fn write_config(
             if value.language != baseline.language {
                 latest.language = value.language;
             }
+            for id in value.keybindings.keys().chain(baseline.keybindings.keys()) {
+                if value.keybindings.get(id) != baseline.keybindings.get(id) {
+                    if let Some(binding) = value.keybindings.get(id) {
+                        latest.keybindings.insert(id.clone(), binding.clone());
+                    } else {
+                        latest.keybindings.remove(id);
+                    }
+                }
+            }
             latest
         } else {
             // The explicit "write applied settings" action writes all applied values.
             pending.value
         }
     };
+    if reset_keybindings {
+        value.keybindings.clear();
+    }
     let bytes =
         toml::to_string_pretty(&value).map_err(|e| ConfigProblem::Validation(e.to_string()))?;
     persistence::write_atomic(&path, bytes.as_bytes()).map_err(|failure| ConfigProblem::Write {
@@ -203,6 +270,7 @@ fn write_config(
 pub(crate) struct ConfigController {
     pub store: ConfigStore,
     pub form: WeakEntity<Form<AppConfig>>,
+    pub pi_form: Entity<Form<PiSettings>>,
     pub draining: bool,
     path: Result<PathBuf, String>,
 }
@@ -224,6 +292,7 @@ impl ConfigController {
         Self {
             store: Store::new(cx, ConfigOperation::new()),
             form: form.downgrade(),
+            pi_form: cx.new(|_| Form::new(PiSettings::default())),
             draining: false,
             path,
         }
@@ -231,8 +300,77 @@ impl ConfigController {
     pub fn busy(&self, cx: &App) -> bool {
         self.draining || self.store.read(cx, |op| op.is_running())
     }
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref().ok()
+    }
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.start(ConfigRepair::Reload, None, cx);
+    }
+    pub fn is_onboarding(&self, cx: &App) -> bool {
+        self.store.read(cx, |op| {
+            op.data().is_some_and(|data| data.configured().is_none())
+        })
+    }
+    pub fn preferences(&self, cx: &App) -> AppConfig {
+        self.store
+            .read(cx, |op| op.data().and_then(ConfigData::configured).cloned())
+            .unwrap_or_else(|| {
+                self.form
+                    .upgrade()
+                    .map(|form| AppConfig::ROOT.get(&form, cx))
+                    .unwrap_or_default()
+            })
+    }
+    pub fn set_preference(&mut self, change: PreferenceChange, cx: &mut Context<Self>) {
+        if self.busy(cx) {
+            return;
+        }
+        if self.is_onboarding(cx) {
+            if let Some(form) = self.form.upgrade() {
+                let mut draft = AppConfig::ROOT.get(&form, cx);
+                change.apply(&mut draft);
+                AppConfig::ROOT.set(&form, draft, cx);
+            }
+            return;
+        }
+        let baseline = self.preferences(cx);
+        let mut value = baseline.clone();
+        change.clone().apply(&mut value);
+        if value == baseline {
+            return;
+        }
+        self.start(
+            ConfigRepair::SavePreference(change),
+            Some(PendingConfig {
+                value,
+                baseline: Some(baseline),
+                version: None,
+            }),
+            cx,
+        );
+    }
+    pub fn submit_pi(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        if self.busy(cx) {
+            return Ok(());
+        }
+        let (version, draft) = self
+            .pi_form
+            .update(cx, |form, cx| form.prepare(cx))
+            .map_err(|_| "error-config-validation".to_owned())?
+            .into_parts();
+        let baseline = self.preferences(cx);
+        let mut value = baseline.clone();
+        value.pi_command = draft.normalized()?.command;
+        self.start(
+            ConfigRepair::SavePi,
+            Some(PendingConfig {
+                value,
+                baseline: Some(baseline),
+                version: Some(version),
+            }),
+            cx,
+        );
+        Ok(())
     }
     pub fn submit_draft(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
         if self.busy(cx) {
@@ -281,6 +419,8 @@ impl ConfigController {
         match action {
             ConfigRepair::Reload => self.reload(cx),
             ConfigRepair::SaveDraft => return self.submit_draft(cx),
+            ConfigRepair::SavePi => return self.submit_pi(cx),
+            ConfigRepair::SavePreference(change) => self.set_preference(change, cx),
             ConfigRepair::WriteCommitted => self.write_committed(cx),
             ConfigRepair::BackupAndReset => {
                 let pending = PendingConfig {
@@ -308,8 +448,19 @@ impl ConfigController {
             return;
         }
         let version = pending.as_ref().and_then(|p| p.version);
-        let rebase = !matches!(action, ConfigRepair::WriteCommitted);
+        let rebase_setup = matches!(
+            action,
+            ConfigRepair::Reload | ConfigRepair::SaveDraft | ConfigRepair::BackupAndReset
+        );
+        let rebase_pi = rebase_setup || matches!(action, ConfigRepair::SavePi);
+        let pi_version = matches!(action, ConfigRepair::SavePi)
+            .then_some(version)
+            .flatten();
         let reset = matches!(action, ConfigRepair::BackupAndReset);
+        let reset_keybindings = matches!(
+            action,
+            ConfigRepair::SavePreference(PreferenceChange::ResetKeybindings)
+        );
         let backup = self
             .store
             .read(cx, |op| op.problem().and_then(|p| p.backup().cloned()));
@@ -326,7 +477,7 @@ impl ConfigController {
             let result = smol::unblock(move || {
                 let path = path.map_err(ConfigProblem::Read)?;
                 match pending {
-                    Some(pending) => write_config(path, pending, reset, backup),
+                    Some(pending) => write_config(path, pending, reset, reset_keybindings, backup),
                     None => read_config(path, require_configured),
                 }
             })
@@ -343,14 +494,28 @@ impl ConfigController {
                     .ok()
                     .map(|d| d.configured().cloned().unwrap_or_default());
                 owner.store.update(cx, |op| op.transition(Complete(result)));
-                if rebase && let Some(value) = value {
-                    let _ = owner.form.update(cx, |form, cx| {
-                        if let Some(version) = version {
-                            form.rebase_if_current(version, value, cx);
-                        } else {
-                            form.rebase(value, cx);
-                        }
-                    });
+                if let Some(value) = value {
+                    if rebase_pi {
+                        owner.pi_form.update(cx, |form, cx| {
+                            let draft = PiSettings {
+                                command: value.pi_command.clone(),
+                            };
+                            if let Some(version) = pi_version {
+                                form.rebase_if_current(version, draft, cx);
+                            } else {
+                                form.rebase(draft, cx);
+                            }
+                        });
+                    }
+                    if rebase_setup {
+                        let _ = owner.form.update(cx, |form, cx| {
+                            if let Some(version) = version {
+                                form.rebase_if_current(version, value, cx);
+                            } else {
+                                form.rebase(value, cx);
+                            }
+                        });
+                    }
                 }
                 cx.notify();
             });
@@ -368,7 +533,10 @@ impl ConfigController {
 }
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, AppLanguage, ConfigController, ConfigRepair, ThemeMode, read_config};
+    use super::{
+        AppConfig, AppLanguage, ConfigController, ConfigRepair, PiSettings, PreferenceChange,
+        ThemeMode, read_config,
+    };
     use gpui_form::Form;
     use gpui_kit as gpui;
     use gpui_kit::{AppContext, Entity, TestAppContext};
@@ -395,6 +563,72 @@ mod tests {
             !owner.store.read(cx, |op| op.is_running())
         })
         .await;
+    }
+
+    #[gpui::test]
+    async fn shortcut_save_merges_only_the_selected_override(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = 'system'\n").unwrap();
+        let form = cx.new(|_| Form::new(AppConfig::default()));
+        let owner = cx.new(|cx| ConfigController::at_path(&form, Ok(path.clone()), cx));
+        owner.update(cx, |owner, cx| owner.reload(cx));
+        settled(&owner, cx).await;
+        std::fs::write(
+            &path,
+            "theme = 'dark'\n[keybindings]\nquick_open = 'secondary-alt-p'\n",
+        )
+        .unwrap();
+        owner.update(cx, |owner, cx| {
+            owner.set_preference(
+                PreferenceChange::Keybinding("new".into(), Some("secondary-shift-n".into())),
+                cx,
+            )
+        });
+        settled(&owner, cx).await;
+        let saved = read_config(path.clone(), true)
+            .unwrap()
+            .configured()
+            .unwrap()
+            .clone();
+        assert_eq!(saved.theme, ThemeMode::Dark);
+        assert_eq!(
+            saved.keybindings.get("new").map(String::as_str),
+            Some("secondary-shift-n")
+        );
+        assert_eq!(
+            saved.keybindings.get("quick_open").map(String::as_str),
+            Some("secondary-alt-p")
+        );
+        owner.update(cx, |owner, cx| {
+            owner.set_preference(PreferenceChange::Keybinding("new".into(), None), cx)
+        });
+        settled(&owner, cx).await;
+        let saved = read_config(path.clone(), true)
+            .unwrap()
+            .configured()
+            .unwrap()
+            .clone();
+        assert!(!saved.keybindings.contains_key("new"));
+        assert!(saved.keybindings.contains_key("quick_open"));
+        // Reset every override, including changes written externally since the last read.
+        std::fs::write(
+            &path,
+            "theme = 'light'\n[keybindings]\nquick_open = 'secondary-alt-p'\nnew = ''\n",
+        )
+        .unwrap();
+        owner.update(cx, |owner, cx| {
+            owner.set_preference(PreferenceChange::ResetKeybindings, cx);
+        });
+        settled(&owner, cx).await;
+        let saved = read_config(path, true)
+            .unwrap()
+            .configured()
+            .unwrap()
+            .clone();
+        assert_eq!(saved.theme, ThemeMode::Light);
+        assert!(saved.keybindings.is_empty());
     }
 
     #[gpui::test]
@@ -428,6 +662,7 @@ mod tests {
                 light_theme: None,
                 dark_theme: Some("chosen-dark".into()),
                 language: AppLanguage::Chinese,
+                keybindings: Default::default(),
             }
         );
         assert!(!form.read_with(cx, |form, _| form.is_dirty()));
@@ -611,5 +846,148 @@ mod tests {
             ThemeMode::Dark
         );
         assert!(!form.read_with(cx, |form, _| form.is_dirty()));
+    }
+
+    #[gpui::test]
+    async fn preferences_never_submit_or_rebase_the_pi_editor(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "pi_command = 'saved-pi'\n").unwrap();
+        let setup = cx.new(|_| Form::new(AppConfig::default()));
+        let owner = cx.new(|cx| ConfigController::at_path(&setup, Ok(path.clone()), cx));
+        owner.update(cx, |owner, cx| owner.reload(cx));
+        settled(&owner, cx).await;
+        let pi = owner.read_with(cx, |owner, _| owner.pi_form.clone());
+        cx.update(|cx| PiSettings::COMMAND.set(&pi, Some("draft-pi".into()), cx));
+        for change in [
+            PreferenceChange::Theme(ThemeMode::Dark),
+            PreferenceChange::Language(AppLanguage::English),
+            PreferenceChange::LightTheme(Some("test-light".into())),
+            PreferenceChange::DarkTheme(Some("test-dark".into())),
+        ] {
+            owner.update(cx, |owner, cx| owner.set_preference(change, cx));
+            settled(&owner, cx).await;
+            assert_eq!(
+                read_config(path.clone(), true)
+                    .unwrap()
+                    .configured()
+                    .unwrap()
+                    .pi_command
+                    .as_deref(),
+                Some("saved-pi")
+            );
+            assert_eq!(
+                cx.update(|cx| PiSettings::COMMAND.get(&pi, cx)),
+                Some("draft-pi".into())
+            );
+            assert!(pi.read_with(cx, |form, _| form.is_dirty()));
+        }
+        owner.update(cx, |owner, cx| owner.submit_pi(cx).unwrap());
+        settled(&owner, cx).await;
+        let saved = read_config(path, true).unwrap();
+        let saved = saved.configured().unwrap();
+        assert_eq!(saved.pi_command.as_deref(), Some("draft-pi"));
+        assert_eq!(saved.theme, ThemeMode::Dark);
+        assert_eq!(saved.language, AppLanguage::English);
+        assert_eq!(saved.light_theme.as_deref(), Some("test-light"));
+        assert_eq!(saved.dark_theme.as_deref(), Some("test-dark"));
+        assert!(!pi.read_with(cx, |form, _| form.is_dirty()));
+    }
+
+    #[gpui::test]
+    async fn onboarding_preferences_wait_for_explicit_confirmation(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let setup = cx.new(|_| Form::new(AppConfig::default()));
+        let owner = cx.new(|cx| ConfigController::at_path(&setup, Ok(path.clone()), cx));
+        owner.update(cx, |owner, cx| owner.reload(cx));
+        settled(&owner, cx).await;
+        owner.update(cx, |owner, cx| {
+            owner.set_preference(PreferenceChange::Language(AppLanguage::Chinese), cx);
+            owner.set_preference(PreferenceChange::Theme(ThemeMode::Light), cx);
+            assert!(!owner.busy(cx));
+            assert_eq!(owner.preferences(cx).language, AppLanguage::Chinese);
+        });
+        assert!(!path.exists());
+        owner.update(cx, |owner, cx| owner.submit_draft(cx).unwrap());
+        settled(&owner, cx).await;
+        let saved = read_config(path, true).unwrap();
+        assert_eq!(saved.configured().unwrap().language, AppLanguage::Chinese);
+        assert_eq!(saved.configured().unwrap().theme, ThemeMode::Light);
+    }
+
+    #[gpui::test]
+    async fn failed_preference_save_keeps_applied_value_and_pi_input(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = 'light'\n").unwrap();
+        let setup = cx.new(|_| Form::new(AppConfig::default()));
+        let owner = cx.new(|cx| ConfigController::at_path(&setup, Ok(path.clone()), cx));
+        owner.update(cx, |owner, cx| owner.reload(cx));
+        settled(&owner, cx).await;
+        let pi = owner.read_with(cx, |owner, _| owner.pi_form.clone());
+        cx.update(|cx| PiSettings::COMMAND.set(&pi, Some("draft-pi".into()), cx));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        owner.update(cx, |owner, cx| {
+            owner.set_preference(PreferenceChange::Theme(ThemeMode::Dark), cx)
+        });
+        settled(&owner, cx).await;
+        owner.read_with(cx, |owner, cx| {
+            assert!(!owner.busy(cx));
+            assert!(owner.store.read(cx, |op| op.problem().is_some()));
+            assert_eq!(owner.preferences(cx).theme, ThemeMode::Light);
+        });
+        assert_eq!(
+            cx.update(|cx| PiSettings::COMMAND.get(&pi, cx)),
+            Some("draft-pi".into())
+        );
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, "theme = 'light'\n").unwrap();
+        owner.update(cx, |owner, cx| {
+            owner.set_preference(PreferenceChange::Theme(ThemeMode::Dark), cx)
+        });
+        settled(&owner, cx).await;
+        assert_eq!(
+            read_config(path, true).unwrap().configured().unwrap().theme,
+            ThemeMode::Dark
+        );
+        assert!(pi.read_with(cx, |form, _| form.is_dirty()));
+    }
+
+    #[gpui::test]
+    async fn pi_save_does_not_replace_newer_edits(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = 'system'\n").unwrap();
+        let setup = cx.new(|_| Form::new(AppConfig::default()));
+        let owner = cx.new(|cx| ConfigController::at_path(&setup, Ok(path.clone()), cx));
+        owner.update(cx, |owner, cx| owner.reload(cx));
+        settled(&owner, cx).await;
+        let pi = owner.read_with(cx, |owner, _| owner.pi_form.clone());
+        owner.update(cx, |owner, cx| {
+            PiSettings::COMMAND.set(&pi, Some("first-pi".into()), cx);
+            owner.submit_pi(cx).unwrap();
+            PiSettings::COMMAND.set(&pi, Some("newer-pi".into()), cx);
+        });
+        settled(&owner, cx).await;
+        assert_eq!(
+            read_config(path, true)
+                .unwrap()
+                .configured()
+                .unwrap()
+                .pi_command
+                .as_deref(),
+            Some("first-pi")
+        );
+        assert_eq!(
+            cx.update(|cx| PiSettings::COMMAND.get(&pi, cx)),
+            Some("newer-pi".into())
+        );
+        assert!(pi.read_with(cx, |form, _| form.is_dirty()));
     }
 }

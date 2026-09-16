@@ -25,7 +25,7 @@
 | `/name` | set_session_name | 已有在线/离线改名 | 复用已有能力；离线沿用文件元数据追加，不为改名启动 Pi |
 | `/session` | get_state、get_session_stats 等 | 已有 token/context 统计提示，缺统一信息页 | 值得完善会话信息入口，集中展示身份、路径、模型与统计 |
 | `/changelog` | 无专用接口 | 无 Pi 更新日志入口 | 无需照搬；Gupi 自身更新说明属于应用帮助 |
-| `/hotkeys` | 无 TUI 键位表查询接口 | 全局面板已有 Gupi 键位提示 | 可以补 Gupi 快捷键总览，便于发现操作；不能展示未接入的 Pi TUI 键位冒充可用 |
+| `/hotkeys` | 无 TUI 键位表查询接口 | #231 已有 Gupi 快捷键查看、修改、清除及恢复默认；面板已有键位提示 | `hotkeys` 搜索别名尚未映射；不再将快捷键总览列为缺失能力，不展示未接入的 Pi TUI 键位冒充可用 |
 | `/fork` | get_fork_messages、fork | 已有用户消息按钮和历史消息 fork | fork 搜索打开历史面板，由用户选择明确源消息 |
 | `/clone` | clone（复制当前执行位置，并切换 runtime） | 会话上下文菜单“复制会话”，成功后转入新会话并刷新目录 | 已接入；沿用 fork 的连接转交与历史读取，新会话输入框为空 |
 | `/trust` | 无信任管理接口 | 无 Pi 信任配置界面 | 归独立安全/项目配置管理，本次不直接写配置替代 RPC |
@@ -44,7 +44,7 @@
 | 复用已有能力 | model、thinking、name、fork、new、resume、reload、quit | 已有业务入口，主要确定是否在命令模式展示及如何路由 |
 | 已新增能力 | export（HTML）、clone | 分别位于标题栏右上角和会话上下文菜单；连接就绪且空闲时可用，复制还要求存在当前历史节点 |
 | 已新增能力 | compact | 当前会话组发起默认手动压缩，停止沿用 abort |
-| 值得完善入口 | session、hotkeys | 已有部分数据或操作基础，可改善复制、查看会话信息及发现快捷键的体验 |
+| 值得完善入口 | session；hotkeys 搜索别名 | 统一会话信息页仍待确定；快捷键设置已由 #231 接入，仅命令搜索别名尚未映射 |
 | 独立管理范围或暂不映射 | settings、tree、scoped-models、import、share、changelog、trust、login、logout | TUI 专属行为、RPC 缺口或涉及独立配置/认证/数据管理；具体理由见逐项表 |
 
 统一面板已确定原始命令名搜索与现有 UI 映射，具体清单见 [command-palette.md](command-palette.md)。其他新增/完善项仍需确定交付范围。统一待确定项见 [decisions.md](decisions.md)。
