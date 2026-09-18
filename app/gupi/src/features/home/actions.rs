@@ -4,6 +4,13 @@ use serde::Deserialize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub(crate) enum Kind {
+    TemporaryActions,
+    PasteAnswer,
+    CopyTemporaryAnswer,
+    RevealWorkspace,
+    HideTemporary,
+    TrashTemporary,
+    TemporarySession(u8),
     Palette,
     QuickOpen,
     New,
@@ -29,8 +36,27 @@ pub(crate) enum Kind {
     Delete,
 }
 impl Kind {
+    pub(crate) fn temporary_only(self) -> bool {
+        matches!(
+            self,
+            Self::TemporaryActions
+                | Self::PasteAnswer
+                | Self::CopyTemporaryAnswer
+                | Self::RevealWorkspace
+                | Self::HideTemporary
+                | Self::TrashTemporary
+                | Self::TemporarySession(_)
+        )
+    }
     pub(crate) fn search_terms(self) -> &'static str {
         match self {
+            Self::TemporaryActions => "actions temporary 操作",
+            Self::PasteAnswer => "paste answer 粘贴 回填",
+            Self::CopyTemporaryAnswer => "copy answer 复制",
+            Self::RevealWorkspace => "reveal workspace 工作目录 定位",
+            Self::TrashTemporary => "delete trash temporary 移到废纸篓 删除",
+            Self::HideTemporary => "hide temporary 隐藏",
+            Self::TemporarySession(_) => "switch temporary conversation 切换临时会话",
             Self::Palette => "command palette",
             Self::QuickOpen => "resume search sessions quick open",
             Self::New => "new conversation",
@@ -48,7 +74,7 @@ impl Kind {
             Self::Clone => "clone duplicate conversation",
             Self::CopyLastAnswer => "copy last assistant answer",
             Self::Compact => "compact context",
-            Self::Stop => "stop abort",
+            Self::Stop => "stop abort hide 停止 隐藏",
             Self::Close => "close connection",
             Self::Reveal => "reveal locate file",
             Self::CopyPath => "copy path",
@@ -70,9 +96,37 @@ pub(super) fn init(cx: &mut App) {
 }
 impl HomeView {
     pub(crate) fn action_enabled(&self, kind: Kind, cx: &App) -> bool {
+        if kind.temporary_only() {
+            return false;
+        }
         let state = self.state.read(cx);
         let s = state.current();
+        if state.temporary
+            && matches!(
+                kind,
+                Kind::QuickOpen
+                    | Kind::Sidebar
+                    | Kind::History
+                    | Kind::OpenHistory
+                    | Kind::Scan
+                    | Kind::Clone
+                    | Kind::Export
+                    | Kind::Close
+                    | Kind::Reveal
+                    | Kind::CopyPath
+                    | Kind::Reconnect
+            )
+        {
+            return false;
+        }
         match kind {
+            Kind::TemporaryActions
+            | Kind::PasteAnswer
+            | Kind::CopyTemporaryAnswer
+            | Kind::RevealWorkspace
+            | Kind::HideTemporary
+            | Kind::TrashTemporary
+            | Kind::TemporarySession(_) => false,
             Kind::Palette | Kind::QuickOpen | Kind::Settings | Kind::ShowMain | Kind::Quit => true,
             Kind::New | Kind::Sidebar => !state.draining(),
             Kind::Scan => !state.draining() && !state.scanning(),
@@ -106,16 +160,32 @@ impl HomeView {
                 .as_ref()
                 .is_some_and(|key| state.can_delete(key)),
             Kind::Reveal | Kind::CopyPath => s.is_some_and(|s| !s.info.path.as_os_str().is_empty()),
-            Kind::Stop => s.is_some_and(|s| {
-                s.busy() && !s.stopping && (!s.command.running() || s.command.compacting())
-            }),
+            Kind::Stop => {
+                state.temporary && s.is_none_or(|s| !s.busy())
+                    || s.is_some_and(|s| {
+                        s.busy() && !s.stopping && (!s.command.running() || s.command.compacting())
+                    })
+            }
             Kind::Close => s.is_some_and(|s| s.instance.is_some() && !s.settings_busy()),
             Kind::Model => s.is_some_and(|s| !s.settings_busy()),
         }
     }
     pub(crate) fn run_action(&mut self, action: &Run, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(action.0, Kind::Palette | Kind::QuickOpen) {
+        if action.0.temporary_only() {
+            cx.propagate();
+            return;
+        }
+        if matches!(action.0, Kind::Palette | Kind::QuickOpen) && self.action_enabled(action.0, cx)
+        {
             self.open_palette(action.0 == Kind::QuickOpen, window, cx);
+            return;
+        }
+        if self.state.read(cx).temporary
+            && action.0 == Kind::Stop
+            && !window.has_active_dialog(cx)
+            && !self.state.read(cx).current().is_some_and(|s| s.busy())
+        {
+            crate::app::temporary::hide(window, cx);
             return;
         }
         if window.has_active_dialog(cx) || !self.action_enabled(action.0, cx) {

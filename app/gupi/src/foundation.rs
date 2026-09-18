@@ -1,4 +1,5 @@
 pub(crate) mod assets;
+pub(crate) mod attachments;
 pub(crate) mod i18n;
 pub(crate) mod model_scope;
 pub(crate) mod paths;

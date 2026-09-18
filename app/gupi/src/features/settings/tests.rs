@@ -221,10 +221,10 @@ fn every_settings_page_renders_with_resources_at_narrow_width(cx: &mut TestAppCo
         }
         if page == 3 {
             for width in [760., 1600.] {
-                window_cx.simulate_resize(gpui_kit::size(gpui_kit::px(width), gpui_kit::px(640.)));
+                window_cx.simulate_resize(gpui_kit::size(gpui_kit::px(width), gpui_kit::px(1200.)));
                 window_cx.update(|window, cx| window.draw(cx).clear(cx));
-                let bound = window_cx.debug_bounds("key-binding-0").unwrap();
-                let unbound = window_cx.debug_bounds("key-binding-7").unwrap();
+                let bound = window_cx.debug_bounds("key-binding-palette").unwrap();
+                let unbound = window_cx.debug_bounds("key-binding-main").unwrap();
                 assert!(
                     bound.left() >= gpui_kit::px(0.) && bound.right() <= gpui_kit::px(width),
                     "native setting field remains inside the window"

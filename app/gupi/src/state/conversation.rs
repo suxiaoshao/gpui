@@ -12,6 +12,7 @@ mod model_change;
 mod reads;
 mod reconnect;
 mod renaming;
+pub(crate) mod temporary;
 use super::{
     history::DisplayMessage,
     pi::{self, InstanceId, PiEvent},
@@ -83,6 +84,10 @@ enum Submission {
 pub(crate) struct Session {
     pub info: SessionInfo,
     pub draft: String,
+    pub preparing: bool,
+    pub attachments: Vec<crate::foundation::attachments::Attachment>,
+    pub attachments_read: Option<Task<()>>,
+    pub pending_template: Option<super::shortcuts::PendingTemplate>,
     pub instance: Option<InstanceId>,
     connection_purpose: ConnectionPurpose,
     pub binding: u64,
@@ -129,6 +134,10 @@ impl Session {
         Self {
             info,
             draft,
+            preparing: false,
+            attachments: Vec::new(),
+            attachments_read: None,
+            pending_template: None,
             instance: None,
             connection_purpose: ConnectionPurpose::Conversation,
             binding: 0,
@@ -200,13 +209,15 @@ impl Session {
         !matches!(self.submission, Submission::Idle)
     }
     pub fn can_edit_draft(&self) -> bool {
-        !self.submitting()
+        !self.preparing
+            && !self.submitting()
             && !self.command.running()
             && self.state.is_some()
             && !matches!(self.core_read, CoreRead::CheckingFile { .. })
     }
     pub fn busy(&self) -> bool {
-        self.running()
+        self.preparing
+            || self.running()
             || self.compacting
             || self.command.compacting()
             || self.retrying
@@ -229,6 +240,38 @@ impl Session {
         } else {
             Activity::Idle
         }
+    }
+    pub fn composer_empty(&self) -> bool {
+        self.draft.trim().is_empty()
+            && self.attachments.is_empty()
+            && self.attachments_read.is_none()
+    }
+    /// Only a successful final response may be sent back to another application.
+    pub fn completed_answer(&self) -> Option<String> {
+        if self.busy() || self.interrupted || !self.pending_ui.is_empty() {
+            return None;
+        }
+        let messages = self.messages(None);
+        let last = messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role(), "user" | "assistant"))?;
+        if last.role() != "assistant" || last.value["stopReason"] != "stop" {
+            return None;
+        }
+        let text = if let Some(start) = last.final_part() {
+            last.value["content"]
+                .as_array()?
+                .iter()
+                .skip(start)
+                .filter(|part| part["type"] == "text")
+                .filter_map(|part| part["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            last.text()
+        };
+        (!text.trim().is_empty()).then_some(text)
     }
     pub fn last_assistant_text(&self) -> Option<String> {
         self.messages(None)
@@ -294,6 +337,7 @@ pub(crate) struct ConversationState {
     pub selected: Option<String>,
     pub catalog: CatalogState<Task<()>>,
     pub storage_error: Option<String>,
+    pub temporary: bool,
     command: PathBuf,
     discovery: Discovery,
     restore_task: Option<Task<()>>,
@@ -324,6 +368,7 @@ impl ConversationState {
             selected: None,
             catalog: CatalogState::Idle,
             storage_error: None,
+            temporary: false,
             command,
             discovery,
             restore_task: None,
@@ -340,6 +385,10 @@ impl ConversationState {
         self.command = command;
     }
     pub fn load(&mut self, cx: &mut Context<Self>) {
+        if self.temporary {
+            self.new_draft(None, cx);
+            return;
+        }
         // The foreground starts blank; persisted drafts are restored in the
         // background and must never replace this selection or start background sessions.
         self.insert_draft(None);
@@ -398,7 +447,7 @@ impl ConversationState {
         self.restore_task.is_some() || self.catalog.running()
     }
     pub fn scan(&mut self, cx: &mut Context<Self>) {
-        if self.scanning() || self.draining {
+        if self.temporary || self.scanning() || self.draining {
             return;
         }
         let options = self.discovery.clone();
@@ -503,7 +552,8 @@ impl ConversationState {
             .collect();
         // The local draft key stays stable even after Pi creates its session file.
         for (key, s) in &self.sessions {
-            if s.info.path.as_os_str().is_empty()
+            if !self.temporary
+                && s.info.path.as_os_str().is_empty()
                 && s.draft.is_empty()
                 && s.empty_conversation()
                 && s.live.is_empty()
@@ -517,7 +567,11 @@ impl ConversationState {
             infos.insert(key.clone(), s.info.clone());
         }
         let mut result = infos.into_iter().collect::<Vec<_>>();
-        result.sort_by(|(ak, a), (bk, b)| b.activity.cmp(&a.activity).then(ak.cmp(bk)));
+        if self.temporary {
+            result.sort_by(|(ak, _), (bk, _)| ak.cmp(bk));
+        } else {
+            result.sort_by(|(ak, a), (bk, b)| b.activity.cmp(&a.activity).then(ak.cmp(bk)));
+        }
         result
     }
     pub fn new_draft(&mut self, cwd: Option<PathBuf>, cx: &mut Context<Self>) {
@@ -546,6 +600,17 @@ impl ConversationState {
                 .as_nanos(),
             self.serial
         );
+        let cwd = if self.temporary {
+            match paths::temporary_dir() {
+                Ok(root) => root.join(&key),
+                Err(error) => {
+                    self.storage_error = Some(error.to_string());
+                    return;
+                }
+            }
+        } else {
+            cwd
+        };
         self.sessions.insert(
             key.clone(),
             Session::new(
@@ -564,6 +629,9 @@ impl ConversationState {
         self.selected = Some(key);
     }
     pub fn set_cwd(&mut self, key: &str, cwd: PathBuf, cx: &mut Context<Self>) {
+        if self.temporary {
+            return;
+        }
         if self.draining {
             return;
         }
@@ -644,6 +712,10 @@ impl ConversationState {
         let Some(s) = self.sessions.get_mut(key) else {
             return;
         };
+        // An exited in-memory instance cannot resume its lost model context.
+        if self.temporary && s.binding > 0 && s.instance.is_none() {
+            return;
+        }
         // Conversation work can join a connection started for model options.
         // A model read never downgrades a pending conversation open.
         if purpose == ConnectionPurpose::Conversation
@@ -658,7 +730,28 @@ impl ConversationState {
         if s.instance.is_some() || s.command.running() || s.core_read.running() {
             return;
         }
-        if !s.info.path.as_os_str().is_empty() {
+        if self.temporary {
+            let directory = s.info.cwd.clone();
+            let key = key.to_owned();
+            let binding = s.binding;
+            s.core_read = CoreRead::CheckingFile {
+                _task: cx.spawn(async move |owner, cx| {
+                    let result = smol::unblock(move || std::fs::create_dir_all(directory)).await;
+                    let _ = owner.update(cx, |this, cx| {
+                        let Some(s) = this.sessions.get_mut(&key).filter(|s| s.binding == binding)
+                        else {
+                            return;
+                        };
+                        s.core_read
+                            .finish(result.as_ref().err().map(ToString::to_string));
+                        if result.is_ok() {
+                            this.launch(&key, cx);
+                        }
+                        cx.notify();
+                    });
+                }),
+            };
+        } else if !s.info.path.as_os_str().is_empty() {
             let path = s.info.path.clone();
             let expected_id = s.info.id.clone();
             let expected_cwd = s.info.cwd.clone();
@@ -693,6 +786,9 @@ impl ConversationState {
             return;
         };
         let mut options = LaunchOptions::new(self.command.clone(), s.info.cwd.clone());
+        if self.temporary {
+            options.args.push("--no-session".into());
+        }
         if !s.info.path.as_os_str().is_empty() {
             options
                 .args
@@ -713,7 +809,7 @@ impl ConversationState {
         };
         cx.notify();
     }
-    fn client(&self, key: &str, cx: &App) -> Option<Client> {
+    pub(crate) fn client(&self, key: &str, cx: &App) -> Option<Client> {
         let id = self.sessions.get(key)?.instance?;
         pi::global(cx).read(cx).client(id).ok().flatten()
     }
@@ -871,7 +967,9 @@ impl ConversationState {
         {
             s.info.path = PathBuf::from(path);
         }
-        s.info.name = snapshot.state.session_name.clone();
+        if !self.temporary || snapshot.state.session_name.is_some() {
+            s.info.name = snapshot.state.session_name.clone();
+        }
         s.run.observe_streaming(snapshot.state.is_streaming);
         s.compacting = snapshot.state.is_compacting;
         if !s.running() && !s.compacting {
@@ -933,6 +1031,8 @@ impl ConversationState {
                 .is_some_and(|client| matches!(client.state(), ConnectionState::Ready(_)))
             && self.sessions.get(key).is_some_and(|s| {
                 s.state.is_some()
+                    && !s.preparing
+                    && s.attachments_read.is_none()
                     && !s.submitting()
                     && s.pending_ui.is_empty()
                     && !s.command.running()
@@ -947,6 +1047,20 @@ impl ConversationState {
         let text = s.draft.clone();
         let revision = s.draft_revision;
         self.submit_text(key, text, Some(revision), mode, cx);
+    }
+    pub fn send_draft(
+        &mut self,
+        key: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<tokio::sync::oneshot::Receiver<bool>> {
+        let s = self.sessions.get(key)?;
+        self.submit_text(
+            key,
+            s.draft.clone(),
+            Some(s.draft_revision),
+            StreamingBehavior::Steer,
+            cx,
+        )
     }
     /// Submit transient command input without storing it in the conversation draft.
     pub fn send_text(
@@ -966,7 +1080,12 @@ impl ConversationState {
         mode: StreamingBehavior,
         cx: &mut Context<Self>,
     ) -> Option<tokio::sync::oneshot::Receiver<bool>> {
-        if text.trim().is_empty() || !self.can_submit(key, cx) {
+        let attachments = if revision.is_some() {
+            self.sessions.get(key)?.attachments.clone()
+        } else {
+            Vec::new()
+        };
+        if (text.trim().is_empty() && attachments.is_empty()) || !self.can_submit(key, cx) {
             return None;
         }
         let client = self.client(key, cx)?;
@@ -977,6 +1096,43 @@ impl ConversationState {
         s.interrupted = false;
         let key = key.to_owned();
         let mut prompt = Prompt::new(text);
+        for attachment in &attachments {
+            match &attachment.content {
+                crate::foundation::attachments::Content::File(path) => {
+                    if !prompt.message.is_empty() {
+                        prompt.message.push('\n');
+                    }
+                    prompt.message.push('@');
+                    prompt.message.push_str(&path.to_string_lossy());
+                }
+                crate::foundation::attachments::Content::Image { image, .. } => {
+                    prompt.images.push(image.clone())
+                }
+            }
+        }
+        if !prompt.images.is_empty()
+            && !s
+                .state
+                .as_ref()
+                .and_then(|s| s.model.as_ref())
+                .and_then(|m| m.extra.get("input"))
+                .and_then(Value::as_array)
+                .is_some_and(|types| types.iter().any(|kind| kind == "image"))
+        {
+            s.error = Some(crate::foundation::i18n::t(
+                cx,
+                "attachment-model-unsupported",
+            ));
+            cx.notify();
+            return None;
+        }
+        let used_template = revision.is_some() && s.pending_template.is_some();
+        if used_template {
+            let template = s.pending_template.as_ref().unwrap();
+            prompt.message =
+                super::shortcuts::template_message(&template.name, &template.body, &prompt.message);
+        }
+        let attachment_ids: Vec<_> = attachments.iter().map(|a| a.id.clone()).collect();
         prompt.streaming_behavior = Some(mode);
         let task = cx.spawn(async move |owner, cx| {
             let result = client.prompt(prompt).await;
@@ -989,6 +1145,10 @@ impl ConversationState {
                 match result {
                     Ok(_) => {
                         s.finish_submission(true);
+                        if used_template {
+                            s.pending_template = None;
+                        }
+                        s.attachments.retain(|a| !attachment_ids.contains(&a.id));
                         // Extension editor updates belong to the next submission.
                         if revision == Some(s.draft_revision) {
                             s.draft.clear();
@@ -1012,6 +1172,13 @@ impl ConversationState {
         Some(receiver)
     }
     pub fn abort(&mut self, key: &str, cx: &mut Context<Self>) {
+        if let Some(session) = self.sessions.get_mut(key).filter(|s| s.preparing) {
+            crate::app::shortcuts::cancel_preparation(key, cx);
+            session.preparing = false;
+            session.interrupted = true;
+            cx.notify();
+            return;
+        }
         let Some(client) = self.client(key, cx) else {
             return;
         };
@@ -1110,6 +1277,9 @@ impl ConversationState {
         }
     }
     fn fork_session(&mut self, key: &str, entry: Option<String>, cx: &mut Context<Self>) {
+        if self.temporary {
+            return;
+        }
         let Some(client) = self.client(key, cx) else {
             return;
         };
@@ -1389,6 +1559,9 @@ impl ConversationState {
         }
     }
     fn file(&self) -> WorkspaceFile {
+        if self.temporary {
+            return WorkspaceFile { drafts: vec![] };
+        }
         WorkspaceFile {
             drafts: self
                 .sessions
@@ -1407,7 +1580,7 @@ impl ConversationState {
     fn changed(&mut self, cx: &mut Context<Self>) {
         self.revision += 1;
         cx.notify();
-        if !self.workspace_loaded || self.save_task.is_some() || self.draining {
+        if self.temporary || !self.workspace_loaded || self.save_task.is_some() || self.draining {
             return;
         }
         self.save_task = Some(cx.spawn(async move |owner, cx| {
@@ -1444,6 +1617,7 @@ impl ConversationState {
         let mut deletions = Vec::new();
         for s in self.sessions.values_mut() {
             s.reset_reads();
+            s.attachments_read = None;
             s.submission = Submission::Idle;
             if matches!(
                 s.command,
@@ -1495,6 +1669,7 @@ fn save_file(file: &WorkspaceFile) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     mod loading;
+    mod temporary_view;
     use super::{ConversationState, WorkspaceFile, catalog::CatalogState};
     use crate::{foundation::session_catalog::Catalog, state::pi};
     use gpui_kit as gpui;

@@ -1,5 +1,7 @@
 # 统一命令面板
 
+后续调整：用户已确认 Skill 候选选择后改为填入主输入框，不直接发送。此项尚未实施，后文描述当前已实现行为；标签编辑已决定等待 gpui-kit #3110，暂不自建编辑器；新方案与其余待确定范围见[输入框资源标签调研](../issue-221/composer-resources.md)。
+
 状态：Implemented。双入口已共用统一面板，单行分类、Enter 执行、Tab 补全、无候选原文提交与独立面板输入已接入。实现与验证分开记录，见 [validation.md](validation.md)。额外内置能力仍由 [builtin-commands.md](builtin-commands.md) 和 [decisions.md](decisions.md) 独立确定。
 
 ## 目标与入口

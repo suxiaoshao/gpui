@@ -22,10 +22,17 @@ impl ConversationState {
     }
 
     pub fn can_delete(&self, key: &str) -> bool {
+        if self.temporary {
+            return self.can_delete_temporary(key);
+        }
         self.deletion_target(key).is_some()
     }
 
     pub fn delete(&mut self, key: &str, cx: &mut Context<Self>) {
+        if self.temporary {
+            self.delete_temporary(key, cx);
+            return;
+        }
         self.delete_with(key, move_to_trash, cx);
     }
 

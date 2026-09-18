@@ -21,6 +21,10 @@ objc2-core-graphics = { version = "0.3.2", features = [
   "CGDataProvider",
   "CGDirectDisplay",
   "CGGeometry",
+  "CGEvent",
+  "CGEventSource",
+  "CGEventTypes",
+  "CGRemoteOperation",
   "CGImage",
   "CGWindow",
 ] }
@@ -40,6 +44,7 @@ windows = { version = "0.62.2", features = [
   "Win32_Graphics_Gdi",
   "Win32_System_WinRT",
   "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
 ] }
 windows-core = "0.62.2"
 windows-future = "0.3.2"

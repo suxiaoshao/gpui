@@ -14,6 +14,96 @@ pub(crate) struct Command {
 }
 pub(crate) const COMMANDS: &[Command] = &[
     Command {
+        id: "temporary_trash",
+        label: "temporary-trash",
+        kind: Kind::TrashTemporary,
+        default: "secondary-shift-backspace",
+    },
+    Command {
+        id: "temporary_actions",
+        label: "temporary-actions",
+        kind: Kind::TemporaryActions,
+        default: "secondary-k",
+    },
+    Command {
+        id: "temporary_paste",
+        label: "temporary-paste-answer",
+        kind: Kind::PasteAnswer,
+        default: "enter",
+    },
+    Command {
+        id: "temporary_copy",
+        label: "command-copy-last-answer",
+        kind: Kind::CopyTemporaryAnswer,
+        default: "secondary-enter",
+    },
+    Command {
+        id: "temporary_reveal",
+        label: "temporary-reveal-workspace",
+        kind: Kind::RevealWorkspace,
+        default: "",
+    },
+    Command {
+        id: "temporary_hide",
+        label: "temporary-hide",
+        kind: Kind::HideTemporary,
+        default: "",
+    },
+    Command {
+        id: "temporary_session_1",
+        label: "temporary-session-1",
+        kind: Kind::TemporarySession(1),
+        default: "secondary-1",
+    },
+    Command {
+        id: "temporary_session_2",
+        label: "temporary-session-2",
+        kind: Kind::TemporarySession(2),
+        default: "secondary-2",
+    },
+    Command {
+        id: "temporary_session_3",
+        label: "temporary-session-3",
+        kind: Kind::TemporarySession(3),
+        default: "secondary-3",
+    },
+    Command {
+        id: "temporary_session_4",
+        label: "temporary-session-4",
+        kind: Kind::TemporarySession(4),
+        default: "secondary-4",
+    },
+    Command {
+        id: "temporary_session_5",
+        label: "temporary-session-5",
+        kind: Kind::TemporarySession(5),
+        default: "secondary-5",
+    },
+    Command {
+        id: "temporary_session_6",
+        label: "temporary-session-6",
+        kind: Kind::TemporarySession(6),
+        default: "secondary-6",
+    },
+    Command {
+        id: "temporary_session_7",
+        label: "temporary-session-7",
+        kind: Kind::TemporarySession(7),
+        default: "secondary-7",
+    },
+    Command {
+        id: "temporary_session_8",
+        label: "temporary-session-8",
+        kind: Kind::TemporarySession(8),
+        default: "secondary-8",
+    },
+    Command {
+        id: "temporary_session_9",
+        label: "temporary-session-9",
+        kind: Kind::TemporarySession(9),
+        default: "secondary-9",
+    },
+    Command {
         id: "palette",
         label: "command-palette",
         kind: Kind::Palette,
@@ -117,7 +207,7 @@ pub(crate) const COMMANDS: &[Command] = &[
     },
     Command {
         id: "stop",
-        label: "conversation-stop",
+        label: "settings-key-stop-or-hide",
         kind: Kind::Stop,
         default: "escape",
     },
@@ -157,6 +247,31 @@ impl Command {
         if text.is_empty() {
             return vec![];
         }
+        if self.kind.temporary_only() {
+            let plain_enter = self.kind == Kind::PasteAnswer
+                && Keystroke::parse(text)
+                    .is_ok_and(|key| key == Keystroke::parse("enter").unwrap());
+            let context = if plain_enter {
+                "GupiTemporary && !Input && !Command && !GupiExtension"
+            } else {
+                "GupiTemporary"
+            };
+            let mut bindings = vec![KeyBinding::new(text, Run(self.kind), Some(context))];
+            if self.kind == Kind::PasteAnswer {
+                // Inputs handle plain Enter through their submit event; lists
+                // otherwise consume it as selection confirmation.
+                bindings.push(KeyBinding::new(
+                    text,
+                    Run(self.kind),
+                    Some(if plain_enter {
+                        "GupiTemporary > List && !Input && !Command"
+                    } else {
+                        "GupiTemporary > List"
+                    }),
+                ));
+            }
+            return bindings;
+        }
         match self.kind {
             Kind::Settings => vec![KeyBinding::new(text, menus::ShowSettings, None)],
             Kind::ShowMain => vec![KeyBinding::new(text, menus::ShowMainWindow, None)],
@@ -172,6 +287,21 @@ impl Command {
                 .to_vec(),
         }
     }
+}
+/// Input widgets own ordinary Enter (sending, IME and popup precedence).
+/// They only invoke the temporary primary action if Enter is still configured.
+pub(crate) fn uses_enter(kind: Kind, cx: &App) -> bool {
+    use gpui_kit::AsKeystroke;
+    let enter = Keystroke::parse("enter").unwrap();
+    cx.key_bindings().borrow().bindings().any(|binding| {
+        binding
+            .action()
+            .as_any()
+            .downcast_ref::<Run>()
+            .is_some_and(|action| action.0 == kind)
+            && binding.keystrokes().len() == 1
+            && binding.keystrokes()[0].as_keystroke() == &enter
+    })
 }
 fn command_for(action: &dyn Action) -> Option<&'static Command> {
     let kind = if action.as_any().is::<menus::ShowSettings>() {
@@ -237,7 +367,7 @@ pub(crate) fn validate(
         let applicable = ["Input", "Textarea", "GupiExtension", "Command", "List"]
             .iter()
             .any(|leaf| {
-                let stack: Vec<_> = ["GupiApplication", "Gupi", leaf]
+                let stack: Vec<_> = ["GupiApplication", "Gupi GupiTemporary", leaf]
                     .into_iter()
                     .map(|s| KeyContext::parse(s).unwrap())
                     .collect();
@@ -300,6 +430,43 @@ mod tests {
     use super::{Kind, Overrides, Run, apply, command_for, validate};
     use gpui_kit::{AsKeystroke, Keystroke, TestAppContext};
     #[gpui_kit::test]
+    fn temporary_trash_rebinding_removes_the_old_key_and_stays_in_its_window(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::foundation::i18n::apply(Default::default(), cx);
+            let overrides = Overrides::from([("temporary_trash".into(), "ctrl-alt-d".into())]);
+            assert!(validate("temporary_trash", "ctrl-alt-d", &overrides, cx).is_ok());
+            apply(&overrides, cx);
+            let keymap = cx.key_bindings();
+            let keymap = keymap.borrow();
+            let bindings = keymap
+                .bindings()
+                .filter(|binding| {
+                    command_for(binding.action()).is_some_and(|c| c.id == "temporary_trash")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(bindings.len(), 1);
+            assert_eq!(
+                bindings[0].keystrokes()[0].as_keystroke(),
+                &Keystroke::parse("ctrl-alt-d").unwrap()
+            );
+            let temp = gpui_kit::KeyContext::parse("Gupi GupiTemporary").unwrap();
+            let main = gpui_kit::KeyContext::parse("Gupi").unwrap();
+            assert!(bindings[0].predicate().unwrap().eval(&[temp]));
+            assert!(!bindings[0].predicate().unwrap().eval(&[main]));
+            drop(keymap);
+            apply(
+                &Overrides::from([("temporary_trash".into(), String::new())]),
+                cx,
+            );
+            assert!(!cx.key_bindings().borrow().bindings().any(|binding| {
+                command_for(binding.action()).is_some_and(|c| c.id == "temporary_trash")
+            }));
+        });
+    }
+    #[gpui_kit::test]
     fn replacing_and_restoring_keeps_other_actions_and_component_bindings(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_kit::init(cx);
@@ -338,7 +505,8 @@ mod tests {
             );
             drop(keys);
             assert!(validate("new", "secondary-p", &overrides, cx).is_err());
-            assert!(validate("new", "secondary-k n", &overrides, cx).is_ok());
+            assert!(validate("new", "secondary-j n", &overrides, cx).is_ok());
+            assert!(validate("new", "secondary-k n", &overrides, cx).is_err());
             apply(&Overrides::new(), cx);
             assert!(
                 cx.key_bindings()

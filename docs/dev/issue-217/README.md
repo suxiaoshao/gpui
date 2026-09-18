@@ -13,7 +13,7 @@ Gupi 是独立 GPUI 桌面应用，通过用户本机 Pi 的 RPC 能力提供原
 | 1 | [#218](https://github.com/suxiaoshao/gpui/issues/218) | 应用骨架、启动引导、分类恢复、设置、主题、本地化与基础打包 | [第一阶段](../issue-218/README.md) |
 | 2 | [#219](https://github.com/suxiaoshao/gpui/issues/219) | Pi RPC 与进程生命周期 | [第二阶段](../issue-219/README.md) |
 | 3 | [#220](https://github.com/suxiaoshao/gpui/issues/220) | 会话目录、恢复、主对话、只读树与时间线、原生 fork | [第三阶段开发计划](../issue-220/README.md) |
-| 4 | [#221](https://github.com/suxiaoshao/gpui/issues/221) | 临时窗口与全局快捷翻译 | 到该阶段再建立 |
+| 4 | [#221](https://github.com/suxiaoshao/gpui/issues/221) | 临时窗口与全局快捷翻译 | [临时窗口开发计划](../../../app/gupi/docs/dev/issue-221/README.md) |
 | 5 | [#222](https://github.com/suxiaoshao/gpui/issues/222) | 完整队列与更完整的扩展 UI；基础历史、fork 和工具详情已有前序实现 | [扩展 UI 子计划](../../../app/gupi/docs/dev/issue-222/README.md)；其余内容开工时再展开 |
 | 6 | [#223](https://github.com/suxiaoshao/gpui/issues/223) | 原生体验、完整打包与发行验收 | 到该阶段再建立 |
 

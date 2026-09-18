@@ -1,4 +1,7 @@
 pub(crate) mod menus;
+pub(crate) mod shortcuts;
+pub(crate) mod temporary;
+mod tray;
 use crate::{
     features::startup::StartupView,
     foundation::{assets::Assets, i18n, paths},
@@ -36,11 +39,15 @@ pub(crate) fn run() {
         gpui_kit::init(cx);
         gpui_tokio::init(cx);
         crate::state::pi::init(cx);
+        temporary::init(cx);
+        shortcuts::init(cx);
         app_theme::init(cx);
         crate::state::theme::init(cx);
         i18n::apply(Default::default(), cx);
         menus::refresh(cx);
+        tray::init(cx);
         crate::state::keybindings::apply(&Default::default(), cx);
+        cx.on_action(|_: &menus::ShowTemporaryWindow, cx| cx.defer(temporary::toggle));
         cx.on_action(|_: &menus::ShowSettings, cx| cx.defer(|cx| show(Some(true), cx)));
         cx.on_action(|_: &menus::ShowMainWindow, cx| cx.defer(|cx| show(Some(false), cx)));
         cx.on_action(|_: &menus::Quit, cx| cx.defer(quit));

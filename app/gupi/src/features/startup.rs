@@ -78,13 +78,28 @@ impl StartupView {
                 i18n::apply(value.language, cx);
                 theme::apply(value, window, cx);
                 crate::state::keybindings::apply(&value.keybindings, cx);
+                if !op.is_running() {
+                    crate::app::shortcuts::apply(value, cx);
+                }
                 menus::refresh(cx);
                 this.applied_pi
                     .update(cx, |pi, cx| pi.request(value.pi_command.clone(), false, cx));
             }
             cx.notify();
         });
-        let pi_sub = cx.observe(&applied_pi, |_, _, cx| cx.notify());
+        let pi_sub = cx.observe(&applied_pi, |this, pi, cx| {
+            let config = this.config.read(cx).preferences(cx);
+            let command = pi
+                .read(cx)
+                .ready_for(config.pi_command.as_deref())
+                .map(|d| d.command.clone());
+            if let Some(command) = command {
+                crate::app::temporary::set_command(command, cx);
+            } else if cx.has_global::<crate::app::temporary::Temporary>() {
+                cx.global_mut::<crate::app::temporary::Temporary>().command = None;
+            }
+            cx.notify();
+        });
         let form_sub = cx.observe_in(&form, window, move |this, _, window, cx| {
             let draft = this.config.read(cx).preferences(cx);
             i18n::apply(draft.language, cx);
@@ -123,12 +138,14 @@ impl StartupView {
             return;
         }
         tracing::info!("managed quit started");
+        crate::app::shortcuts::shutdown(cx);
         self.config.update(cx, |owner, _| owner.draining = true);
         self.applied_pi.update(cx, |pi, _| pi.stop());
         self.draft_pi.update(cx, |pi, _| pi.stop());
         self.settings
             .update(cx, |settings, cx| settings.stop_resources(cx));
         let pi = crate::state::pi::global(cx);
+        let flush_temporary = crate::app::temporary::drain(cx);
         let close_pi = pi.update(cx, |state, cx| state.close_all(cx));
         let flush_home = self
             .home
@@ -150,6 +167,9 @@ impl StartupView {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(20))
                     .await;
+            }
+            if let Some(flush) = flush_temporary {
+                flush.await;
             }
             if let Some(flush) = flush_home {
                 flush.await;

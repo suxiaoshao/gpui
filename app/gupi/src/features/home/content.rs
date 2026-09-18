@@ -79,6 +79,7 @@ impl HomeView {
             )
             .child(
                 Button::new(id)
+                    .disabled(self.state.read(cx).temporary)
                     .small()
                     .label(t(cx, "conversation-reconnect"))
                     .on_click(cx.listener(|this, _, _, cx| {

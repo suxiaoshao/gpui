@@ -387,13 +387,36 @@ impl SidebarItem for ProjectItem {
         content
     }
 }
-pub(super) fn session_menu(
+pub(crate) fn session_menu(
     menu: PopupMenu,
     key: String,
     state: Entity<ConversationState>,
     owner: WeakEntity<HomeView>,
     cx: &App,
 ) -> PopupMenu {
+    if state.read(cx).temporary {
+        let can_delete = state.read(cx).can_delete(&key);
+        let reveal_state = state.clone();
+        let reveal_key = key.clone();
+        return menu
+            .item(
+                PopupMenuItem::new(t(cx, "temporary-reveal-workspace")).on_click(
+                    move |_, _, cx| {
+                        if let Some(path) = reveal_state.read(cx).temporary_workspace(&reveal_key) {
+                            cx.reveal_path(&path);
+                        }
+                    },
+                ),
+            )
+            .item(
+                PopupMenuItem::new(t(cx, "conversation-delete"))
+                    .disabled(!can_delete)
+                    .on_click(move |_, _, cx| {
+                        state.update(cx, |s, cx| s.delete(&key, cx));
+                    }),
+            );
+    }
+
     let current = state.read(cx).sessions.get(&key);
     let busy = current.is_some_and(|s| s.busy());
     let connected = current.is_some_and(|s| s.instance.is_some());
@@ -481,14 +504,14 @@ pub(super) fn session_menu(
             }),
     )
 }
-pub(super) fn display_title(info: &SessionInfo, cx: &App) -> String {
+pub(crate) fn display_title(info: &SessionInfo, cx: &App) -> String {
     if info.title().is_empty() {
         t(cx, "conversation-untitled")
     } else {
         info.title().to_owned()
     }
 }
-fn activity_mark(activity: Activity, cx: &App) -> AnyElement {
+pub(crate) fn activity_mark(activity: Activity, cx: &App) -> AnyElement {
     let (key, content) = match activity {
         Activity::Idle => return div().into_any_element(),
         Activity::Loading => (
@@ -526,7 +549,13 @@ fn activity_mark(activity: Activity, cx: &App) -> AnyElement {
 
 impl HomeView {
     pub(super) fn new_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.state.update(cx, |state, cx| state.new_draft(None, cx));
+        self.state.update(cx, |state, cx| {
+            if state.temporary {
+                state.new_or_reuse_temporary(cx);
+            } else {
+                state.new_draft(None, cx);
+            }
+        });
         self.input.update(cx, |input, cx| input.focus(window, cx));
     }
 

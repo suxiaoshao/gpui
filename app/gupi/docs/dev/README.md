@@ -1,6 +1,10 @@
 # Gupi development plans
 
-- [主 Issue 未完成项与能力边界](../../../../docs/dev/issue-217/follow-ups.md)：跨阶段依赖阻塞、后续工作和验证边界的统一入口。
+**[总待处理文档：未完成项与能力边界](../../../../docs/dev/issue-217/follow-ups.md)**：跨阶段依赖阻塞、后续工作和验证边界的统一入口。
+
+- [临时窗口、全局快捷键与托盘开发计划](issue-221/README.md)：多临时会话、图片/文件输入、模板快捷任务、手动清理及平台接入。
+- [临时窗口 Jaco 对照与对齐方案](issue-221/temporary-window-comparison.md)：窗口配置、跨屏显隐、焦点与布局对照，以及窗口回收和会话保留的边界。
+- [输入框组件与资源标签接入计划](issue-221/composer-resources.md)：InputGroup、原子内联标签的正式版本依赖，Skill/模板/附件行为、Jaco/Zed 编辑器对照与待确定项。
 - [统一设置开发计划](issue-231/README.md)：分类导航、字段搜索、独立保存边界、快捷键与个人级插件、Skill、提示词管理；包含组件前置、数据契约和分步验证。
 - [Pi RPC 能力缺口与社区调研](pi-rpc-gaps.md)：原生协议限制、可替代方案及上游公开进展。
 - [会话目录读取优化](issue-229/README.md)：顺序字节读取、sonic-rs 按字段解析；保留现有加载、排序与搜索，含性能依据和实施步骤。

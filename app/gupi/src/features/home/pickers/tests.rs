@@ -349,3 +349,42 @@ fn refresh_preserves_model_and_level_and_never_submits_a_draft(cx: &mut TestAppC
         })
     });
 }
+
+#[gpui_kit::test]
+fn default_thinking_can_be_selected_as_an_explicit_override(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::foundation::i18n::apply(crate::state::config::AppLanguage::Chinese, cx);
+    });
+    let (source, new_picker) = source();
+    let (picker, cx) = cx.add_window_view(new_picker);
+    let levels = Rc::new(RefCell::new(Vec::new()));
+    let output = levels.clone();
+    let _subscription = cx.update(|_, cx| {
+        cx.subscribe(&picker, move |_, event: &PickerEvent, _| {
+            if let PickerEvent::Thinking(level) = event {
+                output.borrow_mut().push(level.clone());
+            }
+        })
+    });
+    cx.update(|window, cx| {
+        picker.update(cx, |p, cx| {
+            let mut data = projection(&["off", "high"], "high");
+            data.overrides = Some((false, false));
+            sync(&source, p, data, window, cx);
+            p.commit_level("high".into(), cx);
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(&*levels.borrow(), &["high"]);
+    cx.update(|window, cx| {
+        picker.update(cx, |p, cx| {
+            let mut data = projection(&["off", "high"], "high");
+            data.overrides = Some((false, true));
+            sync(&source, p, data, window, cx);
+            p.commit_level("high".into(), cx);
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(levels.borrow().len(), 1);
+}

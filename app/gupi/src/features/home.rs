@@ -1,12 +1,13 @@
 pub(crate) mod actions;
+mod attachments;
 mod composer;
 mod content;
 mod history;
 mod messages;
-mod navigation;
+pub(crate) mod navigation;
 pub(crate) mod palette;
 mod panes;
-mod pickers;
+pub(crate) mod pickers;
 mod slash;
 mod titlebar;
 use crate::{
@@ -63,7 +64,7 @@ pub(crate) struct HomeView {
     runtime_tick: Option<Task<()>>,
     pane_layout: panes::PaneLayout,
     pane_drag: Option<panes::Drag>,
-    palette: Option<(bool, Entity<palette::Palette>)>,
+    palette: Option<Entity<palette::Palette>>,
     slash: slash::Completion,
     pub(crate) command_panel: Option<Entity<super::command_palette::CommandPalette>>,
     focus_handle: FocusHandle,
@@ -71,7 +72,61 @@ pub(crate) struct HomeView {
     _subscriptions: Vec<Subscription>,
 }
 impl HomeView {
+    pub(crate) fn submit_or_paste(
+        &mut self,
+        secondary: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.input.update(cx, |input, cx| {
+            input.marked_text_range(window, cx).is_some()
+        }) {
+            return;
+        }
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        let Some(key) = self.state.read(cx).selected.clone() else {
+            return;
+        };
+        let state = self.state.read(cx);
+        if state.temporary && state.current().is_some_and(|s| s.composer_empty()) {
+            if !secondary
+                && crate::state::keybindings::uses_enter(actions::Kind::PasteAnswer, cx)
+                && let Some(text) = state.current().and_then(|s| s.completed_answer())
+            {
+                crate::app::temporary::paste_answer(text, window, cx);
+            }
+            return;
+        }
+        let preview = self.views.get(&key).and_then(|v| v.preview.as_deref());
+        let allowed = self.state.read(cx).current().is_some_and(|s| {
+            self.state.read(cx).can_submit(&key, cx)
+                && preview.is_none_or(|id| s.history().on_current_path(id))
+        });
+        if allowed {
+            self.state.update(cx, |s, cx| {
+                s.send(
+                    &key,
+                    if secondary {
+                        StreamingBehavior::FollowUp
+                    } else {
+                        StreamingBehavior::Steer
+                    },
+                    cx,
+                )
+            });
+        }
+    }
     pub fn new(command: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let state = cx.new(|cx| ConversationState::new(command, cx));
+        Self::with_state(state, window, cx)
+    }
+    pub(crate) fn with_state(
+        state: Entity<ConversationState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         actions::init(cx);
         for context in ["GupiComposer > Input", "GupiPalette > Input"] {
             cx.bind_keys([
@@ -93,7 +148,6 @@ impl HomeView {
                 ),
             ]);
         }
-        let state = cx.new(|cx| ConversationState::new(command, cx));
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(2, 8)
@@ -159,24 +213,7 @@ impl HomeView {
                         secondary,
                         shift: false,
                     } => {
-                        let preview = this.views.get(&key).and_then(|v| v.preview.as_deref());
-                        let allowed = this.state.read(cx).current().is_some_and(|s| {
-                            this.state.read(cx).can_submit(&key, cx)
-                                && preview.is_none_or(|id| s.history().on_current_path(id))
-                        });
-                        if allowed {
-                            this.state.update(cx, |s, cx| {
-                                s.send(
-                                    &key,
-                                    if *secondary {
-                                        StreamingBehavior::FollowUp
-                                    } else {
-                                        StreamingBehavior::Steer
-                                    },
-                                    cx,
-                                )
-                            });
-                        }
+                        this.submit_or_paste(*secondary, window, cx);
                     }
                     _ => {}
                 }
@@ -210,7 +247,9 @@ impl HomeView {
                 }
             }),
         ];
-        state.update(cx, |state, cx| state.load(cx));
+        if state.read(cx).selected.is_none() {
+            state.update(cx, |state, cx| state.load(cx));
+        }
         let mut view = Self {
             state,
             input,
@@ -361,6 +400,8 @@ impl HomeView {
                                 pickers::PickerEvent::Thinking(level) => {
                                     state.set_thinking(&key, level, cx)
                                 }
+                                pickers::PickerEvent::ResetModel
+                                | pickers::PickerEvent::ResetThinking => {}
                                 pickers::PickerEvent::Load => state.refresh_models(&key, cx),
                                 pickers::PickerEvent::Refresh => {
                                     state.refresh_models(&key, cx);
@@ -599,6 +640,9 @@ impl HomeView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.state.read(cx).temporary {
+            return;
+        }
         let mut layout = layout::capture(window, cx.global::<layout::LayoutState>());
         if let Some(width) = left {
             layout.sidebar_width = width.clamp(160., 480.);
@@ -636,6 +680,36 @@ impl HomeView {
 }
 impl Render for HomeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.state.read(cx).temporary {
+            let empty =
+                self.state.read(cx).current().is_some_and(|s| {
+                    s.empty_conversation() && !s.busy() && s.pending_ui.is_empty()
+                });
+            let content = if empty {
+                v_flex()
+                    .size_full()
+                    .justify_center()
+                    .items_center()
+                    .px_8()
+                    .py_12()
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(780.))
+                            .child(self.render_composer(window, cx)),
+                    )
+            } else {
+                v_flex()
+                    .size_full()
+                    .min_w_0()
+                    .child(self.render_messages(window, cx))
+                    .child(self.render_composer(window, cx))
+            };
+            return content
+                .key_context("Gupi")
+                .track_focus(&self.focus_handle)
+                .into_any_element();
+        }
         if self.pane_layout.fit(
             f32::from(window.viewport_size().width),
             self.show_sidebar,
@@ -695,7 +769,10 @@ impl Render for HomeView {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::run_action))
             .size_full()
+            .relative()
             .child(titlebar)
             .child(shell)
+            .children(self.render_session_search(window, cx))
+            .into_any_element()
     }
 }

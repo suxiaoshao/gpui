@@ -354,7 +354,8 @@ impl HomeView {
                 let target = key.to_owned();
                 let entry = m.entry.clone();
                 let can_fork = self.state.read(cx).sessions.get(key).is_some_and(|s| {
-                    !s.settings_busy()
+                    !self.state.read(cx).temporary
+                        && !s.settings_busy()
                         && !s.model_change.unconfirmed()
                         && entry
                             .as_ref()
@@ -366,15 +367,48 @@ impl HomeView {
                     .child(
                         Message::new()
                             .alignment(MessageAlignment::End)
-                            .content(MessageContent::new().bubble(
-                                Bubble::new().with_variant(BubbleVariant::Muted).content(
-                                    BubbleContent::new().child(self.text_view(
-                                        key,
-                                        format!("text-{}", m.id),
-                                        m.text(),
-                                    )),
+                            .content(
+                                MessageContent::new().bubble(
+                                    Bubble::new().with_variant(BubbleVariant::Muted).content(
+                                        BubbleContent::new()
+                                            .child(self.text_view(
+                                                key,
+                                                format!("text-{}", m.id),
+                                                m.text(),
+                                            ))
+                                            .children(
+                                                m.value
+                                                    .get("content")
+                                                    .and_then(|v| v.as_array())
+                                                    .into_iter()
+                                                    .flatten()
+                                                    .enumerate()
+                                                    .filter(|(_, block)| {
+                                                        block.get("type").and_then(|v| v.as_str())
+                                                            == Some("image")
+                                                    })
+                                                    .map(|(index, block)| {
+                                                        tool_details::ToolImage {
+                                                            id: format!(
+                                                                "user-image-{key}-{}-{index}",
+                                                                m.id
+                                                            ),
+                                                            mime: block
+                                                                .get("mimeType")
+                                                                .and_then(|v| v.as_str())
+                                                                .unwrap_or_default()
+                                                                .into(),
+                                                            data: block
+                                                                .get("data")
+                                                                .and_then(|v| v.as_str())
+                                                                .unwrap_or_default()
+                                                                .into(),
+                                                        }
+                                                    }),
+                                            ),
+                                    ),
                                 ),
-                            ))
+                            )
                             .footer(
                                 MessageFooter::new().child(actions::MessageActions {
                                     id: format!("{key}-{}", m.id),

@@ -113,7 +113,15 @@ pub(crate) fn binding(kind: Kind, window: &Window) -> Option<Kbd> {
     match kind {
         Kind::Settings => Kbd::binding_for_action(&menus::ShowSettings, None, window),
         Kind::Quit => Kbd::binding_for_action(&menus::Quit, None, window),
-        _ => Kbd::binding_for_action(&Run(kind), Some("Gupi"), window),
+        _ => Kbd::binding_for_action(
+            &Run(kind),
+            Some(if kind.temporary_only() {
+                "GupiTemporary"
+            } else {
+                "Gupi"
+            }),
+            window,
+        ),
     }
 }
 impl CommandPalette {
