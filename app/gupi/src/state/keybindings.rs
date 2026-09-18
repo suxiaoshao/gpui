@@ -384,6 +384,24 @@ pub(crate) fn validate(
     }
     Ok(())
 }
+/// System shortcuts apply in every focus context, including the first stroke
+/// of a component chord. Application command conflicts are checked by AppConfig.
+pub(crate) fn validate_global(text: &str, cx: &App) -> Result<(), String> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    let candidate = Keystroke::parse(text).map_err(|_| "settings-key-invalid".to_owned())?;
+    if cx.key_bindings().borrow().bindings().any(|binding| {
+        command_for(binding.action()).is_none()
+            && binding
+                .keystrokes()
+                .first()
+                .is_some_and(|key| key.as_keystroke() == &candidate)
+    }) {
+        return Err("settings-key-conflict".into());
+    }
+    Ok(())
+}
 fn overlaps(a: &[KeybindingKeystroke], b: &[KeybindingKeystroke]) -> bool {
     !a.is_empty()
         && !b.is_empty()

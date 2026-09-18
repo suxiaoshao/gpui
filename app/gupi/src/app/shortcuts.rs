@@ -144,9 +144,23 @@ impl ShortcutsRuntime {
         Ok(())
     }
 }
+fn validate_registration(value: &AppConfig, cx: &App) -> Result<(), String> {
+    value.clone().normalized()?;
+    for binding in std::iter::once(value.shortcuts.launcher.as_str()).chain(
+        value
+            .shortcuts
+            .tasks
+            .iter()
+            .filter(|task| task.enabled)
+            .map(|task| task.binding.as_str()),
+    ) {
+        crate::state::keybindings::validate_global(binding, cx)?;
+    }
+    Ok(())
+}
 /// Pause triggers while the configuration transaction is in flight.
 pub fn prepare(value: &AppConfig, cx: &mut App) -> Result<(), String> {
-    value.clone().normalized()?;
+    validate_registration(value, cx)?;
     if !cx.has_global::<ShortcutsRuntime>() {
         return Ok(());
     }
@@ -161,11 +175,12 @@ pub fn apply(value: &AppConfig, cx: &mut App) {
     if !cx.has_global::<ShortcutsRuntime>() {
         return;
     }
+    let validation = validate_registration(value, cx);
     cx.update_global::<ShortcutsRuntime, _>(|rt, _| {
         if rt.draining {
             return;
         }
-        rt.error = rt.replace(&value.shortcuts).err();
+        rt.error = validation.and_then(|()| rt.replace(&value.shortcuts)).err();
         rt.paused = false;
     });
 }
@@ -449,4 +464,74 @@ async fn run(
         cx.notify();
     });
     result
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::{ShortcutsRuntime, apply, prepare};
+    use crate::state::{config::AppConfig, shortcuts::ShortcutTask};
+    use gpui_kit::{KeyBinding, TestAppContext, component::input::Copy};
+
+    #[gpui_kit::test]
+    fn saving_global_bindings_rejects_component_shortcuts(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            for key in ["secondary-c", "secondary-x", "secondary-v"] {
+                let mut config = AppConfig::default();
+                config.shortcuts.launcher = key.into();
+                assert_eq!(prepare(&config, cx).unwrap_err(), "settings-key-conflict");
+                config.shortcuts.launcher.clear();
+                config.shortcuts.tasks.push(ShortcutTask {
+                    id: "test".into(),
+                    name: "Test".into(),
+                    binding: key.into(),
+                    enabled: true,
+                    template: "/test.md".into(),
+                    ..Default::default()
+                });
+                assert_eq!(prepare(&config, cx).unwrap_err(), "settings-key-conflict");
+                config.shortcuts.tasks[0].enabled = false;
+                assert!(prepare(&config, cx).is_ok());
+            }
+            let mut config = AppConfig::default();
+            config.shortcuts.launcher = "ctrl-alt-space".into();
+            assert!(prepare(&config, cx).is_ok());
+            // A system registration would also swallow the start of this chord,
+            // even though its component context is unrelated to the current view.
+            cx.bind_keys([KeyBinding::new(
+                "ctrl-alt-space x",
+                Copy,
+                Some("OtherEditor"),
+            )]);
+            assert_eq!(prepare(&config, cx).unwrap_err(), "settings-key-conflict");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn loading_conflicting_shortcut_keeps_the_runtime_configuration(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(ShortcutsRuntime {
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                manager: Err("must not attempt OS registration".into()),
+                config: Default::default(),
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                actions: Default::default(),
+                jobs: Default::default(),
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                active: Default::default(),
+                error: None,
+                paused: true,
+                draining: false,
+                _events: None,
+            });
+            let mut config = AppConfig::default();
+            config.shortcuts.launcher = "secondary-c".into();
+            apply(&config, cx);
+            let runtime = cx.global::<ShortcutsRuntime>();
+            assert_eq!(runtime.error.as_deref(), Some("settings-key-conflict"));
+            assert_eq!(runtime.config, Default::default());
+            assert!(!runtime.paused);
+        });
+    }
 }
