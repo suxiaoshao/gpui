@@ -3,6 +3,7 @@ menu-settings = 设置
 menu-show-main = 主窗口
 menu-quit = 退出 Gupi
 startup-welcome = 欢迎使用 Gupi
+temporary-setup-required = 请在设置中完成配置，再开始临时对话。
 startup-checking = 正在检查…
 startup-quitting = 正在完成操作…
 settings-pi-command = Pi 可执行文件

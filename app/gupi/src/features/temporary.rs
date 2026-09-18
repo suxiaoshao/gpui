@@ -1,5 +1,6 @@
 //! A disposable window view over the application-owned temporary sessions.
 mod actions_panel;
+pub(crate) mod startup;
 use super::home::{
     HomeView,
     actions::{Kind, Run},

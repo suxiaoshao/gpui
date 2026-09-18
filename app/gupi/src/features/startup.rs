@@ -61,6 +61,8 @@ impl StartupView {
         let config = cx.new(|cx| ConfigController::new(&form, cx));
         let applied_pi = cx.new(|_| PiProbeController::new());
         let draft_pi = cx.new(|_| PiProbeController::new());
+        cx.global_mut::<crate::app::temporary::Temporary>()
+            .environment = Some((config.clone(), applied_pi.clone()));
         let settings = cx.new(|cx| {
             SettingsView::new(
                 form.clone(),

@@ -1,5 +1,7 @@
 //! The window is a view of application-owned, non-persistent conversations.
-use crate::{features::temporary::TemporaryView, state::conversation::ConversationState};
+use crate::{
+    features::temporary::startup::TemporaryStartup, state::conversation::ConversationState,
+};
 use gpui_kit::{component::Root, *};
 use std::{path::PathBuf, time::Duration};
 use window_ext::{WindowExt as _, WindowLevel};
@@ -10,6 +12,10 @@ const RECYCLE_DELAY: Duration = Duration::from_secs(600);
 pub(crate) struct Temporary {
     pub command: Option<PathBuf>,
     pub state: Option<Entity<ConversationState>>,
+    pub environment: Option<(
+        Entity<crate::state::config::ConfigController>,
+        Entity<crate::pi::PiProbeController>,
+    )>,
     window: Option<WindowHandle<Root>>,
     pub draining: bool,
     pub cleanup: Option<Task<()>>,
@@ -27,6 +33,7 @@ pub fn init(cx: &mut App) {
     cx.set_global(Temporary {
         command: None,
         state: None,
+        environment: None,
         window: None,
         draining: false,
         cleanup: None,
@@ -196,10 +203,10 @@ fn hide_impl(window: &mut Window, restore_front: bool, paste: Option<String>, cx
     cx.global_mut::<Temporary>().recycle = Some(recycle);
 }
 pub fn show(cx: &mut App) {
-    let Some(state) = state(cx) else {
-        super::show(Some(false), cx);
+    if cx.global::<Temporary>().draining {
+        cx.global_mut::<Temporary>().front = None;
         return;
-    };
+    }
     let display = target_display_id(cx);
     cx.global_mut::<Temporary>().recycle = None;
     let existing = cx
@@ -217,13 +224,14 @@ pub fn show(cx: &mut App) {
                     hide(window, cx);
                     false
                 });
-                let view = cx.new(|cx| TemporaryView::new(state, window, cx));
+                let view = cx.new(|cx| TemporaryStartup::new(window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             });
             match result {
                 Ok(handle) => handle,
                 Err(error) => {
                     tracing::error!(%error, "open temporary window failed");
+                    cx.global_mut::<Temporary>().front = None;
                     return;
                 }
             }
@@ -231,7 +239,7 @@ pub fn show(cx: &mut App) {
     };
     cx.global_mut::<Temporary>().window = Some(handle);
     let reveal = handle.update(cx, |root, window, cx| {
-        if let Ok(view) = root.view().clone().downcast::<TemporaryView>() {
+        if let Ok(view) = root.view().clone().downcast::<TemporaryStartup>() {
             view.update(cx, |view, cx| view.focus_search(window, cx));
         }
         let size = display
@@ -244,6 +252,7 @@ pub fn show(cx: &mut App) {
         )
     });
     let Ok((Ok(native), bounds)) = reveal else {
+        cx.global_mut::<Temporary>().front = None;
         return;
     };
     let owner = cx.global_mut::<Temporary>();
@@ -459,6 +468,25 @@ mod tests {
             owner.visible = true;
             (window, state)
         })
+    }
+    #[gpui_kit::test]
+    fn popup_opens_before_pi_is_ready(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            app_theme::init(cx);
+            crate::state::theme::init(cx);
+            crate::foundation::i18n::apply(Default::default(), cx);
+            crate::state::pi::init(cx);
+            init(cx);
+            super::show(cx);
+            let owner = cx.global::<Temporary>();
+            assert!(owner.command.is_none());
+            assert!(owner.state.is_none());
+            let window = owner
+                .window
+                .expect("Pi readiness must not prevent opening the popup");
+            assert!(window.read(cx).is_ok());
+        });
     }
     #[gpui_kit::test]
     fn hidden_window_expires_without_releasing_conversation_state(cx: &mut TestAppContext) {

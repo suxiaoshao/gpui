@@ -202,7 +202,8 @@ pub fn cancel_preparation(_key: &str, cx: &mut App) {
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn trigger(id: &str, cx: &mut App) {
     let Some(state) = super::temporary::state(cx) else {
-        super::show(Some(false), cx);
+        super::temporary::remember_frontmost(cx);
+        super::temporary::show(cx);
         return;
     };
     let rt = cx.global::<ShortcutsRuntime>();

@@ -3,6 +3,7 @@ menu-settings = Settings
 menu-show-main = Main window
 menu-quit = Quit Gupi
 startup-welcome = Welcome to Gupi
+temporary-setup-required = Complete setup in Settings to start a temporary conversation.
 startup-checking = Checking…
 startup-quitting = Finishing operations…
 settings-pi-command = Pi executable
