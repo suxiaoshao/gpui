@@ -130,12 +130,18 @@ fn temporary_new_reuses_unsent_draft_and_navigation_handles_more_than_nine(
 ) {
     init_interactions(cx);
     let state = cx.new(|cx| ConversationState::temporary("unused-pi".into(), cx));
-    state.update(cx, |state, _| {
+    state.update(cx, |state, cx| {
         for i in 0..12 {
             let key = format!("session-{i:02}");
             let mut session = fixture_session(&key);
             if i == 0 {
                 session.draft = "preserve this draft".into();
+                // A healthy draft still preparing its first connection can be
+                // reused. Keep preparation pending without launching Pi.
+                session.binding = 0;
+                session.core_read = super::super::CoreRead::CheckingFile {
+                    _task: cx.spawn(async |_, _| std::future::pending().await),
+                };
             } else {
                 answer(&mut session, "complete");
             }
@@ -164,6 +170,53 @@ fn temporary_new_reuses_unsent_draft_and_navigation_handles_more_than_nine(
     });
     visual.simulate_keystrokes("cmd-n");
     visual.update(|_, cx| assert_eq!(state.read(cx).sessions.len(), 12));
+}
+
+#[gpui_kit::test]
+fn temporary_new_skips_failed_and_exited_drafts(cx: &mut TestAppContext) {
+    init_interactions(cx);
+    let state = cx.new(|cx| ConversationState::temporary("unused-pi".into(), cx));
+    state.update(cx, |state, cx| {
+        let mut failed = fixture_session("failed");
+        failed.binding = 0;
+        failed.error = Some("Pi failed to start".into());
+        failed.draft = "keep failed draft".into();
+        state.sessions.insert("failed".into(), failed);
+        state
+            .sessions
+            .insert("exited".into(), fixture_session("exited"));
+        let mut read_failed = fixture_session("read-failed");
+        read_failed.binding = 0;
+        read_failed.core_read = super::super::CoreRead::Failed("Cannot prepare workspace".into());
+        state.sessions.insert("read-failed".into(), read_failed);
+
+        let mut healthy = fixture_session("healthy");
+        healthy.binding = 0;
+        healthy.draft = "keep healthy draft".into();
+        healthy.core_read = super::super::CoreRead::CheckingFile {
+            _task: cx.spawn(async |_, _| std::future::pending().await),
+        };
+        state.sessions.insert("healthy".into(), healthy);
+
+        for selected in ["failed", "exited", "read-failed"] {
+            state.selected = Some(selected.into());
+            state.new_or_reuse_temporary(cx);
+            assert_eq!(state.selected.as_deref(), Some("healthy"));
+            assert_eq!(state.sessions.len(), 4);
+            assert_eq!(state.current().unwrap().draft, "keep healthy draft");
+        }
+
+        state.sessions.remove("healthy");
+        state.selected = Some("exited".into());
+        state.new_or_reuse_temporary(cx);
+        let replacement = state.selected.clone().unwrap();
+        assert!(replacement.starts_with("draft-"));
+        assert_eq!(state.sessions.len(), 4);
+        assert_eq!(state.sessions["failed"].draft, "keep failed draft");
+        assert!(state.sessions[&replacement].core_read.running());
+        // Cancel preparation before it touches disk or starts a process.
+        state.sessions.get_mut(&replacement).unwrap().reset_reads();
+    });
 }
 
 #[gpui_kit::test]

@@ -13,6 +13,11 @@ impl ConversationState {
         let reusable = |s: &Session| {
             !s.busy()
                 && !s.command.running()
+                && s.error.is_none()
+                && s.core_read.error().is_none()
+                // An exited in-memory instance cannot reconnect, even if it
+                // never received a message. Keep it available for inspection.
+                && (s.binding == 0 || s.instance.is_some())
                 && s.pending_template.is_none()
                 && s.pending_ui.is_empty()
                 && s.info.first_message.is_empty()
