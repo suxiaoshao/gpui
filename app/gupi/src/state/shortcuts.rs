@@ -44,11 +44,18 @@ impl Shortcuts {
         }
     }
     pub fn has_bindings(&self) -> bool {
-        !self.launcher.is_empty() || self.tasks.iter().any(|t| !t.binding.is_empty())
+        !self.launcher.is_empty()
+            || self
+                .tasks
+                .iter()
+                .any(|t| t.enabled && !t.binding.is_empty())
     }
     pub fn validate(&self) -> Result<(), String> {
         let mut ids = BTreeSet::new();
         let mut bindings = BTreeSet::new();
+        if !self.launcher.is_empty() {
+            bindings.insert(system_binding(&self.launcher)?);
+        }
         for task in &self.tasks {
             if task.id.is_empty()
                 || task.name.trim().is_empty()
@@ -57,14 +64,12 @@ impl Shortcuts {
             {
                 return Err("error-config-validation".into());
             }
-        }
-        for binding in std::iter::once(&self.launcher)
-            .chain(self.tasks.iter().map(|t| &t.binding))
-            .filter(|b| !b.is_empty())
-        {
-            let normalized = system_binding(binding)?;
-            if !bindings.insert(normalized) {
-                return Err("settings-key-conflict".into());
+            if !task.binding.is_empty() {
+                // Retain valid saved bindings on disabled tasks without reserving them.
+                let normalized = system_binding(&task.binding)?;
+                if task.enabled && !bindings.insert(normalized) {
+                    return Err("settings-key-conflict".into());
+                }
             }
         }
         Ok(())
@@ -187,6 +192,47 @@ mod tests {
         assert_eq!(
             system_binding("secondary-x").unwrap(),
             system_binding("cmd-x").unwrap()
+        );
+    }
+    #[test]
+    fn disabled_tasks_release_bindings_and_reenable_checks_conflicts() {
+        let task = ShortcutTask {
+            id: "disabled".into(),
+            name: "Disabled".into(),
+            binding: "ctrl-alt-t".into(),
+            enabled: false,
+            template: "/test.md".into(),
+            ..Default::default()
+        };
+        let mut config = Shortcuts {
+            launcher: String::new(),
+            tasks: vec![task.clone()],
+        };
+        assert!(config.validate().is_ok());
+        assert!(!config.has_bindings());
+        config.launcher = "alt-ctrl-t".into();
+        assert!(config.validate().is_ok());
+        config.tasks[0].enabled = true;
+        assert_eq!(config.validate().unwrap_err(), "settings-key-conflict");
+
+        config.tasks[0].enabled = false;
+        config.launcher.clear();
+        config.tasks.push(ShortcutTask {
+            id: "enabled".into(),
+            enabled: true,
+            ..task
+        });
+        assert!(config.validate().is_ok());
+        assert!(config.has_bindings());
+        config.tasks[0].enabled = true;
+        assert_eq!(config.validate().unwrap_err(), "settings-key-conflict");
+        config.tasks[1].enabled = false;
+        assert!(config.validate().is_ok());
+        assert_eq!(config.tasks[1].binding, "ctrl-alt-t");
+        config.tasks[1].binding = "invalid-unmodified-key".into();
+        assert!(
+            config.validate().is_err(),
+            "disabled bindings must still have valid syntax"
         );
     }
 }

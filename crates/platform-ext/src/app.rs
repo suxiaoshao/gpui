@@ -12,12 +12,10 @@ use objc2_app_kit::{NSApplication, NSEvent, NSImage, NSScreen};
 use objc2_foundation::NSData;
 #[cfg(target_os = "windows")]
 use windows::Win32::{
-    Foundation::{LPARAM, POINT, RECT},
-    Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR, MONITOR_DEFAULTTONULL, MonitorFromPoint},
+    Foundation::POINT,
+    Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromPoint},
     UI::WindowsAndMessaging::GetCursorPos,
 };
-#[cfg(target_os = "windows")]
-use windows::core::BOOL;
 
 #[cfg(target_os = "macos")]
 pub fn record_frontmost_app() -> Option<Retained<NSRunningApplication>> {
@@ -65,7 +63,7 @@ pub fn current_mouse_location() -> Option<(f32, f32)> {
 }
 
 #[cfg(target_os = "macos")]
-pub fn current_mouse_display_id() -> Option<u32> {
+pub fn current_mouse_display_id() -> Option<u64> {
     let mtm = MainThreadMarker::new()?;
     let point = NSEvent::mouseLocation();
     let screens = NSScreen::screens(mtm);
@@ -78,14 +76,14 @@ pub fn current_mouse_display_id() -> Option<u32> {
             && point.y >= frame.origin.y
             && point.y < max_y
         {
-            return Some(screen.CGDirectDisplayID());
+            return Some(u64::from(screen.CGDirectDisplayID()));
         }
     }
     None
 }
 
 #[cfg(target_os = "windows")]
-pub fn current_mouse_display_id() -> Option<u32> {
+pub fn current_mouse_display_id() -> Option<u64> {
     let mut point = POINT::default();
     unsafe { GetCursorPos(&mut point).ok()? };
     let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONULL) };
@@ -93,38 +91,12 @@ pub fn current_mouse_display_id() -> Option<u32> {
         return None;
     }
 
-    let mut monitors = Vec::new();
-    unsafe {
-        EnumDisplayMonitors(
-            None,
-            None,
-            Some(enum_monitors),
-            LPARAM(&mut monitors as *mut Vec<HMONITOR> as isize),
-        )
-        .ok()
-        .ok()?;
-    }
-
-    monitors
-        .iter()
-        .position(|candidate: &HMONITOR| candidate.0 == monitor.0)
-        .map(|index| index as u32)
-}
-
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn enum_monitors(
-    monitor: HMONITOR,
-    _hdc: HDC,
-    _rect: *mut RECT,
-    data: LPARAM,
-) -> BOOL {
-    let monitors = unsafe { &mut *(data.0 as *mut Vec<HMONITOR>) };
-    monitors.push(monitor);
-    BOOL(1)
+    // GPUI's Windows DisplayId is the native handle, not an enumeration index.
+    Some(monitor.0 as u64)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub fn current_mouse_display_id() -> Option<u32> {
+pub fn current_mouse_display_id() -> Option<u64> {
     None
 }
 

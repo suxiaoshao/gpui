@@ -308,11 +308,13 @@ fn window_options(display: Option<DisplayId>, cx: &App) -> WindowOptions {
 fn target_display_id(cx: &App) -> Option<DisplayId> {
     let displays = cx.displays();
     if let Some(id) = platform_ext::app::current_mouse_display_id()
-        && let Some(display) = displays.iter().find(|d| u64::from(d.id()) == u64::from(id))
+        && let Some(display) = displays.iter().find(|d| u64::from(d.id()) == id)
     {
         return Some(display.id());
     }
-    if let Some((x, y)) = platform_ext::app::current_mouse_location()
+    // Windows cursor coordinates are physical; GPUI display bounds are logical.
+    if !cfg!(target_os = "windows")
+        && let Some((x, y)) = platform_ext::app::current_mouse_location()
         && let Some(display) = displays
             .iter()
             .find(|d| d.bounds().contains(&point(px(x), px(y))))
