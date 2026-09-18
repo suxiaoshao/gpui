@@ -35,6 +35,9 @@ pub(crate) struct AppConfig {
     pub language: AppLanguage,
 }
 impl AppConfig {
+    pub fn pi_executable(&self) -> PathBuf {
+        self.pi_command.as_deref().unwrap_or("pi").into()
+    }
     pub fn normalized(mut self) -> Result<Self, String> {
         self.shortcuts.validate()?;
         let globals = std::iter::once(&self.shortcuts.launcher)

@@ -311,6 +311,9 @@ impl SettingsView {
             .update(cx, |owner, _| owner.stop());
     }
     pub fn activate(&self, cx: &mut Context<Self>) {
+        let command = self.controller.read(cx).preferences(cx).pi_command;
+        self.applied_pi
+            .update(cx, |pi, cx| pi.request(command, true, cx));
         self.resources
             .read(cx)
             .controller

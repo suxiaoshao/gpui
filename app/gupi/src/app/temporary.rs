@@ -12,10 +12,7 @@ const RECYCLE_DELAY: Duration = Duration::from_secs(600);
 pub(crate) struct Temporary {
     pub command: Option<PathBuf>,
     pub state: Option<Entity<ConversationState>>,
-    pub environment: Option<(
-        Entity<crate::state::config::ConfigController>,
-        Entity<crate::pi::PiProbeController>,
-    )>,
+    pub config: Option<Entity<crate::state::config::ConfigController>>,
     window: Option<WindowHandle<Root>>,
     pub draining: bool,
     pub cleanup: Option<Task<()>>,
@@ -33,7 +30,7 @@ pub fn init(cx: &mut App) {
     cx.set_global(Temporary {
         command: None,
         state: None,
-        environment: None,
+        config: None,
         window: None,
         draining: false,
         cleanup: None,
@@ -472,7 +469,7 @@ mod tests {
         })
     }
     #[gpui_kit::test]
-    fn popup_opens_before_pi_is_ready(cx: &mut TestAppContext) {
+    fn popup_opens_while_configuration_is_loading(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_kit::init(cx);
             app_theme::init(cx);
@@ -486,7 +483,7 @@ mod tests {
             assert!(owner.state.is_none());
             let window = owner
                 .window
-                .expect("Pi readiness must not prevent opening the popup");
+                .expect("configuration loading must not prevent opening the popup");
             assert!(window.read(cx).is_ok());
         });
     }

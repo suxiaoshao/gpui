@@ -472,6 +472,54 @@ mod validation_tests {
     use crate::state::{config::AppConfig, shortcuts::ShortcutTask};
     use gpui_kit::{KeyBinding, TestAppContext, component::input::Copy};
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[gpui_kit::test]
+    fn template_trigger_starts_without_a_version_probe_and_deduplicates(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::state::pi::init(cx);
+            crate::app::temporary::init(cx);
+            // The configured command is available before any version probe.
+            crate::app::temporary::set_command("pi".into(), cx);
+            let mut config = crate::state::shortcuts::Shortcuts::default();
+            config.tasks.push(ShortcutTask {
+                id: "translate".into(),
+                name: "Translate".into(),
+                enabled: true,
+                template: "/test.md".into(),
+                source: crate::state::shortcuts::InputSource::Clipboard,
+                ..Default::default()
+            });
+            cx.set_global(ShortcutsRuntime {
+                manager: Err("no OS registration in test".into()),
+                config,
+                actions: Default::default(),
+                jobs: Default::default(),
+                active: Default::default(),
+                error: None,
+                paused: false,
+                draining: false,
+                _events: None,
+            });
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("original input".into()));
+            super::trigger("translate", cx);
+            assert!(
+                cx.global::<crate::app::temporary::Temporary>()
+                    .state
+                    .is_some()
+            );
+            assert!(
+                cx.global::<ShortcutsRuntime>()
+                    .jobs
+                    .contains_key("translate")
+            );
+            super::trigger("translate", cx);
+            assert_eq!(cx.global::<ShortcutsRuntime>().jobs.len(), 1);
+            // Cancel before the fixture would read files or launch Pi.
+            cx.global_mut::<ShortcutsRuntime>().jobs.clear();
+        });
+    }
+
     #[gpui_kit::test]
     fn saving_global_bindings_rejects_component_shortcuts(cx: &mut TestAppContext) {
         cx.update(|cx| {

@@ -1,6 +1,7 @@
 use super::{chrome, home, settings::SettingsView};
 mod palette;
-use crate::pi::ProbeFailureKey;
+#[cfg(test)]
+mod tests;
 use crate::{
     app::menus,
     components::recovery::recovery,
@@ -16,7 +17,7 @@ use crate::{
 };
 use gpui_form::Form;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Root, WindowExt, button::Button, h_flex, spinner::Spinner, v_flex,
+    ActiveTheme, Disableable, Root, WindowExt, button::Button, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -27,16 +28,11 @@ enum StartupScreen {
     ConfigFailure(&'static str),
     Onboarding,
     Settings,
-    CheckingPi,
-    PiRecovery,
     Home(std::path::PathBuf),
 }
 impl StartupScreen {
     fn configured(&self) -> bool {
-        matches!(
-            self,
-            Self::Settings | Self::CheckingPi | Self::PiRecovery | Self::Home(_)
-        )
+        matches!(self, Self::Settings | Self::Home(_))
     }
 }
 
@@ -61,8 +57,7 @@ impl StartupView {
         let config = cx.new(|cx| ConfigController::new(&form, cx));
         let applied_pi = cx.new(|_| PiProbeController::new());
         let draft_pi = cx.new(|_| PiProbeController::new());
-        cx.global_mut::<crate::app::temporary::Temporary>()
-            .environment = Some((config.clone(), applied_pi.clone()));
+        cx.global_mut::<crate::app::temporary::Temporary>().config = Some(config.clone());
         let settings = cx.new(|cx| {
             SettingsView::new(
                 form.clone(),
@@ -77,6 +72,7 @@ impl StartupView {
         let store = config.read(cx).store.clone();
         let config_sub = store.observe_in(cx, window, |this, op, window, cx| {
             if let Some(value) = op.data().and_then(|d| d.configured()) {
+                crate::app::temporary::set_command(value.pi_executable(), cx);
                 i18n::apply(value.language, cx);
                 theme::apply(value, window, cx);
                 crate::state::keybindings::apply(&value.keybindings, cx);
@@ -84,21 +80,10 @@ impl StartupView {
                     crate::app::shortcuts::apply(value, cx);
                 }
                 menus::refresh(cx);
-                this.applied_pi
-                    .update(cx, |pi, cx| pi.request(value.pi_command.clone(), false, cx));
-            }
-            cx.notify();
-        });
-        let pi_sub = cx.observe(&applied_pi, |this, pi, cx| {
-            let config = this.config.read(cx).preferences(cx);
-            let command = pi
-                .read(cx)
-                .ready_for(config.pi_command.as_deref())
-                .map(|d| d.command.clone());
-            if let Some(command) = command {
-                crate::app::temporary::set_command(command, cx);
-            } else if cx.has_global::<crate::app::temporary::Temporary>() {
-                cx.global_mut::<crate::app::temporary::Temporary>().command = None;
+                if this.show_settings {
+                    this.applied_pi
+                        .update(cx, |pi, cx| pi.request(value.pi_command.clone(), false, cx));
+                }
             }
             cx.notify();
         });
@@ -130,7 +115,7 @@ impl StartupView {
             show_settings: false,
             config_confirm: false,
             log_warning,
-            _subscriptions: vec![config_sub, pi_sub, form_sub, appearance, accent],
+            _subscriptions: vec![config_sub, form_sub, appearance, accent],
             quit_task: None,
             palette: None,
         }
@@ -222,12 +207,6 @@ impl StartupView {
     pub fn is_quitting(&self) -> bool {
         self.quit_task.is_some()
     }
-    fn applied_config(&self, cx: &App) -> Option<AppConfig> {
-        self.config
-            .read(cx)
-            .store
-            .read(cx, |op| op.data().and_then(|d| d.configured()).cloned())
-    }
     fn screen(&self, cx: &App) -> StartupScreen {
         if self.is_quitting() {
             return StartupScreen::Quitting;
@@ -238,15 +217,10 @@ impl StartupView {
             .read(cx, |op| match op.data().map(|data| &data.contents) {
                 Some(ConfigContents::Missing) => StartupScreen::Onboarding,
                 Some(ConfigContents::Configured(config)) => {
-                    let pi = self.applied_pi.read(cx);
                     if self.show_settings {
                         StartupScreen::Settings
-                    } else if pi.operation.is_running() {
-                        StartupScreen::CheckingPi
-                    } else if let Some(data) = pi.ready_for(config.pi_command.as_deref()) {
-                        StartupScreen::Home(data.command.clone())
                     } else {
-                        StartupScreen::PiRecovery
+                        StartupScreen::Home(config.pi_executable())
                     }
                 }
                 None => match op.problem() {
@@ -268,12 +242,9 @@ impl Render for StartupView {
         let page_title = match &screen {
             StartupScreen::Settings => t(cx, "menu-settings"),
             StartupScreen::ConfigFailure(_) => t(cx, "recovery-config-title"),
-            StartupScreen::PiRecovery => t(cx, "recovery-pi-title"),
             StartupScreen::Onboarding => t(cx, "startup-welcome"),
             StartupScreen::Quitting => t(cx, "startup-quitting"),
-            StartupScreen::LoadingConfig | StartupScreen::CheckingPi | StartupScreen::Home(_) => {
-                t(cx, "app-title")
-            }
+            StartupScreen::LoadingConfig | StartupScreen::Home(_) => t(cx, "app-title"),
         };
         if !main {
             window.set_window_title(&page_title);
@@ -357,40 +328,7 @@ impl Render for StartupView {
             StartupScreen::Onboarding | StartupScreen::Settings => {
                 content = content.child(self.settings.clone())
             }
-            StartupScreen::CheckingPi => {
-                content = content.child(
-                    h_flex()
-                        .gap_2()
-                        .child(Spinner::new())
-                        .child(t(cx, "startup-checking")),
-                )
-            }
-            StartupScreen::PiRecovery => {
-                content = content
-                    .child(recovery(
-                        t(cx, "recovery-pi-title"),
-                        t(cx, "error-pi-probe"),
-                        cx,
-                    ))
-                    .child(self.settings.clone())
-            }
             StartupScreen::Home(_) => {}
-        }
-        if configured && !main && !settings_page {
-            let pi = self.applied_pi.read(cx);
-            if let Some(problem) = pi.operation.problem() {
-                content = content.child(div().text_sm().child(t(cx, problem.key())));
-            }
-            content = content.child(
-                Button::new("probe-retry")
-                    .label(t(cx, "action-check-pi"))
-                    .disabled(pi.operation.is_running())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let command = this.applied_config(cx).and_then(|c| c.pi_command);
-                        this.applied_pi
-                            .update(cx, |pi, cx| pi.request(command, true, cx));
-                    })),
-            );
         }
         v_flex()
             .track_focus(&self.focus_handle)
