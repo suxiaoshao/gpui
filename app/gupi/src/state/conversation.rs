@@ -552,15 +552,6 @@ impl ConversationState {
             .collect();
         // The local draft key stays stable even after Pi creates its session file.
         for (key, s) in &self.sessions {
-            if !self.temporary
-                && s.info.path.as_os_str().is_empty()
-                && s.draft.is_empty()
-                && s.empty_conversation()
-                && s.live.is_empty()
-                && !s.busy()
-            {
-                continue;
-            }
             if !s.info.path.as_os_str().is_empty() {
                 infos.remove(&s.info.key());
             }
@@ -574,6 +565,48 @@ impl ConversationState {
         }
         result
     }
+    /// User-requested new pages reuse an unsent ordinary draft. Template tasks
+    /// deliberately keep calling `new_draft` to obtain an independent instance.
+    pub fn new_or_reuse(&mut self, cwd: Option<PathBuf>, cx: &mut Context<Self>) {
+        if self.draining {
+            return;
+        }
+        let cwd = cwd
+            .or_else(|| self.current().map(|s| s.info.cwd.clone()))
+            .unwrap_or_else(|| self.discovery.current.clone());
+        let reusable = |s: &Session| {
+            (self.temporary || s.info.cwd == cwd)
+                && !matches!(s.transcript, Transcript::Unloaded)
+                && !s.busy()
+                && !s.command.running()
+                // Temporary in-memory instances cannot recover after exiting.
+                && (!self.temporary
+                    || (s.error.is_none()
+                        && s.core_read.error().is_none()
+                        && (s.binding == 0 || s.instance.is_some())))
+                && s.pending_template.is_none()
+                && s.pending_ui.is_empty()
+                && s.info.first_message.is_empty()
+                && s.empty_conversation()
+        };
+        let key = self
+            .selected
+            .as_ref()
+            .filter(|key| self.sessions.get(*key).is_some_and(reusable))
+            .cloned()
+            .or_else(|| {
+                self.sessions
+                    .iter()
+                    .find(|(_, s)| reusable(s))
+                    .map(|(key, _)| key.clone())
+            });
+        if let Some(key) = key {
+            self.open(&key, cx);
+        } else {
+            self.new_draft(Some(cwd), cx);
+        }
+    }
+
     pub fn new_draft(&mut self, cwd: Option<PathBuf>, cx: &mut Context<Self>) {
         if self.draining {
             return;
@@ -1723,7 +1756,7 @@ mod tests {
         state.update(cx, |state, cx| {
             state.insert_draft(None);
             let foreground = state.selected.clone().unwrap();
-            assert!(state.infos().is_empty());
+            assert_eq!(state.infos().len(), 1);
             assert!(state.file().drafts.is_empty());
             // Typing while the old file is still being read must not overwrite it.
             state.set_draft(&foreground, "new input during loading".into(), cx);
@@ -1771,7 +1804,7 @@ draft = ""
             state.catalog = CatalogState::Ready(Catalog::default());
             state.apply_catalog(cx);
             assert_eq!(state.selected, foreground);
-            assert!(state.infos().is_empty());
+            assert_eq!(state.infos().len(), 1);
             assert!(state.catalog.data().is_some());
             state.restore_drafts(
                 toml::from_str(
@@ -1795,7 +1828,7 @@ draft = "saved input"
             state.apply_catalog(cx);
             assert_eq!(state.sessions["history"].info.title(), "Restored title");
             assert_eq!(state.sessions["history"].draft, "saved input");
-            assert_eq!(state.infos().len(), 1);
+            assert_eq!(state.infos().len(), 2);
             assert_eq!(state.selected.as_deref(), Some("history"));
             assert!(state.sessions["history"].instance.is_none());
             assert!(!state.sessions["history"].command.running());

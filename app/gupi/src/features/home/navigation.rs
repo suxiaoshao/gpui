@@ -277,7 +277,7 @@ impl SidebarItem for ProjectItem {
                     .accessibility_label(t(cx, "conversation-new"))
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
-                        new_state.update(cx, |s, cx| s.new_draft(Some(new_cwd.clone()), cx));
+                        new_state.update(cx, |s, cx| s.new_or_reuse(Some(new_cwd.clone()), cx));
                     }),
             ),
         )
@@ -288,7 +288,7 @@ impl SidebarItem for ProjectItem {
             let copy = cwd.clone();
             menu.item(
                 PopupMenuItem::new(t(cx, "conversation-new")).on_click(move |_, _, cx| {
-                    state.update(cx, |s, cx| s.new_draft(Some(cwd.clone()), cx))
+                    state.update(cx, |s, cx| s.new_or_reuse(Some(cwd.clone()), cx))
                 }),
             )
             .separator()
@@ -550,11 +550,7 @@ pub(crate) fn activity_mark(activity: Activity, cx: &App) -> AnyElement {
 impl HomeView {
     pub(super) fn new_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.state.update(cx, |state, cx| {
-            if state.temporary {
-                state.new_or_reuse_temporary(cx);
-            } else {
-                state.new_draft(None, cx);
-            }
+            state.new_or_reuse(None, cx);
         });
         self.input.update(cx, |input, cx| input.focus(window, cx));
     }

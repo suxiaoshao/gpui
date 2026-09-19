@@ -200,7 +200,7 @@ fn temporary_new_skips_failed_and_exited_drafts(cx: &mut TestAppContext) {
 
         for selected in ["failed", "exited", "read-failed"] {
             state.selected = Some(selected.into());
-            state.new_or_reuse_temporary(cx);
+            state.new_or_reuse(None, cx);
             assert_eq!(state.selected.as_deref(), Some("healthy"));
             assert_eq!(state.sessions.len(), 4);
             assert_eq!(state.current().unwrap().draft, "keep healthy draft");
@@ -208,7 +208,7 @@ fn temporary_new_skips_failed_and_exited_drafts(cx: &mut TestAppContext) {
 
         state.sessions.remove("healthy");
         state.selected = Some("exited".into());
-        state.new_or_reuse_temporary(cx);
+        state.new_or_reuse(None, cx);
         let replacement = state.selected.clone().unwrap();
         assert!(replacement.starts_with("draft-"));
         assert_eq!(state.sessions.len(), 4);

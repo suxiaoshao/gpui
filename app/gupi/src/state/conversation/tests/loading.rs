@@ -232,7 +232,7 @@ async fn deletion_waits_for_exit_removes_draft_and_catalog_then_opens_new_page(
     })
     .await;
     owner.read_with(cx, |state, _| {
-        assert!(state.infos().is_empty());
+        assert_eq!(state.infos().len(), 1);
         assert!(state.file().drafts.is_empty());
         let current = state.current().unwrap();
         assert!(current.info.path.as_os_str().is_empty());
@@ -352,6 +352,69 @@ fn prepare(
 }
 
 #[gpui_kit::test]
+async fn new_conversation_reuses_unsent_session_in_the_requested_project(cx: &mut TestAppContext) {
+    let (dir, owner, key) = begin(cx, &["empty-entries"]);
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
+    let instance = owner.read_with(cx, |state, _| state.sessions[&key].instance);
+    owner.update(cx, |state, cx| {
+        // Blank, loading attachments, attachment-only and text drafts all use
+        // the same session, and all remain reachable through navigation.
+        for phase in 0..4 {
+            let session = state.sessions.get_mut(&key).unwrap();
+            match phase {
+                1 => session.attachments_read = Some(gpui_kit::Task::ready(())),
+                2 => {
+                    session.attachments_read = None;
+                    session
+                        .attachments
+                        .push(crate::foundation::attachments::Attachment::file(
+                            dir.path().join("example.txt"),
+                        ));
+                }
+                3 => session.draft = "unsent input".into(),
+                _ => {}
+            }
+            state.new_or_reuse(None, cx);
+            assert_eq!(state.selected.as_ref(), Some(&key));
+            assert_eq!(state.sessions.len(), 1);
+            assert_eq!(state.current().unwrap().instance, instance);
+            assert_eq!(state.infos()[0].0, key);
+        }
+        let other_project = dir.path().join("other-project");
+        state.new_or_reuse(Some(other_project.clone()), cx);
+        let other = state.selected.clone().unwrap();
+        assert_ne!(other, key);
+        assert_eq!(state.current().unwrap().info.cwd, other_project);
+        // Cancel before the synthetic project touches disk.
+        state.sessions.get_mut(&other).unwrap().reset_reads();
+        assert!(state.infos().iter().any(|(k, _)| k == &key));
+        state.new_or_reuse(Some(dir.path().into()), cx);
+        assert_eq!(state.selected.as_ref(), Some(&key));
+        assert_eq!(state.sessions.len(), 2);
+        assert_eq!(state.current().unwrap().instance, instance);
+        assert_eq!(state.current().unwrap().draft, "unsent input");
+        assert_eq!(state.current().unwrap().attachments.len(), 1);
+        // Once the original contains a message, New creates another session.
+        state.sessions.get_mut(&key).unwrap().transcript.replace(
+            serde_json::from_value(serde_json::json!({"entries": [
+                {"id":"user", "type":"message", "timestamp":"1", "message":{
+                    "role":"user", "content":"sent message"
+                }}
+            ]}))
+            .unwrap(),
+        );
+        state.new_or_reuse(None, cx);
+        let created = state.selected.clone().unwrap();
+        assert_ne!(created, key);
+        assert_ne!(created, other);
+        assert_eq!(state.sessions.len(), 3);
+        state.sessions.get_mut(&created).unwrap().reset_reads();
+    });
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
 async fn new_conversation_model_options_and_catalog_have_independent_lifecycles(
     cx: &mut TestAppContext,
 ) {
@@ -365,7 +428,7 @@ async fn new_conversation_model_options_and_catalog_have_independent_lifecycles(
     owner.read_with(cx, |state, _| {
         assert_eq!(state.scan_serial, 0);
         assert_eq!(state.sessions[&key].body_state(), BodyState::New);
-        assert!(state.infos().is_empty());
+        assert_eq!(state.infos().len(), 1);
         assert!(!state.sessions[&key].core_read.running());
         assert_eq!(
             state.sessions[&key].model_identity(),
@@ -402,7 +465,7 @@ async fn new_conversation_model_options_and_catalog_have_independent_lifecycles(
         2,
         "catalog refresh must not reload models"
     );
-    assert!(owner.read_with(cx, |state, _| state.infos().is_empty()));
+    assert_eq!(owner.read_with(cx, |state, _| state.infos().len()), 1);
     close(&owner, cx).await;
 }
 
@@ -467,7 +530,7 @@ async fn project_switch_reuses_empty_sessions_and_their_model_connections(cx: &m
             assert_eq!(state.selected.as_deref(), Some(b.as_str()));
             assert_eq!(state.current().unwrap().instance, Some(instance_b));
             assert_eq!(state.sessions.len(), 2);
-            assert!(state.infos().is_empty());
+            assert_eq!(state.infos().len(), 2);
         });
     }
     assert_eq!(count(dir.path(), "get_state"), reads_a);

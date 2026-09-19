@@ -626,7 +626,8 @@ impl HomeView {
                     if let Some(key) = key {
                         this.state.update(cx, |s, cx| s.set_cwd(&key, path, cx));
                     } else {
-                        this.state.update(cx, |s, cx| s.new_draft(Some(path), cx));
+                        this.state
+                            .update(cx, |s, cx| s.new_or_reuse(Some(path), cx));
                     }
                 });
             }

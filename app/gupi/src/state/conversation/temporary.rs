@@ -7,40 +7,6 @@ impl ConversationState {
         state
     }
 
-    /// User-requested new pages reuse an unsent ordinary draft. Template tasks
-    /// deliberately keep calling `new_draft` to obtain an independent instance.
-    pub fn new_or_reuse_temporary(&mut self, cx: &mut Context<Self>) {
-        let reusable = |s: &Session| {
-            !s.busy()
-                && !s.command.running()
-                && s.error.is_none()
-                && s.core_read.error().is_none()
-                // An exited in-memory instance cannot reconnect, even if it
-                // never received a message. Keep it available for inspection.
-                && (s.binding == 0 || s.instance.is_some())
-                && s.pending_template.is_none()
-                && s.pending_ui.is_empty()
-                && s.info.first_message.is_empty()
-                && s.empty_conversation()
-        };
-        let key = self
-            .selected
-            .as_ref()
-            .filter(|key| self.sessions.get(*key).is_some_and(reusable))
-            .cloned()
-            .or_else(|| {
-                self.sessions
-                    .iter()
-                    .find(|(_, s)| reusable(s))
-                    .map(|(key, _)| key.clone())
-            });
-        if let Some(key) = key {
-            self.open(&key, cx);
-        } else {
-            self.new_draft(None, cx);
-        }
-    }
-
     pub fn temporary_workspace(&self, key: &str) -> Option<PathBuf> {
         self.temporary
             .then(|| self.sessions.get(key).map(|s| s.info.cwd.clone()))
