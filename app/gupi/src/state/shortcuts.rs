@@ -77,6 +77,7 @@ impl Shortcuts {
 }
 /// Keep the same GPUI syntax as the existing inline shortcut editor.
 pub(crate) fn system_binding(binding: &str) -> Result<String, String> {
+    super::keybindings::syntax(binding).map_err(str::to_owned)?;
     let key = gpui_kit::Keystroke::parse(binding).map_err(|_| "settings-key-invalid".to_owned())?;
     if key.modifiers.function
         || !(key.modifiers.control || key.modifiers.platform || key.modifiers.alt)

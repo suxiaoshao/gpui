@@ -520,6 +520,35 @@ mod validation_tests {
         });
     }
 
+    #[test]
+    fn configured_shortcuts_accept_single_keys_and_reject_sequences() {
+        let mut config = AppConfig::default();
+        config.shortcuts.launcher = "ctrl-alt-x".into();
+        for invalid in [
+            "ctrl-alt-x y",
+            "ctrl-alt-x\ty",
+            "ctrl-alt-x\ny",
+            " ctrl-alt-x",
+        ] {
+            config.keybindings.insert("new".into(), invalid.into());
+            assert_eq!(
+                config.clone().normalized().unwrap_err(),
+                "settings-key-invalid"
+            );
+        }
+        config.keybindings.insert("new".into(), "ctrl-alt-y".into());
+        assert!(config.clone().normalized().is_ok());
+        config.keybindings.insert("new".into(), "ctrl-alt-x".into());
+        assert_eq!(
+            config.clone().normalized().unwrap_err(),
+            "settings-key-conflict"
+        );
+        config.keybindings.insert("new".into(), String::new());
+        assert!(config.clone().normalized().is_ok());
+        config.shortcuts.launcher = "ctrl-alt-x y".into();
+        assert_eq!(config.normalized().unwrap_err(), "settings-key-invalid");
+    }
+
     #[gpui_kit::test]
     fn saving_global_bindings_rejects_component_shortcuts(cx: &mut TestAppContext) {
         cx.update(|cx| {

@@ -413,7 +413,7 @@ impl KeysView {
                         Input::new(input)
                             .with_size(options.size())
                             .disabled(busy)
-                            .readonly(recording)
+                            .readonly(true)
                             .suffix(suffix),
                     ),
             )
@@ -609,18 +609,11 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 
-    fn edit(cx: &mut VisualTestContext, keys: &Entity<KeysView>, index: usize, value: &str) {
+    fn record(cx: &mut VisualTestContext, keys: &Entity<KeysView>, index: usize, value: &str) {
         cx.update(|window, cx| {
-            keys.read(cx).inputs[index]
-                .focus_handle(cx)
-                .focus(window, cx)
+            keys.update(cx, |keys, cx| keys.start_recording(index, window, cx));
         });
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
-            "cmd-a"
-        } else {
-            "ctrl-a"
-        });
-        cx.simulate_input(value);
+        cx.simulate_keystrokes(value);
     }
 
     #[gpui_kit::test]
@@ -645,7 +638,7 @@ mod tests {
                 assert!(this.save(command_index("quick_open"), Some(String::new()), window, cx));
             });
         });
-        edit(cx, &keys, command_index("palette"), "ctrl-alt-8");
+        record(cx, &keys, command_index("palette"), "ctrl-alt-8");
         click(cx, "key-reset-all");
         cx.update(|window, cx| {
             assert!(window.has_active_dialog(cx));
@@ -776,7 +769,7 @@ mod tests {
                 "secondary-shift-p"
             );
         });
-        edit(cx, &keys, command_index("palette"), "secondary-p");
+        record(cx, &keys, command_index("palette"), "secondary-p");
         click(cx, "key-confirm-palette");
         cx.update(|_, cx| {
             assert!(
@@ -793,7 +786,7 @@ mod tests {
             );
         });
         click(cx, "key-cancel-palette");
-        edit(cx, &keys, command_index("palette"), "ctrl-alt-7 ctrl-alt-8");
+        record(cx, &keys, command_index("palette"), "ctrl-alt-7");
         click(cx, "key-confirm-palette");
         cx.update(|_, cx| {
             assert_eq!(
@@ -804,8 +797,48 @@ mod tests {
                     .keybindings
                     .get("palette")
                     .map(String::as_str),
-                Some("ctrl-alt-7 ctrl-alt-8")
+                Some("ctrl-alt-7")
             );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn shortcut_field_rejects_typing_pasting_and_a_second_stroke(cx: &mut TestAppContext) {
+        let (keys, _, cx) = setup(cx);
+        let index = command_index("palette");
+        cx.update(|window, cx| {
+            keys.read(cx).inputs[index]
+                .focus_handle(cx)
+                .focus(window, cx)
+        });
+        cx.simulate_input("ctrl-alt-x y");
+        cx.update(|_, cx| {
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("ctrl-alt-x y".into()))
+        });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-a cmd-v backspace"
+        } else {
+            "ctrl-a ctrl-v backspace"
+        });
+        cx.update(|_, cx| {
+            assert_eq!(
+                keys.read(cx).inputs[index].read(cx).value(),
+                "secondary-shift-p"
+            )
+        });
+        record(cx, &keys, index, "ctrl-alt-7");
+        cx.simulate_keystrokes("y");
+        cx.update(|_, cx| assert_eq!(keys.read(cx).inputs[index].read(cx).value(), "ctrl-alt-7"));
+        click(cx, "key-confirm-palette");
+        cx.update(|_, cx| {
+            assert_eq!(
+                keys.read(cx)
+                    .controller
+                    .read(cx)
+                    .preferences(cx)
+                    .keybindings["palette"],
+                "ctrl-alt-7"
+            )
         });
     }
 

@@ -39,6 +39,12 @@ impl AppConfig {
         self.pi_command.as_deref().unwrap_or("pi").into()
     }
     pub fn normalized(mut self) -> Result<Self, String> {
+        for (id, binding) in &self.keybindings {
+            if !super::keybindings::COMMANDS.iter().any(|c| c.id == id) {
+                return Err("error-config-validation".into());
+            }
+            super::keybindings::syntax(binding).map_err(str::to_owned)?;
+        }
         self.shortcuts.validate()?;
         let globals = std::iter::once(&self.shortcuts.launcher)
             .chain(
@@ -61,12 +67,6 @@ impl AppConfig {
             }
         }
 
-        for (id, binding) in &self.keybindings {
-            if !super::keybindings::COMMANDS.iter().any(|c| c.id == id) {
-                return Err("error-config-validation".into());
-            }
-            super::keybindings::syntax(binding).map_err(str::to_owned)?;
-        }
         self.pi_command = PiSettings {
             command: self.pi_command,
         }

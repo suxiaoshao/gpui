@@ -305,7 +305,7 @@ impl Render for BindingInput {
             .child(
                 div().flex_1().child(
                     Input::new(&self.input)
-                        .readonly(self.capture.is_some())
+                        .readonly(true)
                         .disabled(busy)
                         .suffix(suffix),
                 ),

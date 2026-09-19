@@ -321,16 +321,12 @@ pub(crate) fn syntax(text: &str) -> Result<(), &'static str> {
     if text.is_empty() {
         return Ok(());
     }
-    if text.trim() != text {
+    if text.chars().any(char::is_whitespace) {
         return Err("settings-key-invalid");
     }
-    if text.split_whitespace().count() > 2 {
-        return Err("settings-key-invalid");
-    }
-    for part in text.split_whitespace() {
-        Keystroke::parse(part).map_err(|_| "settings-key-invalid")?;
-    }
-    Ok(())
+    Keystroke::parse(text)
+        .map(|_| ())
+        .map_err(|_| "settings-key-invalid")
 }
 pub(crate) fn validate(
     id: &str,
@@ -345,10 +341,10 @@ pub(crate) fn validate(
     if text.is_empty() {
         return Ok(());
     }
-    let candidate = command.bindings(text).remove(0);
+    let candidate = Keystroke::parse(text).map_err(|_| "settings-key-invalid".to_owned())?;
     for other in COMMANDS.iter().filter(|c| c.id != id) {
         for binding in other.bindings(other.value(overrides)) {
-            if overlaps(candidate.keystrokes(), binding.keystrokes()) {
+            if starts_with(&binding, &candidate) {
                 return Err(other.label.into());
             }
         }
@@ -361,7 +357,7 @@ pub(crate) fn validate(
         .bindings()
         .filter(|b| command_for(b.action()).is_none())
     {
-        if !overlaps(candidate.keystrokes(), binding.keystrokes()) {
+        if !starts_with(binding, &candidate) {
             continue;
         }
         let applicable = ["Input", "Textarea", "GupiExtension", "Command", "List"]
@@ -391,23 +387,23 @@ pub(crate) fn validate_global(text: &str, cx: &App) -> Result<(), String> {
         return Ok(());
     }
     let candidate = Keystroke::parse(text).map_err(|_| "settings-key-invalid".to_owned())?;
-    if cx.key_bindings().borrow().bindings().any(|binding| {
-        command_for(binding.action()).is_none()
-            && binding
-                .keystrokes()
-                .first()
-                .is_some_and(|key| key.as_keystroke() == &candidate)
-    }) {
+    if cx
+        .key_bindings()
+        .borrow()
+        .bindings()
+        .any(|binding| command_for(binding.action()).is_none() && starts_with(binding, &candidate))
+    {
         return Err("settings-key-conflict".into());
     }
     Ok(())
 }
-fn overlaps(a: &[KeybindingKeystroke], b: &[KeybindingKeystroke]) -> bool {
-    !a.is_empty()
-        && !b.is_empty()
-        && a.iter()
-            .zip(b)
-            .all(|(a, b)| a.as_keystroke() == b.as_keystroke())
+// Component-owned bindings may contain chords; their first stroke must also
+// stay available when assigning a single application or system shortcut.
+fn starts_with(binding: &KeyBinding, key: &Keystroke) -> bool {
+    binding
+        .keystrokes()
+        .first()
+        .is_some_and(|first| first.as_keystroke() == key)
 }
 #[derive(Default)]
 struct Applied(Overrides);
@@ -523,8 +519,8 @@ mod tests {
             );
             drop(keys);
             assert!(validate("new", "secondary-p", &overrides, cx).is_err());
-            assert!(validate("new", "secondary-j n", &overrides, cx).is_ok());
-            assert!(validate("new", "secondary-k n", &overrides, cx).is_err());
+            assert!(validate("new", "secondary-j", &overrides, cx).is_ok());
+            assert!(validate("new", "secondary-k", &overrides, cx).is_err());
             apply(&Overrides::new(), cx);
             assert!(
                 cx.key_bindings()
