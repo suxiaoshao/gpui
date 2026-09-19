@@ -4,6 +4,9 @@ use fluent_bundle::FluentArgs;
 
 impl ConversationState {
     pub fn can_export(&self, key: &str, cx: &App) -> bool {
+        if self.temporary {
+            return false;
+        }
         !self.draining
             && self.sessions.get(key).is_some_and(|s| {
                 s.state.is_some()

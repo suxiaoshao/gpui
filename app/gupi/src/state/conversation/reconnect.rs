@@ -4,7 +4,8 @@ use crate::foundation::i18n::t;
 
 impl ConversationState {
     pub fn can_reconnect(&self, key: &str, cx: &App) -> bool {
-        !self.draining
+        !self.temporary
+            && !self.draining
             && self.sessions.get(key).is_some_and(|s| {
                 !s.settings_busy()
                     && !s.core_read.running()

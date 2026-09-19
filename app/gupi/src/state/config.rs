@@ -27,6 +27,7 @@ pub(crate) enum AppLanguage {
 pub(crate) struct AppConfig {
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub keybindings: super::keybindings::Overrides,
+    pub shortcuts: super::shortcuts::Shortcuts,
     pub pi_command: Option<String>,
     pub theme: ThemeMode,
     pub light_theme: Option<String>,
@@ -34,6 +35,9 @@ pub(crate) struct AppConfig {
     pub language: AppLanguage,
 }
 impl AppConfig {
+    pub fn pi_executable(&self) -> PathBuf {
+        self.pi_command.as_deref().unwrap_or("pi").into()
+    }
     pub fn normalized(mut self) -> Result<Self, String> {
         for (id, binding) in &self.keybindings {
             if !super::keybindings::COMMANDS.iter().any(|c| c.id == id) {
@@ -41,6 +45,28 @@ impl AppConfig {
             }
             super::keybindings::syntax(binding).map_err(str::to_owned)?;
         }
+        self.shortcuts.validate()?;
+        let globals = std::iter::once(&self.shortcuts.launcher)
+            .chain(
+                self.shortcuts
+                    .tasks
+                    .iter()
+                    .filter(|t| t.enabled)
+                    .map(|t| &t.binding),
+            )
+            .filter(|s| !s.is_empty())
+            .map(|s| super::shortcuts::system_binding(s))
+            .collect::<Result<Vec<_>, _>>()?;
+        for command in super::keybindings::COMMANDS {
+            let binding = command.value(&self.keybindings);
+            if !binding.is_empty()
+                && let Ok(binding) = super::shortcuts::system_binding(binding)
+                && globals.contains(&binding)
+            {
+                return Err("settings-key-conflict".into());
+            }
+        }
+
         self.pi_command = PiSettings {
             command: self.pi_command,
         }
@@ -77,6 +103,7 @@ impl PiSettings {
 pub(crate) enum PreferenceChange {
     Keybinding(String, Option<String>),
     ResetKeybindings,
+    Shortcuts(super::shortcuts::Shortcuts),
     Language(AppLanguage),
     Theme(ThemeMode),
     LightTheme(Option<String>),
@@ -85,7 +112,11 @@ pub(crate) enum PreferenceChange {
 impl PreferenceChange {
     fn apply(self, config: &mut AppConfig) {
         match self {
-            Self::ResetKeybindings => config.keybindings.clear(),
+            Self::ResetKeybindings => {
+                config.keybindings.clear();
+                config.shortcuts.clear_bindings();
+            }
+            Self::Shortcuts(value) => config.shortcuts = value,
             Self::Keybinding(id, binding) => match binding {
                 Some(binding) => {
                     config.keybindings.insert(id, binding);
@@ -233,6 +264,9 @@ fn write_config(
             if value.dark_theme != baseline.dark_theme {
                 latest.dark_theme = value.dark_theme;
             }
+            if value.shortcuts != baseline.shortcuts {
+                latest.shortcuts = value.shortcuts;
+            }
             if value.language != baseline.language {
                 latest.language = value.language;
             }
@@ -253,7 +287,9 @@ fn write_config(
     };
     if reset_keybindings {
         value.keybindings.clear();
+        value.shortcuts.clear_bindings();
     }
+    let value = value.normalized().map_err(ConfigProblem::Validation)?;
     let bytes =
         toml::to_string_pretty(&value).map_err(|e| ConfigProblem::Validation(e.to_string()))?;
     persistence::write_atomic(&path, bytes.as_bytes()).map_err(|failure| ConfigProblem::Write {
@@ -472,9 +508,14 @@ impl ConfigController {
             .read(cx, |op| op.data().map(|d| d.path.clone()))
             .map(Ok)
             .unwrap_or_else(|| self.path.clone());
+        let registration = pending
+            .as_ref()
+            .map(|p| crate::app::shortcuts::prepare(&p.value, cx))
+            .transpose();
         let started = std::time::Instant::now();
         let task = cx.spawn(async move |owner, cx| {
             let result = smol::unblock(move || {
+                registration.map_err(ConfigProblem::Validation)?;
                 let path = path.map_err(ConfigProblem::Read)?;
                 match pending {
                     Some(pending) => write_config(path, pending, reset, reset_keybindings, backup),
@@ -493,6 +534,8 @@ impl ConfigController {
                     .as_ref()
                     .ok()
                     .map(|d| d.configured().cloned().unwrap_or_default());
+                let applied = value.clone().unwrap_or_else(|| owner.preferences(cx));
+                crate::app::shortcuts::apply(&applied, cx);
                 owner.store.update(cx, |op| op.transition(Complete(result)));
                 if let Some(value) = value {
                     if rebase_pi {
@@ -615,7 +658,7 @@ mod tests {
         // Reset every override, including changes written externally since the last read.
         std::fs::write(
             &path,
-            "theme = 'light'\n[keybindings]\nquick_open = 'secondary-alt-p'\nnew = ''\n",
+            "theme = 'light'\n[keybindings]\nquick_open = 'secondary-alt-p'\nnew = ''\n[shortcuts]\nlauncher = 'ctrl-alt-t'\n[[shortcuts.tasks]]\nid = 'test'\nname = 'Test'\nbinding = 'ctrl-alt-y'\ntemplate = '/test.md'\n",
         )
         .unwrap();
         owner.update(cx, |owner, cx| {
@@ -629,6 +672,10 @@ mod tests {
             .clone();
         assert_eq!(saved.theme, ThemeMode::Light);
         assert!(saved.keybindings.is_empty());
+        assert!(!saved.shortcuts.has_bindings());
+        assert_eq!(saved.shortcuts.tasks.len(), 1);
+        assert_eq!(saved.shortcuts.tasks[0].name, "Test");
+        assert!(saved.shortcuts.tasks[0].enabled);
     }
 
     #[gpui::test]
@@ -663,6 +710,7 @@ mod tests {
                 dark_theme: Some("chosen-dark".into()),
                 language: AppLanguage::Chinese,
                 keybindings: Default::default(),
+                shortcuts: Default::default(),
             }
         );
         assert!(!form.read_with(cx, |form, _| form.is_dirty()));

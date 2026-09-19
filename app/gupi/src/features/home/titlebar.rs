@@ -13,13 +13,18 @@ impl HomeView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let state = self.state.read(cx);
+        let temporary = state.temporary;
         let current = state.current();
         let title = current
             .map(|session| session.info.title())
             .filter(|title| !title.is_empty())
             .map(str::to_owned)
             .unwrap_or_else(|| t(cx, "conversation-new"));
-        window.set_window_title(&format!("{title} — Gupi"));
+        window.set_window_title(&if temporary {
+            format!("{title} — {} — Gupi", t(cx, "temporary-title"))
+        } else {
+            format!("{title} — Gupi")
+        });
         let key = state.selected.clone();
         let has_actions = current.is_some_and(|session| {
             !session.info.path.as_os_str().is_empty() || session.instance.is_some()
@@ -142,40 +147,42 @@ impl HomeView {
         }
         main = main
             .child(div().flex_1())
-            .child(chrome::control(
-                "export-control",
-                chrome::button("export-session")
-                    .icon(IconName::Download)
-                    .loading(exporting)
-                    .disabled(!can_export)
-                    .tooltip_with_action(
-                        t(cx, "conversation-export"),
-                        &Run(Kind::Export),
-                        Some("Gupi"),
-                    )
-                    .accessibility_label(t(cx, "conversation-export"))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.run_action(&Run(Kind::Export), window, cx);
-                    })),
-            ))
-            .child(chrome::control(
-                "refresh-control",
-                chrome::button("refresh-session")
-                    .icon(IconName::RefreshCw)
-                    .loading(loading)
-                    .disabled(!can_refresh)
-                    .tooltip_with_action(
-                        t(cx, "conversation-refresh-current"),
-                        &Run(Kind::Reconnect),
-                        Some("Gupi"),
-                    )
-                    .accessibility_label(t(cx, "conversation-refresh-current"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(key) = &key {
-                            this.state.update(cx, |state, cx| state.reconnect(key, cx));
-                        }
-                    })),
-            ))
+            .when(!temporary, |row| {
+                row.child(chrome::control(
+                    "export-control",
+                    chrome::button("export-session")
+                        .icon(IconName::Download)
+                        .loading(exporting)
+                        .disabled(!can_export)
+                        .tooltip_with_action(
+                            t(cx, "conversation-export"),
+                            &Run(Kind::Export),
+                            Some("Gupi"),
+                        )
+                        .accessibility_label(t(cx, "conversation-export"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.run_action(&Run(Kind::Export), window, cx);
+                        })),
+                ))
+                .child(chrome::control(
+                    "refresh-control",
+                    chrome::button("refresh-session")
+                        .icon(IconName::RefreshCw)
+                        .loading(loading)
+                        .disabled(!can_refresh)
+                        .tooltip_with_action(
+                            t(cx, "conversation-refresh-current"),
+                            &Run(Kind::Reconnect),
+                            Some("Gupi"),
+                        )
+                        .accessibility_label(t(cx, "conversation-refresh-current"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(key) = &key {
+                                this.state.update(cx, |state, cx| state.reconnect(key, cx));
+                            }
+                        })),
+                ))
+            })
             .child(chrome::control(
                 "history-control",
                 chrome::button("toggle-history")
@@ -190,6 +197,10 @@ impl HomeView {
                         this.toggle_history(window, cx);
                     })),
             ));
-        chrome::title_bar(cx).child(h_flex().size_full().min_w_0().child(left).child(main))
+        let mut bar = chrome::title_bar(cx);
+        if temporary {
+            bar = bar.on_close_window(|_, window, cx| crate::app::temporary::hide(window, cx));
+        }
+        bar.child(h_flex().size_full().min_w_0().child(left).child(main))
     }
 }

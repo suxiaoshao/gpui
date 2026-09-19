@@ -16,38 +16,59 @@ long_description = "Gupi provides a native desktop environment for Pi."
 category = "DeveloperTool"
 
 [dependencies]
-pi-rpc.workspace = true
-gpui-kit = { workspace = true, features = ["tree-sitter-languages"] }
+# UI and workspace services.
+app-assets.workspace = true
+app-theme = { workspace = true, features = ["system-accent"] }
 gpui-form.workspace = true
+gpui-kit = { workspace = true, features = ["tree-sitter-languages"] }
 gpui-operation.workspace = true
 gpui-store.workspace = true
 gpui-tokio.workspace = true
-app-assets.workspace = true
-app-theme = { workspace = true, features = ["system-accent"] }
+pi-rpc.workspace = true
 window-ext.workspace = true
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.151"
-base64 = "0.22.1"
-sonic-rs = "0.5.8"
-toml = "1.1.5"
-thiserror = "2.0.20"
+platform-ext.workspace = true
+
+# Background tasks and Pi subprocess I/O.
 smol = "2.0.2"
-tokio = { version = "1.53.1", features = ["process", "io-util", "time", "macros", "sync", "fs"] }
-tempfile = "3.27.0"
-trash = "5.2.8"
+tokio = { version = "1.53.1", features = [
+  "process",
+  "io-util",
+  "time",
+  "macros",
+  "sync",
+  "fs",
+] }
+
+# Configuration, session data and local resources.
+base64 = "0.22.1"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 dirs-next = "2.0.0"
 glob = "0.3.4"
 globset = "0.4.20"
 ignore = "0.4.33"
-serde_yaml_ng = "0.10.0"
-url = "2.5.8"
 markdown = "1.0.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.151"
+serde_yaml_ng = "0.10.0"
+sonic-rs = "0.5.8"
+tempfile = "3.27.0"
+time = { version = "0.3.55", features = ["parsing", "formatting", "local-offset"] }
+toml = "1.1.5"
+trash = "5.2.8"
+url = "2.5.8"
+uuid = { version = "1.26.0", features = ["v4"] }
+
+# Localization and diagnostics.
 fluent-bundle = "0.16.0"
 sys-locale = "0.3.2"
-time = { version = "0.3.55", features = ["parsing", "formatting", "local-offset"] }
-uuid = { version = "1.26.0", features = ["v4"] }
+thiserror = "2.0.20"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+global-hotkey = { version = "0.8.0", features = ["serde", "tracing"] }
+get-selected-text = "0.1.6"
+tray-icon = { version = "0.25.1", default-features = false }

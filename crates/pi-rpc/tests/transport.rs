@@ -12,6 +12,23 @@ async fn bounded<F: std::future::Future>(future: F) -> F::Output {
         .expect("test exceeded its process cleanup budget")
 }
 #[tokio::test]
+async fn command_name_resolves_from_child_path_without_a_version_probe() {
+    bounded(async {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = support::fixture();
+        let mut options = support::options(dir.path(), "");
+        options.executable = executable.file_name().unwrap().into();
+        options.env.push((
+            "PATH".into(),
+            executable.parent().unwrap().as_os_str().into(),
+        ));
+        let (client, _events) = Client::spawn(options).await.unwrap();
+        assert!(client.ready().await.is_ok());
+        assert!(client.close().await.status.is_some());
+    })
+    .await;
+}
+#[tokio::test]
 async fn request_order_cancellation_extensions_and_isolation() {
     bounded(async {
         let dir = tempfile::tempdir().unwrap();

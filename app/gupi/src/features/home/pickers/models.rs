@@ -6,7 +6,7 @@ use gpui_kit::component::{
 use pi_rpc::protocol::Model;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::features::home) struct ModelKey {
+pub(crate) struct ModelKey {
     pub provider: String,
     pub id: String,
 }

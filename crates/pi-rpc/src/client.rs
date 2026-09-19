@@ -455,7 +455,32 @@ async fn launch(options: LaunchOptions, deadline: Instant) -> Result<Child, Erro
             if Instant::now() >= deadline {
                 return Err(Error::StartupTimeout);
             }
-            let mut command = tokio::process::Command::new(&options.executable);
+            // Resolve configured command names inside the connection deadline,
+            // without requiring a separate `--version` probe (including PATHEXT
+            // launchers on Windows). Respect the child's PATH and working directory.
+            let paths = options
+                .env
+                .iter()
+                .rev()
+                .find(|(name, _)| {
+                    if cfg!(windows) {
+                        name.to_string_lossy().eq_ignore_ascii_case("PATH")
+                    } else {
+                        name == "PATH"
+                    }
+                })
+                .map(|(_, value)| value.clone())
+                .or_else(|| {
+                    (!options.clear_env)
+                        .then(|| std::env::var_os("PATH"))
+                        .flatten()
+                });
+            let executable = which::which_in(&options.executable, paths, &options.cwd)
+                .map_err(|error| Error::Io(format!("{}: {error}", options.executable.display())))?;
+            if Instant::now() >= deadline {
+                return Err(Error::StartupTimeout);
+            }
+            let mut command = tokio::process::Command::new(executable);
             command
                 .arg("--mode")
                 .arg("rpc")

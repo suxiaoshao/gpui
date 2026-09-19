@@ -12,19 +12,22 @@ use gpui_kit::component::{
     tooltip::Tooltip,
 };
 use gpui_kit::prelude::FluentBuilder;
-use models::{ModelKey, ModelList, ModelOption};
+pub(crate) use models::ModelKey;
+use models::{ModelList, ModelOption};
 
 #[derive(Clone)]
-pub(super) enum PickerEvent {
+pub(crate) enum PickerEvent {
     Model(ModelKey),
     Thinking(String),
     Load,
     Refresh,
+    ResetModel,
+    ResetThinking,
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
 /// Computed for the current call; the picker never stores or mutates these facts.
-pub(super) struct Projection {
+pub(crate) struct Projection {
     models: Vec<ModelOption>,
     selected: Option<ModelKey>,
     name: String,
@@ -41,6 +44,7 @@ pub(super) struct Projection {
     thinking_loading: bool,
     changing: bool,
     unconfirmed: bool,
+    overrides: Option<(bool, bool)>,
 }
 impl Projection {
     pub fn from_session(session: &Session) -> Self {
@@ -77,11 +81,33 @@ impl Projection {
             thinking_loading: session.thinking_levels.running(),
             changing: session.model_change.running(),
             unconfirmed: session.model_change.unconfirmed(),
+            overrides: None,
         }
     }
 }
 
 impl Projection {
+    pub fn for_settings(
+        models: &[pi_rpc::protocol::Model],
+        selected: Option<&pi_rpc::protocol::Model>,
+        name: String,
+        levels: Vec<String>,
+        level: String,
+        disabled: bool,
+        overrides: (bool, bool),
+    ) -> Self {
+        Self {
+            models: models.iter().map(ModelOption::from).collect(),
+            selected: selected.map(ModelKey::from),
+            name,
+            reasoning: selected.is_some_and(|m| m.reasoning),
+            levels,
+            level,
+            disabled,
+            overrides: Some(overrides),
+            ..Default::default()
+        }
+    }
     fn can_select_model(&self) -> bool {
         !self.disabled && !self.models_loading && !self.unconfirmed && self.model_error.is_none()
     }
@@ -92,7 +118,7 @@ impl Projection {
             && self.thinking_error.is_none()
             && self.reasoning
             && self.levels.len() > 1
-            && self.levels.contains(&self.level)
+            && (self.levels.contains(&self.level) || self.overrides.is_some())
     }
     fn has_feedback(&self) -> bool {
         self.models_loading
@@ -121,7 +147,7 @@ impl From<&Projection> for SliderBinding {
     }
 }
 
-pub(super) struct Picker {
+pub(crate) struct Picker {
     query: Box<dyn Fn(&App) -> Projection>,
     slider_binding: Option<SliderBinding>,
     list: Entity<ListState<ModelList>>,
@@ -151,7 +177,9 @@ impl Picker {
                         if let Some(key) = key {
                             this.models_page = false;
                             this.focus.focus(window, cx);
-                            if data.selected.as_ref() != Some(&key) {
+                            if data.selected.as_ref() != Some(&key)
+                                || data.overrides.is_some_and(|(model, _)| !model)
+                            {
                                 cx.emit(PickerEvent::Model(key));
                             }
                             cx.notify();
@@ -275,7 +303,7 @@ impl Picker {
             return;
         }
         self.draft_level = None;
-        if level != data.level {
+        if level != data.level || data.overrides.is_some_and(|(_, thinking)| !thinking) {
             cx.emit(PickerEvent::Thinking(level));
         }
         cx.notify();
@@ -521,7 +549,32 @@ impl Picker {
                     .child(label),
             );
         }
-        panel.child(effort).into_any_element()
+        panel = panel.child(effort);
+        if let Some((model, thinking)) = data.overrides {
+            panel = panel.child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("reset-model-override")
+                            .ghost()
+                            .small()
+                            .label(t(cx, "shortcut-default-model"))
+                            .disabled(data.disabled || !model)
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(PickerEvent::ResetModel))),
+                    )
+                    .child(
+                        Button::new("reset-thinking-override")
+                            .ghost()
+                            .small()
+                            .label(t(cx, "shortcut-default-thinking"))
+                            .disabled(data.disabled || !thinking)
+                            .on_click(
+                                cx.listener(|_, _, _, cx| cx.emit(PickerEvent::ResetThinking)),
+                            ),
+                    ),
+            );
+        }
+        panel.into_any_element()
     }
     fn load_feedback(&self, cx: &App) -> AnyElement {
         let data = self.query(cx);
@@ -562,7 +615,11 @@ impl Render for Picker {
         } else {
             data.name.clone()
         };
-        let level = thinking_label(&data.level, cx);
+        let level = if data.overrides.is_some_and(|(_, thinking)| !thinking) {
+            t(cx, "shortcut-default-thinking")
+        } else {
+            thinking_label(&data.level, cx)
+        };
         let trigger = Button::new("model-thinking")
             .ghost()
             .small()
@@ -571,7 +628,10 @@ impl Render for Picker {
             .max_w_full()
             .px_2()
             .accessibility_label(t(cx, "composer-model-thinking"))
-            .when(!self.open, |button| {
+            .when(!self.open && data.overrides.is_some(), |button| {
+                button.tooltip(t(cx, "composer-model-thinking"))
+            })
+            .when(!self.open && data.overrides.is_none(), |button| {
                 button.tooltip_with_action(
                     format!("{}\n{name}\n{level}", t(cx, "composer-model-thinking")),
                     &super::actions::Run(super::actions::Kind::Model),

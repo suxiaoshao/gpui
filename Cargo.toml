@@ -29,29 +29,43 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-pi-rpc = { path = "./crates/pi-rpc" }
+# GPUI runtime and component versions are kept together.
 gpui = { package = "gpui-pre", version = "=0.3.3" }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.3", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.3", features = [
+  "font-kit",
+  "x11",
+  "wayland",
+  "runtime_shaders",
+] }
 gpui-kit = "=0.6.0"
 gpui-component = "=0.6.0"
-# Optional, for default bundled assets
 gpui-component-assets = { package = "gpui-kit-assets", version = "=0.6.0" }
-gpui-heatmap = { path = "./crates/gpui-heatmap" }
-jaco-core = { path = "./crates/jaco-core" }
-jaco-db = { path = "./crates/jaco-db" }
-jaco-agent = { path = "./crates/jaco-agent" }
-jaco-conversation = { path = "./crates/jaco-conversation" }
+
+# Shared workspace crates.
 app-assets = { path = "./crates/app-assets" }
 app-theme = { path = "./crates/app-theme", default-features = false }
 gpui-form = { path = "./crates/gpui-form", features = ["garde-adapter"] }
 gpui-form-gpui-component = { path = "./crates/gpui-form-gpui-component" }
 gpui-form-macros = { path = "./crates/gpui-form-macros" }
+gpui-heatmap = { path = "./crates/gpui-heatmap" }
 gpui-operation = { path = "./crates/gpui-operation" }
 gpui-store = { path = "./crates/gpui-store" }
 gpui-tokio = { path = "./crates/gpui-tokio" }
-garde = { version = "0.23.0", default-features = false, features = ["derive", "url", "email", "pattern"] }
-window-ext = { path = "./crates/window-ext" }
+jaco-agent = { path = "./crates/jaco-agent" }
+jaco-conversation = { path = "./crates/jaco-conversation" }
+jaco-core = { path = "./crates/jaco-core" }
+jaco-db = { path = "./crates/jaco-db" }
+pi-rpc = { path = "./crates/pi-rpc" }
 platform-ext = { path = "./crates/platform-ext" }
+window-ext = { path = "./crates/window-ext" }
+
+# Shared validation and agent integrations.
+garde = { version = "0.23.0", default-features = false, features = [
+  "derive",
+  "url",
+  "email",
+  "pattern",
+] }
 rig = { version = "0.42.0", default-features = false, features = [
   "agent",
   "reqwest",

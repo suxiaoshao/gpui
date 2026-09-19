@@ -1,7 +1,7 @@
 use super::*;
 use crate::foundation::pi_resources::Kind;
 use gpui_kit::component::{
-    ThemeMode as Mode, ThemeRegistry,
+    Sizable, ThemeMode as Mode, ThemeRegistry, WindowExt,
     group_box::GroupBoxVariant,
     setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
 };
@@ -69,6 +69,54 @@ impl SettingsView {
                 )
                 .keywords(["通用 general config file 配置文件 reload 重新读取"])
             }));
+        let general = general.group(
+            SettingGroup::new().title(t(cx, "temporary-title")).item(
+                SettingItem::new(
+                    t(cx, "temporary-clean-released"),
+                    SettingField::render(|_, _, cx| {
+                        let owner = cx.try_global::<crate::app::temporary::Temporary>();
+                        let busy = owner.is_some_and(|s| s.cleanup.is_some());
+                        let result = owner.and_then(|s| s.cleanup_result.clone());
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("temporary-clean-released")
+                                    .small()
+                                    .icon(IconName::Trash2)
+                                    .label(t(cx, "temporary-clean"))
+                                    .loading(busy)
+                                    .disabled(busy || owner.is_none())
+                                    .on_click(|_, window, cx| {
+                                        window.open_dialog(cx, |dialog, _, cx| {
+                                            dialog
+                                                .title(t(cx, "temporary-clean-released"))
+                                                .child(t(cx, "temporary-clean-help"))
+                                                .footer(dialog_buttons(
+                                                    "temporary-clean",
+                                                    false,
+                                                    false,
+                                                    cx,
+                                                ))
+                                                .on_ok(|_, _, cx| {
+                                                    crate::app::temporary::clean_released(cx);
+                                                    true
+                                                })
+                                        });
+                                    }),
+                            )
+                            .children(result.map(|result| {
+                                div().text_sm().child(match result {
+                                    Ok(count) => format!("{}: {count}", t(cx, "temporary-cleaned")),
+                                    Err(error) => error,
+                                })
+                            }))
+                            .into_any_element()
+                    }),
+                )
+                .description(t(cx, "temporary-clean-help"))
+                .keywords(["temporary cleanup 临时对话 清理"]),
+            ),
+        );
         let appearance = SettingPage::new(t(cx, "settings-theme"))
             .icon(IconName::Sparkles)
             .resettable(false)
@@ -118,12 +166,14 @@ impl SettingsView {
         let keyboard = SettingPage::new(t(cx, "settings-page-keys"))
             .icon(IconName::Keyboard)
             .resettable(false)
-            .group(keys::KeysView::actions(&keys))
+            .group(keys::KeysView::actions(&keys, &self.global_keys))
+            .groups(global_keys::GlobalKeys::groups(&self.global_keys, cx))
             .groups(
                 [
                     keys::Group::Application,
                     keys::Group::Conversation,
                     keys::Group::Files,
+                    keys::Group::Temporary,
                 ]
                 .into_iter()
                 .map(|group| {

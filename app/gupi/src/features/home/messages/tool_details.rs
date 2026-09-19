@@ -452,10 +452,10 @@ fn inline_code(value: &str) -> String {
 }
 
 #[derive(IntoElement)]
-struct ToolImage {
-    id: String,
-    mime: String,
-    data: String,
+pub(super) struct ToolImage {
+    pub id: String,
+    pub mime: String,
+    pub data: String,
 }
 struct ImageState {
     mime: String,

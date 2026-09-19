@@ -232,7 +232,7 @@ async fn deletion_waits_for_exit_removes_draft_and_catalog_then_opens_new_page(
     })
     .await;
     owner.read_with(cx, |state, _| {
-        assert!(state.infos().is_empty());
+        assert_eq!(state.infos().len(), 1);
         assert!(state.file().drafts.is_empty());
         let current = state.current().unwrap();
         assert!(current.info.path.as_os_str().is_empty());
@@ -352,6 +352,69 @@ fn prepare(
 }
 
 #[gpui_kit::test]
+async fn new_conversation_reuses_unsent_session_in_the_requested_project(cx: &mut TestAppContext) {
+    let (dir, owner, key) = begin(cx, &["empty-entries"]);
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
+    let instance = owner.read_with(cx, |state, _| state.sessions[&key].instance);
+    owner.update(cx, |state, cx| {
+        // Blank, loading attachments, attachment-only and text drafts all use
+        // the same session, and all remain reachable through navigation.
+        for phase in 0..4 {
+            let session = state.sessions.get_mut(&key).unwrap();
+            match phase {
+                1 => session.attachments_read = Some(gpui_kit::Task::ready(())),
+                2 => {
+                    session.attachments_read = None;
+                    session
+                        .attachments
+                        .push(crate::foundation::attachments::Attachment::file(
+                            dir.path().join("example.txt"),
+                        ));
+                }
+                3 => session.draft = "unsent input".into(),
+                _ => {}
+            }
+            state.new_or_reuse(None, cx);
+            assert_eq!(state.selected.as_ref(), Some(&key));
+            assert_eq!(state.sessions.len(), 1);
+            assert_eq!(state.current().unwrap().instance, instance);
+            assert_eq!(state.infos()[0].0, key);
+        }
+        let other_project = dir.path().join("other-project");
+        state.new_or_reuse(Some(other_project.clone()), cx);
+        let other = state.selected.clone().unwrap();
+        assert_ne!(other, key);
+        assert_eq!(state.current().unwrap().info.cwd, other_project);
+        // Cancel before the synthetic project touches disk.
+        state.sessions.get_mut(&other).unwrap().reset_reads();
+        assert!(state.infos().iter().any(|(k, _)| k == &key));
+        state.new_or_reuse(Some(dir.path().into()), cx);
+        assert_eq!(state.selected.as_ref(), Some(&key));
+        assert_eq!(state.sessions.len(), 2);
+        assert_eq!(state.current().unwrap().instance, instance);
+        assert_eq!(state.current().unwrap().draft, "unsent input");
+        assert_eq!(state.current().unwrap().attachments.len(), 1);
+        // Once the original contains a message, New creates another session.
+        state.sessions.get_mut(&key).unwrap().transcript.replace(
+            serde_json::from_value(serde_json::json!({"entries": [
+                {"id":"user", "type":"message", "timestamp":"1", "message":{
+                    "role":"user", "content":"sent message"
+                }}
+            ]}))
+            .unwrap(),
+        );
+        state.new_or_reuse(None, cx);
+        let created = state.selected.clone().unwrap();
+        assert_ne!(created, key);
+        assert_ne!(created, other);
+        assert_eq!(state.sessions.len(), 3);
+        state.sessions.get_mut(&created).unwrap().reset_reads();
+    });
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
 async fn new_conversation_model_options_and_catalog_have_independent_lifecycles(
     cx: &mut TestAppContext,
 ) {
@@ -365,7 +428,7 @@ async fn new_conversation_model_options_and_catalog_have_independent_lifecycles(
     owner.read_with(cx, |state, _| {
         assert_eq!(state.scan_serial, 0);
         assert_eq!(state.sessions[&key].body_state(), BodyState::New);
-        assert!(state.infos().is_empty());
+        assert_eq!(state.infos().len(), 1);
         assert!(!state.sessions[&key].core_read.running());
         assert_eq!(
             state.sessions[&key].model_identity(),
@@ -402,7 +465,7 @@ async fn new_conversation_model_options_and_catalog_have_independent_lifecycles(
         2,
         "catalog refresh must not reload models"
     );
-    assert!(owner.read_with(cx, |state, _| state.infos().is_empty()));
+    assert_eq!(owner.read_with(cx, |state, _| state.infos().len()), 1);
     close(&owner, cx).await;
 }
 
@@ -467,7 +530,7 @@ async fn project_switch_reuses_empty_sessions_and_their_model_connections(cx: &m
             assert_eq!(state.selected.as_deref(), Some(b.as_str()));
             assert_eq!(state.current().unwrap().instance, Some(instance_b));
             assert_eq!(state.sessions.len(), 2);
-            assert!(state.infos().is_empty());
+            assert_eq!(state.infos().len(), 2);
         });
     }
     assert_eq!(count(dir.path(), "get_state"), reads_a);
@@ -2027,5 +2090,146 @@ async fn command_submission_reports_failure_and_acceptance_without_saving_input(
     assert_eq!(inputs.len(), 2);
     assert_eq!(inputs[1]["message"], "ordinary text with no slash");
     assert_eq!(inputs[1]["streamingBehavior"], "followUp");
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn temporary_instances_are_independent_and_drafts_never_persist(cx: &mut TestAppContext) {
+    let (dir, owner, first) = prepare(cx, &[]);
+    let second_dir = tempfile::tempdir().unwrap();
+    let second = owner.update(cx, |state, cx| {
+        state.temporary = true;
+        state.set_draft(&first, "first draft".into(), cx);
+        state.insert_draft(None);
+        let second = state.selected.clone().unwrap();
+        state.sessions.get_mut(&second).unwrap().info.cwd = second_dir.path().into();
+        state.set_draft(&second, "second draft".into(), cx);
+        state.launch(&first, cx);
+        state.launch(&second, cx);
+        assert!(state.file().drafts.is_empty());
+        assert!(state.save_task.is_none());
+        second
+    });
+    cx.condition(&owner, |s, cx| {
+        s.can_submit(&first, cx) && s.can_submit(&second, cx)
+    })
+    .await;
+    owner.update(cx, |state, cx| {
+        assert_ne!(
+            state.sessions[&first].instance,
+            state.sessions[&second].instance
+        );
+        state.open(&first, cx);
+        assert_eq!(state.current().unwrap().draft, "first draft");
+        state.open(&second, cx);
+        assert_eq!(state.current().unwrap().draft, "second draft");
+        assert!(!state.can_reconnect(&first, cx));
+        assert!(!state.can_export(&first, cx));
+        state.send(&first, StreamingBehavior::Steer, cx);
+        state.send(&second, StreamingBehavior::Steer, cx);
+    });
+    cx.condition(&owner, |s, _| {
+        !s.sessions[&first].submitting() && !s.sessions[&second].submitting()
+    })
+    .await;
+    assert_eq!(count(dir.path(), "prompt"), 1);
+    assert_eq!(count(second_dir.path(), "prompt"), 1);
+    assert!(
+        std::fs::read_to_string(dir.path().join("process.log"))
+            .unwrap()
+            .contains("--no-session")
+    );
+    owner.read_with(cx, |s, _| {
+        assert!(s.file().drafts.is_empty());
+        assert!(s.save_task.is_none());
+    });
+    let client = owner.read_with(cx, |s, cx| s.client(&first, cx).unwrap());
+    let _ = client
+        .request_raw(serde_json::json!({"type":"disconnect"}))
+        .await;
+    cx.condition(&owner, |s, _| s.sessions[&first].instance.is_none())
+        .await;
+    owner.update(cx, |s, cx| {
+        s.open(&first, cx);
+        assert!(
+            s.sessions[&first].instance.is_none(),
+            "switching must not silently replace lost in-memory context"
+        );
+        assert!(!s.can_submit(&first, cx));
+        assert!(s.can_submit(&second, cx));
+        s.sessions.get_mut(&second).unwrap().preparing = true;
+        s.abort(&second, cx);
+        assert!(!s.sessions[&second].preparing);
+        assert!(s.sessions[&second].interrupted);
+    });
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn attachment_and_template_survive_rejection_until_pi_accepts(cx: &mut TestAppContext) {
+    use crate::{foundation::attachments::Attachment, state::shortcuts::PendingTemplate};
+    let (dir, owner, key) = begin(cx, &["fail-prompt"]);
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
+    let file = dir.path().join("original file.txt");
+    std::fs::write(&file, "keep original").unwrap();
+    owner.update(cx, |state, cx| {
+        state.sessions.get_mut(&key).unwrap().attachments =
+            crate::foundation::attachments::from_paths(vec![file.clone()]).unwrap();
+        state.sessions.get_mut(&key).unwrap().pending_template = Some(PendingTemplate {
+            name: "review".into(),
+            body: "Review $1".into(),
+        });
+        state.set_draft(&key, "two words".into(), cx);
+        state.send(&key, StreamingBehavior::Steer, cx);
+    });
+    cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
+        .await;
+    owner.read_with(cx, |state, _| {
+        assert_eq!(state.sessions[&key].attachments.len(), 1);
+        assert!(state.sessions[&key].pending_template.is_some());
+        assert_eq!(state.sessions[&key].draft, "two words");
+    });
+    std::fs::remove_file(dir.path().join("fail-prompt")).unwrap();
+    owner.update(cx, |state, cx| {
+        state.send(&key, StreamingBehavior::Steer, cx)
+    });
+    cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
+        .await;
+    owner.read_with(cx, |state, _| {
+        assert!(state.sessions[&key].attachments.is_empty());
+        assert!(state.sessions[&key].pending_template.is_none());
+        assert!(state.sessions[&key].draft.is_empty());
+    });
+    let inputs = std::fs::read_to_string(dir.path().join("inputs.jsonl")).unwrap();
+    for line in inputs.lines() {
+        let request: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            request["message"],
+            format!(
+                "/review {}",
+                crate::state::shortcuts::argument(&format!("two words\n@{}", file.display()))
+            )
+        );
+    }
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "keep original");
+    // The fixture's text-only model must not silently drop images.
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(1, 1)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    owner.update(cx, |state, cx| {
+        state
+            .sessions
+            .get_mut(&key)
+            .unwrap()
+            .attachments
+            .push(Attachment::from_image("image".into(), png.get_ref()).unwrap());
+        state.send(&key, StreamingBehavior::Steer, cx);
+        assert!(!state.sessions[&key].submitting());
+        assert_eq!(state.sessions[&key].attachments.len(), 1);
+        assert!(state.sessions[&key].error.is_some());
+    });
+    assert_eq!(count(dir.path(), "prompt"), 2);
     close(&owner, cx).await;
 }

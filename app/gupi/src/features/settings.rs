@@ -1,3 +1,4 @@
+mod global_keys;
 mod keys;
 mod layout;
 mod onboarding;
@@ -48,6 +49,7 @@ pub(crate) struct SettingsView {
     applied_pi: Entity<PiProbeController>,
     resources: Entity<resources::ResourcesView>,
     keys: Entity<keys::KeysView>,
+    global_keys: Entity<global_keys::GlobalKeys>,
     step: usize,
     transition: Option<onboarding::PageTransition>,
     transition_serial: u64,
@@ -68,6 +70,7 @@ impl SettingsView {
         let resources = cx.new(|cx| {
             resources::ResourcesView::new(controller.clone(), applied_pi.clone(), window, cx)
         });
+        let global_keys = cx.new(|_| global_keys::GlobalKeys::new(controller.clone()));
         let keys = cx.new(|cx| keys::KeysView::new(controller.clone(), window, cx));
         let config_path = cx.new(|cx| {
             InputState::new(window, cx).default_value(
@@ -173,6 +176,8 @@ impl SettingsView {
                 });
                 cx.notify();
             });
+        let temporary_sub =
+            cx.observe_global::<crate::app::temporary::Temporary>(|_, cx| cx.notify());
         let pi_sub = cx.observe(&draft_pi, |_, _, cx| cx.notify());
         let form_sub = cx.observe_in(&form, window, |this, _, window, cx| {
             this.refresh_language(window, cx)
@@ -192,6 +197,7 @@ impl SettingsView {
             _binding: binding,
             _pi_binding: pi_binding,
             _subscriptions: vec![
+                temporary_sub,
                 resources_sub,
                 resource_controller_sub,
                 keys_sub,
@@ -209,6 +215,7 @@ impl SettingsView {
             applied_pi,
             resources,
             keys,
+            global_keys,
             step: 0,
             transition: None,
             transition_serial: 0,
@@ -304,6 +311,9 @@ impl SettingsView {
             .update(cx, |owner, _| owner.stop());
     }
     pub fn activate(&self, cx: &mut Context<Self>) {
+        let command = self.controller.read(cx).preferences(cx).pi_command;
+        self.applied_pi
+            .update(cx, |pi, cx| pi.request(command, true, cx));
         self.resources
             .read(cx)
             .controller
@@ -434,4 +444,24 @@ impl SettingsView {
             view.w_full().into_any_element()
         }
     }
+}
+
+fn dialog_buttons(label: &str, busy: bool, confirm_disabled: bool, cx: &App) -> impl IntoElement {
+    use gpui_kit::component::dialog::{Cancel, Confirm, DialogFooter};
+    DialogFooter::new()
+        .child(
+            Button::new("cancel")
+                .label(t(cx, "action-cancel"))
+                .disabled(busy)
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(Cancel), cx)),
+        )
+        .child(
+            Button::new("confirm")
+                .primary()
+                .label(t(cx, label))
+                .disabled(busy || confirm_disabled)
+                .on_click(|_, window, cx| {
+                    window.dispatch_action(Box::new(Confirm { secondary: false }), cx)
+                }),
+        )
 }

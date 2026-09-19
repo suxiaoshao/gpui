@@ -21,3 +21,11 @@ pub(crate) fn log_dir() -> io::Result<PathBuf> {
     let fallback = dirs_next::data_local_dir().map(|p| p.join("gupi/logs"));
     directory("GUPI_LOG_DIR", fallback)
 }
+
+pub(crate) fn temporary_dir() -> io::Result<PathBuf> {
+    directory(
+        "GUPI_DATA_DIR",
+        dirs_next::data_local_dir().map(|p| p.join("gupi")),
+    )
+    .map(|root| root.join("temporary-workspaces"))
+}

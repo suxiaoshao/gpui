@@ -5,7 +5,6 @@ use crate::{
 };
 use gpui_kit::component::{
     Selectable, Sizable, WindowExt,
-    dialog::DialogButtonProps,
     input::Escape,
     setting::{RenderOptions, SettingField, SettingGroup, SettingItem},
 };
@@ -16,9 +15,13 @@ pub(super) enum Group {
     Application,
     Conversation,
     Files,
+    Temporary,
 }
 impl Group {
     pub fn of(kind: Kind) -> Self {
+        if kind.temporary_only() {
+            return Self::Temporary;
+        }
         match kind {
             Kind::Palette
             | Kind::QuickOpen
@@ -37,6 +40,7 @@ impl Group {
             Self::Application => "settings-key-group-app",
             Self::Conversation => "settings-key-group-conversation",
             Self::Files => "settings-key-group-files",
+            Self::Temporary => "temporary-title",
         }
     }
 }
@@ -50,15 +54,20 @@ pub(super) struct KeysView {
     _subscriptions: Vec<Subscription>,
 }
 impl KeysView {
-    pub fn actions(owner: &Entity<Self>) -> SettingGroup {
+    pub fn actions(owner: &Entity<Self>, global: &Entity<global_keys::GlobalKeys>) -> SettingGroup {
+        let global = global.clone();
         let owner = owner.clone();
         SettingGroup::new().border_0().p_0().item(
-            SettingItem::render(move |_, _, cx| Self::render_actions(&owner, cx))
-                .keywords(["快捷键 keys keyboard shortcut 恢复默认 reset defaults"]),
+            SettingItem::render(move |_, _, cx| Self::render_actions(&owner, &global, cx))
+                .keywords(["快捷键 keys keyboard shortcut 恢复默认 reset defaults global template task 全局快捷任务 模板"]),
         )
     }
 
-    fn render_actions(owner: &Entity<Self>, cx: &App) -> AnyElement {
+    fn render_actions(
+        owner: &Entity<Self>,
+        global: &Entity<global_keys::GlobalKeys>,
+        cx: &App,
+    ) -> AnyElement {
         let disabled = owner.read(cx).controller.read(cx).busy(cx)
             || owner
                 .read(cx)
@@ -66,11 +75,20 @@ impl KeysView {
                 .read(cx)
                 .preferences(cx)
                 .keybindings
-                .is_empty();
+                .is_empty()
+                && !owner
+                    .read(cx)
+                    .controller
+                    .read(cx)
+                    .preferences(cx)
+                    .shortcuts
+                    .has_bindings();
         let owner = owner.downgrade();
-        h_flex()
+        let actions = h_flex()
             .w_full()
             .justify_end()
+            .gap_2()
+            .child(global_keys::GlobalKeys::add_button(global, cx))
             .child(
                 Button::new("key-reset-all")
                     .small()
@@ -84,12 +102,7 @@ impl KeysView {
                             dialog
                                 .title(t(cx, "settings-key-reset-all"))
                                 .child(t(cx, "settings-key-reset-all-confirm"))
-                                .button_props(
-                                    DialogButtonProps::default()
-                                        .show_cancel(true)
-                                        .ok_text(t(cx, "settings-key-reset-all"))
-                                        .cancel_text(t(cx, "action-cancel")),
-                                )
+                                .footer(dialog_buttons("settings-key-reset-all", false, false, cx))
                                 .on_ok(move |_, window, cx| {
                                     owner
                                         .update(cx, |this, cx| this.reset_all(window, cx))
@@ -97,6 +110,14 @@ impl KeysView {
                                 })
                         });
                     }),
+            );
+        v_flex()
+            .gap_2()
+            .child(actions)
+            .children(
+                cx.try_global::<crate::app::shortcuts::ShortcutsRuntime>()
+                    .and_then(|rt| rt.error.clone())
+                    .map(|error| div().text_color(cx.theme().danger).child(error)),
             )
             .into_any_element()
     }
@@ -354,7 +375,7 @@ impl KeysView {
                         .tooltip(t(cx, "settings-key-clear"))
                         .accessibility_label(t(cx, "settings-key-clear"))
                         .disabled(busy)
-                        .debug_selector(move || format!("key-clear-{index}"))
+                        .debug_selector(move || format!("key-clear-{}", command.id))
                         .on_click(
                             cx.listener(move |this, _, window, cx| this.clear(index, window, cx)),
                         ),
@@ -376,7 +397,7 @@ impl KeysView {
                     ))
                     .accessibility_label(t(cx, "settings-key-record"))
                     .disabled(busy)
-                    .debug_selector(move || format!("key-record-{index}"))
+                    .debug_selector(move || format!("key-record-{}", command.id))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.start_recording(index, window, cx)
                     })),
@@ -387,12 +408,12 @@ impl KeysView {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .debug_selector(move || format!("key-binding-{index}"))
+                    .debug_selector(move || format!("key-binding-{}", command.id))
                     .child(
                         Input::new(input)
                             .with_size(options.size())
                             .disabled(busy)
-                            .readonly(recording)
+                            .readonly(true)
                             .suffix(suffix),
                     ),
             )
@@ -405,7 +426,7 @@ impl KeysView {
                         .tooltip(t(cx, "settings-key-reset"))
                         .accessibility_label(t(cx, "settings-key-reset"))
                         .disabled(busy || recording)
-                        .debug_selector(move || format!("key-reset-{index}"))
+                        .debug_selector(move || format!("key-reset-{}", command.id))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.save(index, None, window, cx);
                         })),
@@ -420,7 +441,7 @@ impl KeysView {
                         .tooltip(t(cx, "action-confirm"))
                         .accessibility_label(t(cx, "action-confirm"))
                         .disabled(busy || recording)
-                        .debug_selector(move || format!("key-confirm-{index}"))
+                        .debug_selector(move || format!("key-confirm-{}", command.id))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.confirm(index, window, cx);
                         })),
@@ -433,7 +454,7 @@ impl KeysView {
                         .tooltip(t(cx, "settings-key-cancel"))
                         .accessibility_label(t(cx, "settings-key-cancel"))
                         .disabled(busy)
-                        .debug_selector(move || format!("key-cancel-{index}"))
+                        .debug_selector(move || format!("key-cancel-{}", command.id))
                         .on_click(cx.listener(|this, _, window, cx| this.cancel(window, cx))),
                 )
             });
@@ -473,7 +494,8 @@ impl KeysView {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, AppLanguage, ConfigController, KeysView};
+    use super::{AppConfig, AppLanguage, COMMANDS, ConfigController, KeysView};
+    use crate::features::settings::global_keys::GlobalKeys;
     use crate::state::config::{ConfigContents, ConfigData};
     use gpui_form::Form;
     use gpui_kit::component::{
@@ -491,7 +513,15 @@ mod tests {
 
     gpui_kit::actions!(keys_test, [UnrelatedAction]);
 
+    fn command_index(id: &str) -> usize {
+        COMMANDS
+            .iter()
+            .position(|command| command.id == id)
+            .unwrap()
+    }
+
     struct Fixture {
+        global: Entity<GlobalKeys>,
         keys: Entity<KeysView>,
         _form: Entity<Form<AppConfig>>,
         dispatched: Rc<Cell<bool>>,
@@ -508,12 +538,20 @@ mod tests {
                         .with_group_variant(GroupBoxVariant::Normal)
                         .page(
                             SettingPage::new("快捷键")
-                                .group(KeysView::actions(&keys))
+                                .group(KeysView::actions(&keys, &self.global))
                                 .group(
                                     SettingGroup::new()
                                         .title("应用")
-                                        .item(KeysView::item(&self.keys, 0, cx))
-                                        .item(KeysView::item(&self.keys, 1, cx)),
+                                        .item(KeysView::item(
+                                            &self.keys,
+                                            command_index("palette"),
+                                            cx,
+                                        ))
+                                        .item(KeysView::item(
+                                            &self.keys,
+                                            command_index("quick_open"),
+                                            cx,
+                                        )),
                                 ),
                         ),
                 )
@@ -545,9 +583,11 @@ mod tests {
                     backup: None,
                 })));
             });
+            let global = cx.new(|_| GlobalKeys::new(controller.clone()));
             let owner = cx.new(|cx| KeysView::new(controller, window, cx));
             keys = Some(owner.clone());
             let fixture = cx.new(|_| Fixture {
+                global,
                 keys: owner,
                 _form: form,
                 dispatched: flag,
@@ -569,18 +609,11 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 
-    fn edit(cx: &mut VisualTestContext, keys: &Entity<KeysView>, index: usize, value: &str) {
+    fn record(cx: &mut VisualTestContext, keys: &Entity<KeysView>, index: usize, value: &str) {
         cx.update(|window, cx| {
-            keys.read(cx).inputs[index]
-                .focus_handle(cx)
-                .focus(window, cx)
+            keys.update(cx, |keys, cx| keys.start_recording(index, window, cx));
         });
-        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
-            "cmd-a"
-        } else {
-            "ctrl-a"
-        });
-        cx.simulate_input(value);
+        cx.simulate_keystrokes(value);
     }
 
     #[gpui_kit::test]
@@ -596,11 +629,16 @@ mod tests {
         cx.update(|window, cx| assert!(!window.has_active_dialog(cx)));
         cx.update(|window, cx| {
             keys.update(cx, |this, cx| {
-                assert!(this.save(0, Some("ctrl-alt-7".into()), window, cx));
-                assert!(this.save(1, Some(String::new()), window, cx));
+                assert!(this.save(
+                    command_index("palette"),
+                    Some("ctrl-alt-7".into()),
+                    window,
+                    cx
+                ));
+                assert!(this.save(command_index("quick_open"), Some(String::new()), window, cx));
             });
         });
-        edit(cx, &keys, 0, "ctrl-alt-8");
+        record(cx, &keys, command_index("palette"), "ctrl-alt-8");
         click(cx, "key-reset-all");
         cx.update(|window, cx| {
             assert!(window.has_active_dialog(cx));
@@ -626,7 +664,12 @@ mod tests {
                     .len(),
                 2
             );
-            assert_eq!(keys.read(cx).inputs[0].read(cx).value(), "ctrl-alt-8");
+            assert_eq!(
+                keys.read(cx).inputs[command_index("palette")]
+                    .read(cx)
+                    .value(),
+                "ctrl-alt-8"
+            );
         });
         click(cx, "key-reset-all");
         cx.simulate_keystrokes("enter");
@@ -652,7 +695,11 @@ mod tests {
     #[gpui_kit::test]
     fn clearing_requires_confirmation_and_cancel_restores_binding(cx: &mut TestAppContext) {
         let (keys, _, cx) = setup(cx);
-        cx.update(|window, cx| keys.read(cx).inputs[0].focus_handle(cx).focus(window, cx));
+        cx.update(|window, cx| {
+            keys.read(cx).inputs[command_index("palette")]
+                .focus_handle(cx)
+                .focus(window, cx)
+        });
         cx.simulate_keystrokes("enter");
         cx.update(|_, cx| {
             assert!(
@@ -664,11 +711,16 @@ mod tests {
                     .is_empty()
             );
         });
-        click(cx, "key-clear-0");
+        click(cx, "key-clear-palette");
         cx.update(|window, cx| {
             assert!(!window.has_active_dialog(cx));
             let keys = keys.read(cx);
-            assert!(keys.inputs[0].read(cx).value().is_empty());
+            assert!(
+                keys.inputs[command_index("palette")]
+                    .read(cx)
+                    .value()
+                    .is_empty()
+            );
             assert!(
                 keys.controller
                     .read(cx)
@@ -677,15 +729,17 @@ mod tests {
                     .is_empty()
             );
         });
-        click(cx, "key-cancel-0");
+        click(cx, "key-cancel-palette");
         cx.update(|_, cx| {
             assert_eq!(
-                keys.read(cx).inputs[0].read(cx).value(),
+                keys.read(cx).inputs[command_index("palette")]
+                    .read(cx)
+                    .value(),
                 "secondary-shift-p"
             );
         });
-        click(cx, "key-clear-0");
-        click(cx, "key-confirm-0");
+        click(cx, "key-clear-palette");
+        click(cx, "key-confirm-palette");
         cx.update(|_, cx| {
             assert_eq!(
                 keys.read(cx)
@@ -698,7 +752,7 @@ mod tests {
                 Some("")
             );
         });
-        click(cx, "key-reset-0");
+        click(cx, "key-reset-palette");
         cx.update(|_, cx| {
             assert!(
                 keys.read(cx)
@@ -709,12 +763,14 @@ mod tests {
                     .is_empty()
             );
             assert_eq!(
-                keys.read(cx).inputs[0].read(cx).value(),
+                keys.read(cx).inputs[command_index("palette")]
+                    .read(cx)
+                    .value(),
                 "secondary-shift-p"
             );
         });
-        edit(cx, &keys, 0, "secondary-p");
-        click(cx, "key-confirm-0");
+        record(cx, &keys, command_index("palette"), "secondary-p");
+        click(cx, "key-confirm-palette");
         cx.update(|_, cx| {
             assert!(
                 keys.read(cx).error.is_some(),
@@ -729,9 +785,9 @@ mod tests {
                     .is_empty()
             );
         });
-        click(cx, "key-cancel-0");
-        edit(cx, &keys, 0, "ctrl-alt-7 ctrl-alt-8");
-        click(cx, "key-confirm-0");
+        click(cx, "key-cancel-palette");
+        record(cx, &keys, command_index("palette"), "ctrl-alt-7");
+        click(cx, "key-confirm-palette");
         cx.update(|_, cx| {
             assert_eq!(
                 keys.read(cx)
@@ -741,15 +797,55 @@ mod tests {
                     .keybindings
                     .get("palette")
                     .map(String::as_str),
-                Some("ctrl-alt-7 ctrl-alt-8")
+                Some("ctrl-alt-7")
             );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn shortcut_field_rejects_typing_pasting_and_a_second_stroke(cx: &mut TestAppContext) {
+        let (keys, _, cx) = setup(cx);
+        let index = command_index("palette");
+        cx.update(|window, cx| {
+            keys.read(cx).inputs[index]
+                .focus_handle(cx)
+                .focus(window, cx)
+        });
+        cx.simulate_input("ctrl-alt-x y");
+        cx.update(|_, cx| {
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("ctrl-alt-x y".into()))
+        });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-a cmd-v backspace"
+        } else {
+            "ctrl-a ctrl-v backspace"
+        });
+        cx.update(|_, cx| {
+            assert_eq!(
+                keys.read(cx).inputs[index].read(cx).value(),
+                "secondary-shift-p"
+            )
+        });
+        record(cx, &keys, index, "ctrl-alt-7");
+        cx.simulate_keystrokes("y");
+        cx.update(|_, cx| assert_eq!(keys.read(cx).inputs[index].read(cx).value(), "ctrl-alt-7"));
+        click(cx, "key-confirm-palette");
+        cx.update(|_, cx| {
+            assert_eq!(
+                keys.read(cx)
+                    .controller
+                    .read(cx)
+                    .preferences(cx)
+                    .keybindings["palette"],
+                "ctrl-alt-7"
+            )
         });
     }
 
     #[gpui_kit::test]
     fn inline_recording_intercepts_keys_and_search_filters_each_item(cx: &mut TestAppContext) {
         let (keys, dispatched, cx) = setup(cx);
-        click(cx, "key-record-0");
+        click(cx, "key-record-palette");
         cx.simulate_keystrokes("ctrl-alt-9");
         assert!(
             !dispatched.get(),
@@ -759,7 +855,10 @@ mod tests {
             assert!(!window.has_active_dialog(cx));
             let keys = keys.read(cx);
             assert!(keys.capture.is_none());
-            assert_eq!(keys.inputs[0].read(cx).value(), "ctrl-alt-9");
+            assert_eq!(
+                keys.inputs[command_index("palette")].read(cx).value(),
+                "ctrl-alt-9"
+            );
             assert!(
                 keys.controller
                     .read(cx)
@@ -768,22 +867,33 @@ mod tests {
                     .is_empty()
             );
         });
-        click(cx, "key-record-0");
+        click(cx, "key-record-palette");
         cx.simulate_keystrokes("escape");
         cx.update(|_, cx| {
             assert!(keys.read(cx).capture.is_none());
-            assert_eq!(keys.read(cx).inputs[0].read(cx).value(), "ctrl-alt-9");
+            assert_eq!(
+                keys.read(cx).inputs[command_index("palette")]
+                    .read(cx)
+                    .value(),
+                "ctrl-alt-9"
+            );
         });
         cx.simulate_keystrokes("escape");
         cx.update(|_, cx| {
             assert_eq!(
-                keys.read(cx).inputs[0].read(cx).value(),
+                keys.read(cx).inputs[command_index("palette")]
+                    .read(cx)
+                    .value(),
                 "secondary-shift-p"
             );
         });
-        click(cx, "key-record-0");
+        click(cx, "key-record-palette");
         // Moving focus to another field must release the recorder before the next keystroke.
-        cx.update(|window, cx| keys.read(cx).inputs[1].focus_handle(cx).focus(window, cx));
+        cx.update(|window, cx| {
+            keys.read(cx).inputs[command_index("quick_open")]
+                .focus_handle(cx)
+                .focus(window, cx)
+        });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
         cx.update(|window, cx| {
@@ -792,14 +902,18 @@ mod tests {
                 keys.capture.is_none(),
                 "editing={:?}, first={}, second={}",
                 keys.editing,
-                keys.inputs[0].focus_handle(cx).is_focused(window),
-                keys.inputs[1].focus_handle(cx).is_focused(window)
+                keys.inputs[command_index("palette")]
+                    .focus_handle(cx)
+                    .is_focused(window),
+                keys.inputs[command_index("quick_open")]
+                    .focus_handle(cx)
+                    .is_focused(window)
             );
         });
         cx.simulate_click(point(px(100.), px(24.)), Modifiers::default());
         cx.simulate_input("palette");
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(cx.debug_bounds("key-binding-0").is_some());
-        assert!(cx.debug_bounds("key-binding-1").is_none());
+        assert!(cx.debug_bounds("key-binding-palette").is_some());
+        assert!(cx.debug_bounds("key-binding-quick_open").is_none());
     }
 }

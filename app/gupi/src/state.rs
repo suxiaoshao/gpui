@@ -6,3 +6,5 @@ pub(crate) mod layout;
 pub(crate) mod pi;
 pub(crate) mod resources;
 pub(crate) mod theme;
+
+pub(crate) mod shortcuts;

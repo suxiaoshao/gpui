@@ -1,8 +1,8 @@
 use super::actions::{Kind, Run};
 use super::*;
+use crate::features::composer::{self, Composer};
 use crate::state::conversation::content::BodyState;
 use gpui_kit::component::input::Textarea;
-use gpui_kit::prelude::FluentBuilder;
 use pi_rpc::protocol::{UiMethod, UiReply};
 mod metrics;
 impl HomeView {
@@ -72,6 +72,7 @@ impl HomeView {
                     )
                     .child(
                         Button::new("retry-session")
+                            .disabled(self.state.read(cx).temporary)
                             .small()
                             .label(t(cx, "conversation-reconnect"))
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -122,15 +123,7 @@ impl HomeView {
         for widget in session.widgets.values().filter(|w| !w.below) {
             shell = shell.child(div().text_sm().child(widget.lines.join("\n")));
         }
-        let mut editor = v_flex()
-            .w_full()
-            .min_w_0()
-            .pb_2()
-            .rounded_2xl()
-            .shadow_sm()
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background);
+        let mut editor = composer::surface(cx);
         if let Some(pending) = session.pending_ui.front() {
             editor = editor
                 .p_3()
@@ -243,23 +236,33 @@ impl HomeView {
                         })),
                 );
         } else {
-            editor = editor.child(
-                div().relative().key_context("GupiComposer").child(
+            let input = div()
+                .relative()
+                .key_context("GupiComposer")
+                .capture_action(cx.listener(Self::paste_attachments))
+                .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                    this.attach_paths(paths.paths().to_vec(), cx)
+                }))
+                .child(
                     Textarea::new(&self.input)
                         .appearance(false)
                         .disabled(preview)
                         .readonly(!session.can_edit_draft())
                         .aria_label(t(cx, "conversation-input")),
-                ),
-            );
+                );
             let Some(view) = self.views.get(&key) else {
                 return div().into_any_element();
             };
-            let choices = div()
-                .min_w_0()
-                .max_w(px(340.))
-                .child(view.model_picker.clone());
-            let mut actions = h_flex().flex_none().items_center().gap_2();
+            let mut actions = h_flex().flex_none().items_center().gap_2().child(
+                Button::new("attach-files")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Plus)
+                    .tooltip(t(cx, "attachment-add"))
+                    .accessibility_label(t(cx, "attachment-add"))
+                    .disabled(!session.can_edit_draft() || session.attachments_read.is_some())
+                    .on_click(cx.listener(|this, _, _, cx| this.choose_attachments(cx))),
+            );
             if session.stats.data().is_some()
                 || session.stats.running()
                 || session.stats.error().is_some()
@@ -307,7 +310,8 @@ impl HomeView {
                         .loading(session.submitting())
                         .disabled(
                             preview
-                                || session.draft.trim().is_empty()
+                                || (session.draft.trim().is_empty()
+                                    && session.attachments.is_empty())
                                 || !self.state.read(cx).can_submit(&key, cx),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -318,40 +322,19 @@ impl HomeView {
                         })),
                 );
             }
-            editor = editor.child(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .items_center()
-                    .flex_wrap()
-                    .gap_2()
-                    .px_2()
-                    .pt_1()
-                    .when(session.stats.data().is_some(), |row| {
-                        row.child(div().flex_none().child(metrics::tokens(session, cx)))
-                    })
-                    .when(
-                        session.stats.running() || session.stats.error().is_some(),
-                        |row| {
-                            row.child(metrics::status(
-                                session,
-                                self.state.clone(),
-                                key.clone(),
-                                cx,
-                            ))
-                        },
-                    )
-                    .child(
-                        h_flex()
-                            .flex_1()
-                            .min_w(px(300.))
-                            .justify_end()
-                            .items_center()
-                            .gap_2()
-                            .child(choices)
-                            .child(actions),
-                    ),
-            );
+            let mut composer = Composer::new(input, view.model_picker.clone()).actions(actions);
+            if session.stats.data().is_some() {
+                composer = composer.leading(div().flex_none().child(metrics::tokens(session, cx)));
+            }
+            if session.stats.running() || session.stats.error().is_some() {
+                composer = composer.leading(metrics::status(
+                    session,
+                    self.state.clone(),
+                    key.clone(),
+                    cx,
+                ));
+            }
+            editor = composer.build(cx);
             if session.pending_count > 0 {
                 editor = editor.child(
                     div()
@@ -362,8 +345,14 @@ impl HomeView {
                 );
             }
         }
-        let mut composer = v_flex().w_full().min_w_0();
-        if session.info.path.as_os_str().is_empty() && session.pending_ui.is_empty() {
+        let mut composer = v_flex()
+            .w_full()
+            .min_w_0()
+            .child(self.render_attachments(cx));
+        if !self.state.read(cx).temporary
+            && session.info.path.as_os_str().is_empty()
+            && session.pending_ui.is_empty()
+        {
             let name = project_name(&session.info.cwd);
             let project_width = label_width(&name, window, cx) + px(40.);
             // Electron uses a 28px project control and 5px vertical inset.

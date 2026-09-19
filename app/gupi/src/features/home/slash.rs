@@ -44,6 +44,12 @@ impl HomeView {
         state.can_submit(key, cx) && preview.is_none_or(|id| s.history().on_current_path(id))
     }
     pub(crate) fn command_label(&self, kind: actions::Kind, cx: &App) -> String {
+        if kind == actions::Kind::Stop
+            && self.state.read(cx).temporary
+            && self.state.read(cx).current().is_none_or(|s| !s.busy())
+        {
+            return t(cx, "temporary-hide");
+        }
         palette::label(kind, self.show_sidebar, self.show_history, cx)
     }
     pub(crate) fn commands_closed(&mut self, from_composer: bool, cx: &mut Context<Self>) {
@@ -71,12 +77,9 @@ impl HomeView {
             panel.update(cx, |panel, cx| panel.focus_input(window, cx));
             return;
         }
+        self.close_session_search(window, cx);
         if window.has_active_dialog(cx) {
-            if self.palette.take().is_some() {
-                window.close_dialog(cx);
-            } else {
-                return;
-            }
+            return;
         }
         self.command_panel = Some(CommandPalette::open(
             Some((cx.weak_entity(), self.state.clone())),
