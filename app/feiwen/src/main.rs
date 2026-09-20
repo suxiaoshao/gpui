@@ -92,7 +92,7 @@ fn main() -> FeiwenResult<()> {
 
     let span = tracing::info_span!("init");
     let _enter = span.enter();
-    let app = gpui_kit::application().with_assets(foundation::Assets::default());
+    let app = gpui_kit::application().with_assets(foundation::Assets);
     event!(Level::INFO, "app created");
 
     app.run(|cx: &mut App| {

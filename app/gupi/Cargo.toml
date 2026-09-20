@@ -17,7 +17,7 @@ category = "DeveloperTool"
 
 [dependencies]
 # UI and workspace services.
-app-assets.workspace = true
+gpui-lucide.workspace = true
 app-theme = { workspace = true, features = ["system-accent"] }
 gpui-form.workspace = true
 gpui-kit = { workspace = true, features = ["tree-sitter-languages"] }
@@ -40,23 +40,23 @@ tokio = { version = "1.53.1", features = [
 ] }
 
 # Configuration, session data and local resources.
-base64 = "0.22.1"
+base64 = "0.23.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 dirs-next = "2.0.0"
 glob = "0.3.4"
 globset = "0.4.20"
 ignore = "0.4.33"
 markdown = "1.0.0"
-serde = { version = "1.0.228", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 serde_yaml_ng = "0.10.0"
-sonic-rs = "0.5.8"
+sonic-rs = "0.5.10"
 tempfile = "3.27.0"
 time = { version = "0.3.55", features = ["parsing", "formatting", "local-offset"] }
-toml = "1.1.5"
-trash = "5.2.8"
+toml = "1.1.6"
+trash = "5.2.9"
 url = "2.5.8"
-uuid = { version = "1.26.0", features = ["v4"] }
+uuid = { version = "1.26.1", features = ["v4"] }
 
 # Localization and diagnostics.
 fluent-bundle = "0.16.0"

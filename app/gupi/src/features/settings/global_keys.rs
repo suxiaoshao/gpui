@@ -129,7 +129,7 @@ impl GlobalKeys {
             Button::new(format!("delete-task-{id}"))
                 .ghost()
                 .small()
-                .icon(IconName::Trash2)
+                .icon(IconName::Trash)
                 .tooltip(t(cx, "shortcut-delete"))
                 .accessibility_label(t(cx, "shortcut-delete"))
                 .disabled(busy)
@@ -299,43 +299,42 @@ impl Render for BindingInput {
                         cx.notify();
                     })),
             );
-        h_flex()
-            .w(px(360.))
-            .gap_1()
-            .child(
-                div().flex_1().child(
-                    Input::new(&self.input)
-                        .readonly(true)
-                        .disabled(busy)
-                        .suffix(suffix),
-                ),
+        let actions = suffix.when(dirty || self.capture.is_some(), |row| {
+            row.child(
+                Button::new("confirm")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Check)
+                    .tooltip(t(cx, "action-confirm"))
+                    .accessibility_label(t(cx, "action-confirm"))
+                    .disabled(busy || self.capture.is_some())
+                    .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
             )
-            .when(dirty || self.capture.is_some(), |row| {
-                row.child(
-                    Button::new("confirm")
-                        .ghost()
-                        .small()
-                        .icon(IconName::Check)
-                        .tooltip(t(cx, "action-confirm"))
-                        .accessibility_label(t(cx, "action-confirm"))
-                        .disabled(busy || self.capture.is_some())
-                        .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
-                )
-                .child(
-                    Button::new("cancel")
-                        .ghost()
-                        .small()
-                        .icon(IconName::X)
-                        .tooltip(t(cx, "action-cancel"))
-                        .accessibility_label(t(cx, "action-cancel"))
-                        .disabled(busy)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.capture = None;
-                            this.input
-                                .update(cx, |s, cx| s.set_value(this.saved.clone(), window, cx));
-                            cx.notify();
-                        })),
-                )
-            })
+            .child(
+                Button::new("cancel")
+                    .ghost()
+                    .small()
+                    .icon(IconName::X)
+                    .tooltip(t(cx, "action-cancel"))
+                    .accessibility_label(t(cx, "action-cancel"))
+                    .disabled(busy)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.capture = None;
+                        this.input
+                            .update(cx, |s, cx| s.set_value(this.saved.clone(), window, cx));
+                        cx.notify();
+                    })),
+            )
+        });
+        InputGroup::new("binding-input")
+            .w(px(360.))
+            .readonly(true)
+            .disabled(busy)
+            .input(Input::new(&self.input))
+            .addon(
+                InputGroupAddon::new("actions")
+                    .align(InputGroupAddonAlignment::InlineEnd)
+                    .child(actions),
+            )
     }
 }

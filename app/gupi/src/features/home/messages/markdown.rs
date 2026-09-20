@@ -15,6 +15,7 @@ pub(super) struct Markdown {
     text: String,
     scroller: WeakEntity<MessageScrollerState>,
     embedded: bool,
+    stream_fade: bool,
 }
 
 impl Markdown {
@@ -24,7 +25,13 @@ impl Markdown {
             text,
             scroller,
             embedded: false,
+            stream_fade: false,
         }
+    }
+
+    pub fn stream_fade(mut self) -> Self {
+        self.stream_fade = true;
+        self
     }
 
     pub fn embedded(mut self) -> Self {
@@ -75,7 +82,9 @@ impl RenderOnce for Markdown {
             MarkdownState::new(self.text.clone(), self.scroller, cx)
         });
         state.update(cx, |state, cx| state.sync(self.text, cx));
-        let view = TextView::new(&state.read(cx).view).selectable(true);
+        let view = TextView::new(&state.read(cx).view)
+            .selectable(true)
+            .stream_fade(self.stream_fade);
         if self.embedded {
             view.style(
                 TextViewStyle::default()

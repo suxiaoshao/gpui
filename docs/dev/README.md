@@ -1,7 +1,12 @@
 # Workspace development plans
 
+## Workspace cleanup
+
+- [Jaco 退役与关联清理](jaco-retirement/README.md)：专用代码、旧图标子模块、CI、打包、依赖与文档的统一清理范围。
+
 ## Dependency upgrade plans
 
+- [2026-09：Workspace 依赖更新与官方 skill 接入](dependency-refresh-2026-09/README.md)：全项目依赖版本盘点、GPUI 配套升级、官方 skill 安装及旧资料镜像替换。
 - [Issue #215：GPUI Kit 与依赖升级](issue-215/README.md)：发布包替代 Git 来源、应用与共享 crate 迁移、skill/文档同步的实施计划。
 
 ## Discussion drafts

@@ -1,6 +1,6 @@
 # Gupi development plans
 
-**[总待处理文档：未完成项与能力边界](../../../../docs/dev/issue-217/follow-ups.md)**：跨阶段依赖阻塞、后续工作和验证边界的统一入口。
+**[总待处理文档：RPC/TUI 接入盘点、未完成项与能力边界](../../../../docs/dev/issue-217/follow-ups.md)**：跨阶段依赖阻塞、后续工作和验证边界的统一入口。
 
 - [临时窗口、全局快捷键与托盘开发计划](issue-221/README.md)：多临时会话、图片/文件输入、模板快捷任务、手动清理及平台接入。
 - [临时窗口 Jaco 对照与对齐方案](issue-221/temporary-window-comparison.md)：窗口配置、跨屏显隐、焦点与布局对照，以及窗口回收和会话保留的边界。

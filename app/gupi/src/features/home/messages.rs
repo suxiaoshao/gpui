@@ -524,11 +524,12 @@ impl HomeView {
                     let text = content.answer_text.clone();
                     result = result.child(
                         Message::new()
-                            .content(MessageContent::new().child(self.text_view(
-                                key,
-                                format!("text-{}", m.id),
-                                text,
-                            )))
+                            .content(
+                                MessageContent::new().child(
+                                    self.text_view(key, format!("text-{}", m.id), text)
+                                        .stream_fade(),
+                                ),
+                            )
                             .footer(MessageFooter::new().content_inset(false).child(
                                 actions::MessageActions {
                                     id: format!("{key}-{}", m.id),

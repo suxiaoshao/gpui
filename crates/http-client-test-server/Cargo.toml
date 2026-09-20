@@ -6,7 +6,7 @@ license = "MIT"
 publish = false
 
 [dependencies]
-async-compression = { version = "0.4.44", default-features = false, features = ["tokio", "brotli", "gzip", "zlib", "zstd"] }
+async-compression = { version = "0.4.48", default-features = false, features = ["tokio", "brotli", "gzip", "zlib", "zstd"] }
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 bytes = "1.12.1"
 futures-util = "0.3.34"
@@ -20,4 +20,4 @@ tokio = { version = "1.53.1", features = ["io-util", "macros", "net", "rt-multi-
 tokio-util = { version = "0.7.19", features = ["rt"] }
 
 [dev-dependencies]
-reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "stream"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream"] }

@@ -82,7 +82,7 @@ impl SettingsView {
                             .child(
                                 Button::new("temporary-clean-released")
                                     .small()
-                                    .icon(IconName::Trash2)
+                                    .icon(IconName::Trash)
                                     .label(t(cx, "temporary-clean"))
                                     .loading(busy)
                                     .disabled(busy || owner.is_none())

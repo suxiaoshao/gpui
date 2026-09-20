@@ -1,6 +1,5 @@
 use super::*;
 use crate::foundation::attachments::{self, Attachment, Content};
-use gpui_kit::component::input::Paste;
 use gpui_kit::prelude::FluentBuilder;
 
 impl HomeView {
@@ -44,23 +43,24 @@ impl HomeView {
             cx,
         );
     }
-    pub(super) fn paste_attachments(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(item) = cx.read_from_clipboard() else {
-            return;
-        };
+    pub(super) fn paste_attachments(
+        &mut self,
+        item: &ClipboardItem,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if let Some(paths) = item.entries().iter().find_map(|entry| match entry {
             ClipboardEntry::ExternalPaths(paths) => Some(paths.paths().to_vec()),
             _ => None,
         }) {
-            cx.stop_propagation();
             self.attach_paths(paths, cx);
+            true
         } else if let Some(bytes) = item.entries().iter().find_map(|entry| match entry {
             ClipboardEntry::Image(image) => Some(image.bytes().to_vec()),
             _ => None,
         }) {
-            cx.stop_propagation();
             let Some(key) = self.attachment_target(cx) else {
-                return;
+                return true;
             };
             let name = t(cx, "attachment-clipboard");
             self.load_attachments(
@@ -71,6 +71,9 @@ impl HomeView {
                 },
                 cx,
             );
+            true
+        } else {
+            false
         }
     }
     fn load_attachments(

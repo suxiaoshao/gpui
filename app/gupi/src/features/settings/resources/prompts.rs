@@ -226,7 +226,7 @@ impl ResourcesView {
                     Button::new(id("delete"))
                         .ghost()
                         .small()
-                        .icon(IconName::Trash2)
+                        .icon(IconName::Trash)
                         .tooltip(t(cx, "settings-resource-delete"))
                         .accessibility_label(t(cx, "settings-resource-delete"))
                         .debug_selector(|| "template-delete".into())

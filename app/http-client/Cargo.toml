@@ -40,7 +40,7 @@ mime = "0.3.17"
 mime_guess = "2.0.5"
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 async-channel = "2.5.0"
-async-compression = { version = "0.4.44", default-features = false, features = [
+async-compression = { version = "0.4.48", default-features = false, features = [
   "tokio",
   "brotli",
   "gzip",
@@ -49,7 +49,7 @@ async-compression = { version = "0.4.44", default-features = false, features = [
 ] }
 bytes = "1.12.1"
 bytemuck = { version = "1.25.2", features = ["extern_crate_alloc"] }
-encoding_rs = "0.8.35"
+encoding_rs = "0.8.41"
 futures-util = "0.3.34"
 hayro = "0.7.1"
 image = { version = "0.25.10", default-features = false, features = [
@@ -70,7 +70,7 @@ rodio = { version = "=0.22.2", default-features = false, features = [
   "symphonia-vorbis",
   "symphonia-wav",
 ] }
-reqwest = { version = "0.13.4", default-features = false, features = [
+reqwest = { version = "0.13.5", default-features = false, features = [
   "rustls",
   "http2",
   "multipart",

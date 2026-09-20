@@ -236,20 +236,14 @@ impl HomeView {
                         })),
                 );
         } else {
-            let input = div()
-                .relative()
-                .key_context("GupiComposer")
-                .capture_action(cx.listener(Self::paste_attachments))
-                .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                    this.attach_paths(paths.paths().to_vec(), cx)
-                }))
-                .child(
-                    Textarea::new(&self.input)
-                        .appearance(false)
-                        .disabled(preview)
-                        .readonly(!session.can_edit_draft())
-                        .aria_label(t(cx, "conversation-input")),
-                );
+            let owner = cx.entity().downgrade();
+            let input = Textarea::new(&self.input)
+                .aria_label(t(cx, "conversation-input"))
+                .on_paste(move |item, window, cx| {
+                    owner
+                        .update(cx, |this, cx| this.paste_attachments(item, window, cx))
+                        .unwrap_or(false)
+                });
             let Some(view) = self.views.get(&key) else {
                 return div().into_any_element();
             };
@@ -322,7 +316,9 @@ impl HomeView {
                         })),
                 );
             }
-            let mut composer = Composer::new(input, view.model_picker.clone()).actions(actions);
+            let mut composer =
+                Composer::new("conversation-composer", input, view.model_picker.clone())
+                    .actions(actions);
             if session.stats.data().is_some() {
                 composer = composer.leading(div().flex_none().child(metrics::tokens(session, cx)));
             }
@@ -334,7 +330,17 @@ impl HomeView {
                     cx,
                 ));
             }
-            editor = composer.build(cx);
+            editor = div()
+                .relative()
+                .key_context("GupiComposer")
+                .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                    this.attach_paths(paths.paths().to_vec(), cx)
+                }))
+                .child(
+                    composer
+                        .build()
+                        .readonly(preview || !session.can_edit_draft()),
+                );
             if session.pending_count > 0 {
                 editor = editor.child(
                     div()

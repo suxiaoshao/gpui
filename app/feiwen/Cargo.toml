@@ -26,7 +26,7 @@ gpui-form.workspace = true
 gpui-form-gpui-component.workspace = true
 gpui-operation = { workspace = true, features = ["tracing"] }
 gpui-store.workspace = true
-app-assets.workspace = true
+gpui-lucide.workspace = true
 app-theme = { workspace = true, default-features = false, features = ["system-accent"] }
 fluent-bundle = "0.16.0"
 unic-langid = "0.9.6"
@@ -37,8 +37,8 @@ pinyin = "0.11.0"
 thiserror = "2.0.20"
 
 # http
-reqwest = {version = "0.13.4",features=["query"]}
-async-compat = "0.2.5"
+reqwest = {version = "0.13.5",features=["query"]}
+async-compat = "0.2.6"
 
 # html
 scraper = "0.27.0"

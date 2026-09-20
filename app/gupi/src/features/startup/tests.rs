@@ -36,7 +36,11 @@ fn configured_windows_and_sessions_do_not_wait_for_a_probe(cx: &mut TestAppConte
             })));
         });
         startup = Some(view.clone());
-        Root::new(view, window, cx)
+        // This tests screen selection and probe ownership, not Home rendering.
+        // Rendering Home would start real workspace I/O outside the deterministic
+        // scheduler and read the user's history during a unit test.
+        let host = cx.new(|_| ProbeTestHost);
+        Root::new(host, window, cx)
     });
     let startup = startup.unwrap();
     startup.update(visual, |view, cx| {
@@ -54,4 +58,15 @@ fn configured_windows_and_sessions_do_not_wait_for_a_probe(cx: &mut TestAppConte
         assert!(matches!(view.screen(cx), StartupScreen::Home(_)));
         view.applied_pi.update(cx, |pi, _| pi.stop());
     });
+}
+
+struct ProbeTestHost;
+impl gpui_kit::Render for ProbeTestHost {
+    fn render(
+        &mut self,
+        _: &mut gpui_kit::Window,
+        _: &mut gpui_kit::Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
+        gpui_kit::div()
+    }
 }
