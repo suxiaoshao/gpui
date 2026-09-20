@@ -554,7 +554,8 @@ impl Owner {
                 _ = self.close.changed() => break Some(Error::Closed),
                 _ = self.events.closed() => break Some(Error::Closed),
                 _ = sleep_until(self.deadline), if !ready => break Some(Error::StartupTimeout),
-                _ = async { sleep_until(drain_deadline.unwrap_or(self.deadline)).await }, if drain_deadline.is_some() && self.pending_event.is_none() => break Some(Error::Closed),
+                // A stalled event consumer must not prevent cleanup after child exit.
+                _ = async { sleep_until(drain_deadline.unwrap_or(self.deadline)).await }, if drain_deadline.is_some() => break Some(Error::Closed),
                 permit = self.events.reserve(), if self.pending_event.is_some() => {
                     match permit {
                         Ok(permit) => {

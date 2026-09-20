@@ -59,6 +59,11 @@ fn main() {
                     response(&id, &command, "null");
                     io::stdout().flush().unwrap();
                 }
+                "flood_exit" => {
+                    for index in 0..4 { println!("{{\"type\":\"delta\",\"index\":{index}}}"); }
+                    io::stdout().flush().unwrap();
+                    return;
+                }
                 "stderr" => { eprintln!("{}TAIL", "x".repeat(8192)); response(&id, &command, "null"); }
                 "exit" => return,
                 "mismatch" => response(&id, "abort", "null"),

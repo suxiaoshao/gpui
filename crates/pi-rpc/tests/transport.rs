@@ -301,6 +301,40 @@ async fn event_backpressure_preserves_order_and_connection() {
 }
 
 #[tokio::test]
+async fn process_exit_settles_requests_with_a_stalled_event_consumer() {
+    bounded(async {
+        let dir = tempfile::tempdir().unwrap();
+        let mut options = support::options(dir.path(), "");
+        options.limits.events = 2;
+        let (client, mut events) = Client::spawn(options).await.unwrap();
+        client.ready().await.unwrap();
+        let mut state = client.subscribe();
+
+        // Keep the consumer alive without reading or requesting an explicit close.
+        let result = client.prompt(Prompt::new("flood_exit")).await;
+        assert!(matches!(result, Err(Error::Closed)));
+        loop {
+            if let ConnectionState::Closed(report) = state.borrow_and_update().clone() {
+                assert!(report.status.is_some());
+                assert!(matches!(report.reason, Some(Error::Closed)));
+                break;
+            }
+            state.changed().await.unwrap();
+        }
+
+        // Events already enqueued remain readable after the connection closes.
+        for index in 0..2 {
+            let Some(Event::Agent { raw, .. }) = events.recv().await else {
+                panic!("lost buffered event")
+            };
+            assert_eq!(raw["index"], index);
+        }
+        assert!(events.recv().await.is_none());
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn payloads_larger_than_the_old_wire_budget_round_trip() {
     bounded(async {
         let dir = tempfile::tempdir().unwrap();
