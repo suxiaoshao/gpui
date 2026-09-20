@@ -29,7 +29,9 @@ fn main() {
     let session_file = option("--session").or_else(|| Path::new("preallocated-file").exists().then(|| std::env::current_dir().unwrap().join("never-written.jsonl").to_string_lossy().into_owned()));
     let mut lifecycle = std::fs::OpenOptions::new().create(true).append(true).open("process.log").unwrap();
     writeln!(lifecycle, "start {} {:?}", std::process::id(), &args[1..]).unwrap();
+    let mut session_name = String::new();
     let mut newer = false;
+    let mut queued = false;
     let mut compacted = false;
     let mut compacting = false;
     let mut held = Vec::<(String, String, String, bool)>::new();
@@ -82,6 +84,11 @@ fn main() {
                 held = remaining;
                 reply(&id, &command, "null", true);
             }
+            "emit_queue" => {
+                queued = true;
+                println!("{{\"type\":\"queue_update\",\"steering\":[\"steer text\"],\"followUp\":[\"follow text\"]}}");
+                reply(&id, &command, "null", true);
+            }
             "emit_editor" => {
                 println!("{{\"type\":\"extension_ui_request\",\"id\":\"submission-editor\",\"method\":\"set_editor_text\",\"text\":\"next extension draft\"}}");
                 reply(&id, &command, "null", true);
@@ -115,8 +122,16 @@ fn main() {
                     println!("{{\"type\":\"compaction_start\",\"reason\":\"manual\"}}");
                 }
                 let data = match command.as_str() {
+                    "clear_queue" => {
+                        let data = if queued { "{\"steering\":[\"steer text\"],\"followUp\":[\"follow text\"]}" } else { "{\"steering\":[],\"followUp\":[]}" };
+                        if !Path::new("fail-clear_queue").exists() {
+                            queued = false;
+                            println!("{{\"type\":\"queue_update\",\"steering\":[],\"followUp\":[]}}");
+                        }
+                        data.into()
+                    }
                     "get_commands" => "{\"commands\":[{\"name\":\"help\",\"description\":\"Fixture command\",\"source\":\"extension\",\"sourceInfo\":null}]}".into(),
-                    "get_state" => format!("{{\"sessionId\":\"fixture\",\"isStreaming\":false,\"isCompacting\":{compacting},\"model\":{},\"thinkingLevel\":\"{thinking}\"}}", model(&selected)).trim_end_matches('}').to_owned() + &session_file.as_ref().map(|path| format!(",\"sessionFile\":{path:?}}}")).unwrap_or_else(|| "}".into()),
+                    "get_state" => format!("{{\"sessionId\":\"fixture\",\"sessionName\":{session_name:?},\"isStreaming\":false,\"isCompacting\":{compacting},\"pendingMessageCount\":{},\"model\":{},\"thinkingLevel\":\"{thinking}\"}}", if queued { 2 } else { 0 }, model(&selected)).trim_end_matches('}').to_owned() + &session_file.as_ref().map(|path| format!(",\"sessionFile\":{path:?}}}")).unwrap_or_else(|| "}".into()),
                     "get_entries" => if Path::new("empty-entries").exists() {
                         "{\"entries\":[],\"leafId\":null}".into()
                     } else if compacted {
@@ -130,6 +145,7 @@ fn main() {
                     "get_available_thinking_levels" => "{\"levels\":[\"off\",\"high\"]}".into(),
                     "get_session_stats" => "{\"tokens\":{\"input\":5,\"output\":3,\"cacheRead\":0,\"cacheWrite\":0,\"total\":8},\"cost\":0}".into(),
                     "get_fork_messages" => "{\"messages\":[{\"entryId\":\"old\",\"text\":\"hello\"}]}".into(),
+                    "set_session_name" => { session_name = field(&line, "name"); "null".into() }
                     "set_model" => { selected = field(&line, "modelId"); "null".into() }
                     "set_thinking_level" => { thinking = field(&line, "level"); "null".into() }
                     "clone" => format!("{{\"cancelled\":{}}}", Path::new("cancel-clone").exists()),

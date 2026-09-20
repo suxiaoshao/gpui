@@ -10,14 +10,17 @@ pub(crate) struct Attachment {
 }
 #[derive(Clone)]
 pub(crate) enum Content {
-    File(PathBuf),
+    File {
+        path: PathBuf,
+        byte_len: u64,
+    },
     Image {
         image: pi_rpc::protocol::Image,
         preview: Arc<Image>,
     },
 }
 impl Attachment {
-    pub fn file(path: PathBuf) -> Self {
+    pub fn file(path: PathBuf, byte_len: u64) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             name: path
@@ -25,53 +28,49 @@ impl Attachment {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned(),
-            content: Content::File(path),
+            content: Content::File { path, byte_len },
+        }
+    }
+    pub fn byte_len(&self) -> u64 {
+        match &self.content {
+            Content::File { byte_len, .. } => *byte_len,
+            Content::Image { preview, .. } => preview.bytes().len() as u64,
+        }
+    }
+    pub fn format_name(&self) -> Option<String> {
+        match &self.content {
+            Content::File { path, .. } => path
+                .extension()
+                .filter(|extension| !extension.is_empty())
+                .map(|extension| extension.to_string_lossy().to_uppercase()),
+            Content::Image { image, .. } => {
+                Some(image.mime_type.trim_start_matches("image/").to_uppercase())
+            }
         }
     }
     pub fn from_image(name: String, bytes: &[u8]) -> Result<Self, String> {
-        let mut reader = image::ImageReader::new(Cursor::new(bytes))
-            .with_guessed_format()
+        let format = image::guess_format(bytes).map_err(|e| e.to_string())?;
+        let preview_format = match format {
+            image::ImageFormat::Png => ImageFormat::Png,
+            image::ImageFormat::Jpeg => ImageFormat::Jpeg,
+            image::ImageFormat::Gif => ImageFormat::Gif,
+            image::ImageFormat::WebP => ImageFormat::Webp,
+            image::ImageFormat::Bmp => ImageFormat::Bmp,
+            _ => return Err("Unsupported image format".into()),
+        };
+        // Read dimensions to validate the container without transforming its pixels.
+        image::ImageReader::with_format(Cursor::new(bytes), format)
+            .into_dimensions()
             .map_err(|e| e.to_string())?;
-        let mut limits = image::Limits::default();
-        limits.max_alloc = Some(128 * 1024 * 1024);
-        reader.limits(limits);
-        let decoded = reader.decode().map_err(|e| e.to_string())?;
-        let mut resized = decoded.thumbnail(2000, 2000);
-        let mut encoded = Cursor::new(Vec::new());
-        resized
-            .write_to(&mut encoded, image::ImageFormat::Png)
-            .map_err(|e| e.to_string())?;
-        let mut format = ImageFormat::Png;
-        let mut mime = "image/png";
-        // Pi's default inline budget is 4.5 MiB after base64 encoding.
-        let budget = 9 * 1024 * 1024 / 2;
-        if encoded.get_ref().len().div_ceil(3) * 4 >= budget {
-            format = ImageFormat::Jpeg;
-            mime = "image/jpeg";
-            for edge in [2000, 1500, 1000, 750] {
-                resized = resized.thumbnail(edge, edge);
-                encoded = Cursor::new(Vec::new());
-                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, 85)
-                    .encode_image(&resized.to_rgb8())
-                    .map_err(|e| e.to_string())?;
-                if encoded.get_ref().len().div_ceil(3) * 4 < budget {
-                    break;
-                }
-            }
-        }
-        if encoded.get_ref().len().div_ceil(3) * 4 >= budget {
-            return Err("Image exceeds inline size limit".into());
-        }
-        let bytes = encoded.into_inner();
         Ok(Self {
             id: uuid::Uuid::new_v4().to_string(),
             name,
             content: Content::Image {
                 image: pi_rpc::protocol::Image {
-                    data: STANDARD.encode(&bytes),
-                    mime_type: mime.into(),
+                    data: STANDARD.encode(bytes),
+                    mime_type: format.to_mime_type().into(),
                 },
-                preview: Arc::new(Image::from_bytes(format, bytes)),
+                preview: Arc::new(Image::from_bytes(preview_format, bytes.to_vec())),
             },
         })
     }
@@ -85,7 +84,7 @@ pub(crate) fn from_paths(paths: Vec<PathBuf>) -> Result<Vec<Attachment>, String>
             if !metadata.is_file() {
                 return Err(format!("Not a file: {}", path.display()));
             }
-            let attachment = Attachment::file(path.clone());
+            let attachment = Attachment::file(path.clone(), metadata.len());
             let extension = path
                 .extension()
                 .unwrap_or_default()
@@ -95,9 +94,6 @@ pub(crate) fn from_paths(paths: Vec<PathBuf>) -> Result<Vec<Attachment>, String>
                 extension.as_str(),
                 "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp"
             ) {
-                if metadata.len() > 64 * 1024 * 1024 {
-                    return Err("Image source exceeds 64 MiB".into());
-                }
                 let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
                 Attachment::from_image(attachment.name, &bytes)
             } else {
@@ -107,51 +103,34 @@ pub(crate) fn from_paths(paths: Vec<PathBuf>) -> Result<Vec<Attachment>, String>
         .collect()
 }
 
-pub(crate) fn check_image_policy(cwd: &std::path::Path) -> Result<(), String> {
-    let agent = super::pi_resources::agent_dir().map_err(|e| e.to_string())?;
-    let mut blocked = false;
-    for path in [agent.join("settings.json"), cwd.join(".pi/settings.json")] {
-        let bytes = match std::fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e.to_string()),
-        };
-        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-        if let Some(value) = value
-            .pointer("/images/blockImages")
-            .and_then(|v| v.as_bool())
-        {
-            blocked = value;
-        }
-    }
-    if blocked {
-        Err("Pi images.blockImages is enabled".into())
-    } else {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn file_references_preserve_original_bytes_and_image_payload_is_bounded() {
+    fn file_and_image_attachments_preserve_original_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a b中文.pdf");
         std::fs::write(&path, [0, 255, 127]).unwrap();
         let items = from_paths(vec![path.clone()]).unwrap();
-        assert!(matches!(&items[0].content,Content::File(p) if p==&path));
+        assert!(matches!(&items[0].content,Content::File { path: p, .. } if p==&path));
         assert_eq!(std::fs::read(&path).unwrap(), vec![0, 255, 127]);
+        assert_eq!(items[0].byte_len(), 3);
+        assert_eq!(items[0].format_name().as_deref(), Some("PDF"));
         let mut bytes = Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(2400, 1200)
             .write_to(&mut bytes, image::ImageFormat::Png)
             .unwrap();
         let image = Attachment::from_image("test".into(), bytes.get_ref()).unwrap();
-        let Content::Image { image, .. } = image.content else {
+        assert_eq!(image.byte_len(), bytes.get_ref().len() as u64);
+        assert_eq!(image.format_name().as_deref(), Some("PNG"));
+        let Content::Image { image, preview } = image.content else {
             panic!()
         };
-        let decoded = image::load_from_memory(&STANDARD.decode(image.data).unwrap()).unwrap();
-        assert_eq!((decoded.width(), decoded.height()), (2000, 1000));
+        let payload = STANDARD.decode(image.data).unwrap();
+        assert_eq!(&payload, bytes.get_ref());
+        assert_eq!(preview.bytes(), bytes.get_ref());
+        let decoded = image::load_from_memory(&payload).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (2400, 1200));
         assert_eq!(image.mime_type, "image/png");
     }
 }

@@ -26,6 +26,7 @@ pub(crate) struct Composer {
     picker: AnyElement,
     leading: Vec<AnyElement>,
     actions: Option<AnyElement>,
+    attachments: Option<AnyElement>,
 }
 
 impl Composer {
@@ -36,6 +37,7 @@ impl Composer {
             picker: picker.into_any_element(),
             leading: vec![],
             actions: None,
+            attachments: None,
         }
     }
 
@@ -49,8 +51,21 @@ impl Composer {
         self
     }
 
+    pub fn attachments(mut self, element: impl IntoElement) -> Self {
+        self.attachments = Some(element.into_any_element());
+        self
+    }
+
     pub fn build(self) -> InputGroup {
-        InputGroup::new(self.id).input(self.input).addon(
+        let mut group = InputGroup::new(self.id).input(self.input);
+        if let Some(attachments) = self.attachments {
+            group = group.addon(
+                InputGroupAddon::new("attachments")
+                    .align(InputGroupAddonAlignment::BlockStart)
+                    .child(attachments),
+            );
+        }
+        group.addon(
             InputGroupAddon::new("footer")
                 .align(InputGroupAddonAlignment::BlockEnd)
                 .child(

@@ -89,36 +89,17 @@ async fn startup_events_are_accessible_before_ready() {
 #[tokio::test]
 async fn protocol_startup_and_consumer_failures_settle_waiters() {
     bounded(async {
-        for (mode, expected) in [
-            ("early", "ready"),
-            ("invalid", "protocol"),
-            ("oversize", "capacity"),
-        ] {
+        for (mode, expected) in [("early", "ready"), ("invalid", "protocol")] {
             let dir = tempfile::tempdir().unwrap();
-            let mut options = support::options(dir.path(), mode);
-            options.limits.frame_bytes = 512;
+            let options = support::options(dir.path(), mode);
             let (client, _events) = Client::spawn(options).await.unwrap();
             let error = client.ready().await.unwrap_err();
             match expected {
                 "protocol" => assert!(matches!(error, Error::Protocol(_))),
-                "capacity" => assert!(matches!(error, Error::Capacity(_))),
                 _ => assert!(matches!(error, Error::NotReady | Error::Closed)),
             }
             assert!(client.close().await.reason.is_some());
         }
-        let dir = tempfile::tempdir().unwrap();
-        let mut options = support::options(dir.path(), "");
-        options.limits.events = 2;
-        let (client, _events) = Client::spawn(options).await.unwrap();
-        client.ready().await.unwrap();
-        assert!(matches!(
-            client.prompt(Prompt::new("flood")).await,
-            Err(Error::Capacity(_))
-        ));
-        assert!(matches!(
-            client.close().await.reason,
-            Some(Error::Capacity(_))
-        ));
     })
     .await;
 }
@@ -283,6 +264,60 @@ async fn shutdown_timeout_closes_the_connection_without_claiming_observed_exit()
                 .unwrap()
                 .contains("eof ")
         );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn event_backpressure_preserves_order_and_connection() {
+    bounded(async {
+        let dir = tempfile::tempdir().unwrap();
+        let mut options = support::options(dir.path(), "");
+        options.limits.events = 2;
+        let (client, mut events) = Client::spawn(options).await.unwrap();
+        client.ready().await.unwrap();
+        let sender = client.clone();
+        let prompt = tokio::spawn(async move { sender.prompt(Prompt::new("flood")).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(matches!(client.state(), ConnectionState::Ready(_)));
+        assert!(!prompt.is_finished());
+        for index in 0..256 {
+            let Some(Event::Agent { raw, .. }) = events.recv().await else {
+                panic!("lost event")
+            };
+            assert_eq!(raw["index"], index);
+        }
+        prompt.await.unwrap().unwrap();
+        client.get_state().await.unwrap();
+        let sender = client.clone();
+        let prompt = tokio::spawn(async move { sender.prompt(Prompt::new("flood")).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let closing = client.close();
+        let (report, ()) = tokio::join!(closing, async { while events.recv().await.is_some() {} });
+        assert!(report.reason.is_none(), "{report:?}");
+        assert!(matches!(prompt.await.unwrap(), Err(Error::Closed)));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn payloads_larger_than_the_old_wire_budget_round_trip() {
+    bounded(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, _events) = Client::spawn(support::options(dir.path(), ""))
+            .await
+            .unwrap();
+        client.ready().await.unwrap();
+        let payload = "x".repeat(33 * 1024 * 1024);
+        let response = client
+            .request_raw(serde_json::json!({"type":"echo","payload":payload}))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.data["payload"].as_str().unwrap().len(),
+            payload.len()
+        );
+        assert!(client.close().await.reason.is_none());
     })
     .await;
 }

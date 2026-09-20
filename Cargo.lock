@@ -6414,7 +6414,6 @@ dependencies = [
  "dirs-next",
  "fluent-bundle",
  "get-selected-text",
- "glob",
  "global-hotkey",
  "globset",
  "gpui-form",
@@ -11075,6 +11074,7 @@ dependencies = [
 name = "pi-rpc"
 version = "0.1.0"
 dependencies = [
+ "semver",
  "serde",
  "serde_json",
  "tempfile",

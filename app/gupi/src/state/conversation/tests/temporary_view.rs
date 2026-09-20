@@ -357,7 +357,7 @@ fn temporary_composing_text_and_attachments_never_trigger_return(cx: &mut TestAp
         });
         state.update(cx, |state, _| {
             state.sessions.get_mut("first").unwrap().attachments.push(
-                crate::foundation::attachments::Attachment::file("/tmp/fixture.txt".into()),
+                crate::foundation::attachments::Attachment::file("/tmp/fixture.txt".into(), 0),
             )
         });
         home.update(cx, |home, cx| home.submit_or_paste(false, window, cx));
@@ -474,5 +474,130 @@ fn temporary_panel_switches_stop_hide_and_honors_rebound_shortcuts(cx: &mut Test
             cx.read_from_clipboard().and_then(|i| i.text()).as_deref(),
             Some("sentinel")
         )
+    });
+}
+
+#[gpui_kit::test]
+fn composer_attachments_stay_inside_group_and_remove_without_preview(cx: &mut TestAppContext) {
+    use crate::foundation::attachments::Attachment;
+    use gpui_kit::{SharedString, component::WindowExt, test::TestWindowExt};
+
+    init_interactions(cx);
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(1200, 800)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let mut image = Attachment::from_image("界面.png".into(), png.get_ref()).unwrap();
+    image.id = "image".into();
+    let mut file = Attachment::file("/tmp/README.md".into(), 128_000);
+    file.id = "file".into();
+    let state = cx.new(|cx| ConversationState::temporary("unused-pi".into(), cx));
+    state.update(cx, |state, _| {
+        let mut session = fixture_session("attachments");
+        session.draft = "keep draft".into();
+        session.attachments = vec![image, file];
+        state.sessions.insert("attachments".into(), session);
+        state.selected = Some("attachments".into());
+    });
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| TemporaryView::new(state.clone(), window, cx));
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(960.), px(620.)));
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.render_frame(cx);
+        let group = window.find("conversation-composer").bounds();
+        let attachments = window
+            .within("conversation-composer")
+            .find("attachments")
+            .bounds();
+        let footer = window
+            .within("conversation-composer")
+            .find("footer")
+            .bounds();
+        assert!(group.contains(&attachments.origin));
+        assert!(attachments.bottom() <= footer.top());
+        window.click(SharedString::from("preview-image"), cx);
+        assert!(window.has_active_dialog(cx));
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.render_frame(cx);
+        let preview = window.find("image-preview").bounds();
+        assert!(preview.size.width > window.viewport_size().width * 0.9);
+        assert!(preview.size.height > window.viewport_size().height * 0.9);
+        assert!(preview.right() <= window.viewport_size().width);
+        assert!(preview.bottom() <= window.viewport_size().height);
+        let bitmap = window.find("image-preview-bitmap").bounds();
+        let image_area = window.find("image-preview-scroll").bounds();
+        assert!(bitmap.size.width <= image_area.size.width);
+        assert!(bitmap.size.height <= image_area.size.height);
+        window.click("image-preview-zoom-in", cx);
+        assert!(window.find("image-preview-bitmap").bounds().size.width > bitmap.size.width);
+        let enlarged = window.find("image-preview-bitmap").bounds();
+        window.scroll(
+            "image-preview-scroll",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-24.), px(-24.))),
+            cx,
+        );
+        let scrolled = window.find("image-preview-bitmap").bounds();
+        assert_eq!(
+            scrolled.size, enlarged.size,
+            "plain scrolling must not zoom"
+        );
+        assert!(scrolled.origin.y < enlarged.origin.y);
+        window.click("image-preview-bitmap", cx);
+        assert!(
+            window.has_active_dialog(cx),
+            "clicking the image must not close it"
+        );
+        window.click("image-preview-zoom-out", cx);
+        assert_eq!(
+            window.find("image-preview-bitmap").bounds().size,
+            bitmap.size
+        );
+        window.click("image-preview-close", cx);
+        assert!(
+            !window.has_active_dialog(cx),
+            "preview must open only one dialog"
+        );
+        window.render_frame(cx);
+        window.click(SharedString::from("preview-image"), cx);
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.press("escape", cx);
+        assert!(!window.has_active_dialog(cx), "Escape closes the preview");
+        window.click(SharedString::from("preview-image"), cx);
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.click_at("image-preview", gpui_kit::point(px(2.), px(100.)), cx);
+        assert!(
+            !window.has_active_dialog(cx),
+            "clicking the blank margin closes the preview"
+        );
+        window.click(SharedString::from("remove-image"), cx);
+        assert!(
+            !window.has_active_dialog(cx),
+            "remove must not open image preview"
+        );
+        assert_eq!(state.read(cx).current().unwrap().attachments.len(), 1);
+        assert_eq!(state.read(cx).current().unwrap().draft, "keep draft");
+        window.click(SharedString::from("remove-file"), cx);
+        assert!(state.read(cx).current().unwrap().attachments.is_empty());
+        assert!(
+            window
+                .within("conversation-composer")
+                .try_find("attachments")
+                .is_none()
+        );
+        assert!(
+            window
+                .within("conversation-composer")
+                .try_find("footer")
+                .is_some()
+        );
     });
 }

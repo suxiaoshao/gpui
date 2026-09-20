@@ -41,7 +41,7 @@ fn fixture() -> PathBuf {
 }
 
 #[gpui_kit::test]
-async fn offline_catalog_rename_appends_metadata_without_launching_pi(cx: &mut TestAppContext) {
+async fn offline_catalog_rename_uses_pi_without_switching_the_foreground(cx: &mut TestAppContext) {
     let (dir, owner, foreground) = prepare(cx, &[]);
     let path = dir.path().join("rename.jsonl");
     let original = format!(
@@ -78,22 +78,12 @@ async fn offline_catalog_rename_appends_metadata_without_launching_pi(cx: &mut T
             state.sessions[&key].info.name.as_deref(),
             Some("renamed conversation")
         );
-        assert!(state.sessions[&key].instance.is_none());
-        assert!(
-            state
-                .catalog
-                .data()
-                .unwrap()
-                .sessions
-                .iter()
-                .any(|info| info.path == path
-                    && info.name.as_deref() == Some("renamed conversation"))
-        );
+        assert!(state.sessions[&key].instance.is_some());
     });
-    let contents = std::fs::read_to_string(&path).unwrap();
-    assert!(contents.starts_with(&original));
-    assert_eq!(contents.lines().count(), 3);
-    assert!(!dir.path().join("commands.log").exists());
+    // The fixture records RPC requests without writing the session: Gupi must not
+    // append its own metadata or impose a session-file version on Pi.
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    assert_eq!(count(dir.path(), "set_session_name"), 1);
     close(&owner, cx).await;
 }
 
@@ -129,6 +119,31 @@ async fn offline_rename_failure_notifies_and_preserves_name(cx: &mut TestAppCont
     assert_eq!(notifications.borrow().len(), 1);
     assert!(!dir.path().join("missing.jsonl").exists());
     assert!(!dir.path().join("commands.log").exists());
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn offline_rename_releases_operation_when_initial_sync_fails(cx: &mut TestAppContext) {
+    let (dir, owner, key) = prepare(cx, &["fail-get_entries"]);
+    let path = dir.path().join("existing.jsonl");
+    let original = format!(
+        "{}\n",
+        serde_json::json!({"type":"session","version":3,"id":"fixture","cwd":dir.path()})
+    );
+    std::fs::write(&path, &original).unwrap();
+    owner.update(cx, |state, cx| {
+        state.sessions.get_mut(&key).unwrap().info =
+            crate::foundation::session_catalog::read_metadata(&path).unwrap();
+        assert!(state.rename(&key, "replacement".into(), cx));
+    });
+    cx.condition(&owner, |state, _| !state.sessions[&key].command.running())
+        .await;
+    owner.read_with(cx, |state, _| {
+        assert!(state.sessions[&key].binding > 0);
+        assert!(state.sessions[&key].error.is_some());
+    });
+    assert_eq!(count(dir.path(), "set_session_name"), 0);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), original);
     close(&owner, cx).await;
 }
 
@@ -190,6 +205,23 @@ async fn rename_waits_for_reconnection_then_uses_existing_rpc(cx: &mut TestAppCo
     cx.condition(&owner, |state, _| !state.sessions[&key].command.running())
         .await;
     assert_eq!(count(dir.path(), "set_session_name"), 1);
+    cx.condition(&owner, |state, _| !state.sessions[&key].core_read.running())
+        .await;
+    std::fs::write(dir.path().join("fail-set_session_name"), "").unwrap();
+    owner.update(cx, |state, cx| {
+        assert!(state.rename(&key, "rejected".into(), cx))
+    });
+    cx.condition(&owner, |state, _| !state.sessions[&key].command.running())
+        .await;
+    assert!(owner.read_with(cx, |state, _| state.sessions[&key].error.is_some()));
+    std::fs::remove_file(dir.path().join("fail-set_session_name")).unwrap();
+    owner.update(cx, |state, cx| {
+        assert!(state.rename(&key, "retry accepted".into(), cx))
+    });
+    cx.condition(&owner, |state, _| !state.sessions[&key].command.running())
+        .await;
+    assert_eq!(count(dir.path(), "set_session_name"), 3);
+    assert!(owner.read_with(cx, |state, _| state.sessions[&key].error.is_none()));
     // The fixture RPC does not write files: a direct-file fallback would add a line.
     assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(), 1);
     close(&owner, cx).await;
@@ -370,6 +402,7 @@ async fn new_conversation_reuses_unsent_session_in_the_requested_project(cx: &mu
                         .attachments
                         .push(crate::foundation::attachments::Attachment::file(
                             dir.path().join("example.txt"),
+                            0,
                         ));
                 }
                 3 => session.draft = "unsent input".into(),
@@ -419,6 +452,15 @@ async fn new_conversation_model_options_and_catalog_have_independent_lifecycles(
     cx: &mut TestAppContext,
 ) {
     let (dir, owner, key) = prepare(cx, &[]);
+    // The RPC catalog is authoritative even if a local config would exclude it.
+    owner.read_with(cx, |state, _| {
+        std::fs::create_dir_all(&state.discovery.agent).unwrap();
+        std::fs::write(
+            state.discovery.agent.join("settings.json"),
+            r#"{"enabledModels":["missing/*"]}"#,
+        )
+        .unwrap();
+    });
     owner.update(cx, |state, cx| state.refresh_models(&key, cx));
     cx.condition(&owner, |state, _| {
         state.sessions[&key].models.data().is_some()
@@ -426,6 +468,14 @@ async fn new_conversation_model_options_and_catalog_have_independent_lifecycles(
     })
     .await;
     owner.read_with(cx, |state, _| {
+        assert_eq!(
+            state.sessions[&key]
+                .model_options()
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "beta"]
+        );
         assert_eq!(state.scan_serial, 0);
         assert_eq!(state.sessions[&key].body_state(), BodyState::New);
         assert_eq!(state.infos().len(), 1);
@@ -2213,7 +2263,7 @@ async fn attachment_and_template_survive_rejection_until_pi_accepts(cx: &mut Tes
         );
     }
     assert_eq!(std::fs::read_to_string(file).unwrap(), "keep original");
-    // The fixture's text-only model must not silently drop images.
+    // Forward images even when model metadata lacks vision; Pi and its input handlers decide.
     let mut png = std::io::Cursor::new(Vec::new());
     image::DynamicImage::new_rgb8(1, 1)
         .write_to(&mut png, image::ImageFormat::Png)
@@ -2226,10 +2276,97 @@ async fn attachment_and_template_survive_rejection_until_pi_accepts(cx: &mut Tes
             .attachments
             .push(Attachment::from_image("image".into(), png.get_ref()).unwrap());
         state.send(&key, StreamingBehavior::Steer, cx);
-        assert!(!state.sessions[&key].submitting());
-        assert_eq!(state.sessions[&key].attachments.len(), 1);
-        assert!(state.sessions[&key].error.is_some());
+        assert!(state.sessions[&key].submitting());
     });
-    assert_eq!(count(dir.path(), "prompt"), 2);
+    cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
+        .await;
+    assert_eq!(count(dir.path(), "prompt"), 3);
+    let inputs = std::fs::read_to_string(dir.path().join("inputs.jsonl")).unwrap();
+    let request: serde_json::Value = serde_json::from_str(inputs.lines().last().unwrap()).unwrap();
+    use base64::Engine as _;
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(request["images"][0]["data"].as_str().unwrap())
+            .unwrap(),
+        *png.get_ref()
+    );
     close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn queue_restore_keeps_current_draft_attachments_and_later_queue_events(
+    cx: &mut TestAppContext,
+) {
+    let (dir, owner, key) = begin(cx, &["hold-clear_queue"]);
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
+    let client = owner.read_with(cx, |state, cx| state.client(&key, cx).unwrap());
+    control(&client, "emit_queue", "", 0).await;
+    cx.condition(&owner, |state, _| state.sessions[&key].pending_count == 2)
+        .await;
+    owner.update(cx, |state, cx| {
+        state.set_draft(&key, "original".into(), cx);
+        state.sessions.get_mut(&key).unwrap().attachments.push(
+            crate::foundation::attachments::Attachment::file(dir.path().join("keep.txt"), 0),
+        );
+        state.clear_queue(&key, true, cx);
+        assert!(!state.can_submit(&key, cx));
+        assert!(state.sessions[&key].can_edit_draft());
+        state.clear_queue(&key, true, cx);
+    });
+    control(&client, "wait_for", "clear_queue", 1).await;
+    // A plugin queues another message while the clear response is in flight.
+    control(&client, "emit_queue", "", 0).await;
+    let other = owner.update(cx, |state, cx| {
+        state.set_draft(&key, "latest draft".into(), cx);
+        state.insert_draft(Some(dir.path().join("other")));
+        let other = state.selected.clone().unwrap();
+        state.set_draft(&other, "other draft".into(), cx);
+        other
+    });
+    control(&client, "release", "clear_queue", 0).await;
+    cx.condition(&owner, |state, _| {
+        !state.sessions[&key].command.running() && !state.sessions[&key].core_read.running()
+    })
+    .await;
+    owner.read_with(cx, |state, _| {
+        let session = &state.sessions[&key];
+        assert_eq!(session.draft, "steer text\n\nfollow text\n\nlatest draft");
+        assert_eq!(session.attachments.len(), 1);
+        assert_eq!(session.attachments[0].name, "keep.txt");
+        assert_eq!(session.pending_count, 2);
+        assert_eq!(session.queued.as_ref().unwrap().follow_up, ["follow text"]);
+        assert_eq!(state.sessions[&other].draft, "other draft");
+        assert_eq!(state.selected.as_ref(), Some(&other));
+    });
+    assert_eq!(count(dir.path(), "clear_queue"), 1);
+    assert_eq!(count(dir.path(), "prompt"), 0);
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn queue_clear_and_failure_never_replace_draft(cx: &mut TestAppContext) {
+    for fail in [false, true] {
+        let (_dir, owner, key) = begin(cx, if fail { &["fail-clear_queue"] } else { &[] });
+        cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+            .await;
+        let client = owner.read_with(cx, |state, cx| state.client(&key, cx).unwrap());
+        control(&client, "emit_queue", "", 0).await;
+        cx.condition(&owner, |state, _| state.sessions[&key].pending_count == 2)
+            .await;
+        owner.update(cx, |state, cx| {
+            state.set_draft(&key, "keep".into(), cx);
+            // Failure to restore must not insert the cached queue text.
+            state.clear_queue(&key, fail, cx);
+        });
+        cx.condition(&owner, |state, _| {
+            !state.sessions[&key].command.running() && !state.sessions[&key].core_read.running()
+        })
+        .await;
+        owner.read_with(cx, |state, _| {
+            assert_eq!(state.sessions[&key].draft, "keep");
+            assert_eq!(state.sessions[&key].pending_count, if fail { 2 } else { 0 });
+        });
+        close(&owner, cx).await;
+    }
 }

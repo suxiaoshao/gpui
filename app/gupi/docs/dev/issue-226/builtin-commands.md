@@ -22,7 +22,7 @@
 | `/import` | 无通用 import；switch_session 仅切换已有文件 | 无外部 JSONL 导入入口 | 独立评估导入、复制及目录归属，不能把 switch_session 直接当作 import |
 | `/share` | 无 TUI GitHub gist 分享接口 | 无分享动作 | 暂不接入；需新增认证和外部发布能力 |
 | `/copy` | get_last_assistant_text；也可读取当前分支文本 | 已有逐条消息复制及面板“复制最后回答” | copy 搜索映射最后回答动作，来源为实际执行分支 |
-| `/name` | set_session_name | 已有在线/离线改名 | 复用已有能力；离线沿用文件元数据追加，不为改名启动 Pi |
+| `/name` | set_session_name | 已有在线/离线改名 | 复用统一 RPC 改名；离线会话先建立连接，再由 Pi 写入 |
 | `/session` | get_state、get_session_stats 等 | 已有 token/context 统计提示，缺统一信息页 | 值得完善会话信息入口，集中展示身份、路径、模型与统计 |
 | `/changelog` | 无专用接口 | 无 Pi 更新日志入口 | 无需照搬；Gupi 自身更新说明属于应用帮助 |
 | `/hotkeys` | 无 TUI 键位表查询接口 | #231 已有 Gupi 快捷键查看、修改、清除及恢复默认；面板已有键位提示 | `hotkeys` 搜索别名尚未映射；不再将快捷键总览列为缺失能力，不展示未接入的 Pi TUI 键位冒充可用 |

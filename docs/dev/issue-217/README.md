@@ -31,3 +31,5 @@ crates/xtask/docs/dev/issue-218/README.md # 第一阶段打包工具接入
 ```
 
 后续阶段按需要增加自己的独立目录，不预建空计划。跨阶段长期稳定的应用说明在实施后归入应用 README；阶段计划保留当时的决定和证据。
+
+- [GUI 与 Pi 职责边界收敛](gui-boundary.md)：移除额外输入限制、RPC 背压和图片预览同步。

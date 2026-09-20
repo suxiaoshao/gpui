@@ -216,20 +216,7 @@ impl HomeView {
         match session.body_state() {
             BodyState::New => {
                 return body
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .justify_center()
-                            .items_center()
-                            .gap_2()
-                            .child(div().text_xl().child(t(cx, "conversation-welcome")))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(t(cx, "conversation-welcome-hint")),
-                            ),
-                    )
+                    .child(self.render_welcome(session, cx))
                     .into_any_element();
             }
             BodyState::Loading(stage) => {
@@ -244,20 +231,7 @@ impl HomeView {
                 if session.empty_conversation() && session.info.path.as_os_str().is_empty() =>
             {
                 return body
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .justify_center()
-                            .items_center()
-                            .gap_2()
-                            .child(div().text_xl().child(t(cx, "conversation-welcome")))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(t(cx, "conversation-welcome-hint")),
-                            ),
-                    )
+                    .child(self.render_welcome(session, cx))
                     .into_any_element();
             }
             BodyState::Ready => {}

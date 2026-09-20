@@ -1,5 +1,7 @@
 # Gupi 未完成项与能力边界索引
 
+GUI 附加限制的移除与预览同步见[职责边界收敛](gui-boundary.md)，该记录不增加输入框上游依赖之外的待办。
+
 归属：[#217](https://github.com/suxiaoshao/gpui/issues/217)。更新日期：2026-09-20。
 
 本页集中查看各阶段留下的依赖阻塞、后续工作和未验证边界。详细设计、源码依据及验证仍归原文档；已有独立文件只链接，不在这里重写方案。表中的“待确定范围”不代表已经授权实现，“未验证”也不等于已发现缺陷。
@@ -54,7 +56,7 @@
 | `get_fork_messages`、`fork` | 直接调用；指定用户消息分叉 | 不等同于在原文件任意树节点继续，见 RPC 缺口 |
 | `clone` | 直接调用；复制当前会话 | 已有，不重复列为待实现 |
 | `export_html` | 直接调用；系统保存窗口指定 `outputPath` | 未用 Pi 自动选默认输出路径；无需为此另加入口。JSONL 导出属于文件能力 |
-| `set_session_name` | 直接调用；已连接会话改名；离线另有本地元数据追加 | 已有，不重复列为待实现 |
+| `set_session_name` | 直接调用；离线会话也先连接 Pi，再执行改名 | 已有，不重复列为待实现 |
 | `get_session_stats` | 直接调用；token、费用、context 用量 | typed 结果只保留这三类；身份、用户/assistant/工具/总消息计数等未用于统一会话信息页，范围待定 |
 | `steer`、`follow_up` | 未直接调用；通过 `prompt.streamingBehavior` 接入运行中 steer/follow-up | 已有主要提交能力，不能因缺两个 typed 方法认定缺功能；独立命令的始终入队语义不与 prompt 的空闲直接执行混同 |
 | `new_session`、`switch_session` | 未直接调用；Gupi 新会话/恢复使用独立或复用实例，以及 `--session` | 已有多会话新建/恢复；不为用满 API 而强切一个 runtime。`parentSession` 也未作为普通新建参数提供 |
@@ -63,7 +65,7 @@
 | `get_messages` | 未直接调用；消息界面由 entries 和实时事件构建 | 已有消息展示；若要查看 Pi 精确模型上下文再评估此接口，历史视图不等同于模型当前上下文 |
 | `get_last_assistant_text` | 未直接调用；从实际执行分支提取最后回答 | 已有复制/回填，避免增加重复请求 |
 | `abort_retry` | 未直接调用；通用 `abort` 已会取消重试 | 仅缺“只取消重试”的专用动作，不能列为无法停止重试 |
-| `clear_queue` | `pi-rpc` 已有 typed 方法；Gupi 产品代码没有调用 | 尚无清空/取回队列入口；返回值只包含两类文本数组，见下方队列边界 |
+| `clear_queue` | 已接入清空全部、全部文字取回草稿 | 返回值仅含两类文字数组，排队图片无法恢复；逐条操作继续延后 |
 | `set_steering_mode`、`set_follow_up_mode` | 未接入 typed 方法和设置 UI | `all` / `one-at-a-time` 策略待选。Pi setter 会写其设置，接入前须明确保存归属，不能随意当作临时会话字段 |
 | `set_auto_compaction` | 未接入开关；只展示已有状态 | Pi 自动压缩仍正常工作；缺的是修改设置的入口，setter 会写 Pi 设置 |
 | `set_auto_retry` | 未接入开关 | Pi 自动重试仍工作；缺修改设置入口，setter 会写 Pi 设置 |
@@ -81,7 +83,7 @@
 | `tool_execution_start`、`tool_execution_update`、`tool_execution_end` | 接入工具执行状态、部分结果及结果卡片 | 已有，不继承插件 TUI renderer |
 | `compaction_start`、`compaction_end` | 更新压缩状态并刷新历史 | `reason`、`errorMessage`、`aborted`、`willRetry` 没有完整反馈；手动 RPC 失败有自己的报错，但自动压缩失败提示仍需核对/完善 |
 | `auto_retry_start`、`auto_retry_end` | 更新 retrying、结束错误及快照 | 未展示 attempt/maxAttempts/delayMs/errorMessage 等重试进度 |
-| `queue_update` | 未消费；当前 pending 数量来自状态快照 | 优先同步现有数量；事件也提供 steering/followUp 文本数组，但队列展示/编辑另定范围 |
+| `queue_update` | 已消费，实时同步两类文字和 pending 数量 | 队列可折叠查看；状态快照仅能补充数量，逐条操作和完整附件仍受协议限制 |
 | `entry_appended` | 未消费 | 当前 Pi 实际发送点是插件追加 custom entry，历史视图需及时同步；不是所有消息的通用追加通知 |
 | `session_info_changed`、`thinking_level_changed` | 未消费 | Gupi 自己操作后会回读，但插件等外部变化没有即时应用这些通知 |
 | `summarization_retry_scheduled`、`summarization_retry_attempt_start`、`summarization_retry_finished` | 未消费 | 未展示摘要/压缩重试等待和尝试状态；与普通模型重试区分 |
@@ -96,7 +98,7 @@
 
 | 事件 | 用户可见影响 | 最小接入范围 |
 | --- | --- | --- |
-| `queue_update` | 入队、出队、清空后的数量可能沿用旧快照；`pending_count` 还参与 busy 判断，影响临时会话等操作是否可用 | 用 steering 与 followUp 数组长度之和更新现有数量。Gupi 提交后的回读及运行结束后的刷新已有部分覆盖，但不能代替实时同步；不因此增加队列编辑器或附件恢复机制 |
+| `queue_update`（已补齐） | 实时同步入队、出队、清空的文字和数量，供展示及 busy 判断 | 已接入；逐条编辑与附件撤回按[队列交互计划](../../../app/gupi/docs/dev/issue-222/queue-composer.md)延后 |
 | `session_info_changed` | 插件改名后，标题可能直到后续刷新才更新，空闲时尤其明显 | 同步现有会话名称，兼顾名称被清空；无需每次重扫全部会话目录 |
 | `thinking_level_changed` | 插件改变思考等级后，选择器可能仍显示旧值 | 同步现有状态，保留模型切换及回读的并发保护。事件只带 level，不应当作完整模型快照，也不另建一份思考等级状态 |
 | `extension_error` | 插件的独立错误通道未呈现，用户可能不知道某项操作为何未执行 | 使用已有通知及诊断记录，说明插件和错误来源；插件错误不一定终止运行，不能直接把整个对话标为失败或自动中止 |
@@ -133,9 +135,10 @@ Pi TUI 已按以上阶段显示提示。Gupi 现有压缩状态覆盖了基本�
 
 ### 队列边界修正
 
-- **已经提供**：运行中提交 steer/follow-up、`queue_update` 两类排队文本、`clear_queue` 清空并返回文本、两个队列模式 setter。可实现的下一步是队列展示及“取回全部到编辑区”等最小交互，先确定产品范围。
+- **已经提供**：运行中提交 steer/follow-up、`queue_update` 两类排队文本、`clear_queue` 清空并返回文本、两个队列模式 setter。用户已确认逐条返回草稿、编辑和删除的设计目标，详见[队列交互草稿](../../../app/gupi/docs/dev/issue-222/queue-composer.md)；现有接口尚不足以直接实现完整目标。
 - **没有专用 RPC**：无副作用主动读取队列的 `get_queue`、按消息 ID 修改/删除某一项、包含图片等附件的完整队列快照。事件和清空结果只有字符串数组，不能声称能够无损恢复排队图片。
 - TUI 的“编辑排队消息”实际是将全部队列取出、拼接进编辑器，不是任意逐条在线编辑 API。不要把候选功能写成上游已经提供。
+- 继续调研发现本地 Pi 新 Harness 已有 entryId、完整消息与 cancelQueued，但 coding-agent RPC 尚未接入；公开扩展 API 也不能操作已排队单条。具体可行性、消费竞态和推荐契约见[队列交互草稿](../../../app/gupi/docs/dev/issue-222/queue-composer.md#逐条操作的可行性与实现边界)，不据此维护第二套客户端队列。
 - TUI 在压缩期间另有界面层 `compactionQueuedMessages`；Gupi 当前压缩时限制发送。若要同等体验，属于新增客户端队列策略，尚未授权实现，也不恢复先前删除的失败输入恢复队列。
 
 ## Pi TUI 有、原生 RPC 没有直接提供的能力
@@ -176,7 +179,7 @@ Pi TUI 已按以上阶段显示提示。Gupi 现有压缩状态覆盖了基本�
 
 | 项目 | 当前已有内容与剩余范围 | 归属与详细记录 |
 | --- | --- | --- |
-| 队列交互 | 已有 steer/follow-up 和数量提示；尚未消费 `queue_update`、调用 `clear_queue` 或配置两种队列模式。可做文本队列展示/全部取回；逐项编辑和附件无损恢复不能视为已有 RPC。范围依上方队列边界确定，不恢复已删除的失败输入恢复队列 | [#222](https://github.com/suxiaoshao/gpui/issues/222)、[RPC 取消契约](../issue-219/README.md)、[快捷键范围调研](../../../app/gupi/docs/dev/issue-226/README.md) |
+| 队列交互 | 已接入实时文字队列、折叠展示、清空全部、全部文字取回及运行中发送入口。未完成：逐条撤回/编辑/删除、完整附件和原命令恢复、原位置重新入队；Pi 0.86.0 的标准 RPC 仍不提供所需契约。两个队列模式 setter 尚未提供设置入口。不自建调度或失败输入恢复队列 | [#222 队列交互草稿](../../../app/gupi/docs/dev/issue-222/queue-composer.md)、[RPC 取消契约](../issue-219/README.md) |
 | Cmd/Ctrl+F 当前分支正文查找 | 尚未实现、尚未单独建 Issue。范围、高亮、折叠展开、结果定位与流式更新规则待独立讨论；不与现有会话目录搜索或跨会话全文索引混为一项 | [正文查找范围草案](../../../app/gupi/docs/dev/issue-226/README.md#独立于-226-的正文查找) |
 | 额外 Pi 内置命令能力 | 统一会话信息页、模型范围管理、JSONL 导入/导出等仍需选择范围。快捷键设置已经可查看/修改/恢复，不能再列成缺失功能；`hotkeys` 的命令搜索别名尚未接入。分享、认证、信任管理等仅保留原有边界，不自动列为必做任务 | [完整内置命令对照](../../../app/gupi/docs/dev/issue-226/builtin-commands.md)、[D-14 范围决定](../../../app/gupi/docs/dev/issue-226/decisions.md#待确定的产品范围) |
 | 项目级设置 | #231 只做个人级设置。若后续接入项目级设置，应从 session 中独立对话框进入，具体范围尚未设计；不在全局设置中添加项目选择器 | [设置范围与生效边界](../../../app/gupi/docs/dev/issue-231/README.md#已确认方向) |

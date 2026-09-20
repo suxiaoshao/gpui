@@ -3,6 +3,7 @@ mod attachments;
 mod composer;
 mod content;
 mod history;
+mod image_preview;
 mod messages;
 pub(crate) mod navigation;
 pub(crate) mod palette;
@@ -10,6 +11,7 @@ mod panes;
 pub(crate) mod pickers;
 mod slash;
 mod titlebar;
+mod welcome;
 use crate::{
     foundation::{assets::IconName, i18n::t},
     state::{
@@ -41,6 +43,7 @@ struct SessionView {
     model_picker: Entity<pickers::Picker>,
     preview: Option<String>,
     process_open: HashMap<String, bool>,
+    queue_open: bool,
     scroller: Entity<MessageScrollerState>,
     rows: Rc<Vec<messages::ChatRow>>,
     content_revision: u64,
@@ -419,6 +422,7 @@ impl HomeView {
                     model_picker,
                     preview: None,
                     process_open: HashMap::new(),
+                    queue_open: false,
                     scroller,
                     rows: Rc::new(vec![]),
                     content_revision: u64::MAX,

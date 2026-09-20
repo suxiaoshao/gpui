@@ -15,18 +15,16 @@ use std::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::{Child, ChildStdin},
-    sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch},
+    sync::{Semaphore, mpsc, oneshot, watch},
     task::JoinHandle,
     time::{Instant, sleep_until, timeout},
 };
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Limits count encoded JSON bytes; decoded allocations also depend on JSON shape.
+/// Bound queued work by count, without imposing a Pi payload size policy.
 #[derive(Clone, Debug)]
 pub struct Limits {
-    pub frame_bytes: usize,
-    pub event_bytes: usize,
     pub events: usize,
     pub requests: usize,
     pub writes: usize,
@@ -35,8 +33,6 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            frame_bytes: 32 * 1024 * 1024,
-            event_bytes: 32 * 1024 * 1024,
             events: 128,
             requests: 128,
             writes: 32,
@@ -46,16 +42,9 @@ impl Default for Limits {
 }
 impl Limits {
     fn validate(&self) -> Result<(), Error> {
-        if [
-            self.frame_bytes,
-            self.event_bytes,
-            self.events,
-            self.requests,
-            self.writes,
-            self.stderr_bytes,
-        ]
-        .iter()
-        .any(|&n| n == 0 || n > u32::MAX as usize || n > Semaphore::MAX_PERMITS)
+        if [self.events, self.requests, self.writes, self.stderr_bytes]
+            .iter()
+            .any(|&n| n == 0 || n > u32::MAX as usize || n > Semaphore::MAX_PERMITS)
         {
             return Err(Error::Options(
                 "limits must be positive and fit the channel/semaphore range",
@@ -121,7 +110,6 @@ struct Shared {
 struct Inner {
     shared: Arc<Shared>,
     writes: mpsc::Sender<Write>,
-    write_budget: Arc<Semaphore>,
     close: watch::Sender<bool>,
     state: watch::Receiver<ConnectionState>,
     limits: Limits,
@@ -138,18 +126,14 @@ pub struct Client {
 }
 struct Write {
     bytes: Vec<u8>,
-    _permit: OwnedSemaphorePermit,
 }
-struct QueuedEvent {
-    event: Event,
-    _permit: OwnedSemaphorePermit,
-}
+/// Consume concurrently with requests: a full queue pauses stdout until drained.
 pub struct EventStream {
-    receiver: mpsc::Receiver<QueuedEvent>,
+    receiver: mpsc::Receiver<Event>,
 }
 impl EventStream {
     pub async fn recv(&mut self) -> Option<Event> {
-        self.receiver.recv().await.map(|item| item.event)
+        self.receiver.recv().await
     }
 }
 struct Waiting {
@@ -189,7 +173,6 @@ impl Client {
             .take()
             .ok_or(Error::Options("missing piped stderr"))?;
         let (writes, writer_rx) = mpsc::channel(options.limits.writes);
-        let write_budget = Arc::new(Semaphore::new(options.limits.frame_bytes));
         let (close, close_rx) = watch::channel(false);
         let (state_tx, state) = watch::channel(ConnectionState::Starting);
         let (event_tx, receiver) = mpsc::channel(options.limits.events);
@@ -204,7 +187,6 @@ impl Client {
             inner: Arc::new(Inner {
                 shared: shared.clone(),
                 writes,
-                write_budget,
                 close,
                 state,
                 limits: options.limits.clone(),
@@ -222,11 +204,11 @@ impl Client {
         tokio::spawn(
             Owner {
                 child,
-                stdout: Jsonl::new(stdout, options.limits.frame_bytes),
+                stdout: Jsonl::new(stdout),
                 shared,
                 state: state_tx,
                 events: event_tx,
-                event_budget: Arc::new(Semaphore::new(options.limits.event_bytes)),
+                pending_event: None,
                 close: close_rx,
                 writer_control,
                 writer_task,
@@ -281,7 +263,7 @@ impl Client {
             .as_object_mut()
             .expect("tagged command")
             .insert("id".into(), Value::String(id.clone()));
-        let bytes = encode(&value, self.inner.limits.frame_bytes)?;
+        let bytes = serde_json::to_vec(&value)?;
         let (reply, receive) = oneshot::channel();
         let waiting = Waiting {
             shared: self.inner.shared.clone(),
@@ -368,7 +350,7 @@ impl Client {
         let object = value.as_object_mut().expect("reply object");
         object.insert("type".into(), "extension_ui_response".into());
         object.insert("id".into(), id.into());
-        let bytes = encode(&value, self.inner.limits.frame_bytes)?;
+        let bytes = serde_json::to_vec(&value)?;
         let requests = self.inner.shared.requests.lock().unwrap();
         if !requests.accepting {
             return Err(Error::Closed);
@@ -376,18 +358,9 @@ impl Client {
         self.enqueue(bytes)
     }
     fn enqueue(&self, bytes: Vec<u8>) -> Result<(), Error> {
-        let permit = self
-            .inner
-            .write_budget
-            .clone()
-            .try_acquire_many_owned(bytes.len() as u32)
-            .map_err(|_| Error::Capacity("queued write bytes"))?;
         self.inner
             .writes
-            .try_send(Write {
-                bytes,
-                _permit: permit,
-            })
+            .try_send(Write { bytes })
             .map_err(|e| match e {
                 mpsc::error::TrySendError::Full(_) => Error::Capacity("write queue"),
                 mpsc::error::TrySendError::Closed(_) => Error::Closed,
@@ -413,31 +386,6 @@ impl Client {
             }
         }
     }
-}
-
-fn encode(value: &Value, limit: usize) -> Result<Vec<u8>, Error> {
-    struct Bounded {
-        bytes: Vec<u8>,
-        limit: usize,
-    }
-    impl std::io::Write for Bounded {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            if self.bytes.len().saturating_add(buf.len()) > self.limit {
-                return Err(std::io::Error::other("frame capacity exceeded"));
-            }
-            self.bytes.extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut writer = Bounded {
-        bytes: Vec::new(),
-        limit,
-    };
-    serde_json::to_writer(&mut writer, value).map_err(|_| Error::Capacity("outgoing frame"))?;
-    Ok(writer.bytes)
 }
 
 async fn launch(options: LaunchOptions, deadline: Instant) -> Result<Child, Error> {
@@ -585,8 +533,8 @@ struct Owner {
     stdout: Jsonl<tokio::process::ChildStdout>,
     shared: Arc<Shared>,
     state: watch::Sender<ConnectionState>,
-    events: mpsc::Sender<QueuedEvent>,
-    event_budget: Arc<Semaphore>,
+    events: mpsc::Sender<Event>,
+    pending_event: Option<Event>,
     close: watch::Receiver<bool>,
     writer_control: watch::Sender<WriterControl>,
     writer_task: JoinHandle<Result<(), Error>>,
@@ -606,11 +554,22 @@ impl Owner {
                 _ = self.close.changed() => break Some(Error::Closed),
                 _ = self.events.closed() => break Some(Error::Closed),
                 _ = sleep_until(self.deadline), if !ready => break Some(Error::StartupTimeout),
-                _ = async { sleep_until(drain_deadline.unwrap_or(self.deadline)).await }, if drain_deadline.is_some() => break Some(Error::Closed),
-                line = self.stdout.next() => {
+                _ = async { sleep_until(drain_deadline.unwrap_or(self.deadline)).await }, if drain_deadline.is_some() && self.pending_event.is_none() => break Some(Error::Closed),
+                permit = self.events.reserve(), if self.pending_event.is_some() => {
+                    match permit {
+                        Ok(permit) => {
+                            permit.send(self.pending_event.take().unwrap());
+                            if drain_deadline.is_some() {
+                                drain_deadline = Some(Instant::now() + SHUTDOWN_TIMEOUT);
+                            }
+                        },
+                        Err(_) => break Some(Error::Closed),
+                    }
+                }
+                line = self.stdout.next(), if self.pending_event.is_none() => {
                     match line {
                         Ok(Some(line)) => match self.dispatch(&line, &mut ready) {
-                            Ok(()) => {}, Err(error) => break Some(error),
+                            Ok(event) => self.pending_event = event, Err(error) => break Some(error),
                         },
                         Ok(None) => break if ready { None } else { Some(Error::NotReady) },
                         Err(error) => break Some(error),
@@ -691,7 +650,10 @@ impl Owner {
         // that Pi is idle; only then close stdin to run its session_shutdown hooks.
         while stdout_open || status.is_none() {
             tokio::select! {
-                line = self.stdout.next(), if stdout_open => {
+                permit = self.events.reserve(), if self.pending_event.is_some() => {
+                    permit.map_err(|_| Error::Closed)?.send(self.pending_event.take().unwrap());
+                }
+                line = self.stdout.next(), if stdout_open && self.pending_event.is_none() => {
                     if let Some(line) = line? {
                         let raw: Value = serde_json::from_slice(&line)?;
                         if raw.get("type").and_then(Value::as_str) == Some("response")
@@ -707,7 +669,7 @@ impl Owner {
                             let _ = self.writer_control.send(WriterControl::Closed);
                         } else {
                             // A late startup response must not restore Ready while closing.
-                            self.dispatch(&line, &mut true)?;
+                            self.pending_event = self.dispatch(&line, &mut true)?;
                         }
                     } else {
                         stdout_open = false;
@@ -731,7 +693,7 @@ impl Owner {
             let _ = pending.reply.send(Err(error.clone()));
         }
     }
-    fn dispatch(&self, line: &[u8], ready: &mut bool) -> Result<(), Error> {
+    fn dispatch(&self, line: &[u8], ready: &mut bool) -> Result<Option<Event>, Error> {
         let raw: Value = serde_json::from_slice(line)?;
         let kind = raw
             .get("type")
@@ -769,7 +731,7 @@ impl Owner {
                     let _ = pending.reply.send(result);
                 }
             }
-            return Ok(());
+            return Ok(None);
         }
         let event = if kind == "extension_ui_request" {
             Event::ExtensionUi {
@@ -782,20 +744,7 @@ impl Owner {
                 raw,
             }
         };
-        let permit = self
-            .event_budget
-            .clone()
-            .try_acquire_many_owned(line.len() as u32)
-            .map_err(|_| Error::Capacity("queued event bytes"))?;
-        self.events
-            .try_send(QueuedEvent {
-                event,
-                _permit: permit,
-            })
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => Error::Capacity("event queue"),
-                mpsc::error::TrySendError::Closed(_) => Error::Closed,
-            })
+        Ok(Some(event))
     }
 }
 fn rejection(response: &Response) -> Error {

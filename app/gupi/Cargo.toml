@@ -43,7 +43,6 @@ tokio = { version = "1.53.1", features = [
 base64 = "0.23.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 dirs-next = "2.0.0"
-glob = "0.3.4"
 globset = "0.4.20"
 ignore = "0.4.33"
 markdown = "1.0.0"
