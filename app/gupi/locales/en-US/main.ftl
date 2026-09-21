@@ -512,3 +512,8 @@ conversation-queue-clear = Clear all queued messages
 conversation-queue-no-text = Message without text
 conversation-queue-unavailable = Queue content is not available yet
 conversation-queue-text-only = Returning the queue restores text only; queued images cannot be restored.
+
+conversation-retry-countdown = Retry { $attempt }/{ $total } in about { $seconds }s
+conversation-retry-waiting = Retry { $attempt }/{ $total }: waiting for Pi
+conversation-summary-retry-countdown = Summary retry { $attempt }/{ $total } in about { $seconds }s
+conversation-summary-retry-waiting = Summary retry { $attempt }/{ $total }: waiting for Pi

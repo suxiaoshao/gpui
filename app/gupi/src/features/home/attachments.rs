@@ -100,14 +100,14 @@ impl HomeView {
                             Ok(items) => session.attachments.extend(items),
                             Err(error) => session.error = Some(error),
                         }
-                        cx.notify();
+                        crate::state::conversation::notify_session(&target, cx);
                     }
                 });
             });
             if let Some(session) = state.sessions.get_mut(&key) {
                 session.attachments_read = Some(task);
             }
-            cx.notify();
+            crate::state::conversation::notify_session(&key, cx);
         });
     }
     pub(super) fn render_attachments(&self, cx: &Context<Self>) -> Option<AnyElement> {
@@ -196,7 +196,7 @@ impl HomeView {
                                             .filter(|s| s.can_edit_draft())
                                         {
                                             session.attachments.retain(|a| a.id != id);
-                                            cx.notify();
+                                            crate::state::conversation::notify_session(&target, cx);
                                         }
                                     });
                                 })),

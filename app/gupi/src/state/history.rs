@@ -54,6 +54,9 @@ pub(crate) struct HistoryRow {
 }
 impl History {
     pub fn replace(&mut self, entries: Entries) {
+        if self.entries == entries.entries && self.leaf == entries.leaf_id {
+            return;
+        }
         self.revision = self.revision.wrapping_add(1);
         self.entries = entries.entries;
         self.leaf = entries.leaf_id;
@@ -227,7 +230,7 @@ impl History {
         }
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DisplayMessage {
     pub id: String,
     pub entry: Option<String>,

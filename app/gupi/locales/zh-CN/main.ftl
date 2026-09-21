@@ -512,3 +512,8 @@ conversation-queue-clear = 清空全部排队消息
 conversation-queue-no-text = 无文字消息
 conversation-queue-unavailable = 暂未获取队列内容
 conversation-queue-text-only = 取回仅恢复文字，排队图片无法恢复。
+
+conversation-retry-countdown = 第 { $attempt }/{ $total } 次重试，约 { $seconds } 秒后重试
+conversation-retry-waiting = 第 { $attempt }/{ $total } 次重试，等待 Pi
+conversation-summary-retry-countdown = 摘要第 { $attempt }/{ $total } 次重试，约 { $seconds } 秒后重试
+conversation-summary-retry-waiting = 摘要第 { $attempt }/{ $total } 次重试，等待 Pi

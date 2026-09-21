@@ -156,7 +156,11 @@ fn every_settings_page_renders_with_resources_at_narrow_width(cx: &mut TestAppCo
             let form = cx.new(|_| Form::new(AppConfig::default()));
             let controller = cx.new(|cx| ConfigController::new(&form, cx));
             let draft = cx.new(|_| PiProbeController::new());
-            let applied = cx.new(|_| PiProbeController::new());
+            let applied = cx.new(|_| {
+                let mut probe = PiProbeController::new();
+                probe.draining = true; // Layout fixture: no external executable probing.
+                probe
+            });
             let settings = cx.new(|cx| {
                 SettingsView::new(
                     form,

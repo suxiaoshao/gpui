@@ -118,23 +118,27 @@ impl ResourcesView {
             cx.new(|cx| InputState::new(window, cx).placeholder(t(cx, "settings-skill-search")));
         let prompt_search =
             cx.new(|cx| InputState::new(window, cx).placeholder(t(cx, "settings-template-search")));
-        let observe = cx.observe(&controller, |this, controller, cx| {
-            if let Some(catalog) = controller.read(cx).catalog.data() {
-                this.expanded_packages.retain(|source| {
-                    catalog
-                        .packages
-                        .iter()
-                        .any(|package| &package.source == source)
-                });
-                this.previews.retain(|path, _| {
-                    catalog
-                        .resources
-                        .iter()
-                        .any(|r| matches!(r.kind, Kind::Skill | Kind::Prompt) && r.path == *path)
-                });
-            }
-            cx.notify();
-        });
+        let observe = cx.observe(&controller, |_, _, cx| cx.notify());
+        let catalog_changed =
+            cx.subscribe(&controller, |this: &mut Self, controller, event, cx| {
+                if !matches!(event, ResourceEvent::CatalogChanged) {
+                    return;
+                }
+                if let Some(catalog) = controller.read(cx).catalog.data() {
+                    this.expanded_packages.retain(|source| {
+                        catalog
+                            .packages
+                            .iter()
+                            .any(|package| &package.source == source)
+                    });
+                    this.previews.retain(|path, _| {
+                        catalog.resources.iter().any(|r| {
+                            matches!(r.kind, Kind::Skill | Kind::Prompt) && r.path == *path
+                        })
+                    });
+                }
+                cx.notify();
+            });
         let change = cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify());
         let saved = cx.subscribe_in(&controller, window, |this, _, event, window, cx| {
             let ResourceEvent::Saved(path, text) = event else {
@@ -172,7 +176,7 @@ impl ResourcesView {
             }
             cx.notify();
         });
-        let mut subscriptions = vec![observe, change, saved];
+        let mut subscriptions = vec![observe, catalog_changed, change, saved];
         for input in [&source, &names[0], &names[1], &prompt_search] {
             subscriptions.push(cx.subscribe(input, |_, _, _: &InputEvent, cx| cx.notify()));
         }
@@ -359,6 +363,26 @@ impl ResourcesView {
                 .is_some_and(|catalog| !catalog.warnings.is_empty())
     }
     pub fn render_page(&self, kind: Kind, section: Section, cx: &mut Context<Self>) -> AnyElement {
+        if matches!(
+            self.controller.read(cx).catalog,
+            refresh::Operation::Idle(_)
+        ) {
+            let controller = self.controller.clone();
+            cx.defer(move |cx| {
+                controller.update(cx, |owner, cx| {
+                    if matches!(owner.catalog, refresh::Operation::Idle(_)) {
+                        owner.refresh(cx);
+                    }
+                })
+            });
+        }
+        if kind == Kind::Extension {
+            let probe = self.applied_pi.clone();
+            let command = self.config.read(cx).preferences(cx).pi_command;
+            if !probe.read(cx).matches_command(command.as_deref()) {
+                cx.defer(move |cx| probe.update(cx, |probe, cx| probe.request(command, false, cx)));
+            }
+        }
         let controller = self.controller.read(cx);
         let busy = controller.busy() || self.config.read(cx).busy(cx);
         let catalog = controller.catalog.data();

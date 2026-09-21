@@ -19,6 +19,7 @@
 
 | Issue | 入口 |
 | --- | --- |
+| [#236](https://github.com/suxiaoshao/gpui/issues/236) Gupi 事件同步、重试进度与会话局部刷新 | [实现与验证说明](../../app/gupi/docs/dev/issue-236/README.md) |
 | [#220](https://github.com/suxiaoshao/gpui/issues/220) Gupi 会话导航与主窗口对话 | [开发计划](issue-220/README.md)；页面美学与 UI/UX 由关联应用草稿承接 |
 | [#219](https://github.com/suxiaoshao/gpui/issues/219) Gupi Pi RPC 与进程生命周期 | [issue-219/README.md](issue-219/README.md) |
 | [#200](https://github.com/suxiaoshao/gpui/issues/200) HTTP Client Response 音频迁移与 GStreamer 删除 | [issue-200/README.md](issue-200/README.md) |

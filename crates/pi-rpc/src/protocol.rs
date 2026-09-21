@@ -112,7 +112,7 @@ pub struct SessionState {
 }
 
 /// Entry identity is typed; kind-specific fields preserve Pi's extensible format.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionEntry {
     pub id: String,

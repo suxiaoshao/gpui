@@ -6,6 +6,7 @@ pub(crate) enum ReadState<T> {
     Idle,
     Loading {
         id: u64,
+        again: bool,
         _task: Task<()>,
         previous: Option<T>,
     },
@@ -40,6 +41,17 @@ impl<T> ReadState<T> {
     pub fn running(&self) -> bool {
         matches!(self, Self::Loading { .. })
     }
+    pub(super) fn queue(&mut self) -> bool {
+        if let Self::Loading { again, .. } = self {
+            *again = true;
+            true
+        } else {
+            false
+        }
+    }
+    pub(super) fn queued(&self) -> bool {
+        matches!(self, Self::Loading { again: true, .. })
+    }
     pub fn accepts(&self, request: u64) -> bool {
         matches!(self, Self::Loading { id, .. } if *id == request)
     }
@@ -59,6 +71,7 @@ impl<T> Transition<ReadMessage<T>> for &mut ReadState<T> {
                 };
                 *self = ReadState::Loading {
                     id,
+                    again: false,
                     _task: task,
                     previous,
                 };
@@ -101,12 +114,25 @@ impl<T> Transition<ReadMessage<T>> for &mut ReadState<T> {
     }
 }
 
+/// A state-only read never replaces history or clears live messages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ReadScope {
+    State,
+    History,
+    Full,
+}
+
 /// Core state/history remain the session's event-merged data. This enum owns
 /// only the in-flight read and its scoped failure, not a duplicate snapshot.
 pub(crate) enum CoreRead {
     Idle,
-    CheckingFile { _task: Task<()> },
-    Reading { _task: Task<()>, again: bool },
+    CheckingFile {
+        _task: Task<()>,
+    },
+    Reading {
+        _task: Task<()>,
+        pending: Option<ReadScope>,
+    },
     Failed(String),
 }
 impl CoreRead {
@@ -119,13 +145,16 @@ impl CoreRead {
             _ => None,
         }
     }
-    pub fn queue(&mut self) {
-        if let Self::Reading { again, .. } = self {
-            *again = true;
+    pub fn queue(&mut self, scope: ReadScope) {
+        if let Self::Reading { pending, .. } = self {
+            *pending = Some(pending.map_or(scope, |old| old.max(scope)));
         }
     }
-    pub fn finish(&mut self, error: Option<String>) -> bool {
-        let again = matches!(self, Self::Reading { again: true, .. }) && error.is_none();
+    pub fn finish(&mut self, error: Option<String>) -> Option<ReadScope> {
+        let again = match self {
+            Self::Reading { pending, .. } if error.is_none() => *pending,
+            _ => None,
+        };
         let old = std::mem::replace(self, error.map(Self::Failed).unwrap_or(Self::Idle));
         drop(old);
         again

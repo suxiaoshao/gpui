@@ -68,7 +68,7 @@ impl ConversationState {
                             s.error = Some(t(cx, "conversation-reconnect-unconfirmed"));
                             s.command = SessionCommand::ReconnectUnconfirmed;
                         }
-                        cx.notify();
+                        notify_session(&target, cx);
                     });
                     return;
                 }
@@ -117,10 +117,10 @@ impl ConversationState {
                         s.command.finish();
                     }
                 }
-                cx.notify();
+                notify_session(&target, cx);
             });
         });
         self.sessions.get_mut(&key).unwrap().command = SessionCommand::Reconnecting { _task: task };
-        cx.notify();
+        notify_session(&key, cx);
     }
 }

@@ -10,7 +10,17 @@ actions!(
         ShowTemporaryWindow
     ]
 );
+struct AppliedLocale(&'static str);
+impl Global for AppliedLocale {}
 pub(crate) fn refresh(cx: &mut App) {
+    let locale = crate::foundation::i18n::locale(cx);
+    if cx
+        .try_global::<AppliedLocale>()
+        .is_some_and(|old| old.0 == locale)
+    {
+        return;
+    }
+    cx.set_global(AppliedLocale(locale));
     super::tray::refresh(cx);
     cx.set_menus(vec![Menu {
         disabled: false,

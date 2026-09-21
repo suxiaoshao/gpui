@@ -97,6 +97,9 @@ impl HomeView {
                     .child(format!("{}: {error}", t(cx, "conversation-save-error"))),
             );
         }
+        if session.retry.is_some() || session.summary_retry.is_some() {
+            shell = shell.child(self.progress.clone());
+        }
         if session.compacting || session.command.compacting() {
             shell = shell.child(
                 h_flex()

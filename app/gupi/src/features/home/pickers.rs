@@ -215,30 +215,36 @@ impl Picker {
     pub fn sync_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let data = self.query(cx);
         let binding = SliderBinding::from(&data);
-        let reset_slider = self.slider_binding.as_ref() != Some(&binding) || !data.can_think();
-        self.list.update(cx, |list, cx| {
+        let reset_slider = self.slider_binding.as_ref() != Some(&binding)
+            || self.draft_level.is_some() && !data.can_think();
+        let list_changed = self.list.update(cx, |list, cx| {
             let cursor = list
                 .selected_index()
                 .and_then(|ix| list.delegate().item(ix))
                 .map(|m| m.key.clone());
             let delegate = list.delegate_mut();
-            delegate.replace(
+            if !delegate.replace(
                 data.models.clone(),
                 data.selected.clone(),
                 !data.can_select_model(),
-            );
+            ) {
+                return false;
+            }
             let index = cursor
                 .as_ref()
                 .or(data.selected.as_ref())
                 .and_then(|key| delegate.position(key));
             list.set_selected_index(index, window, cx);
             cx.notify();
+            true
         });
         self.slider_binding = Some(binding);
         if reset_slider {
             self.reset_slider(window, cx);
         }
-        cx.notify();
+        if list_changed || reset_slider {
+            cx.notify();
+        }
     }
     fn reset_slider(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let data = self.query(cx);

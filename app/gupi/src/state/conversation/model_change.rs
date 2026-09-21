@@ -39,63 +39,82 @@ impl ConversationState {
                         return false;
                     };
                     s.model_change.reconciling();
-                    cx.notify();
+                    notify_controls(&task_key, cx);
                     true
                 })
                 .unwrap_or(false);
             if !valid {
                 return;
             }
-            let state = client.get_state().await.and_then(|state| {
-                if state.session_id != session_id {
-                    return Err(pi_rpc::Error::Protocol(
-                        "session changed while confirming model settings".into(),
-                    ));
-                }
-                Ok(state)
-            });
-            let _ = owner.update(cx, |this, cx| {
-                let Some(s) = this
-                    .sessions
-                    .get_mut(&task_key)
-                    .filter(|s| s.binding == binding && s.model_revision == revision)
-                else {
+            loop {
+                let Ok(Some(event_revision)) = owner.read_with(cx, |this, _| {
+                    this.sessions
+                        .get(&task_key)
+                        .filter(|s| s.binding == binding && s.model_revision == revision)
+                        .map(|s| s.settings_event_revision)
+                }) else {
                     return;
                 };
-                let confirmed = state.is_ok();
-                let refresh_core = match state {
-                    Ok(actual) => {
-                        let current = s.state.as_mut().unwrap();
-                        current.model = actual.model;
-                        current.thinking_level = actual.thinking_level;
-                        s.model_change.finish(Ok(command_error))
+                let state = client.get_state().await.and_then(|state| {
+                    if state.session_id != session_id {
+                        return Err(pi_rpc::Error::Protocol(
+                            "session changed while confirming model settings".into(),
+                        ));
                     }
-                    Err(error) => {
-                        let error = match command_error {
-                            Some(command) => format!("{command}\n{error}"),
-                            None => error.to_string(),
+                    Ok(state)
+                });
+                let repeat = owner
+                    .update(cx, |this, cx| {
+                        let Some(s) = this
+                            .sessions
+                            .get_mut(&task_key)
+                            .filter(|s| s.binding == binding && s.model_revision == revision)
+                        else {
+                            return false;
                         };
-                        s.model_change.finish(Err(error))
-                    }
-                };
-                s.content_revision += 1;
-                if confirmed {
-                    this.read_thinking(&task_key, cx);
+                        if state.is_ok() && s.settings_event_revision != event_revision {
+                            return true;
+                        }
+                        let confirmed = state.is_ok();
+                        let refresh_core = match state {
+                            Ok(actual) => {
+                                let current = s.state.as_mut().unwrap();
+                                current.model = actual.model;
+                                current.thinking_level = actual.thinking_level;
+                                s.model_change.finish(Ok(command_error.clone()))
+                            }
+                            Err(error) => {
+                                let error = match &command_error {
+                                    Some(command) => format!("{command}\n{error}"),
+                                    None => error.to_string(),
+                                };
+                                s.model_change.finish(Err(error))
+                            }
+                        };
+
+                        if confirmed {
+                            this.read_thinking(&task_key, cx);
+                        }
+                        if refresh_core {
+                            this.refresh(&task_key, cx);
+                        } else if confirmed {
+                            this.refresh_stats(&task_key, cx);
+                        }
+                        notify_controls(&task_key, cx);
+                        false
+                    })
+                    .unwrap_or(false);
+                if !repeat {
+                    break;
                 }
-                if refresh_core {
-                    this.refresh(&task_key, cx);
-                } else if confirmed {
-                    this.refresh_stats(&task_key, cx);
-                }
-                cx.notify();
-            });
+            }
         });
         let s = self.sessions.get_mut(key).unwrap();
         s.model_change = ModelChange::Applying {
             task,
             refresh_core: false,
         };
-        s.content_revision += 1;
-        cx.notify();
+
+        notify_controls(key, cx);
     }
 }

@@ -23,6 +23,8 @@ pub(crate) struct PiEvent {
     pub instance: InstanceId,
     pub event: Event,
 }
+pub(crate) struct ConnectionChanged(pub InstanceId);
+impl EventEmitter<ConnectionChanged> for PiState {}
 pub(crate) struct PiState {
     instances: BTreeMap<InstanceId, Instance>,
     next_id: u64,
@@ -73,6 +75,7 @@ impl PiState {
                     Err(error) => Instance::Failed(error),
                 };
                 owner.instances.insert(id, instance);
+                cx.emit(ConnectionChanged(id));
                 cx.notify();
             });
         });
@@ -104,13 +107,12 @@ impl PiState {
                         };
                         if owner.update(cx, |_, cx| {
                             cx.emit(PiEvent { instance: id, event });
-                            cx.notify();
                         }).is_err() { break; }
                     }
                     changed = status.changed() => {
                         if changed.is_err() { break; }
                         let exited = matches!(*status.borrow_and_update(), ConnectionState::Closed(_));
-                        if owner.update(cx, |_, cx| cx.notify()).is_err() { break; }
+                        if owner.update(cx, |_, cx| { cx.emit(ConnectionChanged(id)); cx.notify(); }).is_err() { break; }
                         if exited {
                             // Drain any events queued before the exit report.
                             while let Some(event) = events.recv().await {
@@ -137,6 +139,7 @@ impl PiState {
             Some(Instance::Connected(connection)) => Some(connection.client.close()),
             _ => None,
         };
+        cx.emit(ConnectionChanged(id));
         cx.notify();
         cx.spawn(async move |_, _| {
             match (instance, closing) {

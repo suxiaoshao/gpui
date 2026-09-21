@@ -326,7 +326,7 @@ async fn deletion_of_catalog_only_session_does_not_launch_pi(cx: &mut TestAppCon
     .await;
     owner.read_with(cx, |state, _| {
         assert_eq!(state.sessions[&foreground].draft, "other draft");
-        assert_ne!(state.selected.as_deref(), Some(foreground.as_str()));
+        assert_eq!(state.selected.as_deref(), Some(foreground.as_str()));
         assert!(state.current().unwrap().instance.is_none());
     });
     assert!(!dir.path().join("commands.log").exists());
@@ -1256,7 +1256,7 @@ async fn fork_history_failure_keeps_successful_fork_and_returned_text(cx: &mut T
             assert_eq!(state.current().unwrap().draft, "selected fork message");
             assert_eq!(state.current().unwrap().instance, instance);
             assert_eq!(state.sessions[&key].draft, "original conversation draft");
-            assert!(state.scan_serial > scans);
+            assert_eq!(state.scan_serial, scans);
             assert!(
                 state
                     .file()
@@ -2463,4 +2463,326 @@ async fn queue_clear_and_failure_never_replace_draft(cx: &mut TestAppContext) {
         });
         close(&owner, cx).await;
     }
+}
+
+fn emit_session_event(
+    owner: &Entity<ConversationState>,
+    key: &str,
+    raw: serde_json::Value,
+    cx: &mut TestAppContext,
+) {
+    owner.update(cx, |state, cx| {
+        let instance = state.sessions[key].instance.unwrap();
+        let kind = raw["type"].as_str().unwrap().to_owned();
+        state.on_event(
+            &pi::PiEvent {
+                instance,
+                event: pi_rpc::protocol::Event::Agent { kind, raw },
+            },
+            cx,
+        );
+    });
+}
+async fn reads_settled(owner: &Entity<ConversationState>, key: &str, cx: &mut TestAppContext) {
+    cx.condition(owner, |state, _| {
+        let s = &state.sessions[key];
+        s.state.is_some()
+            && !s.core_read.running()
+            && !s.stats.running()
+            && !s.fork_messages.running()
+            && !s.models.running()
+            && !s.thinking_levels.running()
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn scoped_events_keep_queue_retry_and_name_changes_out_of_history_reads(
+    cx: &mut TestAppContext,
+) {
+    let (dir, owner, key) = begin(cx, &[]);
+    reads_settled(&owner, &key, cx).await;
+    let revision = owner.read_with(cx, |s, _| s.sessions[&key].content_revision);
+    let entries = count(dir.path(), "get_entries");
+    let client = owner.read_with(cx, |s, cx| s.client(&key, cx).unwrap());
+    control(&client, "emit_queue", "", 0).await;
+    cx.condition(&owner, |s, _| s.sessions[&key].pending_count == 2)
+        .await;
+    for raw in [
+        serde_json::json!({"type":"extension_error","error":"later"}),
+        serde_json::json!({"type":"turn_start"}),
+        serde_json::json!({"type":"session_info_changed","name":"Plugin name"}),
+        serde_json::json!({"type":"auto_retry_start","attempt":2,"maxAttempts":5,"delayMs":8000,"errorMessage":"busy"}),
+        serde_json::json!({"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":3,"delayMs":1000,"errorMessage":"busy"}),
+        serde_json::json!({"type":"summarization_retry_finished"}),
+    ] {
+        emit_session_event(&owner, &key, raw, cx);
+    }
+    owner.read_with(cx, |s, _| {
+        let session = &s.sessions[&key];
+        assert_eq!(session.content_revision, revision);
+        assert_eq!(session.info.name.as_deref(), Some("Plugin name"));
+        assert!(session.retry.is_some());
+        assert!(session.summary_retry.is_none());
+        assert_eq!(s.scan_serial, 0);
+    });
+    assert_eq!(count(dir.path(), "get_entries"), entries);
+    emit_session_event(
+        &owner,
+        &key,
+        serde_json::json!({"type":"session_info_changed"}),
+        cx,
+    );
+    owner.read_with(cx, |s, _| assert!(s.sessions[&key].info.name.is_none()));
+    emit_session_event(
+        &owner,
+        &key,
+        serde_json::json!({"type":"auto_retry_end","success":true}),
+        cx,
+    );
+    owner.update(cx, |s, cx| s.clear_queue(&key, false, cx));
+    cx.condition(&owner, |s, _| {
+        !s.sessions[&key].command.running() && !s.sessions[&key].core_read.running()
+    })
+    .await;
+    assert_eq!(count(dir.path(), "get_entries"), entries);
+    owner.read_with(cx, |s, _| assert_eq!(s.sessions[&key].pending_count, 0));
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn settled_reads_only_its_session_and_unchanged_history_keeps_its_revision(
+    cx: &mut TestAppContext,
+) {
+    let (dir, owner, key) = begin(cx, &[]);
+    reads_settled(&owner, &key, cx).await;
+    let (history, content) = owner.read_with(cx, |s, _| {
+        (
+            s.sessions[&key].history().revision,
+            s.sessions[&key].content_revision,
+        )
+    });
+    let entries = count(dir.path(), "get_entries");
+    let stats = count(dir.path(), "get_session_stats");
+    emit_session_event(&owner, &key, serde_json::json!({"type":"agent_end"}), cx);
+    assert_eq!(count(dir.path(), "get_entries"), entries);
+    emit_session_event(
+        &owner,
+        &key,
+        serde_json::json!({"type":"agent_settled"}),
+        cx,
+    );
+    reads_settled(&owner, &key, cx).await;
+    assert_eq!(count(dir.path(), "get_entries"), entries + 1);
+    assert_eq!(count(dir.path(), "get_session_stats"), stats);
+    owner.read_with(cx, |s, _| {
+        assert_eq!(s.scan_serial, 0);
+        assert_eq!(s.sessions[&key].history().revision, history);
+        assert_eq!(s.sessions[&key].content_revision, content + 1);
+    });
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn settings_events_during_canonical_readback_are_reconciled_without_history(
+    cx: &mut TestAppContext,
+) {
+    let (dir, owner, key) = begin(cx, &[]);
+    reads_settled(&owner, &key, cx).await;
+    let entries = count(dir.path(), "get_entries");
+    let revision = owner.read_with(cx, |s, _| s.sessions[&key].content_revision);
+    let client = owner.read_with(cx, |s, cx| s.client(&key, cx).unwrap());
+    let states = count(dir.path(), "get_state");
+    std::fs::write(dir.path().join("hold-get_state"), "").unwrap();
+    owner.update(cx, |s, cx| s.set_thinking(&key, "off".into(), cx));
+    control(&client, "wait_for", "get_state", states + 1).await;
+    client.set_thinking_level("high".into()).await.unwrap();
+    emit_session_event(
+        &owner,
+        &key,
+        serde_json::json!({"type":"thinking_level_changed","level":"high"}),
+        cx,
+    );
+    control(&client, "release", "get_state", 0).await;
+    cx.condition(&owner, |s, _| !s.sessions[&key].model_change.running())
+        .await;
+    owner.read_with(cx, |s, _| {
+        assert_eq!(
+            s.sessions[&key].state.as_ref().unwrap().thinking_level,
+            "high"
+        );
+        assert_eq!(s.sessions[&key].content_revision, revision);
+    });
+    assert_eq!(count(dir.path(), "get_entries"), entries);
+    assert!(count(dir.path(), "get_state") >= states + 2);
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn queue_events_do_not_discard_pending_usage_results(cx: &mut TestAppContext) {
+    let (dir, owner, key) = begin(cx, &["hold-get_session_stats"]);
+    cx.condition(&owner, |s, _| s.sessions[&key].stats.running())
+        .await;
+    let client = owner.read_with(cx, |s, cx| s.client(&key, cx).unwrap());
+    control(&client, "wait_for", "get_session_stats", 1).await;
+    control(&client, "emit_queue", "", 0).await;
+    control(&client, "release", "get_session_stats", 0).await;
+    cx.condition(&owner, |s, _| s.sessions[&key].stats.data().is_some())
+        .await;
+    assert_eq!(count(dir.path(), "get_session_stats"), 1);
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn appended_custom_and_usage_entries_refresh_history_and_usage_without_a_catalog_scan(
+    cx: &mut TestAppContext,
+) {
+    let (dir, owner, key) = begin(cx, &[]);
+    reads_settled(&owner, &key, cx).await;
+    let before_stats = count(dir.path(), "get_session_stats");
+    let mut entries = vec![];
+    for (id, kind) in [("custom-entry", "custom"), ("warm-entry", "usage")] {
+        let parent = entries
+            .last()
+            .and_then(|e: &serde_json::Value| e["id"].as_str())
+            .map(str::to_owned);
+        let entry = serde_json::json!({"id":id,"type":kind,"parentId":parent,"timestamp":"2026-09-21T00:00:00Z","usageType":"cache_warm","data":{"answer":1}});
+        entries.push(entry.clone());
+        std::fs::write(
+            dir.path().join("entries.json"),
+            serde_json::json!({"entries":entries,"leafId":id}).to_string(),
+        )
+        .unwrap();
+        emit_session_event(
+            &owner,
+            &key,
+            serde_json::json!({"type":"entry_appended","entry":entry}),
+            cx,
+        );
+        cx.condition(&owner, |s, _| {
+            s.sessions[&key].history().entry(id).is_some()
+        })
+        .await;
+        reads_settled(&owner, &key, cx).await;
+    }
+    assert_eq!(count(dir.path(), "get_session_stats"), before_stats + 2);
+    owner.read_with(cx, |s, _| assert_eq!(s.scan_serial, 0));
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn repeated_usage_refreshes_share_the_pending_read(cx: &mut TestAppContext) {
+    let (dir, owner, key) = begin(cx, &["hold-get_session_stats"]);
+    cx.condition(&owner, |s, _| s.sessions[&key].stats.running())
+        .await;
+    let client = owner.read_with(cx, |s, cx| s.client(&key, cx).unwrap());
+    control(&client, "wait_for", "get_session_stats", 1).await;
+    owner.update(cx, |s, cx| {
+        for _ in 0..5 {
+            s.refresh_stats(&key, cx);
+        }
+    });
+    assert_eq!(count(dir.path(), "get_session_stats"), 1);
+    control(&client, "release", "get_session_stats", 0).await;
+    reads_settled(&owner, &key, cx).await;
+    assert_eq!(count(dir.path(), "get_session_stats"), 2);
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn background_rename_is_scoped_and_does_not_save_drafts_or_scan(cx: &mut TestAppContext) {
+    use std::{cell::RefCell, rc::Rc};
+    let (dir, owner, key) = begin(cx, &[]);
+    reads_settled(&owner, &key, cx).await;
+    let foreground = owner.update(cx, |state, _| {
+        state.insert_draft(Some(dir.path().join("foreground")));
+        state.selected.clone().unwrap()
+    });
+    cx.run_until_parked();
+    let changes = Rc::new(RefCell::new(Vec::new()));
+    let observed = changes.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&owner, move |_, event, _| {
+            if let super::super::ConversationEvent::Changed(change) = event {
+                observed.borrow_mut().push((
+                    change.catalog,
+                    change.selection,
+                    change.sessions.keys().cloned().collect::<Vec<_>>(),
+                ));
+            }
+        })
+    });
+    let (revision, scans) = owner.read_with(cx, |state, _| (state.revision, state.scan_serial));
+    owner.update(cx, |state, cx| {
+        assert!(state.rename(&key, "Renamed in background".into(), cx))
+    });
+    cx.condition(&owner, |state, _| !state.sessions[&key].command.running())
+        .await;
+    cx.run_until_parked();
+    owner.read_with(cx, |state, _| {
+        assert_eq!(state.selected.as_ref(), Some(&foreground));
+        assert_eq!(
+            state.sessions[&key].info.name.as_deref(),
+            Some("Renamed in background")
+        );
+        assert_eq!((state.revision, state.scan_serial), (revision, scans));
+    });
+    assert!(!changes.borrow().is_empty());
+    assert!(
+        changes
+            .borrow()
+            .iter()
+            .all(|(catalog, selection, keys)| !catalog
+                && !selection
+                && keys == std::slice::from_ref(&key))
+    );
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn streamed_body_and_repeated_draft_updates_have_distinct_batched_scopes(
+    cx: &mut TestAppContext,
+) {
+    use std::{cell::RefCell, rc::Rc};
+    let (_dir, owner, key) = begin(cx, &[]);
+    reads_settled(&owner, &key, cx).await;
+    emit_session_event(&owner, &key, serde_json::json!({"type":"agent_start"}), cx);
+    cx.run_until_parked();
+    let changes = Rc::new(RefCell::new(Vec::new()));
+    let observed = changes.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&owner, move |_, event, _| {
+            if let super::super::ConversationEvent::Changed(change) = event {
+                observed.borrow_mut().push((
+                    change.catalog,
+                    change.sessions.clone(),
+                    change.bodies.clone(),
+                ));
+            }
+        })
+    });
+    owner.update(cx, |state, cx| {
+        state.set_draft(&key, "a".into(), cx);
+        state.set_draft(&key, "ab".into(), cx);
+        state.set_draft(&key, "abc".into(), cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(changes.borrow().len(), 1);
+    assert_eq!(changes.borrow()[0].1.get(&key), Some(&false));
+    changes.borrow_mut().clear();
+    emit_session_event(
+        &owner,
+        &key,
+        serde_json::json!({"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"live"}],"timestamp":1}}),
+        cx,
+    );
+    cx.run_until_parked();
+    assert_eq!(changes.borrow().len(), 1);
+    {
+        let changes = changes.borrow();
+        assert!(!changes[0].0);
+        assert!(changes[0].1.is_empty());
+        assert!(changes[0].2.contains(&key));
+    }
+    close(&owner, cx).await;
 }

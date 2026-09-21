@@ -82,8 +82,6 @@ impl SettingsView {
             )
         });
         let resources_sub = cx.observe(&resources, |_, _, cx| cx.notify());
-        let resource_controller = resources.read(cx).controller.clone();
-        let resource_controller_sub = cx.observe(&resource_controller, |_, _, cx| cx.notify());
         let keys_sub = cx.observe(&keys, |_, _, cx| cx.notify());
         let applied_sub = cx.observe(&applied_pi, |_, _, cx| cx.notify());
         let input = cx.new(|cx| {
@@ -199,7 +197,6 @@ impl SettingsView {
             _subscriptions: vec![
                 temporary_sub,
                 resources_sub,
-                resource_controller_sub,
                 keys_sub,
                 applied_sub,
                 input_sub,
@@ -309,16 +306,6 @@ impl SettingsView {
             .controller
             .clone()
             .update(cx, |owner, _| owner.stop());
-    }
-    pub fn activate(&self, cx: &mut Context<Self>) {
-        let command = self.controller.read(cx).preferences(cx).pi_command;
-        self.applied_pi
-            .update(cx, |pi, cx| pi.request(command, true, cx));
-        self.resources
-            .read(cx)
-            .controller
-            .clone()
-            .update(cx, |owner, cx| owner.refresh(cx));
     }
     fn render_config_actions(
         &self,

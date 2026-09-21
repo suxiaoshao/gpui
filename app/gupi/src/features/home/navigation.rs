@@ -25,7 +25,7 @@ type SessionRow = (String, SessionInfo, Activity);
 
 #[derive(Clone)]
 enum NavigationItem {
-    Project(ProjectItem),
+    Project(Entity<ProjectView>),
     Loading { progress: Option<ScanProgress> },
     Failed,
     Empty,
@@ -42,11 +42,11 @@ impl SidebarItem for NavigationItem {
     fn render(
         self,
         id: impl Into<ElementId>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) -> impl IntoElement {
         match self {
-            Self::Project(project) => project.render(id, window, cx).into_any_element(),
+            Self::Project(project) => project.into_any_element(),
             Self::Loading { progress } => catalog_loading(progress, false, cx),
             Self::Failed => div()
                 .px_2()
@@ -250,6 +250,7 @@ impl SidebarItem for ProjectItem {
                     if !this.open_projects.remove(&project) {
                         this.open_projects.insert(project.clone());
                     }
+                    this.sync_navigation_selection(cx);
                     cx.notify();
                 });
             },
@@ -377,6 +378,7 @@ impl SidebarItem for ProjectItem {
                                     if !this.projects_with_more.remove(&path) {
                                         this.projects_with_more.insert(path.clone());
                                     }
+                                    this.sync_navigation_selection(cx);
                                     cx.notify();
                                 });
                             }),
@@ -557,52 +559,12 @@ impl HomeView {
 
     pub(super) fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let state = self.state.read(cx);
-        let mut projects: Vec<(PathBuf, Vec<SessionRow>)> = vec![];
-        for (key, info) in state.infos() {
-            let activity = state
-                .sessions
-                .get(&key)
-                .map(|s| s.activity())
-                .unwrap_or(Activity::Idle);
-            if let Some((_, rows)) = projects.iter_mut().find(|(cwd, _)| *cwd == info.cwd) {
-                rows.push((key, info, activity));
-            } else {
-                projects.push((info.cwd.clone(), vec![(key, info, activity)]));
-            }
-        }
-        let basename = |path: &PathBuf| {
-            path.file_name()
-                .unwrap_or(path.as_os_str())
-                .to_string_lossy()
-                .into_owned()
-        };
-        let names = projects
+        let groups = self
+            .navigation
+            .order
             .iter()
-            .map(|(path, _)| basename(path))
-            .collect::<Vec<_>>();
-        let groups = projects
-            .into_iter()
-            .map(|(cwd, rows)| {
-                let name = basename(&cwd);
-                let label = if names.iter().filter(|n| **n == name).count() > 1 {
-                    cwd.parent()
-                        .and_then(|p| p.file_name())
-                        .map(|p| format!("{}/{}", p.to_string_lossy(), name))
-                        .unwrap_or(name)
-                } else {
-                    name
-                };
-                ProjectItem {
-                    closed: !self.open_projects.contains(&cwd),
-                    more: self.projects_with_more.contains(&cwd),
-                    cwd,
-                    label,
-                    rows,
-                    selected: state.selected.clone(),
-                    state: self.state.clone(),
-                    owner: cx.entity().downgrade(),
-                }
-            })
+            .filter_map(|cwd| self.navigation.groups.get(cwd))
+            .cloned()
             .collect::<Vec<_>>();
         let mut items = Vec::new();
         if state.scanning() && state.catalog.data().is_none() {
@@ -773,6 +735,310 @@ impl HomeView {
                     }
                     state.update(cx, |s, cx| s.rename(&key, name.trim().into(), cx))
                 })
+        });
+    }
+}
+
+/// Retained presentation cache: only changed projects invalidate their view.
+#[derive(Default)]
+pub(super) struct Navigation {
+    rows: BTreeMap<String, SessionRow>,
+    groups: BTreeMap<PathBuf, Entity<ProjectView>>,
+    order: Vec<PathBuf>,
+}
+struct ProjectView(ProjectItem);
+impl Render for ProjectView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.0.clone().render("project", window, cx)
+    }
+}
+impl HomeView {
+    pub(super) fn sync_navigation(&mut self, source: Option<&str>, cx: &mut Context<Self>) {
+        if self.state.read(cx).temporary {
+            return;
+        }
+        let state = self.state.read(cx);
+        let mut affected = HashSet::new();
+        match source {
+            Some(key) => {
+                if let Some(session) = state.sessions.get(key) {
+                    let row = (key.to_owned(), session.info.clone(), session.activity());
+                    if self.navigation.rows.get(key) != Some(&row) {
+                        if let Some(old) = self.navigation.rows.insert(key.to_owned(), row) {
+                            affected.insert(old.1.cwd);
+                        }
+                        affected.insert(session.info.cwd.clone());
+                    }
+                    // The catalog alias disappears when a local draft gains a file.
+                    let alias = session.info.key();
+                    if alias != key
+                        && !alias.is_empty()
+                        && let Some(old) = self.navigation.rows.remove(&alias)
+                    {
+                        affected.insert(old.1.cwd);
+                    }
+                } else if let Some(old) = self.navigation.rows.remove(key) {
+                    affected.insert(old.1.cwd);
+                }
+            }
+            None => {
+                let rows: BTreeMap<_, _> = state
+                    .infos()
+                    .into_iter()
+                    .map(|(key, info)| {
+                        let activity = state
+                            .sessions
+                            .get(&key)
+                            .map(|s| s.activity())
+                            .unwrap_or(Activity::Idle);
+                        (key.clone(), (key, info, activity))
+                    })
+                    .collect();
+                for (key, row) in self.navigation.rows.iter().chain(rows.iter()) {
+                    if self.navigation.rows.get(key) != rows.get(key) {
+                        affected.insert(row.1.cwd.clone());
+                    }
+                }
+                self.navigation.rows = rows;
+            }
+        }
+        if source.is_some() && affected.is_empty() {
+            return;
+        }
+        self.refresh_navigation(affected, cx);
+    }
+    pub(super) fn sync_navigation_selection(&mut self, cx: &mut Context<Self>) {
+        self.refresh_navigation(HashSet::new(), cx);
+    }
+    fn refresh_navigation(&mut self, affected: HashSet<PathBuf>, cx: &mut Context<Self>) {
+        let selected_key = self.state.read(cx).selected.clone();
+        let mut changed = false;
+        for cwd in affected {
+            let mut rows = self
+                .navigation
+                .rows
+                .values()
+                .filter(|(_, info, _)| info.cwd == cwd)
+                .cloned()
+                .collect::<Vec<_>>();
+            rows.sort_by(|(ak, a, _), (bk, b, _)| b.activity.cmp(&a.activity).then(ak.cmp(bk)));
+            if rows.is_empty() {
+                changed |= self.navigation.groups.remove(&cwd).is_some();
+                continue;
+            }
+            let selected = selected_key
+                .as_ref()
+                .filter(|key| rows.iter().any(|(k, _, _)| k == *key))
+                .cloned();
+            let item = ProjectItem {
+                closed: !self.open_projects.contains(&cwd),
+                more: self.projects_with_more.contains(&cwd),
+                label: String::new(),
+                cwd: cwd.clone(),
+                rows,
+                selected,
+                state: self.state.clone(),
+                owner: cx.weak_entity(),
+            };
+            if let Some(group) = self.navigation.groups.get(&cwd) {
+                group.update(cx, |group, cx| {
+                    let label = group.0.label.clone();
+                    group.0 = item;
+                    group.0.label = label;
+                    cx.notify();
+                });
+            } else {
+                self.navigation
+                    .groups
+                    .insert(cwd, cx.new(|_| ProjectView(item)));
+            }
+            changed = true;
+        }
+        let selected = self.state.read(cx).selected.clone();
+        let basename = |path: &PathBuf| {
+            path.file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy()
+                .into_owned()
+        };
+        let names = self
+            .navigation
+            .groups
+            .keys()
+            .map(basename)
+            .collect::<Vec<_>>();
+        for (cwd, group) in &self.navigation.groups {
+            let name = basename(cwd);
+            let label = if names.iter().filter(|other| **other == name).count() > 1 {
+                cwd.parent()
+                    .and_then(|p| p.file_name())
+                    .map(|p| format!("{}/{}", p.to_string_lossy(), name))
+                    .unwrap_or(name)
+            } else {
+                name
+            };
+            let current = group.read(cx);
+            let selected = selected
+                .as_ref()
+                .filter(|key| current.0.rows.iter().any(|(k, _, _)| k == *key))
+                .cloned();
+            let closed = !self.open_projects.contains(cwd);
+            let more = self.projects_with_more.contains(cwd);
+            if current.0.selected != selected
+                || current.0.closed != closed
+                || current.0.more != more
+                || current.0.label != label
+            {
+                group.update(cx, |group, cx| {
+                    group.0.selected = selected;
+                    group.0.closed = closed;
+                    group.0.more = more;
+                    group.0.label = label;
+                    cx.notify();
+                });
+                changed = true;
+            }
+        }
+        if changed {
+            let mut order = self.navigation.groups.keys().cloned().collect::<Vec<_>>();
+            order.sort_by(|a, b| {
+                let a_row = &self.navigation.groups[a].read(cx).0.rows[0];
+                let b_row = &self.navigation.groups[b].read(cx).0.rows[0];
+                b_row
+                    .1
+                    .activity
+                    .cmp(&a_row.1.activity)
+                    .then(a_row.0.cmp(&b_row.0))
+            });
+            self.navigation.order = order;
+            cx.notify();
+        }
+    }
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use super::HomeView;
+    use crate::state::{
+        config::AppLanguage,
+        conversation::{ConversationState, Session, notify, notify_session},
+        pi,
+    };
+    use gpui_kit::component::Root;
+    use gpui_kit::{AppContext, TestAppContext, px, size};
+    use std::{path::PathBuf, rc::Rc};
+
+    fn session(name: &str, cwd: &str) -> Session {
+        let mut session = Session::from_rpc_messages(&[]);
+        session.info.cwd = cwd.into();
+        session.info.name = Some(name.into());
+        session.state = Some(
+            serde_json::from_value(serde_json::json!({
+                "sessionId": name, "isStreaming": false, "isCompacting": false
+            }))
+            .unwrap(),
+        );
+        session
+    }
+
+    #[gpui_kit::test]
+    fn inserting_a_session_preserves_other_project_views_and_background_updates_preserve_body(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            app_theme::init(cx);
+            crate::state::theme::init(cx);
+            crate::foundation::i18n::apply(AppLanguage::Chinese, cx);
+            pi::init(cx);
+            cx.set_global(crate::state::layout::LayoutState::default());
+        });
+        let state = cx.new(|cx| ConversationState::new("unused".into(), cx));
+        state.update(cx, |s, _| {
+            s.sessions
+                .insert("a".into(), session("Alpha", "/tmp/project-a"));
+            s.sessions
+                .insert("b".into(), session("Beta", "/tmp/project-b"));
+            s.selected = Some("a".into());
+        });
+        let mut home = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| HomeView::with_state(state.clone(), window, cx));
+            home = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let home = home.unwrap();
+        visual.simulate_resize(size(px(1200.), px(800.)));
+        visual.run_until_parked();
+        let (a, b, body, history) = visual.update(|_, cx| {
+            let home = home.read(cx);
+            (
+                home.navigation.groups[&PathBuf::from("/tmp/project-a")].clone(),
+                home.navigation.groups[&PathBuf::from("/tmp/project-b")].clone(),
+                home.views["a"].rows.clone(),
+                home.history_list.read(cx).delegate().rows.clone(),
+            )
+        });
+        let notifications = Rc::new(std::cell::Cell::new(0));
+        let captured = notifications.clone();
+        let _subscription =
+            visual.update(|_, cx| cx.observe(&b, move |_, _| captured.set(captured.get() + 1)));
+        visual.update(|_, cx| {
+            state.update(cx, |s, cx| {
+                s.sessions
+                    .insert("new".into(), session("New", "/tmp/project-a"));
+                notify(cx);
+            })
+        });
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            let home = home.read(cx);
+            assert_eq!(home.navigation.groups[&PathBuf::from("/tmp/project-a")], a);
+            assert_eq!(home.navigation.groups[&PathBuf::from("/tmp/project-b")], b);
+            assert_eq!(a.read(cx).0.rows.len(), 2);
+            assert!(Rc::ptr_eq(&home.views["a"].rows, &body));
+            assert!(Rc::ptr_eq(
+                &home.history_list.read(cx).delegate().rows,
+                &history
+            ));
+        });
+        assert_eq!(
+            notifications.get(),
+            0,
+            "adding in A must not invalidate project B"
+        );
+        visual.update(|_, cx| {
+            state.update(cx, |s, cx| {
+                s.sessions.get_mut("b").unwrap().content_revision += 1;
+                notify_session("b", cx);
+            })
+        });
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            let home = home.read(cx);
+            assert!(Rc::ptr_eq(&home.views["a"].rows, &body));
+            assert!(Rc::ptr_eq(
+                &home.history_list.read(cx).delegate().rows,
+                &history
+            ));
+        });
+        assert_eq!(
+            notifications.get(),
+            0,
+            "body changes must not invalidate unchanged navigation metadata"
+        );
+        // Disclosure state remains on the owner while the retained project updates.
+        visual.update(|_, cx| {
+            home.update(cx, |home, cx| {
+                home.open_projects.insert("/tmp/project-b".into());
+                home.projects_with_more.insert("/tmp/project-b".into());
+                home.sync_navigation(None, cx);
+            })
+        });
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            assert!(!b.read(cx).0.closed);
+            assert!(b.read(cx).0.more);
         });
     }
 }

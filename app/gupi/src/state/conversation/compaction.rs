@@ -44,13 +44,13 @@ impl ConversationState {
                         error: true,
                     });
                 }
-                this.refresh(&target, cx);
-                cx.notify();
+                this.read_session(&target, ReadScope::History, cx);
+                notify_session(&target, cx);
             });
         });
         let session = self.sessions.get_mut(key).unwrap();
         session.interrupted = false;
         session.command = SessionCommand::Compacting { _task: task };
-        cx.notify();
+        notify_session(key, cx);
     }
 }

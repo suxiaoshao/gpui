@@ -49,3 +49,33 @@ pub(crate) enum ToolExecution {
     Complete(Value),
     Failed(Value),
 }
+
+/// Pi owns scheduling; this deadline only describes its announced waiting period.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RetryProgress {
+    pub attempt: u64,
+    pub max_attempts: u64,
+    pub deadline: std::time::Instant,
+    pub reason: String,
+}
+impl RetryProgress {
+    pub fn from_event(event: &Value) -> Option<Self> {
+        let delay = event["delayMs"].as_u64()?;
+        Some(Self {
+            attempt: event["attempt"].as_u64()?,
+            max_attempts: event["maxAttempts"].as_u64()?,
+            deadline: std::time::Instant::now()
+                .checked_add(std::time::Duration::from_millis(delay))?,
+            reason: event["errorMessage"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+        })
+    }
+    pub fn remaining(&self) -> u64 {
+        self.deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .as_secs_f64()
+            .ceil() as u64
+    }
+}

@@ -14,20 +14,24 @@ mod actions;
 mod activity;
 mod images;
 mod markdown;
-mod metadata;
+pub(super) mod metadata;
 mod presentation;
 mod tool_details;
 mod viewport;
 use activity::{Activity, ActivityBlock, RunContent, ToolStatus};
 use presentation::Disclosure;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) struct ChatRow {
     pub id: String,
     pub entries: Vec<String>,
     kind: RowKind,
 }
 impl ChatRow {
+    pub(super) fn active(&self) -> bool {
+        matches!(self.kind, RowKind::Run { active: true, .. })
+    }
+
     fn spacing_before(&self, previous: Option<&Self>) -> Rems {
         let Some(previous) = previous else {
             return rems(0.);
@@ -67,7 +71,7 @@ impl ChatRow {
         }
     }
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum RowKind {
     User(DisplayMessage),
     Run {
@@ -188,12 +192,13 @@ fn project_rows(
     rows
 }
 impl HomeView {
-    fn text_view(&self, key: &str, id: String, text: String) -> markdown::Markdown {
+    fn text_view(&self, key: &str, row: &str, id: String, text: String) -> markdown::Markdown {
         markdown::Markdown::new(
             format!("{key}-{id}"),
             text,
             self.views[key].scroller.downgrade(),
         )
+        .row(row.to_owned(), self.views[key].row_positions.clone())
     }
     pub(super) fn render_messages(
         &self,
@@ -316,10 +321,21 @@ impl HomeView {
         }
         body.into_any_element()
     }
-    fn toggle_process(&mut self, key: &str, id: &str, current: bool, cx: &mut Context<Self>) {
+    fn toggle_process(
+        &mut self,
+        key: &str,
+        row: &str,
+        id: &str,
+        current: bool,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(view) = self.views.get_mut(key) {
             view.process_open.insert(id.to_owned(), !current);
-            view.scroller.update(cx, |s, cx| s.remeasure(cx));
+            if let Some(index) = view.row_positions.borrow().get(row).copied() {
+                view.scroller.update(cx, |s, cx| {
+                    s.remeasure_items(index..index + 1, cx);
+                });
+            }
             cx.notify();
         }
     }
@@ -373,7 +389,12 @@ impl HomeView {
                                     div()
                                         .id(format!("user-text-{key}-{}", m.id))
                                         .test_support()
-                                        .child(self.text_view(key, format!("text-{}", m.id), text)),
+                                        .child(self.text_view(
+                                            key,
+                                            &row.id,
+                                            format!("text-{}", m.id),
+                                            text,
+                                        )),
                                 ),
                             ),
                         )
@@ -415,13 +436,18 @@ impl HomeView {
                 .content(
                     MessageContent::new().child(
                         self.fold(
-                            key,
+                            (key, &row.id),
                             &row.id,
                             Disclosure::compaction(t(cx, "conversation-compaction")),
                             false,
                             div()
                                 .pl_6()
-                                .child(self.text_view(key, format!("text-{}", m.id), m.text()))
+                                .child(self.text_view(
+                                    key,
+                                    &row.id,
+                                    format!("text-{}", m.id),
+                                    m.text(),
+                                ))
                                 .into_any_element(),
                             cx,
                         ),
@@ -436,6 +462,7 @@ impl HomeView {
                 )
                 .content(MessageContent::new().child(self.text_view(
                     key,
+                    &row.id,
                     format!("text-{}", m.id),
                     m.text(),
                 )))
@@ -464,6 +491,7 @@ impl HomeView {
                         .children(blocks.into_iter().enumerate().map(|(i, block)| {
                             self.render_block(
                                 key,
+                                &row.id,
                                 block,
                                 *active && !content.final_started && i == last,
                                 cx,
@@ -472,9 +500,10 @@ impl HomeView {
                         .into_any_element();
                     result = result.child(
                         self.fold(
-                            key,
+                            (key, &row.id),
                             &row.id,
                             Disclosure::run(title)
+                                .clock(active.then(|| self.views[key].clock.clone()))
                                 .locked((*active && !content.final_started) || content.interrupted),
                             *active || content.interrupted || content.answer.is_none(),
                             process,
@@ -502,7 +531,7 @@ impl HomeView {
                         Message::new()
                             .content(
                                 MessageContent::new().child(
-                                    self.text_view(key, format!("text-{}", m.id), text)
+                                    self.text_view(key, &row.id, format!("text-{}", m.id), text)
                                         .stream_fade(),
                                 ),
                             )

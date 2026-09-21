@@ -132,7 +132,9 @@ fn main() {
                     }
                     "get_commands" => "{\"commands\":[{\"name\":\"help\",\"description\":\"Fixture command\",\"source\":\"extension\",\"sourceInfo\":null}]}".into(),
                     "get_state" => format!("{{\"sessionId\":\"fixture\",\"sessionName\":{session_name:?},\"isStreaming\":false,\"isCompacting\":{compacting},\"pendingMessageCount\":{},\"model\":{},\"thinkingLevel\":\"{thinking}\"}}", if queued { 2 } else { 0 }, model(&selected)).trim_end_matches('}').to_owned() + &session_file.as_ref().map(|path| format!(",\"sessionFile\":{path:?}}}")).unwrap_or_else(|| "}".into()),
-                    "get_entries" => if Path::new("empty-entries").exists() {
+                    "get_entries" => if Path::new("entries.json").exists() {
+                        std::fs::read_to_string("entries.json").unwrap()
+                    } else if Path::new("empty-entries").exists() {
                         "{\"entries\":[],\"leafId\":null}".into()
                     } else if compacted {
                         "{\"entries\":[{\"id\":\"old\",\"timestamp\":\"2026-09-11T00:00:00Z\",\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"hello\"}},{\"id\":\"compact\",\"parentId\":\"old\",\"timestamp\":\"2026-09-11T01:00:00Z\",\"type\":\"compaction\",\"summary\":\"compressed context\",\"firstKeptEntryId\":\"old\"}],\"leafId\":\"compact\"}".into()

@@ -14,6 +14,7 @@ pub(super) struct Palette {
     state: Entity<ConversationState>,
     search: Entity<CommandState>,
     sessions: Vec<(String, SessionInfo)>,
+    available: HashSet<String>,
     error: Option<String>,
     original_focus: Option<FocusHandle>,
     focus: FocusHandle,
@@ -124,8 +125,42 @@ impl HomeView {
         let sessions = state.read(cx).infos();
         let panel = cx.new(|cx| Palette {
             owner: owner.clone(),
-            _subscription: cx.observe(&state, |_, _, cx| cx.notify()),
+            _subscription: cx.subscribe(&state, |this: &mut Palette, _, event, cx| {
+                if let ConversationEvent::Changed(changes) = event {
+                    if changes.catalog {
+                        this.sync_catalog(cx);
+                    } else {
+                        for (key, navigation) in &changes.sessions {
+                            if !navigation {
+                                continue;
+                            }
+                            if let Some(session) = this.state.read(cx).sessions.get(key) {
+                                let info = session.info.clone();
+                                let alias = info.key();
+                                if alias != *key {
+                                    this.available.remove(&alias);
+                                }
+                                this.available.insert(key.clone());
+                                if let Some((_, old)) =
+                                    this.sessions.iter_mut().find(|(k, _)| k == key)
+                                {
+                                    *old = info;
+                                } else {
+                                    this.sessions.push((key.clone(), info));
+                                }
+                            } else {
+                                this.available.remove(key);
+                            }
+                        }
+                    }
+                    if changes.catalog || changes.progress || changes.sessions.values().any(|v| *v)
+                    {
+                        cx.notify();
+                    }
+                }
+            }),
             state,
+            available: sessions.iter().map(|(key, _)| key.clone()).collect(),
             sessions,
             search: cx.new(|cx| CommandState::new(window, cx)),
             error: None,
@@ -205,6 +240,25 @@ impl HomeView {
     }
 }
 impl Palette {
+    fn sync_catalog(&mut self, cx: &App) {
+        let infos = self.state.read(cx).infos();
+        self.available = infos.iter().map(|(key, _)| key.clone()).collect();
+        let mut positions: HashMap<_, _> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .map(|(i, (key, _))| (key.clone(), i))
+            .collect();
+        for (key, info) in infos {
+            if let Some(index) = positions.get(&key) {
+                self.sessions[*index].1 = info;
+            } else {
+                positions.insert(key.clone(), self.sessions.len());
+                self.sessions.push((key, info));
+            }
+        }
+    }
+
     fn dismiss(&self, window: &mut Window, cx: &mut App) {
         if let Some(focus) = &self.original_focus {
             focus.focus(window, cx);
@@ -230,14 +284,6 @@ impl Palette {
 }
 impl Render for Palette {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let infos = self.state.read(cx).infos();
-        for (key, info) in &infos {
-            if let Some((_, previous)) = self.sessions.iter_mut().find(|(k, _)| k == key) {
-                *previous = info.clone();
-            } else {
-                self.sessions.push((key.clone(), info.clone()));
-            }
-        }
         let items = self
             .sessions
             .iter()
@@ -248,7 +294,7 @@ impl Render for Palette {
                 CommandItem::new()
                     .label(title.clone())
                     .keywords([path.clone(), info.first_message.clone()])
-                    .disabled(!infos.iter().any(|(k, _)| k == key))
+                    .disabled(!self.available.contains(key))
                     .child(move |_, cx| {
                         let tooltip = format!("{title}\n{path}");
                         h_flex()

@@ -122,6 +122,23 @@ pub(crate) fn scan(
     options: &Discovery,
     known: &[PathBuf],
     cancel: &AtomicBool,
+    progress: impl FnMut(ScanProgress),
+) -> io::Result<Catalog> {
+    scan_scope(options, known, None, cancel, progress)
+}
+pub(crate) fn scan_project(
+    options: &Discovery,
+    cwd: &Path,
+    cancel: &AtomicBool,
+    progress: impl FnMut(ScanProgress),
+) -> io::Result<Catalog> {
+    scan_scope(options, &[], Some(cwd), cancel, progress)
+}
+fn scan_scope(
+    options: &Discovery,
+    known: &[PathBuf],
+    project: Option<&Path>,
+    cancel: &AtomicBool,
     mut progress: impl FnMut(ScanProgress),
 ) -> io::Result<Catalog> {
     let mut last_report = Instant::now();
@@ -137,12 +154,20 @@ pub(crate) fn scan(
     let mut seen_directories = BTreeSet::new();
     let mut seen_projects = BTreeSet::new();
     let mut directories = VecDeque::new();
-    let mut projects = VecDeque::from([options.current.clone()]);
+    let mut projects = VecDeque::from([project.unwrap_or(&options.current).to_path_buf()]);
     projects.extend(known.iter().cloned());
     // The default root contains per-cwd directories, while an override is flat.
     let default_root = options.agent.join("sessions");
     result.directories.insert(default_root.clone());
-    if let Some(children) = directory(&default_root)? {
+    if let Some(cwd) = project {
+        // Pi SessionManager::getDefaultSessionDirPath; only this cwd's default directory.
+        let cwd = cwd.to_string_lossy();
+        let encoded = cwd
+            .strip_prefix(['/', '\\'])
+            .unwrap_or(&cwd)
+            .replace(['/', '\\', ':'], "-");
+        directories.push_back(default_root.join(format!("--{encoded}--")));
+    } else if let Some(children) = directory(&default_root)? {
         for child in children {
             check_cancel(cancel)?;
             let child = child.map_err(|e| at_path(&default_root, e))?;
@@ -201,7 +226,13 @@ pub(crate) fn scan(
             let file = fs::File::open(&path).map_err(|e| at_path(&path, e))?;
             let info =
                 read_header(&path, &mut BufReader::new(file)).map_err(|e| at_path(&path, e))?;
-            projects.push_back(info.cwd);
+            if project.is_some_and(|cwd| info.cwd != cwd) {
+                seen_files.remove(&path);
+                continue;
+            }
+            if project.is_none() {
+                projects.push_back(info.cwd);
+            }
             report(
                 ScanProgress::Discovering {
                     files: seen_files.len(),
@@ -447,6 +478,46 @@ fn read_metadata_cancelled(
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn project_discovery_does_not_read_other_projects_or_follow_their_settings() {
+        let root = tempfile::tempdir().unwrap();
+        let agent = root.path().join("agent");
+        let cwd = root.path().join("selected");
+        let other = root.path().join("other");
+        fs::create_dir_all(cwd.join(".pi")).unwrap();
+        fs::create_dir_all(cwd.join("history")).unwrap();
+        fs::create_dir_all(agent.join("sessions/unrelated")).unwrap();
+        fs::write(agent.join("sessions/unrelated/broken.jsonl"), "invalid").unwrap();
+        fs::write(cwd.join(".pi/settings.json"), r#"{"sessionDir":"history"}"#).unwrap();
+        fs::write(
+            cwd.join("history/ours.jsonl"),
+            format!("{}\n", json!({"type":"session","id":"ours","cwd":cwd})),
+        )
+        .unwrap();
+        // A shared override directory may contain another project's records.
+        fs::write(
+            cwd.join("history/theirs.jsonl"),
+            format!(
+                "{}\ninvalid",
+                json!({"type":"session","id":"theirs","cwd":other})
+            ),
+        )
+        .unwrap();
+        let options = Discovery {
+            home: root.path().into(),
+            agent,
+            current: other,
+            session_override: None,
+        };
+        let catalog = scan_project(&options, &cwd, &AtomicBool::new(false), |_| {}).unwrap();
+        assert_eq!(catalog.sessions.len(), 1);
+        assert_eq!(catalog.sessions[0].id, "ours");
+        assert!(
+            !catalog
+                .directories
+                .contains(&options.agent.join("sessions/unrelated"))
+        );
+    }
     #[test]
     fn metadata_keeps_last_title_first_text_and_maximum_activity() {
         let root = tempfile::tempdir().unwrap();

@@ -7,6 +7,10 @@ use gpui_kit::{
     App, AppContext, Entity, IntoElement, RenderOnce, StyleRefinement, Styled, Subscription,
     WeakEntity, Window, rems, transparent_black,
 };
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
+
+type RowPositions = Rc<RefCell<HashMap<String, usize>>>;
+type RowTarget = Option<(String, RowPositions)>;
 
 /// No extra layout surface: this renders the managed TextView directly.
 #[derive(IntoElement)]
@@ -14,6 +18,7 @@ pub(super) struct Markdown {
     id: String,
     text: String,
     scroller: WeakEntity<MessageScrollerState>,
+    row: RowTarget,
     embedded: bool,
     stream_fade: bool,
 }
@@ -24,11 +29,16 @@ impl Markdown {
             id,
             text,
             scroller,
+            row: None,
             embedded: false,
             stream_fade: false,
         }
     }
 
+    pub fn row(mut self, id: String, positions: RowPositions) -> Self {
+        self.row = Some((id, positions));
+        self
+    }
     pub fn stream_fade(mut self) -> Self {
         self.stream_fade = true;
         self
@@ -45,19 +55,31 @@ struct MarkdownState {
     text: String,
     view: Entity<TextViewState>,
     _subscription: Subscription,
+    row: Rc<RefCell<RowTarget>>,
 }
 
 impl MarkdownState {
     fn new(text: String, scroller: WeakEntity<MessageScrollerState>, cx: &mut App) -> Self {
         let view = cx.new(|cx| TextViewState::markdown(&text, cx));
+        let row: Rc<RefCell<RowTarget>> = Rc::default();
+        let target = row.clone();
         let subscription = cx.observe(&view, move |_, cx| {
             // Parsing finishes after the RPC update's initial row measurement.
-            let _ = scroller.update(cx, |scroller, cx| scroller.remeasure(cx));
+            let index = target
+                .borrow()
+                .as_ref()
+                .and_then(|(id, positions)| positions.borrow().get(id).copied());
+            if let Some(index) = index {
+                let _ = scroller.update(cx, |scroller, cx| {
+                    scroller.remeasure_items(index..index + 1, cx);
+                });
+            }
         });
         Self {
             text,
             view,
             _subscription: subscription,
+            row,
         }
     }
 
@@ -81,7 +103,10 @@ impl RenderOnce for Markdown {
         let state = window.use_keyed_state(format!("markdown-{}", self.id), cx, |_, cx| {
             MarkdownState::new(self.text.clone(), self.scroller, cx)
         });
-        state.update(cx, |state, cx| state.sync(self.text, cx));
+        state.update(cx, |state, cx| {
+            *state.row.borrow_mut() = self.row;
+            state.sync(self.text, cx);
+        });
         let view = TextView::new(&state.read(cx).view)
             .selectable(true)
             .stream_fade(self.stream_fade);
@@ -120,6 +145,10 @@ mod tests {
         let scroller = cx.new(|cx| MessageScrollerState::new(1, cx));
         let mut markdown = cx
             .update(|cx| MarkdownState::new("开始\n\n```rust\n".into(), scroller.downgrade(), cx));
+        *markdown.row.borrow_mut() = Some((
+            "row".into(),
+            Rc::new(RefCell::new(HashMap::from([("row".into(), 0)]))),
+        ));
         cx.run_until_parked();
         let notifications = Rc::new(Cell::new(0));
         let observed = notifications.clone();
