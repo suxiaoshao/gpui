@@ -444,7 +444,7 @@ async fn run(
                 session.error = Some(error.clone());
             }
         }
-        cx.notify();
+        crate::state::conversation::notify_session(&key, cx);
     });
     result
 }

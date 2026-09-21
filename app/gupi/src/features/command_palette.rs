@@ -164,10 +164,21 @@ impl CommandPalette {
                 cx.observe(&input, |_, _, cx| cx.notify()),
             ];
             if let Some((_, state)) = &home {
-                subscriptions.push(cx.observe_in(
+                subscriptions.push(cx.subscribe_in(
                     state,
                     window,
-                    |this: &mut Self, _, window, cx| this.sync(window, cx),
+                    |this: &mut Self,
+                     _,
+                     event: &crate::state::conversation::ConversationEvent,
+                     window,
+                     cx| {
+                        if let crate::state::conversation::ConversationEvent::Changed(changes) =
+                            event
+                            && changes.affects(this.target.as_ref().map(|(key, _)| key))
+                        {
+                            this.sync(window, cx);
+                        }
+                    },
                 ));
             }
             Self {

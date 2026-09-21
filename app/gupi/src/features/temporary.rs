@@ -9,7 +9,7 @@ use super::home::{
 use crate::{
     app::{menus, temporary},
     foundation::{assets::IconName, i18n::t},
-    state::conversation::{Activity, ConversationState},
+    state::conversation::{Activity, ConversationEvent, ConversationState},
 };
 use gpui_kit::{
     component::{
@@ -74,8 +74,19 @@ impl TemporaryView {
         let composer = home.read(cx).input.clone();
         let subscriptions = vec![
             cx.observe(&composer, |_, _, cx| cx.notify()),
-            cx.observe_in(&state, window, |this, _, window, cx| {
-                this.refresh(window, cx)
+            cx.subscribe_in(&state, window, |this, _, event, window, cx| {
+                if let ConversationEvent::Changed(changes) = event {
+                    if changes.catalog || changes.selection {
+                        this.refresh_source(None, window, cx);
+                    } else {
+                        for (source, navigation) in &changes.sessions {
+                            if *navigation || this.state.read(cx).selected.as_ref() == Some(source)
+                            {
+                                this.refresh_source(Some(source), window, cx);
+                            }
+                        }
+                    }
+                }
             }),
             cx.subscribe_in(&search, window, |this, _, event, window, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -122,6 +133,14 @@ impl TemporaryView {
             .update(cx, |search, cx| search.focus(window, cx));
     }
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_source(None, window, cx);
+    }
+    fn refresh_source(
+        &mut self,
+        source: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let query = self.search.read(cx).value().trim().to_lowercase();
         let state = self.state.read(cx);
         if let Some((key, session)) = state
@@ -145,35 +164,81 @@ impl TemporaryView {
         } else {
             self.answer_available = None;
         }
-        let rows: Vec<_> = state
-            .infos()
-            .into_iter()
-            .filter_map(|(key, info)| {
-                let title = navigation::display_title(&info, cx);
-                if !matches_query(&title, &query) {
-                    return None;
-                }
-                let activity = state
-                    .sessions
-                    .get(&key)
-                    .map(|s| s.activity())
-                    .unwrap_or(Activity::Idle);
-                Some(Row {
-                    key,
-                    title,
-                    activity,
-                })
+        let make_row = |key: String, info: crate::foundation::session_catalog::SessionInfo| {
+            let title = navigation::display_title(&info, cx);
+            if !matches_query(&title, &query) {
+                return None;
+            }
+            let activity = state
+                .sessions
+                .get(&key)
+                .map(|s| s.activity())
+                .unwrap_or(Activity::Idle);
+            Some(Row {
+                key,
+                title,
+                activity,
             })
-            .collect();
-        let selected = rows
-            .iter()
-            .position(|r| Some(&r.key) == state.selected.as_ref())
-            .map(|row| IndexPath::default().row(row));
-        self.list.update(cx, |list, cx| {
-            list.delegate_mut().rows = rows;
-            list.set_selected_index(selected, window, cx);
-            cx.notify();
-        });
+        };
+        let selected_key = state.selected.clone();
+        let changed = if let Some(source) = source {
+            let row = state
+                .sessions
+                .get(source)
+                .and_then(|s| make_row(source.to_owned(), s.info.clone()));
+            let rows = &self.list.read(cx).delegate().rows;
+            let index = rows.iter().position(|r| r.key == source);
+            if index.and_then(|i| rows.get(i)) == row.as_ref() {
+                false
+            } else {
+                self.list.update(cx, |list, cx| {
+                    let rows = &mut list.delegate_mut().rows;
+                    match (index, row) {
+                        (Some(i), Some(row)) => rows[i] = row,
+                        (Some(i), None) => {
+                            rows.remove(i);
+                        }
+                        (None, Some(row)) => {
+                            rows.push(row);
+                            rows.sort_by(|a, b| a.key.cmp(&b.key));
+                        }
+                        _ => {}
+                    }
+                    let selected = rows
+                        .iter()
+                        .position(|r| Some(&r.key) == selected_key.as_ref())
+                        .map(|row| IndexPath::default().row(row));
+                    list.set_selected_index(selected, window, cx);
+                    cx.notify();
+                });
+                true
+            }
+        } else {
+            let rows: Vec<_> = state
+                .infos()
+                .into_iter()
+                .filter_map(|(key, info)| make_row(key, info))
+                .collect();
+            let selected = rows
+                .iter()
+                .position(|r| Some(&r.key) == selected_key.as_ref())
+                .map(|row| IndexPath::default().row(row));
+            if self.list.read(cx).delegate().rows == rows
+                && self.list.read(cx).selected_index() == selected
+            {
+                false
+            } else {
+                self.list.update(cx, |list, cx| {
+                    list.delegate_mut().rows = rows;
+                    list.set_selected_index(selected, window, cx);
+                    cx.notify();
+                });
+                true
+            }
+        };
+        if !changed && source.is_some_and(|source| selected_key.as_deref() != Some(source)) {
+            return;
+        }
         if let Some(panel) = &self.panel {
             panel.update(cx, |_, cx| cx.notify());
         }
@@ -512,7 +577,7 @@ impl Render for TemporaryView {
             .children(Root::render_notification_layer(window, cx))
     }
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct Row {
     key: String,
     title: String,

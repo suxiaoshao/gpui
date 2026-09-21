@@ -28,7 +28,7 @@ impl Detail {
 }
 
 impl HomeView {
-    pub(super) fn tool_details(&self, key: &str, tool: &Tool, cx: &App) -> AnyElement {
+    pub(super) fn tool_details(&self, key: &str, row: &str, tool: &Tool, cx: &App) -> AnyElement {
         let kind = tool.kind();
         let mut primary = vec![];
         let mut fields = vec![];
@@ -111,6 +111,7 @@ impl HomeView {
                         header.child(
                             self.text_view(
                                 key,
+                                row,
                                 format!("tool-primary-{}", tool.id),
                                 primary.join(" · "),
                             )
@@ -119,7 +120,7 @@ impl HomeView {
                     })
                     .when(!header_content.is_empty(), |header| {
                         header.child(self.tool_detail_content(
-                            key,
+                            (key, row),
                             &tool.id,
                             "header",
                             header_content,
@@ -130,6 +131,7 @@ impl HomeView {
                         header.child(
                             self.text_view(
                                 key,
+                                row,
                                 format!("tool-fields-{}", tool.id),
                                 fields.join(" · "),
                             )
@@ -147,7 +149,7 @@ impl HomeView {
                     .when(has_header, |body| {
                         body.border_t_1().border_color(cx.theme().border)
                     })
-                    .child(self.tool_detail_content(key, &tool.id, "body", input, cx)),
+                    .child(self.tool_detail_content((key, row), &tool.id, "body", input, cx)),
             );
         }
         if has_footer {
@@ -161,12 +163,19 @@ impl HomeView {
                         footer.border_t_1().border_color(cx.theme().border)
                     })
                     .when(!extra.is_empty(), |footer| {
-                        footer.child(self.tool_detail_content(key, &tool.id, "footer", extra, cx))
+                        footer.child(self.tool_detail_content(
+                            (key, row),
+                            &tool.id,
+                            "footer",
+                            extra,
+                            cx,
+                        ))
                     })
                     .when(!status.is_empty(), |footer| {
                         footer.child(
                             self.text_view(
                                 key,
+                                row,
                                 format!("tool-status-{}", tool.id),
                                 status.join("\n\n"),
                             )
@@ -180,12 +189,13 @@ impl HomeView {
 
     fn tool_detail_content(
         &self,
-        key: &str,
+        location: (&str, &str),
         tool_id: &str,
         section: &str,
         content: Vec<Detail>,
         cx: &App,
     ) -> AnyElement {
+        let (key, row) = location;
         let mut body = v_flex().w_full().min_w_0().gap_2();
         let mut markdown = vec![];
         for (index, detail) in content.into_iter().enumerate() {
@@ -197,6 +207,7 @@ impl HomeView {
                         body = body.child(
                             self.text_view(
                                 key,
+                                row,
                                 format!("tool-body-{section}-{tool_id}-{index}"),
                                 markdown.join("\n\n"),
                             )
@@ -223,6 +234,7 @@ impl HomeView {
             body = body.child(
                 self.text_view(
                     key,
+                    row,
                     format!("tool-body-{section}-{tool_id}-tail"),
                     markdown.join("\n\n"),
                 )

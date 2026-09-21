@@ -136,10 +136,10 @@ impl ConversationState {
                                     state.session_name = Some(name.clone());
                                 }
                                 s.error = None;
+                                notify_session(other, cx);
                             }
                         }
-                        this.refresh(&key, cx);
-                        this.request_scan(cx);
+                        this.sessions.get_mut(&key).unwrap().history_dirty = true;
                     }
                     Err(error) => {
                         s.error = Some(error.clone());
@@ -149,11 +149,11 @@ impl ConversationState {
                         });
                     }
                 }
-                this.changed(cx);
+                notify_session(&key, cx);
             });
         });
         self.sessions.get_mut(&target).unwrap().command = SessionCommand::Renaming { _task: task };
-        cx.notify();
+        notify_session(&target, cx);
         true
     }
 }

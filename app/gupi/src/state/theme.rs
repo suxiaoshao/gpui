@@ -1,6 +1,6 @@
 use super::config::{AppConfig, ThemeMode};
 use gpui_kit::component::{ThemeMode as Mode, ThemeRegistry};
-use gpui_kit::{App, Window};
+use gpui_kit::{App, Global, Window};
 
 /// Image viewing needs a dark scrim in both modes, independently of the
 /// deliberately subtle backdrop used by ordinary themed dialogs.
@@ -57,8 +57,31 @@ pub(crate) fn selected_id(config: &AppConfig, mode: Mode) -> &str {
             .unwrap_or(app_theme::DEFAULT_DARK_THEME_ID),
     }
 }
+struct Applied {
+    mode: Mode,
+    id: String,
+}
+impl Global for Applied {}
 pub(crate) fn apply(config: &AppConfig, window: &mut Window, cx: &mut App) {
+    apply_with(config, window, false, cx);
+}
+pub(crate) fn accent_changed(config: &AppConfig, window: &mut Window, cx: &mut App) {
+    apply_with(config, window, true, cx);
+}
+fn apply_with(config: &AppConfig, window: &mut Window, force: bool, cx: &mut App) {
     let mode = resolved_mode(config.theme, window);
+    let id = selected_id(config, mode);
+    if !force
+        && cx
+            .try_global::<Applied>()
+            .is_some_and(|old| old.mode == mode && old.id == id)
+    {
+        return;
+    }
+    cx.set_global(Applied {
+        mode,
+        id: id.to_owned(),
+    });
     let theme = app_theme::resolve_theme_config(
         ThemeRegistry::global(cx),
         mode,

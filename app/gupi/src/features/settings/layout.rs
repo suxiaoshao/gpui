@@ -159,7 +159,16 @@ impl SettingsView {
             vec![item(
                 "settings-pi-command",
                 "pi executable path environment version 路径 环境 检查",
-                |this, _, cx| this.render_pi(cx),
+                |this, _, cx| {
+                    let probe = this.applied_pi.clone();
+                    let command = this.controller.read(cx).preferences(cx).pi_command;
+                    if !probe.read(cx).matches_command(command.as_deref()) {
+                        cx.defer(move |cx| {
+                            probe.update(cx, |probe, cx| probe.request(command, false, cx))
+                        });
+                    }
+                    this.render_pi(cx)
+                },
             )],
         );
         let keys = self.keys.clone();

@@ -3,7 +3,7 @@ use crate::foundation::i18n::t_with_args;
 use fluent_bundle::FluentArgs;
 use time::{OffsetDateTime, UtcOffset};
 
-pub(super) fn process_title(
+pub(in crate::features::home) fn process_title(
     messages: &[DisplayMessage],
     active: bool,
     started_at: Option<i64>,

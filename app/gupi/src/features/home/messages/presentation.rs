@@ -19,6 +19,7 @@ enum Level {
 }
 pub(super) struct Disclosure {
     title: String,
+    clock: Option<Entity<super::super::progress::ProcessClock>>,
     icon: Option<IconName>,
     level: Level,
     loading: bool,
@@ -29,6 +30,7 @@ impl Disclosure {
     pub fn compaction(title: String) -> Self {
         Self {
             title,
+            clock: None,
             icon: Some(IconName::FileText),
             level: Level::Tool,
             loading: false,
@@ -39,12 +41,17 @@ impl Disclosure {
     pub fn run(title: String) -> Self {
         Self {
             title,
+            clock: None,
             icon: None,
             level: Level::Run,
             loading: false,
             failed: false,
             locked: false,
         }
+    }
+    pub fn clock(mut self, clock: Option<Entity<super::super::progress::ProcessClock>>) -> Self {
+        self.clock = clock;
+        self
     }
     pub fn locked(mut self, locked: bool) -> Self {
         self.locked = locked;
@@ -55,13 +62,14 @@ impl Disclosure {
 impl HomeView {
     pub(super) fn fold(
         &self,
-        key: &str,
+        location: (&str, &str),
         id: &str,
         heading: Disclosure,
         default: bool,
         content: AnyElement,
         cx: &App,
     ) -> AnyElement {
+        let (key, row) = location;
         let open = heading.locked
             || self
                 .views
@@ -73,8 +81,11 @@ impl HomeView {
         let key = key.to_owned();
         let id = id.to_owned();
         let target = id.clone();
+        let row = row.to_owned();
         let action = Rc::new(move |_: &mut Window, cx: &mut App| {
-            let _ = owner.update(cx, |this, cx| this.toggle_process(&key, &target, open, cx));
+            let _ = owner.update(cx, |this, cx| {
+                this.toggle_process(&key, &row, &target, open, cx)
+            });
         });
         let click = action.clone();
         let keyboard = action.clone();
@@ -114,7 +125,13 @@ impl HomeView {
                     .min_w_0()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .text(heading.title.clone()),
+                    .map(|content| {
+                        if let Some(clock) = heading.clock {
+                            content.child(clock)
+                        } else {
+                            content.text(heading.title.clone())
+                        }
+                    }),
             )
             .when(!heading.locked, |m| m.child(arrow));
         let trigger = div()
@@ -162,6 +179,7 @@ impl HomeView {
     pub(super) fn render_block(
         &self,
         key: &str,
+        row: &str,
         block: ActivityBlock<'_>,
         current: bool,
         cx: &App,
@@ -169,14 +187,16 @@ impl HomeView {
         match block {
             ActivityBlock::Message(Activity::Text { id, text, .. }) => Message::new()
                 .content(
-                    MessageContent::new()
-                        .child(self.text_view(key, id.clone(), text.clone()).stream_fade()),
+                    MessageContent::new().child(
+                        self.text_view(key, row, id.clone(), text.clone())
+                            .stream_fade(),
+                    ),
                 )
                 .into_any_element(),
             ActivityBlock::Message(_) => unreachable!("Only assistant prose separates groups"),
             ActivityBlock::Group { id, items } => {
                 if let [item] = items {
-                    return self.render_activity(key, item, cx);
+                    return self.render_activity(key, row, item, cx);
                 }
                 let tools: Vec<_> = items
                     .iter()
@@ -217,6 +237,7 @@ impl HomeView {
                 };
                 let heading = Disclosure {
                     title,
+                    clock: None,
                     icon: None,
                     level: Level::Group,
                     loading: running_tool.is_some() || thinking,
@@ -227,10 +248,14 @@ impl HomeView {
                     .w_full()
                     .min_w_0()
                     .gap_1()
-                    .children(items.iter().map(|item| self.render_activity(key, item, cx)))
+                    .children(
+                        items
+                            .iter()
+                            .map(|item| self.render_activity(key, row, item, cx)),
+                    )
                     .into_any_element();
                 self.fold(
-                    key,
+                    (key, row),
                     &id,
                     heading,
                     false,
@@ -241,15 +266,16 @@ impl HomeView {
         }
     }
 
-    fn render_activity(&self, key: &str, item: &Activity, cx: &App) -> AnyElement {
+    fn render_activity(&self, key: &str, row: &str, item: &Activity, cx: &App) -> AnyElement {
         match item {
-            Activity::Tool(tool) => self.render_tool(key, tool, cx),
+            Activity::Tool(tool) => self.render_tool(key, row, tool, cx),
             Activity::Text {
                 id, text, running, ..
             } => self.fold(
-                key,
+                (key, row),
                 id,
                 Disclosure {
+                    clock: None,
                     title: t(
                         cx,
                         if *running {
@@ -267,15 +293,19 @@ impl HomeView {
                 false,
                 div()
                     .pl_6()
-                    .child(self.text_view(key, id.clone(), text.clone()).stream_fade())
+                    .child(
+                        self.text_view(key, row, id.clone(), text.clone())
+                            .stream_fade(),
+                    )
                     .into_any_element(),
                 cx,
             ),
         }
     }
 
-    fn render_tool(&self, key: &str, tool: &Tool, cx: &App) -> AnyElement {
+    fn render_tool(&self, key: &str, row: &str, tool: &Tool, cx: &App) -> AnyElement {
         let heading = Disclosure {
+            clock: None,
             title: tool_title(tool, cx),
             icon: Some(tool.kind().icon()),
             level: Level::Tool,
@@ -284,11 +314,11 @@ impl HomeView {
             locked: false,
         };
         self.fold(
-            key,
+            (key, row),
             &tool.id,
             heading,
             false,
-            self.tool_details(key, tool, cx),
+            self.tool_details(key, row, tool, cx),
             cx,
         )
     }

@@ -53,6 +53,8 @@ impl Session {
         self.read_serial
     }
     pub(super) fn reset_reads(&mut self) {
+        self.retry = None;
+        self.summary_retry = None;
         self.core_read.finish(None);
         self.models.reset();
         self.commands.reset();
@@ -107,7 +109,7 @@ impl ConversationState {
                     .filter(|s| s.binding == binding)
                 {
                     s.commands.transition(ReadMessage::Finish { id, result });
-                    cx.notify();
+                    notify_controls(&target, cx);
                 }
             });
         });
@@ -116,7 +118,7 @@ impl ConversationState {
             .unwrap()
             .commands
             .transition(ReadMessage::Start { id, task });
-        cx.notify();
+        notify_controls(&key, cx);
     }
     pub fn refresh_models(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some(s) = self.sessions.get(key) else {
@@ -166,7 +168,7 @@ impl ConversationState {
                     .filter(|s| s.binding == binding)
                 {
                     s.models.transition(ReadMessage::Finish { id, result });
-                    cx.notify();
+                    notify_controls(&task_key, cx);
                 }
             });
         });
@@ -175,7 +177,7 @@ impl ConversationState {
             .unwrap()
             .models
             .transition(ReadMessage::Start { id, task });
-        cx.notify();
+        notify_controls(key, cx);
     }
     pub(super) fn read_thinking(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some(client) = self.client(key, cx) else {
@@ -207,7 +209,7 @@ impl ConversationState {
                 {
                     s.thinking_levels
                         .transition(ReadMessage::Finish { id, result });
-                    cx.notify();
+                    notify_controls(&task_key, cx);
                 }
             });
         });
@@ -216,7 +218,7 @@ impl ConversationState {
             .unwrap()
             .thinking_levels
             .transition(ReadMessage::Start { id, task });
-        cx.notify();
+        notify_controls(key, cx);
     }
     pub fn refresh_stats(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some(client) = self.client(key, cx) else {
@@ -226,9 +228,11 @@ impl ConversationState {
         if self.draining || s.state.is_none() {
             return;
         }
-        s.stats.transition(ReadMessage::Cancel);
+        if s.stats.queue() {
+            return;
+        }
         let binding = s.binding;
-        let revision = s.event_revision;
+        let revision = s.usage_revision;
         let model_revision = s.model_revision;
         let id = s.next_read();
         let task_key = key.to_owned();
@@ -240,12 +244,18 @@ impl ConversationState {
                     .get_mut(&task_key)
                     .filter(|s| s.binding == binding && s.stats.accepts(id))
                 {
-                    if s.event_revision != revision || s.model_revision != model_revision {
+                    let stale = s.usage_revision != revision || s.model_revision != model_revision;
+                    let again = s.stats.queued();
+                    let success = result.is_ok();
+                    if stale {
                         s.stats.transition(ReadMessage::Cancel);
                     } else {
                         s.stats.transition(ReadMessage::Finish { id, result });
                     }
-                    cx.notify();
+                    if (again || stale) && success {
+                        this.refresh_stats(&task_key, cx);
+                    }
+                    notify_controls(&task_key, cx);
                 }
             });
         });
@@ -254,7 +264,7 @@ impl ConversationState {
             .unwrap()
             .stats
             .transition(ReadMessage::Start { id, task });
-        cx.notify();
+        notify_controls(key, cx);
     }
     pub fn refresh_fork_messages(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some(client) = self.client(key, cx) else {
@@ -264,9 +274,11 @@ impl ConversationState {
         if self.draining || s.state.is_none() {
             return;
         }
-        s.fork_messages.transition(ReadMessage::Cancel);
+        if s.fork_messages.queue() {
+            return;
+        }
         let binding = s.binding;
-        let revision = s.event_revision;
+        let revision = s.content_revision;
         let id = s.next_read();
         let task_key = key.to_owned();
         let task = cx.spawn(async move |owner, cx| {
@@ -281,20 +293,24 @@ impl ConversationState {
                     .get_mut(&task_key)
                     .filter(|s| s.binding == binding && s.fork_messages.accepts(id))
                 {
-                    if s.event_revision != revision {
+                    let stale = s.content_revision != revision;
+                    let again = s.fork_messages.queued();
+                    let success = result.is_ok();
+                    if stale {
                         s.fork_messages.transition(ReadMessage::Cancel);
                     } else {
                         s.fork_messages
                             .transition(ReadMessage::Finish { id, result });
                     }
-                    s.content_revision += 1;
-                    cx.notify();
+                    if again && success {
+                        this.refresh_fork_messages(&task_key, cx);
+                    }
+                    notify_controls(&task_key, cx);
                 }
             });
         });
         let s = self.sessions.get_mut(key).unwrap();
         s.fork_messages.transition(ReadMessage::Start { id, task });
-        s.content_revision += 1;
-        cx.notify();
+        notify_controls(key, cx);
     }
 }

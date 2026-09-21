@@ -84,13 +84,37 @@ impl ConversationState {
                 }
                 match result {
                     Ok(()) => {
+                        let selected_deleted = this.selected.as_ref().is_some_and(|key| {
+                            this.sessions
+                                .get(key)
+                                .is_some_and(|s| s.info.path == info.path)
+                        });
+                        let removed: Vec<_> = this
+                            .sessions
+                            .iter()
+                            .filter(|(_, s)| s.info.path == info.path)
+                            .map(|(key, _)| key.clone())
+                            .collect();
+                        let saved_draft = removed
+                            .iter()
+                            .any(|key| !this.sessions[key].draft.is_empty());
                         this.sessions.retain(|_, s| s.info.path != info.path);
+                        notify_session(&info.key(), cx);
                         this.catalog
                             .transition(CatalogMessage::RemoveSession(info.path));
-                        this.insert_draft(Some(info.cwd));
-                        this.request_scan(cx);
-                        this.changed(cx);
-                        cx.emit(ConversationEvent::Deleted);
+                        this.discover_pending_projects(cx);
+                        for key in removed {
+                            notify_session(&key, cx);
+                        }
+                        if selected_deleted {
+                            this.insert_draft(Some(info.cwd));
+                            notify_session(this.selected.as_ref().unwrap(), cx);
+                            notify_selection(cx);
+                        }
+                        if saved_draft {
+                            this.save_changes(cx);
+                        }
+                        notify_progress(cx);
                     }
                     Err(error) => {
                         let mut args = FluentArgs::new();
@@ -99,13 +123,13 @@ impl ConversationState {
                             message: t_with_args(cx, "conversation-delete-failed", &args),
                             error: true,
                         });
-                        cx.notify();
+                        notify_session(&task_key, cx);
                     }
                 }
             });
         });
         self.sessions.get_mut(&key).unwrap().command = SessionCommand::Deleting { task };
-        cx.notify();
+        notify_session(&key, cx);
     }
 }
 

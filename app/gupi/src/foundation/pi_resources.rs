@@ -24,7 +24,7 @@ impl Kind {
         }
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Resource {
     pub kind: Kind,
     pub path: PathBuf,
@@ -35,13 +35,13 @@ pub(crate) struct Resource {
     pub enabled: bool,
     pub editable: bool,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Package {
     pub source: String,
     pub path: PathBuf,
     pub version: Option<String>,
 }
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Catalog {
     pub root: PathBuf,
     pub packages: Vec<Package>,
@@ -248,9 +248,79 @@ pub(crate) async fn package_action(
     }
 }
 
+/// Reuse the discovery parser for one edited file, preserving catalog order.
+pub(crate) fn reload_resource(catalog: &mut Catalog, resource: Resource) {
+    let index = catalog
+        .resources
+        .iter()
+        .position(|r| r.path == resource.path)
+        .unwrap_or(catalog.resources.len());
+    let prefix = format!("{}:", resource.path.display());
+    catalog
+        .warnings
+        .retain(|warning| !warning.starts_with(&prefix));
+    catalog.resources.retain(|r| r.path != resource.path);
+    let previous_len = catalog.resources.len();
+    discovery::add(
+        catalog,
+        resource.kind,
+        resource.path,
+        resource.base,
+        resource.package,
+        resource.enabled,
+        resource.editable,
+    );
+    if catalog.resources.len() > previous_len {
+        let updated = catalog.resources.pop().unwrap();
+        catalog
+            .resources
+            .insert(index.min(catalog.resources.len()), updated);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn editing_one_prompt_preserves_other_resources_without_rescanning_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompts = dir.path().join("prompts");
+        std::fs::create_dir(&prompts).unwrap();
+        let first = prompts.join("first.md");
+        let second = prompts.join("second.md");
+        std::fs::write(&first, "---\ndescription: before\n---\ntext").unwrap();
+        std::fs::write(&second, "Other prompt").unwrap();
+        let mut catalog = scan(dir.path().into(), None).unwrap();
+        let resource = catalog
+            .resources
+            .iter()
+            .find(|r| r.path == first)
+            .unwrap()
+            .clone();
+        let other = catalog
+            .resources
+            .iter()
+            .find(|r| r.path == second)
+            .unwrap()
+            .clone();
+        std::fs::write(&first, "---\ndescription: after\n---\ntext").unwrap();
+        std::fs::write(&second, [0xff]).unwrap();
+        reload_resource(&mut catalog, resource);
+        assert_eq!(
+            catalog
+                .resources
+                .iter()
+                .find(|r| r.path == first)
+                .unwrap()
+                .description,
+            "after"
+        );
+        assert_eq!(
+            catalog.resources.iter().find(|r| r.path == second),
+            Some(&other)
+        );
+        assert!(catalog.warnings.is_empty());
+    }
     #[test]
     fn text_creation_never_overwrites_and_registration_keeps_external_file() {
         let temp = tempfile::tempdir().unwrap();

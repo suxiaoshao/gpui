@@ -50,13 +50,22 @@ pub(super) struct ModelList {
     disabled: bool,
 }
 impl ModelList {
-    pub fn replace(&mut self, all: Vec<ModelOption>, current: Option<ModelKey>, disabled: bool) {
+    pub fn replace(
+        &mut self,
+        all: Vec<ModelOption>,
+        current: Option<ModelKey>,
+        disabled: bool,
+    ) -> bool {
+        if self.all == all && self.current == current && self.disabled == disabled {
+            return false;
+        }
         self.current = current;
         self.disabled = disabled;
         if self.all != all {
             self.all = all;
             self.filter();
         }
+        true
     }
     fn filter(&mut self) {
         let mut groups = BTreeMap::<String, Vec<ModelOption>>::new();

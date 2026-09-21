@@ -70,7 +70,7 @@ impl StartupView {
             )
         });
         let store = config.read(cx).store.clone();
-        let config_sub = store.observe_in(cx, window, |this, op, window, cx| {
+        let config_sub = store.observe_in(cx, window, |_, op, window, cx| {
             if let Some(value) = op.data().and_then(|d| d.configured()) {
                 crate::app::temporary::set_command(value.pi_executable(), cx);
                 i18n::apply(value.language, cx);
@@ -80,10 +80,6 @@ impl StartupView {
                     crate::app::shortcuts::apply(value, cx);
                 }
                 menus::refresh(cx);
-                if this.show_settings {
-                    this.applied_pi
-                        .update(cx, |pi, cx| pi.request(value.pi_command.clone(), false, cx));
-                }
             }
             cx.notify();
         });
@@ -101,7 +97,7 @@ impl StartupView {
         let accent = cx.observe_global_in::<app_theme::SystemAccentThemeState>(
             window,
             move |_, window, cx| {
-                theme::apply(&accent_config.read(cx).preferences(cx), window, cx);
+                theme::accent_changed(&accent_config.read(cx).preferences(cx), window, cx);
             },
         );
         config.update(cx, |owner, cx| owner.reload(cx));
@@ -191,10 +187,6 @@ impl StartupView {
             {
                 window.close_dialog(cx);
             }
-        }
-        if visible && !self.show_settings {
-            self.settings
-                .update(cx, |settings, cx| settings.activate(cx));
         }
         self.show_settings = visible;
         if !visible && let Some(home) = &self.home {

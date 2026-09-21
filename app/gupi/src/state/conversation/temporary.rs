@@ -61,18 +61,18 @@ impl ConversationState {
                         if this.selected.as_ref() == Some(&key) {
                             this.new_draft(None, cx);
                         }
-                        cx.emit(ConversationEvent::Deleted);
+                        notify_session(&key, cx);
                     }
                     Err(error) => cx.emit(ConversationEvent::Notify {
                         message: error,
                         error: true,
                     }),
                 }
-                cx.notify();
+                notify_session(&key, cx);
             });
         });
         self.sessions.get_mut(&target).unwrap().command = SessionCommand::Deleting { task };
-        cx.notify();
+        notify_session(&target, cx);
     }
 }
 

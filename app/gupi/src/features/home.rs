@@ -9,6 +9,7 @@ pub(crate) mod navigation;
 pub(crate) mod palette;
 mod panes;
 pub(crate) mod pickers;
+mod progress;
 mod slash;
 mod titlebar;
 mod welcome;
@@ -41,11 +42,14 @@ struct SessionView {
     history_canvas: Entity<history::canvas::HistoryCanvas>,
     history_projection: Option<(u64, HistoryDetail)>,
     model_picker: Entity<pickers::Picker>,
+    clock: Entity<progress::ProcessClock>,
+    list_projection: Option<(u64, HistoryDetail, HistoryScope, Option<String>)>,
     preview: Option<String>,
     process_open: HashMap<String, bool>,
     queue_open: bool,
     scroller: Entity<MessageScrollerState>,
     rows: Rc<Vec<messages::ChatRow>>,
+    row_positions: Rc<std::cell::RefCell<HashMap<String, usize>>>,
     content_revision: u64,
 }
 pub(crate) struct HomeView {
@@ -61,10 +65,11 @@ pub(crate) struct HomeView {
     history_scope: HistoryScope,
     show_sidebar: bool,
     show_history: bool,
+    navigation: navigation::Navigation,
     projects_with_more: HashSet<PathBuf>,
     open_projects: HashSet<PathBuf>,
     layout_save: Option<Task<()>>,
-    runtime_tick: Option<Task<()>>,
+    progress: Entity<progress::RetryView>,
     pane_layout: panes::PaneLayout,
     pane_drag: Option<panes::Drag>,
     palette: Option<Entity<palette::Palette>>,
@@ -76,6 +81,48 @@ pub(crate) struct HomeView {
     _subscriptions: Vec<Subscription>,
 }
 impl HomeView {
+    fn sync_messages(&mut self, key: &str, force: bool, cx: &mut Context<Self>) {
+        let Some(session) = self.state.read(cx).sessions.get(key) else {
+            return;
+        };
+        let Some(view) = self.views.get_mut(key) else {
+            return;
+        };
+        if force || view.content_revision != session.content_revision {
+            if view
+                .preview
+                .as_ref()
+                .is_some_and(|id| session.history().entry(id).is_none())
+            {
+                view.preview = None;
+            }
+            let rows = messages::project(session, view.preview.as_deref());
+            let old = view.rows.clone();
+            view.rows = Rc::new(rows);
+            let new = view.rows.clone();
+            *view.row_positions.borrow_mut() = new
+                .iter()
+                .enumerate()
+                .map(|(i, row)| (row.id.clone(), i))
+                .collect();
+            view.content_revision = session.content_revision;
+            view.scroller.update(cx, |state, cx| {
+                let prefix = old
+                    .iter()
+                    .zip(new.iter())
+                    .take_while(|(a, b)| a.id == b.id)
+                    .count();
+                if prefix < old.len() || new.len() != old.len() {
+                    let _ = state.splice(prefix..old.len(), new.len() - prefix, cx);
+                }
+                for (index, row) in new.iter().enumerate() {
+                    if old.get(index) != Some(row) || row.active() {
+                        state.remeasure_items(index..index + 1, cx);
+                    }
+                }
+            });
+        }
+    }
     pub(crate) fn has_image_preview(&self, cx: &App) -> bool {
         self.image_preview.read(cx).is_open()
     }
@@ -172,18 +219,39 @@ impl HomeView {
         let subscriptions = vec![
             cx.observe(&input, |_, _, cx| cx.notify()),
             cx.observe(&history_list, |_, _, cx| cx.notify()),
-            cx.observe_in(&state, window, |this, _, window, cx| {
-                this.sync(false, window, cx)
-            }),
             cx.subscribe_in(
                 &state,
                 window,
                 |this, _, event: &ConversationEvent, window, cx| match event {
-                    ConversationEvent::Deleted => {
-                        this.sync(false, window, cx);
-                        this.views
-                            .retain(|key, _| this.state.read(cx).sessions.contains_key(key));
-                        this.input.update(cx, |input, cx| input.focus(window, cx));
+                    ConversationEvent::Changed(changes) => {
+                        if changes.catalog {
+                            this.sync_navigation(None, cx);
+                        } else {
+                            for (key, navigation) in &changes.sessions {
+                                if *navigation {
+                                    this.sync_navigation(Some(key), cx);
+                                }
+                            }
+                        }
+                        if changes.selection {
+                            this.sync_navigation_selection(cx);
+                        }
+                        if changes.catalog || changes.affects(this.state.read(cx).selected.as_ref())
+                        {
+                            this.sync(false, window, cx);
+                        } else if let Some(key) = this.state.read(cx).selected.clone()
+                            && changes.bodies.contains(&key)
+                        {
+                            this.sync_messages(&key, false, cx);
+                        }
+                        for key in changes.sessions.keys() {
+                            if !this.state.read(cx).sessions.contains_key(key) {
+                                this.views.remove(key);
+                            }
+                        }
+                        if changes.progress {
+                            cx.notify();
+                        }
                     }
                     ConversationEvent::Notify { message, error } => {
                         use gpui_kit::component::notification::Notification;
@@ -270,10 +338,11 @@ impl HomeView {
             history_scope: Default::default(),
             show_sidebar: true,
             show_history: false,
+            navigation: Default::default(),
             projects_with_more: HashSet::new(),
             open_projects: HashSet::new(),
             layout_save: None,
-            runtime_tick: None,
+            progress: cx.new(progress::RetryView::new),
             pane_layout: panes::PaneLayout::default(),
             pane_drag: None,
             palette: None,
@@ -284,6 +353,7 @@ impl HomeView {
             extension_focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         };
+        view.sync_navigation(None, cx);
         view.sync(false, window, cx);
         view.focus_composer(window, cx);
         view
@@ -295,41 +365,16 @@ impl HomeView {
             self.slash = Default::default();
         }
         if changed && let Some(view) = self.shown_key.as_ref().and_then(|key| self.views.get(key)) {
+            view.clock.update(cx, |clock, cx| clock.sync(None, cx));
             view.history_canvas
                 .update(cx, |canvas, cx| canvas.clear_pointer(cx));
             view.model_picker
                 .update(cx, |picker, cx| picker.close(window, cx));
         }
         self.shown_key = key.clone();
-        let running = key
-            .as_ref()
-            .and_then(|key| self.state.read(cx).sessions.get(key))
-            .is_some_and(|s| s.running());
-        if !running {
-            self.runtime_tick = None;
-        } else if self.runtime_tick.is_none() {
-            self.runtime_tick = Some(cx.spawn(async |this, cx| {
-                loop {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(1))
-                        .await;
-                    if this
-                        .update(cx, |this, cx| {
-                            if let Some(view) =
-                                this.shown_key.as_ref().and_then(|key| this.views.get(key))
-                            {
-                                view.scroller.update(cx, |s, cx| s.remeasure(cx));
-                            }
-                            cx.notify();
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            }));
-        }
         let Some(key) = key else {
+            self.progress
+                .update(cx, |progress, cx| progress.sync(None, None, cx));
             cx.notify();
             return;
         };
@@ -425,11 +470,14 @@ impl HomeView {
                     history_canvas,
                     history_projection: None,
                     model_picker,
+                    clock: cx.new(progress::ProcessClock::new),
+                    list_projection: None,
                     preview: None,
                     process_open: HashMap::new(),
                     queue_open: false,
                     scroller,
                     rows: Rc::new(vec![]),
+                    row_positions: Rc::default(),
                     content_revision: u64::MAX,
                 },
             );
@@ -437,6 +485,17 @@ impl HomeView {
         let view = self.views.get_mut(&key).unwrap();
         view.model_picker
             .update(cx, |picker, cx| picker.sync_controls(window, cx));
+        let Some(session) = self.state.read(cx).sessions.get(&key) else {
+            return;
+        };
+        let retry = session.retry.clone();
+        let summary_retry = session.summary_retry.clone();
+        let started_at = session.run_started_at();
+        self.progress
+            .update(cx, |progress, cx| progress.sync(retry, summary_retry, cx));
+        self.views[&key]
+            .clock
+            .update(cx, |clock, cx| clock.sync(started_at, cx));
         let Some(session) = self.state.read(cx).sessions.get(&key) else {
             return;
         };
@@ -448,21 +507,38 @@ impl HomeView {
                 matches!(p.request.method, pi_rpc::protocol::UiMethod::Editor { .. }),
             )
         });
+        self.sync_messages(&key, changed || force, cx);
         let view = self.views.get_mut(&key).unwrap();
-        if changed || force || view.content_revision != session.content_revision {
-            if view
-                .preview
-                .as_ref()
-                .is_some_and(|id| session.history().entry(id).is_none())
-            {
-                view.preview = None;
-            }
-            let rows = messages::project(session, view.preview.as_deref());
-            let history_rows = session.history().list_rows(
-                self.history_detail,
-                self.history_scope,
-                view.preview.as_deref(),
-            );
+        let Some(session) = self.state.read(cx).sessions.get(&key) else {
+            return;
+        };
+        let history_key = (
+            session.history().revision,
+            self.history_detail,
+            self.history_scope,
+            view.preview.clone(),
+        );
+        let forkable: HashSet<_> = session
+            .fork_options()
+            .iter()
+            .map(|m| m.entry_id.clone())
+            .collect();
+        let can_fork = !session.settings_busy() && !session.model_change.unconfirmed();
+        let history_changed =
+            changed || force || view.list_projection.as_ref() != Some(&history_key);
+        let controls_changed = self.history_list.read(cx).delegate().forkable != forkable
+            || self.history_list.read(cx).delegate().can_fork != can_fork;
+        if history_changed || controls_changed {
+            view.list_projection = Some(history_key);
+            let history_rows = if history_changed {
+                Rc::new(session.history().list_rows(
+                    self.history_detail,
+                    self.history_scope,
+                    view.preview.as_deref(),
+                ))
+            } else {
+                self.history_list.read(cx).delegate().rows.clone()
+            };
             let target = view
                 .preview
                 .clone()
@@ -514,40 +590,22 @@ impl HomeView {
                 .preview
                 .as_deref()
                 .and_then(|id| session.history().visible_ancestor(id, self.history_detail));
-            let forkable: HashSet<_> = session
-                .fork_options()
-                .iter()
-                .map(|m| m.entry_id.clone())
-                .collect();
-            let can_fork = !session.settings_busy() && !session.model_change.unconfirmed();
-            view.content_revision = session.content_revision;
             view.history_canvas.update(cx, |canvas, cx| {
                 canvas.sync(canvas_rows, canvas_preview, forkable.clone(), can_fork, cx)
-            });
-            let old = view.rows.clone();
-            view.rows = Rc::new(rows);
-            let new = view.rows.clone();
-            view.scroller.update(cx, |state, cx| {
-                let prefix = old
-                    .iter()
-                    .zip(new.iter())
-                    .take_while(|(a, b)| a.id == b.id)
-                    .count();
-                if prefix < old.len() || new.len() != old.len() {
-                    let _ = state.splice(prefix..old.len(), new.len() - prefix, cx);
-                }
-                state.remeasure(cx);
             });
             self.history_list.update(cx, |list, cx| {
                 let old_selected = list.delegate().selected_id.clone();
                 let old_lane_offset = list.delegate().lane_offset;
                 let delegate = list.delegate_mut();
-                delegate.graph = Rc::new(crate::state::history::HistoryGraph::new(&history_rows));
+                if history_changed {
+                    delegate.graph =
+                        Rc::new(crate::state::history::HistoryGraph::new(&history_rows));
+                }
                 delegate.preview_id = history_preview;
                 if changed {
                     delegate.lane_offset = 0;
                 }
-                delegate.rows = Rc::new(history_rows);
+                delegate.rows = history_rows;
                 delegate.session = key.clone();
                 delegate.forkable = forkable;
                 delegate.can_fork = can_fork;
@@ -567,6 +625,10 @@ impl HomeView {
                 }
                 cx.notify();
             });
+        }
+        if self.show_history {
+            self.state
+                .update(cx, |state, cx| state.read_visible_history(&key, cx));
         }
         if self.input.read(cx).value().as_ref() != draft {
             self.input
@@ -605,7 +667,7 @@ impl HomeView {
         {
             view.rows[index].reveal(&id, &mut view.process_open);
             view.scroller.update(cx, |s, cx| {
-                s.remeasure(cx);
+                s.remeasure_items(index..index + 1, cx);
                 s.scroll_to_item(index, cx);
             });
         }

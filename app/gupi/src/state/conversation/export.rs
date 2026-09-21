@@ -72,10 +72,10 @@ impl ConversationState {
                         error: true,
                     }),
                 }
-                cx.notify();
+                notify_session(&task_key, cx);
             });
         });
         self.sessions.get_mut(&target).unwrap().command = SessionCommand::Exporting { _task: task };
-        cx.notify();
+        notify_session(key, cx);
     }
 }

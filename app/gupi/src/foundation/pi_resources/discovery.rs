@@ -142,7 +142,7 @@ pub(crate) fn scan(root: PathBuf, agents: Option<PathBuf>) -> Result<Catalog, Er
     Ok(result)
 }
 
-fn add(
+pub(super) fn add(
     catalog: &mut Catalog,
     kind: Kind,
     path: PathBuf,

@@ -29,9 +29,11 @@ impl ConversationState {
                     return;
                 };
                 session.command.finish();
+                let mut draft_changed = false;
                 match result {
                     Ok(queue) if restore_text => {
                         if let Some(draft) = restored_text(queue, &session.draft) {
+                            draft_changed = session.draft != draft;
                             session.draft = draft;
                             session.draft_revision += 1;
                         }
@@ -46,13 +48,16 @@ impl ConversationState {
                 }
                 // Queue events are authoritative; a later enqueue must not be
                 // erased by this response. The snapshot also refreshes the count.
-                this.refresh(&target, cx);
-                this.changed(cx);
+                this.read_session(&target, ReadScope::State, cx);
+                if draft_changed {
+                    this.save_changes(cx);
+                }
+                notify_session(&target, cx);
             });
         });
         self.sessions.get_mut(&key).unwrap().command =
             SessionCommand::ClearingQueue { _task: task };
-        cx.notify();
+        notify_session(&key, cx);
     }
 }
 

@@ -25,6 +25,7 @@ pub(crate) struct ResourceController {
     pub mutation: repair::Operation<(), Error, (), Task<()>>,
 }
 pub(crate) enum ResourceEvent {
+    CatalogChanged,
     Saved(PathBuf, String),
     Finished {
         target: String,
@@ -47,17 +48,56 @@ impl ResourceController {
         self.mutation.transition(Cancel);
     }
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.refresh_after(None, cx);
+    }
+    fn refresh_after(&mut self, change: Option<Change>, cx: &mut Context<Self>) {
         if self.busy() {
             return;
         }
-        let worker = cx.background_spawn(async {
+        let previous = change.as_ref().and_then(|_| self.catalog.data().cloned());
+        let worker = cx.background_spawn(async move {
+            if let (Some(change), Some(mut catalog)) = (change, previous) {
+                match change {
+                    Change::Toggle(resource, enabled) => {
+                        for item in &mut catalog.resources {
+                            if item.path == resource.path {
+                                item.enabled = enabled;
+                            }
+                        }
+                        return Ok(catalog);
+                    }
+                    Change::Delete(resource) => {
+                        catalog.resources.retain(|item| item.path != resource.path);
+                        return Ok(catalog);
+                    }
+                    Change::Save { path, .. } => {
+                        if let Some(resource) = catalog
+                            .resources
+                            .iter()
+                            .find(|item| item.path == path)
+                            .cloned()
+                        {
+                            io::reload_resource(&mut catalog, resource);
+                            return Ok(catalog);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             let root = io::agent_dir()?;
             io::scan(root, dirs_next::home_dir().map(|p| p.join(".agents")))
         });
         let task = cx.spawn(async move |owner, cx| {
             let result = worker.await;
             let _ = owner.update(cx, |owner, cx| {
+                let changed = result
+                    .as_ref()
+                    .ok()
+                    .is_some_and(|next| owner.catalog.data() != Some(next));
                 owner.catalog.transition(Complete(result));
+                if changed {
+                    cx.emit(ResourceEvent::CatalogChanged);
+                }
                 cx.notify();
             });
         });
@@ -88,6 +128,7 @@ impl ResourceController {
             Change::Save { path, text, .. } => Some((path.clone(), text.clone())),
             _ => None,
         };
+        let updated = change.clone();
         let worker = Tokio::spawn(cx, async move {
             match change {
                 Change::Package {
@@ -124,8 +165,7 @@ impl ResourceController {
                     cx.emit(ResourceEvent::Saved(path, text));
                 }
                 // A CLI failure may still have changed files. Always reread the actual state.
-                owner.refresh(cx);
-                cx.notify();
+                owner.refresh_after(success.then_some(updated), cx);
             });
         });
         match &self.mutation {

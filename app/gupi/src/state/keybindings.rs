@@ -436,13 +436,40 @@ pub(crate) fn apply(overrides: &Overrides, cx: &mut App) {
     cx.clear_key_bindings();
     cx.bind_keys(bindings);
     cx.set_global(Applied(overrides.clone()));
-    menus::refresh(cx);
+    menus::refresh_native(cx);
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Kind, Overrides, Run, apply, command_for, validate};
     use gpui_kit::{AsKeystroke, Keystroke, TestAppContext};
+    #[gpui_kit::test]
+    fn binding_changes_rebuild_native_menus_without_a_locale_change(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::foundation::i18n::apply(Default::default(), cx);
+            crate::app::menus::refresh(cx);
+
+            // The test platform does not materialize native accelerators. Clear
+            // its menu snapshot to observe whether applying bindings rebuilds it.
+            for overrides in [
+                Overrides::new(),
+                Overrides::from([("quit".into(), "cmd-alt-q".into())]),
+                Overrides::from([("quit".into(), String::new())]),
+                Overrides::new(),
+            ] {
+                cx.set_menus(Vec::new());
+                apply(&overrides, cx);
+                assert_eq!(cx.get_menus().unwrap().len(), 1);
+
+                cx.set_menus(Vec::new());
+                apply(&overrides, cx);
+                crate::app::menus::refresh(cx);
+                assert!(cx.get_menus().unwrap().is_empty());
+            }
+        });
+    }
+
     #[gpui_kit::test]
     fn temporary_trash_rebinding_removes_the_old_key_and_stays_in_its_window(
         cx: &mut TestAppContext,
