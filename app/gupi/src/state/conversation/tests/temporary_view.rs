@@ -357,7 +357,7 @@ fn temporary_composing_text_and_attachments_never_trigger_return(cx: &mut TestAp
         });
         state.update(cx, |state, _| {
             state.sessions.get_mut("first").unwrap().attachments.push(
-                crate::foundation::attachments::Attachment::file("/tmp/fixture.txt".into()),
+                crate::foundation::attachments::Attachment::file("/tmp/fixture.txt".into(), 0),
             )
         });
         home.update(cx, |home, cx| home.submit_or_paste(false, window, cx));
@@ -474,5 +474,217 @@ fn temporary_panel_switches_stop_hide_and_honors_rebound_shortcuts(cx: &mut Test
             cx.read_from_clipboard().and_then(|i| i.text()).as_deref(),
             Some("sentinel")
         )
+    });
+}
+
+#[gpui_kit::test]
+fn composer_attachments_stay_inside_group_and_remove_without_preview(cx: &mut TestAppContext) {
+    use crate::foundation::attachments::Attachment;
+    use gpui_kit::{SharedString, component::WindowExt, test::TestWindowExt};
+
+    init_interactions(cx);
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(1200, 800)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let mut image = Attachment::from_image("界面.png".into(), png.get_ref()).unwrap();
+    image.id = "image".into();
+    let mut file = Attachment::file("/tmp/README.md".into(), 128_000);
+    file.id = "file".into();
+    let state = cx.new(|cx| ConversationState::temporary("unused-pi".into(), cx));
+    state.update(cx, |state, _| {
+        let mut session = fixture_session("attachments");
+        session.draft = "keep draft".into();
+        session.attachments = vec![image, file];
+        state.sessions.insert("attachments".into(), session);
+        state.selected = Some("attachments".into());
+    });
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| TemporaryView::new(state.clone(), window, cx));
+        view.update(cx, |view, cx| view.focus_search(window, cx));
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(960.), px(620.)));
+    visual.run_until_parked();
+    let mut previous_focus = None;
+    visual.update(|window, cx| {
+        window.render_frame(cx);
+        let group = window.find("conversation-composer").bounds();
+        let attachments = window
+            .within("conversation-composer")
+            .find("attachments")
+            .bounds();
+        let footer = window
+            .within("conversation-composer")
+            .find("footer")
+            .bounds();
+        assert!(group.contains(&attachments.origin));
+        assert!(attachments.bottom() <= footer.top());
+        previous_focus = window.focused(cx);
+        assert!(previous_focus.is_some());
+        window.click(SharedString::from("preview-image"), cx);
+        assert!(window.try_find("image-preview").is_some());
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.render_frame(cx);
+        let preview = window.find("image-preview").bounds();
+        assert_eq!(preview.origin, gpui_kit::point(px(0.), px(0.)));
+        assert_eq!(preview.size, window.viewport_size());
+        assert!(
+            !window.has_active_dialog(cx),
+            "viewer has no styled Dialog shell"
+        );
+        window.press("secondary-n", cx);
+        assert_eq!(state.read(cx).sessions.len(), 1, "modal blocks New Session");
+        window.press("enter", cx);
+        assert!(
+            window.try_find("image-preview").is_some(),
+            "Enter does not close viewer"
+        );
+        let bitmap = window.find("image-preview-bitmap").bounds();
+        let image_area = window.find("image-preview-scroll").bounds();
+        assert!(bitmap.size.width <= image_area.size.width);
+        assert!(bitmap.size.height <= image_area.size.height);
+        window.click("image-preview-zoom-in", cx);
+        assert!(window.find("image-preview-bitmap").bounds().size.width > bitmap.size.width);
+        let enlarged = window.find("image-preview-bitmap").bounds();
+        window.scroll(
+            "image-preview-scroll",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-24.), px(-24.))),
+            cx,
+        );
+        let scrolled = window.find("image-preview-bitmap").bounds();
+        assert_eq!(
+            scrolled.size, enlarged.size,
+            "plain scrolling must not zoom"
+        );
+        assert!(scrolled.origin.y < enlarged.origin.y);
+        window.click("image-preview-bitmap", cx);
+        assert!(
+            window.try_find("image-preview").is_some(),
+            "clicking the image must not close it"
+        );
+        window.click("image-preview-zoom-out", cx);
+        assert_eq!(
+            window.find("image-preview-bitmap").bounds().size,
+            bitmap.size
+        );
+        window.click("image-preview-close", cx);
+        assert!(
+            !window.try_find("image-preview").is_some(),
+            "close removes the viewer"
+        );
+        assert_eq!(window.focused(cx), previous_focus, "close restores focus");
+        window.render_frame(cx);
+        window.click(SharedString::from("preview-image"), cx);
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.press("escape", cx);
+        assert!(
+            !window.try_find("image-preview").is_some(),
+            "Escape closes the preview"
+        );
+        window.click(SharedString::from("preview-image"), cx);
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.click_at("image-preview", gpui_kit::point(px(2.), px(100.)), cx);
+        assert!(
+            !window.try_find("image-preview").is_some(),
+            "clicking the blank margin closes the preview"
+        );
+        window.click(SharedString::from("remove-image"), cx);
+        assert!(
+            !window.try_find("image-preview").is_some(),
+            "remove must not open image preview"
+        );
+        assert_eq!(state.read(cx).current().unwrap().attachments.len(), 1);
+        assert_eq!(state.read(cx).current().unwrap().draft, "keep draft");
+        window.click(SharedString::from("remove-file"), cx);
+        assert!(state.read(cx).current().unwrap().attachments.is_empty());
+        assert!(
+            window
+                .within("conversation-composer")
+                .try_find("attachments")
+                .is_none()
+        );
+        assert!(
+            window
+                .within("conversation-composer")
+                .try_find("footer")
+                .is_some()
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn user_message_images_are_compact_separate_and_open_preview(cx: &mut TestAppContext) {
+    use crate::state::history::DisplayMessage;
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use gpui_kit::{SharedString, test::TestWindowExt};
+    init_interactions(cx);
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(1080, 290)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let image = serde_json::json!({"type":"image", "mimeType":"image/png", "data":STANDARD.encode(png.get_ref())});
+    let state = cx.new(|cx| ConversationState::temporary("unused-pi".into(), cx));
+    state.update(cx, |state, _| {
+        let mut session = fixture_session("images");
+        for (id, content) in [
+            ("photo", serde_json::json!([image.clone()])),
+            (
+                "mixed",
+                serde_json::json!([{"type":"text", "text":"会不会更好"}, image.clone(), image]),
+            ),
+        ] {
+            session.live.push(DisplayMessage {
+                id: id.into(),
+                entry: None,
+                completed_at: None,
+                final_answer_part: None,
+                value: serde_json::json!({"role":"user", "content":content}),
+            });
+        }
+        session.transcript.receive_message();
+        session.content_revision += 1;
+        state.sessions.insert("images".into(), session);
+        state.selected = Some("images".into());
+    });
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| TemporaryView::new(state.clone(), window, cx));
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(1100.), px(860.)));
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("user-text-images-photo").is_none());
+        let single = window.find("user-image-images-photo-0").bounds();
+        let rem: f32 = window.rem_size().into();
+        assert!(f32::from(single.size.width) <= rem * 12. + 1.);
+        let ratio = f32::from(single.size.width) / f32::from(single.size.height);
+        assert!((ratio - 1080. / 290.).abs() < 0.05);
+        let images = window.find("user-images-images-mixed").bounds();
+        let text = window.find("user-text-images-mixed").bounds();
+        assert!(images.bottom() <= text.top());
+        let first = window.find("user-image-images-mixed-1").bounds();
+        let second = window.find("user-image-images-mixed-2").bounds();
+        assert_eq!(first.top(), second.top());
+        assert!(first.right() < second.left());
+        window.click(SharedString::from("user-image-images-mixed-1"), cx);
+        assert!(window.try_find("image-preview").is_some());
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.render_frame(cx);
+        let original = window.find("image-preview-bitmap").bounds();
+        window.click("image-preview-zoom-in", cx);
+        assert!(window.find("image-preview-bitmap").bounds().size.width > original.size.width);
+        window.press("escape", cx);
+        assert!(!window.try_find("image-preview").is_some());
+        assert_eq!(state.read(cx).current().unwrap().live.len(), 2);
     });
 }

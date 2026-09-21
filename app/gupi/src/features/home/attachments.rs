@@ -1,7 +1,12 @@
 use super::*;
 use crate::foundation::attachments::{self, Attachment, Content};
-use gpui_kit::component::input::Paste;
-use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::component::{
+    Icon,
+    attachment::{
+        Attachment as AttachmentView, AttachmentActions, AttachmentContent, AttachmentDescription,
+        AttachmentGroup, AttachmentMedia, AttachmentTitle,
+    },
+};
 
 impl HomeView {
     fn attachment_target(&self, cx: &App) -> Option<String> {
@@ -44,23 +49,24 @@ impl HomeView {
             cx,
         );
     }
-    pub(super) fn paste_attachments(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(item) = cx.read_from_clipboard() else {
-            return;
-        };
+    pub(super) fn paste_attachments(
+        &mut self,
+        item: &ClipboardItem,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if let Some(paths) = item.entries().iter().find_map(|entry| match entry {
             ClipboardEntry::ExternalPaths(paths) => Some(paths.paths().to_vec()),
             _ => None,
         }) {
-            cx.stop_propagation();
             self.attach_paths(paths, cx);
+            true
         } else if let Some(bytes) = item.entries().iter().find_map(|entry| match entry {
             ClipboardEntry::Image(image) => Some(image.bytes().to_vec()),
             _ => None,
         }) {
-            cx.stop_propagation();
             let Some(key) = self.attachment_target(cx) else {
-                return;
+                return true;
             };
             let name = t(cx, "attachment-clipboard");
             self.load_attachments(
@@ -71,6 +77,9 @@ impl HomeView {
                 },
                 cx,
             );
+            true
+        } else {
+            false
         }
     }
     fn load_attachments(
@@ -82,24 +91,8 @@ impl HomeView {
         let state = self.state.clone();
         state.update(cx, |state, cx| {
             let target = key.clone();
-            let cwd = state.sessions[&key].info.cwd.clone();
             let task = cx.spawn(async move |state, cx| {
-                let result = match future.await {
-                    Ok(items) => {
-                        if items
-                            .iter()
-                            .any(|a| matches!(a.content, Content::Image { .. }))
-                        {
-                            smol::unblock(move || {
-                                attachments::check_image_policy(&cwd).map(|_| items)
-                            })
-                            .await
-                        } else {
-                            Ok(items)
-                        }
-                    }
-                    Err(e) => Err(e),
-                };
+                let result = future.await;
                 let _ = state.update(cx, |state, cx| {
                     if let Some(session) = state.sessions.get_mut(&target) {
                         session.attachments_read = None;
@@ -117,73 +110,130 @@ impl HomeView {
             cx.notify();
         });
     }
-    pub(super) fn render_attachments(&self, cx: &Context<Self>) -> AnyElement {
-        let Some(session) = self.state.read(cx).current() else {
-            return div().into_any_element();
-        };
+    pub(super) fn render_attachments(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let session = self.state.read(cx).current()?;
+        if session.attachments.is_empty() {
+            return None;
+        }
         let key = self.shown_key.clone().unwrap_or_default();
-        let editable = session.can_edit_draft();
-        h_flex()
-            .flex_wrap()
-            .gap_2()
-            .children(session.attachments.iter().map(|attachment| {
-                let target = key.clone();
-                let id = attachment.id.clone();
-                let content = attachment.content.clone();
-                let name = attachment.name.clone();
-                h_flex()
-                    .gap_1()
-                    .child(
-                        Button::new(format!("preview-{id}"))
-                            .small()
-                            .label(name.clone())
-                            .when(matches!(content, Content::File(_)), |button| {
-                                button.icon(IconName::FileText)
-                            })
-                            .when_some(
-                                match &content {
-                                    Content::Image { preview, .. } => Some(preview.clone()),
-                                    _ => None,
-                                },
-                                |button, preview| {
-                                    button
-                                        .child(img(preview).size_6().object_fit(ObjectFit::Contain))
-                                },
-                            )
-                            .on_click(move |_, window, cx| match &content {
-                                Content::File(path) => cx.open_with_system(path),
-                                Content::Image { preview, .. } => {
-                                    let preview = preview.clone();
-                                    let name = name.clone();
-                                    window.open_dialog(cx, move |dialog, _, _| {
-                                        dialog.title(name.clone()).child(
-                                            img(preview.clone())
-                                                .w_full()
-                                                .h_64()
-                                                .object_fit(ObjectFit::Contain),
-                                        )
+        let editable = session.can_edit_draft()
+            && self
+                .views
+                .get(&key)
+                .and_then(|view| view.preview.as_deref())
+                .is_none_or(|id| session.history().on_current_path(id));
+        Some(
+            AttachmentGroup::new(SharedString::from(format!("composer-attachments-{key}")))
+                .children(session.attachments.iter().map(|attachment| {
+                    let target = key.clone();
+                    let id = attachment.id.clone();
+                    let content = attachment.content.clone();
+                    let name = attachment.name.clone();
+                    let media = match &content {
+                        Content::File { .. } => {
+                            AttachmentMedia::new().child(Icon::new(IconName::FileText))
+                        }
+                        Content::Image { image } => AttachmentMedia::new().src(image.path()),
+                    };
+                    let format = attachment
+                        .format_name()
+                        .unwrap_or_else(|| t(cx, "attachment-file"));
+                    let description =
+                        format!("{format} · {}", format_file_size(attachment.byte_len()));
+                    let host = self.image_preview.clone();
+                    let button_host = host.clone();
+                    let button_content = content.clone();
+                    let button_name = name.clone();
+                    let card = AttachmentView::new()
+                        .id(SharedString::from(format!("attachment-{id}")))
+                        .small()
+                        .media(media)
+                        .content(
+                            AttachmentContent::new()
+                                .child(
+                                    // The card's pointer preview has a keyboard-accessible
+                                    // counterpart; Attachment's whole-card layer is pointer-only.
+                                    Button::new(SharedString::from(format!("preview-{id}")))
+                                        .ghost()
+                                        .xsmall()
+                                        .self_start()
+                                        .px_0()
+                                        .min_w_0()
+                                        .max_w_full()
+                                        .accessibility_label(name.clone())
+                                        .tooltip(name.clone())
+                                        .child(AttachmentTitle::new(name.clone()))
+                                        .on_click(move |_, window, cx| {
+                                            show_preview(
+                                                &button_host,
+                                                &button_content,
+                                                &button_name,
+                                                window,
+                                                cx,
+                                            )
+                                        }),
+                                )
+                                .description(AttachmentDescription::new(description)),
+                        )
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            show_preview(&host, &content, &name, window, cx);
+                        });
+                    card.actions(
+                        AttachmentActions::new().child(
+                            Button::new(SharedString::from(format!("remove-{id}")))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::X)
+                                .disabled(!editable)
+                                .tooltip(t(cx, "attachment-remove"))
+                                .accessibility_label(t(cx, "attachment-remove"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.state.update(cx, |state, cx| {
+                                        if let Some(session) = state
+                                            .sessions
+                                            .get_mut(&target)
+                                            .filter(|s| s.can_edit_draft())
+                                        {
+                                            session.attachments.retain(|a| a.id != id);
+                                            cx.notify();
+                                        }
                                     });
-                                }
-                            }),
+                                })),
+                        ),
                     )
-                    .child(
-                        Button::new(format!("remove-{id}"))
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::X)
-                            .disabled(!editable)
-                            .tooltip(t(cx, "attachment-remove"))
-                            .accessibility_label(t(cx, "attachment-remove"))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.state.update(cx, |state, cx| {
-                                    if let Some(session) = state.sessions.get_mut(&target) {
-                                        session.attachments.retain(|a| a.id != id);
-                                        cx.notify();
-                                    }
-                                });
-                            })),
-                    )
-            }))
-            .into_any_element()
+                }))
+                .into_any_element(),
+        )
     }
+}
+
+fn show_preview(
+    host: &Entity<super::image_preview::PreviewHost>,
+    content: &Content,
+    name: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    match content {
+        Content::File { path, .. } => cx.open_with_system(path),
+        Content::Image { image } => {
+            super::image_preview::open(host, image.clone(), name.to_owned(), window, cx);
+        }
+    }
+}
+
+fn format_file_size(bytes: u64) -> String {
+    if bytes < 1_000 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64;
+    let units = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
+    let mut unit = 0;
+    while value >= 1_000. && unit < units.len() - 1 {
+        value /= 1_000.;
+        unit += 1;
+    }
+    let number = format!("{value:.1}");
+    format!("{} {}", number.trim_end_matches(".0"), units[unit])
 }

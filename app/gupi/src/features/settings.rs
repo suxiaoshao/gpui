@@ -23,7 +23,7 @@ use gpui_kit::component::{
     ActiveTheme, Disableable,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputGroup, InputGroupAddon, InputGroupAddonAlignment, InputState},
     v_flex,
 };
 use gpui_kit::component::{
@@ -343,40 +343,42 @@ impl SettingsView {
             .path()
             .map(std::path::Path::to_path_buf);
         let mut view = v_flex().gap_2().child(
-            h_flex()
-                .gap_2()
+            div()
+                .debug_selector(|| "settings-config-path".into())
                 .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .debug_selector(|| "settings-config-path".into())
-                        .child(Input::new(&self.config_path).readonly(true)),
-                )
-                .child(
-                    Button::new("reload-config")
-                        .debug_selector(|| "settings-config-reload".into())
-                        .ghost()
-                        .icon(IconName::RotateCw)
-                        .tooltip(t(cx, "settings-reload"))
-                        .accessibility_label(t(cx, "settings-reload"))
-                        .disabled(busy)
-                        .on_click(
-                            cx.listener(|this, _, _, cx| this.request(ConfigRepair::Reload, cx)),
+                    InputGroup::new("config-path")
+                        .readonly(true)
+                        .input(Input::new(&self.config_path))
+                        .addon(
+                            InputGroupAddon::new("actions")
+                                .align(InputGroupAddonAlignment::InlineEnd)
+                                .child(
+                                    Button::new("reload-config")
+                                        .debug_selector(|| "settings-config-reload".into())
+                                        .ghost()
+                                        .icon(IconName::RotateCw)
+                                        .tooltip(t(cx, "settings-reload"))
+                                        .accessibility_label(t(cx, "settings-reload"))
+                                        .disabled(busy)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.request(ConfigRepair::Reload, cx)
+                                        })),
+                                )
+                                .child(
+                                    Button::new("open-config")
+                                        .debug_selector(|| "settings-config-open".into())
+                                        .ghost()
+                                        .icon(IconName::FileText)
+                                        .tooltip(t(cx, "settings-config-open"))
+                                        .accessibility_label(t(cx, "settings-config-open"))
+                                        .disabled(path.is_none())
+                                        .on_click(move |_, _, cx| {
+                                            if let Some(path) = &path {
+                                                cx.open_with_system(path);
+                                            }
+                                        }),
+                                ),
                         ),
-                )
-                .child(
-                    Button::new("open-config")
-                        .debug_selector(|| "settings-config-open".into())
-                        .ghost()
-                        .icon(IconName::FileText)
-                        .tooltip(t(cx, "settings-config-open"))
-                        .accessibility_label(t(cx, "settings-config-open"))
-                        .disabled(path.is_none())
-                        .on_click(move |_, _, cx| {
-                            if let Some(path) = &path {
-                                cx.open_with_system(path);
-                            }
-                        }),
                 ),
         );
         if can_write {

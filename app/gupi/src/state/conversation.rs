@@ -9,6 +9,7 @@ mod export;
 pub(crate) mod loading;
 mod messages;
 mod model_change;
+mod queue;
 mod reads;
 mod reconnect;
 mod renaming;
@@ -117,6 +118,7 @@ pub(crate) struct Session {
     pub draft_revision: u64,
     pub content_revision: u64,
     pub pending_count: usize,
+    pub queued: Option<protocol::ClearedQueue>,
     pub command: SessionCommand,
     pub core_read: CoreRead,
     event_revision: u64,
@@ -165,6 +167,7 @@ impl Session {
             draft_revision: 0,
             content_revision: 0,
             pending_count: 0,
+            queued: None,
             command: SessionCommand::Idle,
             core_read: CoreRead::Idle,
             event_revision: 0,
@@ -211,7 +214,7 @@ impl Session {
     pub fn can_edit_draft(&self) -> bool {
         !self.preparing
             && !self.submitting()
-            && !self.command.running()
+            && (!self.command.running() || self.command.clearing_queue())
             && self.state.is_some()
             && !matches!(self.core_read, CoreRead::CheckingFile { .. })
     }
@@ -834,6 +837,8 @@ impl ConversationState {
                 s.binding += 1;
                 s.error = None;
                 s.state = None;
+                s.queued = None;
+                s.pending_count = 0;
             }
             Err(error) => {
                 s.error = Some(error.to_string());
@@ -874,6 +879,7 @@ impl ConversationState {
                         s.reset_reads();
                         s.command.finish();
                         s.pending_count = 0;
+                        s.queued = None;
                         s.fail_submission(s.error.clone().unwrap(), cx);
                         s.binding += 1;
                         pi::global(cx)
@@ -906,6 +912,8 @@ impl ConversationState {
                     s.reset_reads();
                     s.clear_extension_ui();
                     s.command.finish();
+                    s.queued = None;
+                    s.pending_count = 0;
                     s.binding += 1;
                 }
                 Ok(None) => {}
@@ -1035,6 +1043,13 @@ impl ConversationState {
             }
         }
         s.pending_count = snapshot.state.pending_message_count;
+        if s.pending_count == 0
+            || s.queued
+                .as_ref()
+                .is_some_and(|q| q.steering.len() + q.follow_up.len() != s.pending_count)
+        {
+            s.queued = None;
+        }
         s.state = Some(snapshot.state);
         if s.command.reconnecting() {
             s.command.finish();
@@ -1131,33 +1146,15 @@ impl ConversationState {
         let mut prompt = Prompt::new(text);
         for attachment in &attachments {
             match &attachment.content {
-                crate::foundation::attachments::Content::File(path) => {
+                crate::foundation::attachments::Content::File { path, .. } => {
                     if !prompt.message.is_empty() {
                         prompt.message.push('\n');
                     }
                     prompt.message.push('@');
                     prompt.message.push_str(&path.to_string_lossy());
                 }
-                crate::foundation::attachments::Content::Image { image, .. } => {
-                    prompt.images.push(image.clone())
-                }
+                crate::foundation::attachments::Content::Image { .. } => {}
             }
-        }
-        if !prompt.images.is_empty()
-            && !s
-                .state
-                .as_ref()
-                .and_then(|s| s.model.as_ref())
-                .and_then(|m| m.extra.get("input"))
-                .and_then(Value::as_array)
-                .is_some_and(|types| types.iter().any(|kind| kind == "image"))
-        {
-            s.error = Some(crate::foundation::i18n::t(
-                cx,
-                "attachment-model-unsupported",
-            ));
-            cx.notify();
-            return None;
         }
         let used_template = revision.is_some() && s.pending_template.is_some();
         if used_template {
@@ -1168,7 +1165,40 @@ impl ConversationState {
         let attachment_ids: Vec<_> = attachments.iter().map(|a| a.id.clone()).collect();
         prompt.streaming_behavior = Some(mode);
         let task = cx.spawn(async move |owner, cx| {
-            let result = client.prompt(prompt).await;
+            let prepared = smol::unblock(move || {
+                for attachment in &attachments {
+                    if let crate::foundation::attachments::Content::Image { image } =
+                        &attachment.content
+                    {
+                        prompt.images.push(image.to_rpc_image()?);
+                    }
+                }
+                Ok::<_, String>(prompt)
+            })
+            .await;
+            // File encoding can finish after the user stops or replaces this session.
+            let current = owner
+                .update(cx, |this, cx| {
+                    let Some(s) = this.sessions.get_mut(&key).filter(|s| {
+                        s.binding == binding && matches!(s.submission, Submission::Sending { .. })
+                    }) else {
+                        return false;
+                    };
+                    if s.interrupted {
+                        s.finish_submission(false);
+                        this.changed(cx);
+                        return false;
+                    }
+                    true
+                })
+                .unwrap_or(false);
+            if !current {
+                return;
+            }
+            let result = match prepared {
+                Ok(prompt) => client.prompt(prompt).await.map_err(|e| e.to_string()),
+                Err(error) => Err(error),
+            };
             let _ = owner.update(cx, |this, cx| {
                 let Some(s) = this.sessions.get_mut(&key).filter(|s| {
                     s.binding == binding && matches!(s.submission, Submission::Sending { .. })
@@ -1423,6 +1453,14 @@ impl ConversationState {
         match &event.event {
             Event::Agent { kind, raw } => {
                 match kind.as_str() {
+                    "queue_update" => {
+                        if let Ok(queue) =
+                            serde_json::from_value::<protocol::ClearedQueue>(raw.clone())
+                        {
+                            s.pending_count = queue.steering.len() + queue.follow_up.len();
+                            s.queued = Some(queue);
+                        }
+                    }
                     "agent_start" => {
                         s.message_stream = None;
                         s.tools.clear();

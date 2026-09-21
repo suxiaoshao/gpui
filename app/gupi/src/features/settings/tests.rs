@@ -209,7 +209,11 @@ fn every_settings_page_renders_with_resources_at_narrow_width(cx: &mut TestAppCo
                 let open = window_cx.debug_bounds("settings-config-open").unwrap();
                 assert_eq!(path.center().y, reload.center().y);
                 assert_eq!(reload.center().y, open.center().y);
-                assert!(path.right() <= reload.left() && reload.right() <= open.left());
+                assert!(path.left() < reload.left() && reload.right() <= open.left());
+                assert!(
+                    open.right() <= path.right(),
+                    "actions stay inside the compound input"
+                );
                 assert!(open.right() <= gpui_kit::px(width));
                 if width == 1600. {
                     assert!(

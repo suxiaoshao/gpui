@@ -2,9 +2,12 @@ use super::actions::{Kind, Run};
 use super::*;
 use crate::features::composer::{self, Composer};
 use crate::state::conversation::content::BodyState;
-use gpui_kit::component::input::Textarea;
+use gpui_kit::component::button::DropdownButton;
+use gpui_kit::component::input::{InputGroupButton, Textarea};
+use gpui_kit::component::menu::PopupMenuItem;
 use pi_rpc::protocol::{UiMethod, UiReply};
 mod metrics;
+mod queue;
 impl HomeView {
     fn reply_extension(&mut self, reply: UiReply, cx: &mut Context<Self>) {
         if let Some((key, id)) = self.shown_request.clone() {
@@ -39,7 +42,7 @@ impl HomeView {
     }
     pub(super) fn render_composer(
         &self,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(session) = self.state.read(cx).current() else {
@@ -236,26 +239,19 @@ impl HomeView {
                         })),
                 );
         } else {
-            let input = div()
-                .relative()
-                .key_context("GupiComposer")
-                .capture_action(cx.listener(Self::paste_attachments))
-                .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                    this.attach_paths(paths.paths().to_vec(), cx)
-                }))
-                .child(
-                    Textarea::new(&self.input)
-                        .appearance(false)
-                        .disabled(preview)
-                        .readonly(!session.can_edit_draft())
-                        .aria_label(t(cx, "conversation-input")),
-                );
+            let owner = cx.entity().downgrade();
+            let input = Textarea::new(&self.input)
+                .aria_label(t(cx, "conversation-input"))
+                .on_paste(move |item, window, cx| {
+                    owner
+                        .update(cx, |this, cx| this.paste_attachments(item, window, cx))
+                        .unwrap_or(false)
+                });
             let Some(view) = self.views.get(&key) else {
                 return div().into_any_element();
             };
             let mut actions = h_flex().flex_none().items_center().gap_2().child(
-                Button::new("attach-files")
-                    .ghost()
+                InputGroupButton::new("attach-files")
                     .small()
                     .icon(IconName::Plus)
                     .tooltip(t(cx, "attachment-add"))
@@ -269,12 +265,11 @@ impl HomeView {
             {
                 actions = actions.child(metrics::context(session, cx));
             }
-            if session.busy() && !session.submitting() {
+            let running = session.busy() && !session.submitting();
+            if running {
                 actions = actions.child(
                     Button::new("stop-generation")
                         .small()
-                        .size_8()
-                        .rounded_full()
                         .icon(IconName::Square)
                         .tooltip_with_action(
                             t(cx, "conversation-stop"),
@@ -289,40 +284,80 @@ impl HomeView {
                             }
                         })),
                 );
-            } else {
+            }
+            if !running || !session.composer_empty() {
                 let label = t(
                     cx,
                     if session.submitting() {
                         "conversation-sending"
+                    } else if running {
+                        "conversation-queue-steer"
                     } else {
                         "conversation-send"
                     },
                 );
-                actions = actions.child(
-                    Button::new("send-message")
-                        .primary()
-                        .small()
-                        .size_8()
-                        .rounded_full()
-                        .icon(IconName::ArrowUp)
-                        .tooltip(label.clone())
-                        .accessibility_label(label)
-                        .loading(session.submitting())
-                        .disabled(
-                            preview
-                                || (session.draft.trim().is_empty()
-                                    && session.attachments.is_empty())
-                                || !self.state.read(cx).can_submit(&key, cx),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(key) = this.shown_key.clone() {
-                                this.state
-                                    .update(cx, |s, cx| s.send(&key, StreamingBehavior::Steer, cx));
-                            }
-                        })),
-                );
+                let disabled = preview
+                    || session.composer_empty()
+                    || !self.state.read(cx).can_submit(&key, cx);
+                let send = cx.listener(|this, _, _, cx| {
+                    if let Some(key) = this.shown_key.clone() {
+                        this.state
+                            .update(cx, |s, cx| s.send(&key, StreamingBehavior::Steer, cx));
+                    }
+                });
+                if running {
+                    let state = self.state.clone();
+                    let target = key.clone();
+                    actions = actions.child(
+                        DropdownButton::new("queue-send-mode")
+                            .small()
+                            .primary()
+                            .disabled(disabled)
+                            .button(
+                                Button::new("send-message")
+                                    .icon(IconName::ArrowUp)
+                                    .tooltip(label.clone())
+                                    .accessibility_label(label)
+                                    .on_click(send),
+                            )
+                            .dropdown_menu(move |mut menu, _, cx| {
+                                for (label, mode) in [
+                                    ("conversation-queue-steer", StreamingBehavior::Steer),
+                                    ("conversation-queue-follow-up", StreamingBehavior::FollowUp),
+                                ] {
+                                    let state = state.clone();
+                                    let target = target.clone();
+                                    menu = menu.item(PopupMenuItem::new(t(cx, label)).on_click(
+                                        move |_, _, cx| {
+                                            state.update(cx, |state, cx| {
+                                                state.send(&target, mode.clone(), cx)
+                                            });
+                                        },
+                                    ));
+                                }
+                                menu
+                            }),
+                    );
+                } else {
+                    actions = actions.child(
+                        InputGroupButton::new("send-message")
+                            .primary()
+                            .small()
+                            .icon(IconName::ArrowUp)
+                            .tooltip(label.clone())
+                            .accessibility_label(label)
+                            .loading(session.submitting())
+                            .disabled(disabled)
+                            .on_click(send),
+                    );
+                }
             }
-            let mut composer = Composer::new(input, view.model_picker.clone()).actions(actions);
+            let mut composer =
+                Composer::new("conversation-composer", input, view.model_picker.clone())
+                    .actions(actions);
+            if let Some(attachments) = self.render_attachments(cx) {
+                composer = composer.attachments(attachments);
+            }
             if session.stats.data().is_some() {
                 composer = composer.leading(div().flex_none().child(metrics::tokens(session, cx)));
             }
@@ -334,58 +369,22 @@ impl HomeView {
                     cx,
                 ));
             }
-            editor = composer.build(cx);
-            if session.pending_count > 0 {
-                editor = editor.child(
-                    div()
-                        .px_2()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(t(cx, "conversation-queued")),
+            editor = div()
+                .relative()
+                .key_context("GupiComposer")
+                .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                    this.attach_paths(paths.paths().to_vec(), cx)
+                }))
+                .child(
+                    composer
+                        .build()
+                        .readonly(preview || !session.can_edit_draft()),
                 );
-            }
         }
-        let mut composer = v_flex()
-            .w_full()
-            .min_w_0()
-            .child(self.render_attachments(cx));
-        if !self.state.read(cx).temporary
-            && session.info.path.as_os_str().is_empty()
-            && session.pending_ui.is_empty()
-        {
-            let name = project_name(&session.info.cwd);
-            let project_width = label_width(&name, window, cx) + px(40.);
-            // Electron uses a 28px project control and 5px vertical inset.
-            // Keep all three visible insets equal; the 12px overlap is separate.
-            composer = composer.child(
-                v_flex()
-                    .mx_3()
-                    .pb_3()
-                    .rounded_t_xl()
-                    .bg(cx.theme().muted)
-                    .child(
-                        h_flex().p(px(5.)).items_center().child(
-                            div().w(project_width).max_w_full().h_7().child(
-                                Button::new("choose-project")
-                                    .ghost()
-                                    .small()
-                                    .h_7()
-                                    .rounded_full()
-                                    .icon(IconName::Folder)
-                                    .label(name)
-                                    .tooltip(session.info.cwd.to_string_lossy().into_owned())
-                                    .accessibility_label(t(cx, "conversation-project"))
-                                    .disabled(session.busy() || session.command.running())
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.pick_directory(cx)),
-                                    ),
-                            ),
-                        ),
-                    ),
-            );
-            editor = editor.relative().mt(-px(12.));
+        if session.pending_count > 0 {
+            shell = shell.child(self.render_queue(&key, preview, cx));
         }
-        shell = shell.child(composer.child(editor));
+        shell = shell.child(editor);
         for widget in session.widgets.values().filter(|w| w.below) {
             shell = shell.child(div().text_sm().child(widget.lines.join("\n")));
         }
@@ -418,33 +417,4 @@ impl HomeView {
             .child(shell)
             .into_any_element()
     }
-}
-
-fn project_name(path: &std::path::Path) -> String {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| path.to_string_lossy().into_owned())
-}
-
-// Measure labels with the current font; each control adds its own icon/padding.
-fn label_width(label: &str, window: &Window, cx: &App) -> Pixels {
-    let text: SharedString = label.to_owned().into();
-    window
-        .text_system()
-        .shape_line(
-            text.clone(),
-            cx.theme().font_size,
-            &[TextRun {
-                len: text.len(),
-                font: window.text_style().font(),
-                color: cx.theme().foreground,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            }],
-            None,
-        )
-        .width
 }

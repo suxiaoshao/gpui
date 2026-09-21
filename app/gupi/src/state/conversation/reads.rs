@@ -1,6 +1,5 @@
 use super::loading::ReadMessage;
 use super::*;
-use crate::foundation::model_scope;
 
 pub(crate) struct ThinkingLevels {
     pub model: Option<(String, String)>,
@@ -153,23 +152,13 @@ impl ConversationState {
         }
         let binding = s.binding;
         let id = s.next_read();
-        let cwd = s.info.cwd.clone();
-        let agent = self.discovery.agent.clone();
         let task_key = key.to_owned();
         let task = cx.spawn(async move |owner, cx| {
-            let result = async {
-                let models = client
-                    .get_available_models()
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .models;
-                smol::unblock(move || {
-                    let scope = model_scope::load(&agent, &cwd).map_err(|e| e.to_string())?;
-                    Ok(model_scope::filter(models, scope.as_deref()))
-                })
+            let result = client
+                .get_available_models()
                 .await
-            }
-            .await;
+                .map(|value| value.models)
+                .map_err(|e| e.to_string());
             let _ = owner.update(cx, |this, cx| {
                 if let Some(s) = this
                     .sessions

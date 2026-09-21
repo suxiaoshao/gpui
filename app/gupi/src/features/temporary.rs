@@ -193,7 +193,7 @@ impl TemporaryView {
             .is_some_and(|(_, _, available)| *available)
     }
     fn run(&mut self, action: &Run, window: &mut Window, cx: &mut Context<Self>) {
-        if window.has_active_dialog(cx) {
+        if window.has_active_dialog(cx) || self.home.read(cx).has_image_preview(cx) {
             cx.propagate();
             return;
         }
@@ -383,7 +383,10 @@ impl TemporaryView {
         });
     }
     fn toggle_focus(&mut self, _: &ToggleInputFocus, window: &mut Window, cx: &mut Context<Self>) {
-        if window.has_active_dialog(cx) || self.panel.is_some() {
+        if window.has_active_dialog(cx)
+            || self.home.read(cx).has_image_preview(cx)
+            || self.panel.is_some()
+        {
             cx.propagate();
             return;
         }
@@ -409,7 +412,9 @@ impl Render for TemporaryView {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .capture_action(cx.listener(|this, action: &Run, window, cx| {
-                if action.0 == Kind::New && !window.has_active_dialog(cx) {
+                if action.0 == Kind::New
+                    && !(window.has_active_dialog(cx) || this.home.read(cx).has_image_preview(cx))
+                {
                     this.run(action, window, cx);
                     cx.stop_propagation();
                 } else {
@@ -425,7 +430,7 @@ impl Render for TemporaryView {
                 }),
             )
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
-                if window.has_active_dialog(cx) {
+                if window.has_active_dialog(cx) || this.home.read(cx).has_image_preview(cx) {
                     cx.propagate();
                 } else {
                     this.focus_search(window, cx);

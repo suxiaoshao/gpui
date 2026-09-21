@@ -14,7 +14,7 @@
 | 工作 | skill |
 | --- | --- |
 | 应用结构与职责选择 | `gpui-app-development` |
-| GPUI API、组件 | `gpui`、`gpui-component-usage` |
+| GPUI API、组件 | `gpui-kit`、`gpui-kit-design-guides` |
 | 图标、资源、本地化 | `gpui-app-icon-usage`、`gpui-i18n` |
 | Store、Operation、Form 实现或接入 | 对应 `gpui-store`、`gpui-operation`、`gpui-form` |
 | 原生界面调试 | `gpui-computer-use-debugging` |

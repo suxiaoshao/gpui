@@ -496,13 +496,13 @@ impl Render for Editor {
                     .child(
                         field().label(t(cx, "composer-model-thinking")).child(
                             Composer::new(
+                                "task-composer",
                                 Textarea::new(&self.composer)
-                                    .appearance(false)
-                                    .disabled(true)
                                     .aria_label(t(cx, "conversation-input")),
                                 self.picker.clone(),
                             )
-                            .build(cx),
+                            .build()
+                            .readonly(true),
                         ),
                     ),
             )

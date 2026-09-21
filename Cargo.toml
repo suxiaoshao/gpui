@@ -16,6 +16,7 @@ members = [
   "crates/gpui-form-gpui-component",
   "crates/gpui-form-macros",
   "crates/gpui-heatmap",
+  "crates/gpui-lucide",
   "crates/gpui-operation",
   "crates/gpui-store",
   "crates/gpui-tokio",
@@ -30,16 +31,16 @@ resolver = "2"
 
 [workspace.dependencies]
 # GPUI runtime and component versions are kept together.
-gpui = { package = "gpui-pre", version = "=0.3.3" }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.3", features = [
+gpui = { package = "gpui-pre", version = "=0.3.5" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.5", features = [
   "font-kit",
   "x11",
   "wayland",
   "runtime_shaders",
 ] }
-gpui-kit = "=0.6.0"
-gpui-component = "=0.6.0"
-gpui-component-assets = { package = "gpui-kit-assets", version = "=0.6.0" }
+gpui-kit = "=0.6.4"
+gpui-component = "=0.6.4"
+gpui-component-assets = { package = "gpui-kit-assets", version = "=0.6.4" }
 
 # Shared workspace crates.
 app-assets = { path = "./crates/app-assets" }
@@ -48,6 +49,7 @@ gpui-form = { path = "./crates/gpui-form", features = ["garde-adapter"] }
 gpui-form-gpui-component = { path = "./crates/gpui-form-gpui-component" }
 gpui-form-macros = { path = "./crates/gpui-form-macros" }
 gpui-heatmap = { path = "./crates/gpui-heatmap" }
+gpui-lucide = { path = "./crates/gpui-lucide" }
 gpui-operation = { path = "./crates/gpui-operation" }
 gpui-store = { path = "./crates/gpui-store" }
 gpui-tokio = { path = "./crates/gpui-tokio" }

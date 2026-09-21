@@ -33,7 +33,7 @@ sys-locale = "0.3.2"
 thiserror = "2.0.20"
 
 # http
-reqwest = { version = "0.13.4", features = [
+reqwest = { version = "0.13.5", features = [
     "gzip",
     "charset",
     "query",
@@ -46,7 +46,7 @@ scraper = "0.27.0"
 # async
 futures = "0.3.34"
 async-stream = "0.3.6"
-async-compat = "0.2.5"
+async-compat = "0.2.6"
 
 # path
 dirs-next = "2.0.0"

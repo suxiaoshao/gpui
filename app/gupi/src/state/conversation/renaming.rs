@@ -1,5 +1,4 @@
 use super::*;
-use crate::foundation::session_file;
 
 impl ConversationState {
     fn rename_target(&self, key: &str, cx: &App) -> Option<(String, SessionInfo)> {
@@ -65,26 +64,61 @@ impl ConversationState {
         let Some((key, info)) = self.rename_target(key, cx) else {
             return false;
         };
-        let client = self.client(&key, cx);
-        let connected = client.is_some();
+        let connected_client = self.client(&key, cx);
         self.sessions
             .entry(key.clone())
             .or_insert_with(|| Session::new(info.clone(), String::new()));
-        let binding = self.sessions[&key].binding;
+        // Reuse the normal connection owner and extension event consumer. Pi owns
+        // both loading/migrating the session and writing its metadata.
+        if self.sessions[&key].instance.is_none() {
+            self.connect(&key, cx);
+        }
+        let initial_binding = self.sessions[&key].binding;
         let target = key.clone();
         let task = cx.spawn(async move |owner, cx| {
-            let result = if let Some(client) = client {
-                client
-                    .set_session_name(name.clone())
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| e.to_string())
+            let connection = if let Some(client) = connected_client {
+                Ok((client, initial_binding))
             } else {
-                let info = info.clone();
-                let name = name.clone();
-                smol::unblock(move || session_file::rename(&info, &name))
-                    .await
-                    .map_err(|e| e.to_string())
+                loop {
+                    let next = owner.read_with(cx, |this, cx| {
+                        let s = this
+                            .sessions
+                            .get(&key)
+                            .ok_or((initial_binding, "Session was removed".to_owned()))?;
+                        if s.binding > initial_binding + 1 {
+                            return Err((initial_binding, "Session connection changed".to_owned()));
+                        }
+                        if let Some(error) = s.error.as_deref().or(s.core_read.error()) {
+                            return Err((s.binding, error.to_owned()));
+                        }
+                        Ok((s.state.is_some() && !s.core_read.running())
+                            .then(|| this.client(&key, cx).map(|client| (client, s.binding)))
+                            .flatten())
+                    });
+                    match next {
+                        Ok(Ok(Some(connection))) => break Ok(connection),
+                        Ok(Ok(None)) => {
+                            smol::Timer::after(std::time::Duration::from_millis(20)).await
+                        }
+                        Ok(Err(error)) => break Err(error),
+                        Err(_) => return,
+                    };
+                }
+            };
+            let (binding, result) = match connection {
+                Ok((client, binding)) => {
+                    let result = async {
+                        client.ready().await.map_err(|e| e.to_string())?;
+                        client
+                            .set_session_name(name.clone())
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        Ok(())
+                    }
+                    .await;
+                    (binding, result)
+                }
+                Err((binding, error)) => (binding, Err(error)),
             };
             let _ = owner.update(cx, |this, cx| {
                 let Some(s) = this.sessions.get_mut(&key).filter(|s| s.binding == binding) else {
@@ -104,9 +138,7 @@ impl ConversationState {
                                 s.error = None;
                             }
                         }
-                        if connected {
-                            this.refresh(&key, cx);
-                        }
+                        this.refresh(&key, cx);
                         this.request_scan(cx);
                     }
                     Err(error) => {
@@ -116,14 +148,6 @@ impl ConversationState {
                             error: true,
                         });
                     }
-                }
-                // Opening the session while its metadata write is running waits
-                // on that write before starting the normal connection path.
-                if !connected
-                    && this.selected.as_ref() == Some(&key)
-                    && matches!(this.sessions[&key].transcript, Transcript::Unloaded)
-                {
-                    this.connect(&key, cx);
                 }
                 this.changed(cx);
             });

@@ -174,12 +174,14 @@ pub(crate) fn register_skill(root: &Path, path: &Path) -> Result<(), Error> {
 pub(crate) fn create_path(root: &Path, kind: Kind, name: &str) -> Result<PathBuf, Error> {
     let name = name.trim();
     if name.is_empty()
-        || !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        || matches!(name, "." | "..")
+        || name.chars().any(|c| {
+            c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+        })
+        || name.ends_with('.')
     {
         return Err(Error(
-            "Use letters, digits, hyphens or underscores for the resource name".into(),
+            "Use a valid file name without path separators".into(),
         ));
     }
     Ok(match kind {
@@ -269,7 +271,13 @@ mod tests {
         );
         assert_eq!(std::fs::read_to_string(external).unwrap(), "external");
         assert!(!root.join("skills/external.md").exists());
-        assert!(create_path(&root, Kind::Prompt, "../escape").is_err());
+        for name in ["../escape", "..", ".", "a/b", "a\\b", "a\0b"] {
+            assert!(create_path(&root, Kind::Prompt, name).is_err());
+        }
+        assert_eq!(
+            create_path(&root, Kind::Prompt, "中文提示词").unwrap(),
+            root.join("prompts/中文提示词.md")
+        );
         save_text(&root.join("SYSTEM.md"), "replacement", false).unwrap();
         save_text(&root.join("APPEND_SYSTEM.md"), "additional", false).unwrap();
         assert_eq!(

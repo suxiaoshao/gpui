@@ -262,7 +262,7 @@ impl ResourcesView {
                         Button::new(id("remove"))
                             .ghost()
                             .small()
-                            .icon(IconName::Trash2)
+                            .icon(IconName::Trash)
                             .tooltip(t(cx, "settings-package-remove"))
                             .accessibility_label(t(cx, "settings-package-remove"))
                             .disabled(busy || !pi_ready)

@@ -4,6 +4,8 @@
 
 2026-09-16 补充应用侧进展：个人包、Skill、模板与系统提示词管理已由 [#231](issue-231/README.md)接入；下文社区状态仍为原调查快照。跨阶段后续工作见[主 Issue 未完成项索引](../../../../docs/dev/issue-217/follow-ups.md)。
 
+2026-09-19 重新核对官方 Pi `36b60d2e`（0.85.1）的 RPC 类型、分发、AgentSession 事件和 TUI 实现；RPC 类型与分发与原本地基线相同。**全部 33 个 RPC 命令、事件与扩展 UI 的接入状态，以及 TUI 无直接 RPC 的能力，集中维护在[主 Issue 待处理文档](../../../../docs/dev/issue-217/follow-ups.md#pi-rpc-全量接入盘点)**，不在本文件复制第二份清单。下方社区 issue/PR 的状态仍为 2026-09-14 调查快照，本轮未重新进行社区 fork 搜索。
+
 ## 原生 RPC 的主要缺口
 
 | 能力 | 源码事实 | Gupi 的影响 |
@@ -42,9 +44,9 @@
 
 - 手动压缩、HTML 导出、复制会话、用户消息 fork：RPC 已支持，Gupi 已接入。
 - 删除会话：没有专用 RPC，Gupi 已通过本地文件管理实现。
-- 模型／思考选择、会话统计、队列操作：有 RPC；具体界面完善归 Gupi。
+- 模型／思考选择、会话统计：已有 RPC 与应用接入。队列已有 `queue_update` 文本事件、`clear_queue` 和模式设置，但没有主动读取完整队列、按 ID 逐项修改/删除或附件无损恢复接口；不能笼统称为完整队列管理已被 RPC 覆盖。
 - select/confirm/input/editor、通知、状态、文字 widget、标题、设置输入文本：九类标准 UI 已支持。
-- question 组件等待属于组件库和界面工作，不改变 Pi 问卷协议。当前锁定 gpui-kit/gpui-component 0.6.0 中未发现 question 入口；不能据此判断上游最新分支状态。
+- Questionnaire、InputGroup、原子内联标签统一等待兼容正式版本，按用户 2026-09-19 决定接入；三项已合并，v0.6.4 尚不全包含。组件发布不改变 Pi 问卷协议。
 
 已有设计参见 [命令能力对照](issue-226/builtin-commands.md)、[命令面板](issue-226/command-palette.md)、[扩展 UI](issue-222/README.md)。
 

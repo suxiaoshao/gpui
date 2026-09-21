@@ -43,7 +43,6 @@ fn main() {
                 continue;
             }
             if mode == "invalid" { println!("{{broken"); }
-            else if mode == "oversize" { println!("{}", "x".repeat(4096)); }
             else {
                 response(&id, &command, &format!("{{\"sessionId\":\"{}\",\"isStreaming\":false,\"isCompacting\":false,\"futureField\":7}}", std::process::id()));
             }
@@ -56,8 +55,14 @@ fn main() {
                     if let Some((id, cmd)) = held.take() { response(&id, &cmd, "null"); }
                 }
                 "flood" => {
-                    for _ in 0..256 { println!("{{\"type\":\"delta\",\"text\":\"data\"}}"); }
+                    for index in 0..256 { println!("{{\"type\":\"delta\",\"index\":{index}}}"); }
+                    response(&id, &command, "null");
                     io::stdout().flush().unwrap();
+                }
+                "flood_exit" => {
+                    for index in 0..4 { println!("{{\"type\":\"delta\",\"index\":{index}}}"); }
+                    io::stdout().flush().unwrap();
+                    return;
                 }
                 "stderr" => { eprintln!("{}TAIL", "x".repeat(8192)); response(&id, &command, "null"); }
                 "exit" => return,
@@ -68,6 +73,8 @@ fn main() {
                 }
                 _ => response(&id, &command, "null"),
             }
+        } else if command == "echo" {
+            response(&id, &command, &line);
         } else if command == "get_commands" {
             println!("{{\"type\":\"response\",\"id\":\"{id}\",\"command\":\"get_commands\",\"success\":false,\"error\":\"fixture rejection\"}}");
         } else if command == "clear_queue" {

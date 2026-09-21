@@ -129,12 +129,8 @@ async fn probe_with(
             let version = std::str::from_utf8(&stdout)
                 .map_err(|_| ProbeFailure::InvalidVersion)?
                 .trim();
-            let parts: Vec<_> = version.trim_start_matches('v').split('.').collect();
             if !status.success()
-                || parts.len() != 3
-                || parts
-                    .iter()
-                    .any(|part| part.is_empty() || !part.chars().all(|c| c.is_ascii_digit()))
+                || semver::Version::parse(version.strip_prefix('v').unwrap_or(version)).is_err()
             {
                 return Err(ProbeFailure::InvalidVersion);
             }
@@ -328,6 +324,13 @@ mod tests {
                 .unwrap()
                 .version,
             "0.85.1"
+        );
+        assert_eq!(
+            fixture("echo v0.86.0-beta.1+build.2", Duration::from_secs(3))
+                .await
+                .unwrap()
+                .version,
+            "v0.86.0-beta.1+build.2"
         );
         assert!(matches!(
             fixture("echo bad", Duration::from_secs(3)).await,

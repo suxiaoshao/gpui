@@ -402,21 +402,7 @@ impl KeysView {
                         this.start_recording(index, window, cx)
                     })),
             );
-        let row = h_flex()
-            .gap_1()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .debug_selector(move || format!("key-binding-{}", command.id))
-                    .child(
-                        Input::new(input)
-                            .with_size(options.size())
-                            .disabled(busy)
-                            .readonly(true)
-                            .suffix(suffix),
-                    ),
-            )
+        let actions = suffix
             .when(config.keybindings.contains_key(command.id), |row| {
                 row.child(
                     Button::new(("key-reset", index))
@@ -471,7 +457,22 @@ impl KeysView {
             .on_action(cx.listener(|this, _: &Escape, window, cx| {
                 this.cancel(window, cx);
             }))
-            .child(row)
+            .child(
+                div()
+                    .debug_selector(move || format!("key-binding-{}", command.id))
+                    .child(
+                        InputGroup::new(("key-input", index))
+                            .with_size(options.size())
+                            .readonly(true)
+                            .disabled(busy)
+                            .input(Input::new(input))
+                            .addon(
+                                InputGroupAddon::new("actions")
+                                    .align(InputGroupAddonAlignment::InlineEnd)
+                                    .child(actions),
+                            ),
+                    ),
+            )
             .when(recording, |field| {
                 field.child(
                     div()

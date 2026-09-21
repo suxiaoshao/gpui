@@ -168,7 +168,10 @@ impl HomeView {
     ) -> AnyElement {
         match block {
             ActivityBlock::Message(Activity::Text { id, text, .. }) => Message::new()
-                .content(MessageContent::new().child(self.text_view(key, id.clone(), text.clone())))
+                .content(
+                    MessageContent::new()
+                        .child(self.text_view(key, id.clone(), text.clone()).stream_fade()),
+                )
                 .into_any_element(),
             ActivityBlock::Message(_) => unreachable!("Only assistant prose separates groups"),
             ActivityBlock::Group { id, items } => {
@@ -264,7 +267,7 @@ impl HomeView {
                 false,
                 div()
                     .pl_6()
-                    .child(self.text_view(key, id.clone(), text.clone()))
+                    .child(self.text_view(key, id.clone(), text.clone()).stream_fade())
                     .into_any_element(),
                 cx,
             ),

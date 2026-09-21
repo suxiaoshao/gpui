@@ -5,14 +5,12 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 pub(crate) struct Jsonl<R> {
     reader: BufReader<R>,
     buffer: Vec<u8>,
-    limit: usize,
 }
 impl<R: AsyncRead + Unpin> Jsonl<R> {
-    pub fn new(reader: R, limit: usize) -> Self {
+    pub fn new(reader: R) -> Self {
         Self {
             reader: BufReader::new(reader),
             buffer: Vec::new(),
-            limit,
         }
     }
     pub async fn next(&mut self) -> Result<Option<Vec<u8>>, Error> {
@@ -27,9 +25,6 @@ impl<R: AsyncRead + Unpin> Jsonl<R> {
             }
             let newline = chunk.iter().position(|&b| b == b'\n');
             let len = newline.unwrap_or(chunk.len());
-            if self.buffer.len().saturating_add(len) > self.limit {
-                return Err(Error::Capacity("frame"));
-            }
             self.buffer.extend_from_slice(&chunk[..len]);
             self.reader.consume(len + usize::from(newline.is_some()));
             if newline.is_some() {
@@ -53,7 +48,7 @@ mod tests {
     #[tokio::test]
     async fn cancellation_preserves_partial_utf8_and_only_lf_splits() {
         let (mut write, read) = tokio::io::duplex(32);
-        let mut reader = Jsonl::new(read, 128);
+        let mut reader = Jsonl::new(read);
         write.write_all(b"{\"text\":\"\xe4").await.unwrap();
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(10), reader.next())
@@ -77,10 +72,5 @@ mod tests {
         );
         assert_eq!(reader.next().await.unwrap().unwrap(), b"\"tail\"");
         assert!(reader.next().await.unwrap().is_none());
-    }
-    #[tokio::test]
-    async fn frame_limit_applies_before_newline() {
-        let mut reader = Jsonl::new(&b"12345"[..], 4);
-        assert!(matches!(reader.next().await, Err(Error::Capacity("frame"))));
     }
 }

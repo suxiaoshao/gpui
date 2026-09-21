@@ -1,92 +1,37 @@
-use app_assets::{AppAssets, define_lucide_icons, define_svg_icons};
 use gpui_kit::{AssetSource, SharedString};
+pub(crate) use gpui_lucide::IconName;
+use gpui_lucide::SvgIcon;
 use std::borrow::Cow;
-define_lucide_icons!(pub(crate) enum IconName {
-    Sparkles => "sparkles", Puzzle => "puzzle", Palette => "palette", Eye => "eye", LockKeyhole => "lock-keyhole",
-    UserRound => "user-round", Bot => "bot",
-    Settings => "settings", ArrowLeft => "arrow-left", ArrowRight => "arrow-right",
-    Check => "check", Keyboard => "keyboard", Info => "info", Eraser => "eraser", Undo2 => "undo-2",
-    RotateCw => "rotate-cw", FolderOpen => "folder-open", Save => "save", Search => "search",
-    Plus => "plus", SquarePen => "square-pen", PanelRight => "panel-right",
-    ArrowUp => "arrow-up", ArrowDown => "arrow-down", Database => "database", CircleDashed => "circle-dashed", Square => "square", ChevronDown => "chevron-down",
-    ChevronLeft => "chevron-left", ChevronRight => "chevron-right", ChevronUp => "chevron-up", GitBranch => "git-branch", Copy => "copy",
-    Ellipsis => "ellipsis", CircleAlert => "circle-alert", MessageCircle => "message-circle",
-    List => "list", Tag => "tag",
-    ZoomIn => "zoom-in", ZoomOut => "zoom-out", Scan => "scan", LocateFixed => "locate-fixed",
-    RefreshCw => "refresh-cw", FileText => "file-text", Download => "download",
-    X => "x", Folder => "folder", Trash2 => "trash-2",
-    Terminal => "terminal", BookOpen => "book-open", FilePenLine => "file-pen-line",
-    FilePlus => "file-plus", Wrench => "wrench", Brain => "brain", ChartNoAxesColumn => "chart-no-axes-column",
-});
-define_svg_icons!(
-    #[asset_source(ProviderLogoAssets)]
-    pub(crate) enum ProviderLogoName {
-        #[svg("provider-icons/openai.svg", source = "thesvg", slug = "openai")]
-        OpenAI,
-        #[svg(
-            "provider-icons/anthropic.svg",
-            source = "simple-icons",
-            slug = "anthropic"
-        )]
-        Anthropic,
-        #[svg(
-            "provider-icons/google-gemini.svg",
-            source = "simple-icons",
-            slug = "googlegemini"
-        )]
-        GoogleGemini,
-        #[svg("provider-icons/ollama.svg", source = "simple-icons", slug = "ollama")]
-        Ollama,
-        #[svg(
-            "provider-icons/openrouter.svg",
-            source = "simple-icons",
-            slug = "openrouter"
-        )]
-        OpenRouter,
-        #[svg(
-            "provider-icons/deepseek.svg",
-            source = "simple-icons",
-            slug = "deepseek"
-        )]
-        DeepSeek,
-        #[svg(
-            "provider-icons/moonshot.svg",
-            source = "simple-icons",
-            slug = "moonshotai"
-        )]
-        Moonshot,
-        #[svg("provider-icons/zai.svg", source = "wikimedia", slug = "z-ai")]
-        Zai,
-        #[svg(
-            "provider-icons/azure-openai.svg",
-            source = "thesvg",
-            slug = "azure-azure-openai"
-        )]
-        AzureOpenAI,
-        #[svg(
-            "provider-icons/mistral.svg",
-            source = "simple-icons",
-            slug = "mistralai"
-        )]
-        Mistral,
-        #[svg("provider-icons/xai.svg", source = "thesvg", slug = "xai-grok")]
-        Xai,
-        #[svg("provider-icons/groq.svg", source = "thesvg", slug = "groq")]
-        Groq,
-        #[svg(
-            "provider-icons/perplexity.svg",
-            source = "simple-icons",
-            slug = "perplexity"
-        )]
-        Perplexity,
-        #[svg(
-            "provider-icons/together.svg",
-            source = "official-together",
-            slug = "together-ai-logo-suite"
-        )]
-        Together,
-    }
-);
+
+struct ProviderLogoName;
+#[allow(non_upper_case_globals)]
+impl ProviderLogoName {
+    const OpenAI: SvgIcon = SvgIcon::new(include_bytes!("../../assets/provider-icons/openai.svg"));
+    const Anthropic: SvgIcon =
+        SvgIcon::new(include_bytes!("../../assets/provider-icons/anthropic.svg"));
+    const GoogleGemini: SvgIcon = SvgIcon::new(include_bytes!(
+        "../../assets/provider-icons/google-gemini.svg"
+    ));
+    const Ollama: SvgIcon = SvgIcon::new(include_bytes!("../../assets/provider-icons/ollama.svg"));
+    const OpenRouter: SvgIcon =
+        SvgIcon::new(include_bytes!("../../assets/provider-icons/openrouter.svg"));
+    const DeepSeek: SvgIcon =
+        SvgIcon::new(include_bytes!("../../assets/provider-icons/deepseek.svg"));
+    const Moonshot: SvgIcon =
+        SvgIcon::new(include_bytes!("../../assets/provider-icons/moonshot.svg"));
+    const Zai: SvgIcon = SvgIcon::new(include_bytes!("../../assets/provider-icons/zai.svg"));
+    const AzureOpenAI: SvgIcon = SvgIcon::new(include_bytes!(
+        "../../assets/provider-icons/azure-openai.svg"
+    ));
+    const Mistral: SvgIcon =
+        SvgIcon::new(include_bytes!("../../assets/provider-icons/mistral.svg"));
+    const Xai: SvgIcon = SvgIcon::new(include_bytes!("../../assets/provider-icons/xai.svg"));
+    const Groq: SvgIcon = SvgIcon::new(include_bytes!("../../assets/provider-icons/groq.svg"));
+    const Perplexity: SvgIcon =
+        SvgIcon::new(include_bytes!("../../assets/provider-icons/perplexity.svg"));
+    const Together: SvgIcon =
+        SvgIcon::new(include_bytes!("../../assets/provider-icons/together.svg"));
+}
 
 pub(crate) fn provider_icon(provider: &str) -> gpui_kit::component::Icon {
     provider_logo_icon(provider)
@@ -136,15 +81,11 @@ impl AssetSource for BrandAssets {
             LOGO_WHITE => Ok(Some(Cow::Borrowed(include_bytes!(
                 "../../assets/brand/logo-white.svg"
             )))),
-            _ => match ProviderLogoAssets.load(path)? {
-                Some(asset) => Ok(Some(asset)),
-                None => LucideAssets.load(path),
-            },
+            _ => gpui_kit::assets::Assets.load(path),
         }
     }
     fn list(&self, path: &str) -> gpui_kit::Result<Vec<SharedString>> {
-        let mut items = LucideAssets.list(path)?;
-        items.extend(ProviderLogoAssets.list(path)?);
+        let mut items = gpui_kit::assets::Assets.list(path)?;
         items.extend(
             [LOGO_BLACK, LOGO_WHITE]
                 .into_iter()
@@ -154,4 +95,4 @@ impl AssetSource for BrandAssets {
         Ok(items)
     }
 }
-pub(crate) type Assets = AppAssets<BrandAssets>;
+pub(crate) type Assets = BrandAssets;

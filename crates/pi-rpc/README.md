@@ -45,7 +45,7 @@ assert!(report.reason.is_none(), "connection close failed: {report:?}");
 
 The example sends a model request when run with a configured Pi; tests below do not. A real UI consumer must retain access to a client for replies without keeping an accidental ownership cycle alive indefinitely.
 
-`probe::probe(command, deadline)` locates a command and checks `--version` for environment diagnostics. It is not a prerequisite for opening an RPC connection. Its 15-second application budget, bounded output and cancellation behavior are independent of a long-running RPC request. `LaunchOptions` accepts an executable path or command name, cwd, extra argument vector, environment overrides and startup timeout. The connection resolves the executable within its startup deadline using the child's PATH and cwd, including Windows launcher extensions. Arguments are passed through `Command::args`, not concatenated into a shell string. On Windows the Rust standard library handles `.cmd`/`.bat` launching and quoting ([Rust process documentation](https://doc.rust-lang.org/stable/std/process/index.html#windows-argument-splitting)).
+`probe::probe(command, deadline)` locates a command and checks a SemVer `--version` (including prerelease/build suffixes) for environment diagnostics. It is not a prerequisite for opening an RPC connection. Its 15-second application budget, bounded output and cancellation behavior are independent of a long-running RPC request. `LaunchOptions` accepts an executable path or command name, cwd, extra argument vector, environment overrides and startup timeout. The connection resolves the executable within its startup deadline using the child's PATH and cwd, including Windows launcher extensions. Arguments are passed through `Command::args`, not concatenated into a shell string. On Windows the Rust standard library handles `.cmd`/`.bat` launching and quoting ([Rust process documentation](https://doc.rust-lang.org/stable/std/process/index.html#windows-argument-splitting)).
 
 Typed commands cover state, command discovery, prompt, abort, clear_queue, entries, fork messages/fork, clone, HTML export, session names, available models/model selection, thinking levels and session statistics. `get_entries` returns Pi parent links and the execution leaf; `fork` switches that client to an independent session and returns draft text, so the host must update its session binding after success. `clone_session` copies through the current execution leaf and switches the client to the new session, returning an empty draft. `export_html` writes to the chosen path and returns the resulting path without switching sessions. `request_raw` is an escape hatch for other Pi commands: it owns the request ID and applies the same limits and response association. `reply` uses the extension UI envelope and ID, without adding a command-response waiter. Dropping a request future removes only the local waiter; it does not abort Pi or replay the request.
 
@@ -55,16 +55,15 @@ Defaults are configurable through `LaunchOptions::limits`:
 
 | Resource | Default |
 | --- | --- |
-| Encoded incoming/outgoing frame | 32 MiB |
-| Total queued event bytes | 32 MiB, at most 128 events |
-| Total queued/in-flight normal write bytes | 32 MiB, at most 32 queued writes |
+| Queued events | 128, then stdout backpressure |
+| Queued normal writes | 32 |
 | Pending requests | 128 |
 | stderr tail | 64 KiB |
 | Startup, including spawn and first get_state | 15 seconds |
 
-The byte budgets measure JSON wire bytes, not total allocator usage; parsed JSON and the event currently held by the consumer also occupy memory. A 32 MiB frame leaves room for a roughly 24 MiB binary image encoded as base64, less JSON overhead; it is not an unlimited history-transfer contract. The initial capacities are conservative implementation defaults, not measurements of all Pi workloads. Tests use reduced capacities to exercise failure behavior.
+The transport does not impose an encoded image, request or history-frame byte cap. Memory depends on payload size and JSON shape. It retains at most one parsed event awaiting space in the bounded event queue; when full, stdout reading pauses until the consumer catches up, preserving order without terminating Pi. The host must consume events concurrently with requests and during graceful close. Explicit close and process errors remain observable while an event waits for space.
 
-LF is the only separator; CRLF and a valid final JSON fragment without LF are accepted. UTF-8 is buffered across reads, and U+2028/U+2029 inside JSON strings do not split frames. Malformed/oversized input, event overload or I/O failure closes the connection and settles all pending requests. Full outgoing queues or pending-request capacity reject that submission. Unknown or cancelled-request responses are not turned into events. Dropping the event stream closes the connection, so a forgotten consumer cannot silently discard an active session.
+LF is the only separator; CRLF and a valid final JSON fragment without LF are accepted. UTF-8 is buffered across reads, and U+2028/U+2029 inside JSON strings do not split frames. Malformed input or I/O failure closes the connection and settles pending requests. Full outgoing queues or pending-request capacity reject that submission without closing the connection. Unknown or cancelled-request responses are not turned into events. Dropping the event stream closes the connection, so a forgotten consumer cannot silently discard an active session.
 
 A failed command returns `Error::Rejected`; other typed errors distinguish startup, protocol, I/O, capacity and closed-connection failures. A failed startup preserves its cause. `CloseReport` includes an observed exit status when available, the connection/shutdown error and the captured bounded stderr tail; the library does not automatically log message content or environment values.
 

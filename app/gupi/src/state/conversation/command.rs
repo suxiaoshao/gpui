@@ -26,8 +26,14 @@ pub(crate) enum SessionCommand {
     Compacting {
         _task: Task<()>,
     },
+    ClearingQueue {
+        _task: Task<()>,
+    },
 }
 impl SessionCommand {
+    pub fn clearing_queue(&self) -> bool {
+        matches!(self, Self::ClearingQueue { .. })
+    }
     pub fn compacting(&self) -> bool {
         matches!(self, Self::Compacting { .. })
     }

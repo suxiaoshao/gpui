@@ -3,6 +3,7 @@ mod attachments;
 mod composer;
 mod content;
 mod history;
+mod image_preview;
 mod messages;
 pub(crate) mod navigation;
 pub(crate) mod palette;
@@ -10,6 +11,7 @@ mod panes;
 pub(crate) mod pickers;
 mod slash;
 mod titlebar;
+mod welcome;
 use crate::{
     foundation::{assets::IconName, i18n::t},
     state::{
@@ -41,6 +43,7 @@ struct SessionView {
     model_picker: Entity<pickers::Picker>,
     preview: Option<String>,
     process_open: HashMap<String, bool>,
+    queue_open: bool,
     scroller: Entity<MessageScrollerState>,
     rows: Rc<Vec<messages::ChatRow>>,
     content_revision: u64,
@@ -65,6 +68,7 @@ pub(crate) struct HomeView {
     pane_layout: panes::PaneLayout,
     pane_drag: Option<panes::Drag>,
     palette: Option<Entity<palette::Palette>>,
+    image_preview: Entity<image_preview::PreviewHost>,
     slash: slash::Completion,
     pub(crate) command_panel: Option<Entity<super::command_palette::CommandPalette>>,
     focus_handle: FocusHandle,
@@ -72,6 +76,9 @@ pub(crate) struct HomeView {
     _subscriptions: Vec<Subscription>,
 }
 impl HomeView {
+    pub(crate) fn has_image_preview(&self, cx: &App) -> bool {
+        self.image_preview.read(cx).is_open()
+    }
     pub(crate) fn submit_or_paste(
         &mut self,
         secondary: bool,
@@ -83,7 +90,7 @@ impl HomeView {
         }) {
             return;
         }
-        if window.has_active_dialog(cx) {
+        if window.has_active_dialog(cx) || self.has_image_preview(cx) {
             return;
         }
         let Some(key) = self.state.read(cx).selected.clone() else {
@@ -270,6 +277,7 @@ impl HomeView {
             pane_layout: panes::PaneLayout::default(),
             pane_drag: None,
             palette: None,
+            image_preview: cx.new(image_preview::PreviewHost::new),
             slash: Default::default(),
             command_panel: None,
             focus_handle: cx.focus_handle(),
@@ -419,6 +427,7 @@ impl HomeView {
                     model_picker,
                     preview: None,
                     process_open: HashMap::new(),
+                    queue_open: false,
                     scroller,
                     rows: Rc::new(vec![]),
                     content_revision: u64::MAX,
@@ -707,6 +716,7 @@ impl Render for HomeView {
                     .child(self.render_composer(window, cx))
             };
             return content
+                .child(self.image_preview.clone())
                 .key_context("Gupi")
                 .track_focus(&self.focus_handle)
                 .into_any_element();
@@ -774,6 +784,7 @@ impl Render for HomeView {
             .child(titlebar)
             .child(shell)
             .children(self.render_session_search(window, cx))
+            .child(self.image_preview.clone())
             .into_any_element()
     }
 }

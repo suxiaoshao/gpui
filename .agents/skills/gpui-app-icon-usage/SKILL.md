@@ -7,11 +7,12 @@ description: Choose or update UI icons, runtime assets, or packaged app icons in
 
 ## UI icons and runtime assets
 
-- Jaco and Feiwen use app-local `IconName` in `app/{name}/src/foundation/assets.rs`; Feiwen declares its set with `app_assets::define_lucide_icons!`.
-- Jaco provider logos use `ProviderLogoName` / `ProviderLogoAssets`, `app_assets::define_svg_icons!` and `app/jaco/assets/provider-icons/`.
-- HTTP Client and Novel Download register `gpui_kit::assets::Assets`. Use component icons for generic component affordances and app-local variants for app-owned additions.
-- Lucide slugs must exist at `third_party/lucide/icons/<slug>.svg`. App-owned SVG sets use `define_svg_icons!`; feature code uses typed names instead of raw paths or scattered `include_bytes!` calls.
-- Runtime images belong to the app's `assets/` tree and `with_assets(...)` source. Shared loading helpers belong in `crates/app-assets`.
+- Gupi and Feiwen use `gpui_lucide::IconName` constants. Each embeds its own SVG bytes and converts into the upstream `Icon`; use it directly in `Button::icon`, `Icon::new`, or as an element. No icon selection macro or asset path registration is needed. See `crates/gpui-lucide/README.md`.
+- The complete catalog comes from the pinned `gpui-kit-assets` package through its supported Cargo icons-dir metadata. Do not copy SVGs or maintain an application-wide byte lookup table for Lucide icons.
+- Custom/provider SVGs use `gpui_lucide::SvgIcon::new(include_bytes!(...))`; keep those files application-owned. Gupi provider logos live under `app/gupi/assets/provider-icons/`.
+- Continue registering `gpui_kit::assets::Assets` for the component library's default icons. Gupi additionally supplies its own black/white brand logos. HTTP Client and Novel Download retain their existing default asset registration.
+- The old `app-assets`, `app-assets-macros` and `third_party/lucide` are retained only for Jaco, which is no longer maintained. Remove them with Jaco after Gupi is merged; do not migrate Jaco or add new consumers to the old system.
+- Runtime images and branded assets remain in the application's `assets/` tree. Shared SVG rendering, sizing and transformations come from the upstream `Icon` implementation.
 
 ## Bundle assets
 

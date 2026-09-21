@@ -5,7 +5,6 @@ use crate::{
     foundation::{
         attachments::{self, Attachment, Content},
         i18n::t,
-        pi_resources,
     },
     state::shortcuts::{InputSource, ShortcutTask, system_binding},
 };
@@ -315,7 +314,7 @@ async fn run(
         }
     }
     for a in &attachments {
-        if let Content::File(path) = &a.content {
+        if let Content::File { path, .. } = &a.content {
             if !text.is_empty() {
                 text.push('\n');
             }
@@ -326,20 +325,8 @@ async fn run(
     attachments.retain(|a| matches!(a.content, Content::Image { .. }));
     let has_input = !text.trim().is_empty() || !attachments.is_empty();
     let template = definition.template.clone();
-    let body = smol::unblock(move || {
-        let catalog =
-            pi_resources::scan(pi_resources::agent_dir().map_err(|e| e.to_string())?, None)
-                .map_err(|e| e.to_string())?;
-        if !catalog
-            .resources
-            .iter()
-            .any(|r| r.kind == pi_resources::Kind::Prompt && r.enabled && r.path == template)
-        {
-            return Err("Prompt template is missing or disabled".into());
-        }
-        std::fs::read_to_string(template).map_err(|e| e.to_string())
-    })
-    .await?;
+    let body =
+        smol::unblock(move || std::fs::read_to_string(template).map_err(|e| e.to_string())).await?;
     let key = state.update(cx, |s, cx| {
         let previous = s.selected.clone();
         s.new_draft(None, cx);
@@ -426,10 +413,6 @@ async fn run(
                 .map_err(|e| e.to_string())?;
         }
         let snapshot = client.get_state().await.map_err(|e| e.to_string())?;
-        if !attachments.is_empty() {
-            let cwd = state.read_with(cx, |s, _| s.sessions[&key].info.cwd.clone());
-            smol::unblock(move || attachments::check_image_policy(&cwd)).await?;
-        }
         state.update(cx, |s, cx| {
             let session = s.sessions.get_mut(&key).unwrap();
             session.state = Some(snapshot);

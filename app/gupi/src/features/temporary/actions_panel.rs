@@ -94,7 +94,7 @@ impl Render for ActionsPanel {
                     Kind::FocusInput => IconName::SquarePen,
                     Kind::Model => IconName::Brain,
                     Kind::RevealWorkspace => IconName::FolderOpen,
-                    Kind::TrashTemporary => IconName::Trash2,
+                    Kind::TrashTemporary => IconName::Trash,
                     Kind::New => IconName::Plus,
                     Kind::Stop if state.current().is_some_and(|s| s.busy()) => IconName::Square,
                     _ => IconName::X,
