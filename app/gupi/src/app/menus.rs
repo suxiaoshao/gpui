@@ -22,6 +22,12 @@ pub(crate) fn refresh(cx: &mut App) {
     }
     cx.set_global(AppliedLocale(locale));
     super::tray::refresh(cx);
+    refresh_native(cx);
+}
+
+/// Native menus capture the keymap when built. Rebuild after binding changes
+/// even when translated labels are unchanged; the tray has no accelerators.
+pub(crate) fn refresh_native(cx: &mut App) {
     cx.set_menus(vec![Menu {
         disabled: false,
         name: "Gupi".into(),
