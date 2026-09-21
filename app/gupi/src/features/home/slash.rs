@@ -26,7 +26,7 @@ impl HomeView {
     ) {
         if self.slash.changed(text)
             && self.input.read(cx).focus_handle(cx).is_focused(window)
-            && !window.has_active_dialog(cx)
+            && !(window.has_active_dialog(cx) || self.has_image_preview(cx))
             && self.command_input_allowed(cx)
         {
             self.open_commands(true, window, cx);
@@ -78,7 +78,7 @@ impl HomeView {
             return;
         }
         self.close_session_search(window, cx);
-        if window.has_active_dialog(cx) {
+        if window.has_active_dialog(cx) || self.has_image_preview(cx) {
             return;
         }
         self.command_panel = Some(CommandPalette::open(

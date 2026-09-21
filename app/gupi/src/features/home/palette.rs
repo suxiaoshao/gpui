@@ -115,7 +115,7 @@ impl HomeView {
                 .update(cx, |search, cx| search.focus(window, cx));
             return;
         }
-        if window.has_active_dialog(cx) {
+        if window.has_active_dialog(cx) || self.has_image_preview(cx) {
             return;
         }
         let focus = window.focused(cx);

@@ -175,6 +175,9 @@ impl HomeView {
             cx.propagate();
             return;
         }
+        if self.has_image_preview(cx) {
+            return;
+        }
         if matches!(action.0, Kind::Palette | Kind::QuickOpen) && self.action_enabled(action.0, cx)
         {
             self.open_palette(action.0 == Kind::QuickOpen, window, cx);

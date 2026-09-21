@@ -2223,9 +2223,24 @@ async fn attachment_and_template_survive_rejection_until_pi_accepts(cx: &mut Tes
         .await;
     let file = dir.path().join("original file.txt");
     std::fs::write(&file, "keep original").unwrap();
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(1, 1)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let image = Attachment::from_image("clipboard.png".into(), png.get_ref()).unwrap();
+    let crate::foundation::attachments::Content::Image { image: original } = &image.content else {
+        panic!()
+    };
+    let image_path = original.path().to_owned();
     owner.update(cx, |state, cx| {
         state.sessions.get_mut(&key).unwrap().attachments =
             crate::foundation::attachments::from_paths(vec![file.clone()]).unwrap();
+        state
+            .sessions
+            .get_mut(&key)
+            .unwrap()
+            .attachments
+            .push(image);
         state.sessions.get_mut(&key).unwrap().pending_template = Some(PendingTemplate {
             name: "review".into(),
             body: "Review $1".into(),
@@ -2236,10 +2251,11 @@ async fn attachment_and_template_survive_rejection_until_pi_accepts(cx: &mut Tes
     cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
         .await;
     owner.read_with(cx, |state, _| {
-        assert_eq!(state.sessions[&key].attachments.len(), 1);
+        assert_eq!(state.sessions[&key].attachments.len(), 2);
         assert!(state.sessions[&key].pending_template.is_some());
         assert_eq!(state.sessions[&key].draft, "two words");
     });
+    assert_eq!(std::fs::read(&image_path).unwrap(), *png.get_ref());
     std::fs::remove_file(dir.path().join("fail-prompt")).unwrap();
     owner.update(cx, |state, cx| {
         state.send(&key, StreamingBehavior::Steer, cx)
@@ -2251,6 +2267,7 @@ async fn attachment_and_template_survive_rejection_until_pi_accepts(cx: &mut Tes
         assert!(state.sessions[&key].pending_template.is_none());
         assert!(state.sessions[&key].draft.is_empty());
     });
+    assert!(!image_path.exists());
     let inputs = std::fs::read_to_string(dir.path().join("inputs.jsonl")).unwrap();
     for line in inputs.lines() {
         let request: serde_json::Value = serde_json::from_str(line).unwrap();
@@ -2290,6 +2307,83 @@ async fn attachment_and_template_survive_rejection_until_pi_accepts(cx: &mut Tes
             .unwrap(),
         *png.get_ref()
     );
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn image_read_failure_retains_draft_for_retry(cx: &mut TestAppContext) {
+    use crate::foundation::attachments::{Attachment, Content};
+    let (dir, owner, key) = begin(cx, &[]);
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(1, 1)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let attachment = Attachment::from_image("clipboard.png".into(), png.get_ref()).unwrap();
+    let Content::Image { image } = &attachment.content else {
+        panic!()
+    };
+    let path = image.path().to_owned();
+    std::fs::remove_file(&path).unwrap();
+    owner.update(cx, |state, cx| {
+        state
+            .sessions
+            .get_mut(&key)
+            .unwrap()
+            .attachments
+            .push(attachment);
+        state.set_draft(&key, "keep this".into(), cx);
+        state.send(&key, StreamingBehavior::Steer, cx);
+    });
+    cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
+        .await;
+    owner.read_with(cx, |state, _| {
+        let session = &state.sessions[&key];
+        assert_eq!(session.draft, "keep this");
+        assert_eq!(session.attachments.len(), 1);
+        assert!(session.error.is_some());
+    });
+    assert_eq!(count(dir.path(), "prompt"), 0);
+    std::fs::write(&path, png.get_ref()).unwrap();
+    owner.update(cx, |state, cx| {
+        state.send(&key, StreamingBehavior::Steer, cx)
+    });
+    cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
+        .await;
+    assert_eq!(count(dir.path(), "prompt"), 1);
+    assert!(!path.exists());
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn stopped_image_preparation_does_not_send_late(cx: &mut TestAppContext) {
+    use crate::foundation::attachments::Attachment;
+    let (dir, owner, key) = begin(cx, &[]);
+    cx.condition(&owner, |state, cx| state.can_submit(&key, cx))
+        .await;
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(1, 1)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    owner.update(cx, |state, cx| {
+        state
+            .sessions
+            .get_mut(&key)
+            .unwrap()
+            .attachments
+            .push(Attachment::from_image("clipboard.png".into(), png.get_ref()).unwrap());
+        state.set_draft(&key, "keep this".into(), cx);
+        state.send(&key, StreamingBehavior::Steer, cx);
+        state.abort(&key, cx);
+    });
+    cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
+        .await;
+    assert_eq!(count(dir.path(), "prompt"), 0);
+    owner.read_with(cx, |state, _| {
+        assert_eq!(state.sessions[&key].draft, "keep this");
+        assert_eq!(state.sessions[&key].attachments.len(), 1);
+    });
     close(&owner, cx).await;
 }
 

@@ -8,9 +8,11 @@ use gpui_kit::component::{
     },
     message_scroller::MessageScroller,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 
 mod actions;
 mod activity;
+mod images;
 mod markdown;
 mod metadata;
 mod presentation;
@@ -335,54 +337,54 @@ impl HomeView {
                             .as_ref()
                             .is_some_and(|id| s.fork_options().iter().any(|m| &m.entry_id == id))
                 });
+                let text = m.text();
+                let images: Vec<_> = m
+                    .value
+                    .get("content")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                    .filter(|(_, block)| block["type"].as_str() == Some("image"))
+                    .map(|(index, block)| images::UserImage {
+                        preview_host: self.image_preview.clone(),
+                        id: format!("user-image-{key}-{}-{index}", m.id),
+                        mime: block["mimeType"].as_str().unwrap_or_default().into(),
+                        data: block["data"].as_str().unwrap_or_default().into(),
+                    })
+                    .collect();
+                let content = MessageContent::new()
+                    .when(!images.is_empty(), |content| {
+                        content.child(
+                            h_flex()
+                                .id(format!("user-images-{key}-{}", m.id))
+                                .test_support()
+                                .max_w_full()
+                                .flex_wrap()
+                                .justify_end()
+                                .gap_2()
+                                .children(images),
+                        )
+                    })
+                    .when(!text.trim().is_empty(), |content| {
+                        content.bubble(
+                            Bubble::new().with_variant(BubbleVariant::Muted).content(
+                                BubbleContent::new().child(
+                                    div()
+                                        .id(format!("user-text-{key}-{}", m.id))
+                                        .test_support()
+                                        .child(self.text_view(key, format!("text-{}", m.id), text)),
+                                ),
+                            ),
+                        )
+                    });
                 let label = t(cx, "conversation-fork");
                 div()
                     .id(row.id.clone())
                     .child(
                         Message::new()
                             .alignment(MessageAlignment::End)
-                            .content(
-                                MessageContent::new().bubble(
-                                    Bubble::new().with_variant(BubbleVariant::Muted).content(
-                                        BubbleContent::new()
-                                            .child(self.text_view(
-                                                key,
-                                                format!("text-{}", m.id),
-                                                m.text(),
-                                            ))
-                                            .children(
-                                                m.value
-                                                    .get("content")
-                                                    .and_then(|v| v.as_array())
-                                                    .into_iter()
-                                                    .flatten()
-                                                    .enumerate()
-                                                    .filter(|(_, block)| {
-                                                        block.get("type").and_then(|v| v.as_str())
-                                                            == Some("image")
-                                                    })
-                                                    .map(|(index, block)| {
-                                                        tool_details::ToolImage {
-                                                            id: format!(
-                                                                "user-image-{key}-{}-{index}",
-                                                                m.id
-                                                            ),
-                                                            mime: block
-                                                                .get("mimeType")
-                                                                .and_then(|v| v.as_str())
-                                                                .unwrap_or_default()
-                                                                .into(),
-                                                            data: block
-                                                                .get("data")
-                                                                .and_then(|v| v.as_str())
-                                                                .unwrap_or_default()
-                                                                .into(),
-                                                        }
-                                                    }),
-                                            ),
-                                    ),
-                                ),
-                            )
+                            .content(content)
                             .footer(
                                 MessageFooter::new().child(actions::MessageActions {
                                     id: format!("{key}-{}", m.id),

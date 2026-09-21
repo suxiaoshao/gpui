@@ -1,8 +1,8 @@
-//! Window-sized image preview. Geometry follows Jaco; state belongs to this overlay.
-use crate::foundation::{assets::IconName, i18n::t};
+//! Window-filling image viewer with local zoom state and modal focus ownership.
+use crate::foundation::{assets::IconName, attachments::ImageAttachment, i18n::t};
 use gpui_kit::{
     component::{
-        ActiveTheme, Disableable, Icon, WindowExt,
+        ActiveTheme, Disableable, Icon,
         button::{Button, ButtonVariants},
         h_flex,
         label::Label,
@@ -10,7 +10,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _,
     *,
 };
-use std::{io::Cursor, sync::Arc};
+use std::sync::Arc;
 
 const MAX_ZOOM_PERCENT: f32 = 800.;
 const ZOOM_EPSILON: f32 = 0.01;
@@ -33,60 +33,146 @@ enum ZoomStep {
 }
 
 struct ImagePreview {
-    image: Arc<Image>,
-    name: String,
-    natural_size: Result<PreviewSize, String>,
+    host: WeakEntity<PreviewHost>,
+    image: PreviewImage,
+    name: Option<String>,
+    natural_size: PreviewSize,
     zoom_percent: Option<f32>,
     scroll: ScrollHandle,
 }
 
-pub(super) fn open(image: Arc<Image>, name: String, window: &mut Window, cx: &mut App) {
-    // Read dimensions from the encoded header without decoding another full bitmap.
-    let natural_size = image::ImageReader::new(Cursor::new(image.bytes()))
-        .with_guessed_format()
-        .map_err(|e| e.to_string())
-        .and_then(|reader| reader.into_dimensions().map_err(|e| e.to_string()))
-        .map(|(width, height)| PreviewSize {
-            width: width as f32,
-            height: height as f32,
-        });
-    let preview = cx.new(|_| ImagePreview {
-        image,
-        name,
-        natural_size,
-        zoom_percent: None,
-        scroll: ScrollHandle::new(),
-    });
-    window.open_dialog(cx, move |dialog, window, _| {
-        let viewport = window.viewport_size();
-        dialog
-            .width(viewport.width)
-            .h(viewport.height)
-            .margin_top(px(0.))
-            .p_0()
-            .rounded_none()
-            .border_0()
-            .close_button(false)
-            .overlay(false)
-            .overlay_closable(false)
-            .keyboard(true)
-            .content({
-                let preview = preview.clone();
-                move |content, _, _| content.p_0().size_full().child(preview.clone())
-            })
+enum PreviewImage {
+    Attachment(Arc<ImageAttachment>),
+    Message {
+        image: Arc<Image>,
+        dimensions: (u32, u32),
+    },
+}
+impl PreviewImage {
+    fn source(&self) -> ImageSource {
+        match self {
+            Self::Attachment(image) => image.path().into(),
+            Self::Message { image, .. } => image.clone().into(),
+        }
+    }
+    fn dimensions(&self) -> (u32, u32) {
+        match self {
+            Self::Attachment(image) => image.dimensions(),
+            Self::Message { dimensions, .. } => *dimensions,
+        }
+    }
+}
+
+/// Per-page modal owner; the base dialog supplies the focus trap and dismissal.
+pub(super) struct PreviewHost {
+    preview: Option<Entity<ImagePreview>>,
+    focus: FocusHandle,
+    previous_focus: Option<FocusHandle>,
+}
+
+impl PreviewHost {
+    pub(super) fn new(cx: &mut Context<Self>) -> Self {
+        Self {
+            preview: None,
+            focus: cx.focus_handle(),
+            previous_focus: None,
+        }
+    }
+
+    pub(super) fn is_open(&self) -> bool {
+        self.preview.is_some()
+    }
+
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.preview = None;
+        if let Some(focus) = self.previous_focus.take() {
+            focus.focus(window, cx);
+        }
+        cx.notify();
+    }
+}
+
+impl Render for PreviewHost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(preview) = self.preview.clone() else {
+            return div().into_any_element();
+        };
+        gpui_kit::base::Dialog::new(cx)
+            .focus_handle(self.focus.clone())
+            .on_ok(|_, _, _| false)
+            .on_close(cx.listener(|this, _, window, cx| this.close(window, cx)))
+            .popup(preview)
+            .into_any_element()
+    }
+}
+
+pub(super) fn open(
+    host: &Entity<PreviewHost>,
+    image: Arc<ImageAttachment>,
+    name: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    open_source(
+        host,
+        PreviewImage::Attachment(image),
+        Some(name),
+        window,
+        cx,
+    );
+}
+
+pub(super) fn open_message(
+    host: &Entity<PreviewHost>,
+    image: Arc<Image>,
+    dimensions: (u32, u32),
+    window: &mut Window,
+    cx: &mut App,
+) {
+    open_source(
+        host,
+        PreviewImage::Message { image, dimensions },
+        None,
+        window,
+        cx,
+    );
+}
+
+fn open_source(
+    host: &Entity<PreviewHost>,
+    image: PreviewImage,
+    name: Option<String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let (width, height) = image.dimensions();
+    host.update(cx, |host, cx| {
+        if host.preview.is_none() {
+            host.previous_focus = window.focused(cx);
+        }
+        let owner = cx.weak_entity();
+        host.preview = Some(cx.new(|_| ImagePreview {
+            host: owner,
+            image,
+            name,
+            natural_size: PreviewSize {
+                width: width as f32,
+                height: height as f32,
+            },
+            zoom_percent: None,
+            scroll: ScrollHandle::new(),
+        }));
+        host.focus.focus(window, cx);
+        cx.notify();
     });
 }
 
 impl ImagePreview {
-    fn viewport(window: &Window, cx: &App) -> PreviewSize {
-        // Dialog reserves themed side/bottom clearance inside the native window border.
-        let padding = gpui_kit::component::window_paddings(window);
-        let margin = cx.theme().spacing_tokens().lg;
-        let size = window.viewport_size()
-            - size(
-                padding.left + padding.right + margin * 2.,
-                padding.top + padding.bottom + margin,
-            );
+    fn close(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = self.host.update(cx, |host, cx| host.close(window, cx));
+    }
+    fn viewport(window: &Window) -> PreviewSize {
+        let size = window.viewport_size();
         let rem: f32 = window.rem_size().into();
         PreviewSize {
             width: (f32::from(size.width) - rem * 7.).max(1.),
@@ -95,9 +181,7 @@ impl ImagePreview {
     }
 
     fn zoom(&self, viewport: PreviewSize) -> f32 {
-        let Ok(natural) = self.natural_size else {
-            return 100.;
-        };
+        let natural = self.natural_size;
         let fit = fit_zoom_percent(natural, viewport);
         self.zoom_percent
             .map(|zoom| clamp_zoom_percent(zoom, fit))
@@ -111,10 +195,8 @@ impl ImagePreview {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Ok(natural) = self.natural_size else {
-            return;
-        };
-        let viewport = Self::viewport(window, cx);
+        let natural = self.natural_size;
+        let viewport = Self::viewport(window);
         let next = clamp_zoom_percent(next, fit_zoom_percent(natural, viewport));
         let bounds = self.scroll.bounds();
         let anchor = anchor
@@ -137,10 +219,8 @@ impl ImagePreview {
     }
 
     fn step(&mut self, direction: ZoomStep, window: &mut Window, cx: &mut Context<Self>) {
-        let Ok(natural) = self.natural_size else {
-            return;
-        };
-        let viewport = Self::viewport(window, cx);
+        let natural = self.natural_size;
+        let viewport = Self::viewport(window);
         self.set_zoom(
             next_zoom_step(
                 self.zoom(viewport),
@@ -173,7 +253,7 @@ impl ImagePreview {
         };
         cx.stop_propagation();
         self.set_zoom(
-            self.zoom(Self::viewport(window, cx)) * factor,
+            self.zoom(Self::viewport(window)) * factor,
             Some(event.position),
             window,
             cx,
@@ -183,7 +263,7 @@ impl ImagePreview {
     fn pinch_zoom(&mut self, event: &PinchEvent, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         self.set_zoom(
-            self.zoom(Self::viewport(window, cx)) * (1. + event.delta).max(0.01),
+            self.zoom(Self::viewport(window)) * (1. + event.delta).max(0.01),
             Some(event.position),
             window,
             cx,
@@ -228,7 +308,7 @@ impl ImagePreview {
                             .h(px(image_size.height))
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .child(
-                                img(self.image.clone())
+                                img(self.image.source())
                                     .size_full()
                                     .object_fit(ObjectFit::Contain),
                             ),
@@ -310,60 +390,53 @@ impl ImagePreview {
 
 impl Render for ImagePreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let viewport = Self::viewport(window, cx);
+        let viewport = Self::viewport(window);
         let zoom = self.zoom(viewport);
         let close = t(cx, "image-preview-close");
         div()
             .id("image-preview")
             .test_support()
             .size_full()
+            .occlude()
             .relative()
             .overflow_hidden()
-            .bg(cx.theme().tokens.background.background)
+            .bg(crate::state::theme::image_preview_backdrop())
             .text_color(cx.theme().foreground)
-            .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                cx.stop_propagation();
-                window.close_dialog(cx);
-            })
-            .map(|view| match &self.natural_size {
-                Ok(natural) => view
-                    .child(self.render_image(*natural, viewport, zoom, cx))
-                    .child(self.render_controls(*natural, viewport, zoom, cx)),
-                Err(error) => view.child(
-                    div()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            Label::new(format!("{}: {error}", t(cx, "image-preview-load-failed")))
-                                .text_sm(),
-                        ),
-                ),
-            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.close(window, cx);
+                }),
+            )
+            .child(self.render_image(self.natural_size, viewport, zoom, cx))
+            .child(self.render_controls(self.natural_size, viewport, zoom, cx))
             .child(
                 h_flex()
                     .absolute()
                     .top_4()
-                    .left_4()
+                    // Keep the native traffic lights clear, even for long filenames.
+                    .left(rems(7.))
                     .right_4()
-                    .justify_between()
+                    .justify_end()
                     .gap_4()
-                    .child(
-                        div()
-                            .min_w_0()
-                            .max_w(rems(32.5))
-                            .px_3()
-                            .py_2()
-                            .rounded_full()
-                            .bg(cx.theme().tokens.popover.background)
-                            .text_color(cx.theme().popover_foreground)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .shadow_lg()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .child(Label::new(self.name.clone()).text_sm().truncate()),
-                    )
+                    .when_some(self.name.clone(), |header, name| {
+                        header.child(
+                            div()
+                                .min_w_0()
+                                .max_w(rems(32.5))
+                                .px_3()
+                                .py_2()
+                                .rounded_full()
+                                .bg(cx.theme().tokens.popover.background)
+                                .text_color(cx.theme().popover_foreground)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .shadow_lg()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .child(Label::new(name).text_sm().truncate()),
+                        )
+                    })
                     .child(
                         Button::new("image-preview-close")
                             .ghost()
@@ -379,7 +452,7 @@ impl Render for ImagePreview {
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .tooltip(close.clone())
                             .accessibility_label(close)
-                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                            .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
                     ),
             )
     }

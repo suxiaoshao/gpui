@@ -1153,9 +1153,7 @@ impl ConversationState {
                     prompt.message.push('@');
                     prompt.message.push_str(&path.to_string_lossy());
                 }
-                crate::foundation::attachments::Content::Image { image, .. } => {
-                    prompt.images.push(image.clone())
-                }
+                crate::foundation::attachments::Content::Image { .. } => {}
             }
         }
         let used_template = revision.is_some() && s.pending_template.is_some();
@@ -1167,7 +1165,40 @@ impl ConversationState {
         let attachment_ids: Vec<_> = attachments.iter().map(|a| a.id.clone()).collect();
         prompt.streaming_behavior = Some(mode);
         let task = cx.spawn(async move |owner, cx| {
-            let result = client.prompt(prompt).await;
+            let prepared = smol::unblock(move || {
+                for attachment in &attachments {
+                    if let crate::foundation::attachments::Content::Image { image } =
+                        &attachment.content
+                    {
+                        prompt.images.push(image.to_rpc_image()?);
+                    }
+                }
+                Ok::<_, String>(prompt)
+            })
+            .await;
+            // File encoding can finish after the user stops or replaces this session.
+            let current = owner
+                .update(cx, |this, cx| {
+                    let Some(s) = this.sessions.get_mut(&key).filter(|s| {
+                        s.binding == binding && matches!(s.submission, Submission::Sending { .. })
+                    }) else {
+                        return false;
+                    };
+                    if s.interrupted {
+                        s.finish_submission(false);
+                        this.changed(cx);
+                        return false;
+                    }
+                    true
+                })
+                .unwrap_or(false);
+            if !current {
+                return;
+            }
+            let result = match prepared {
+                Ok(prompt) => client.prompt(prompt).await.map_err(|e| e.to_string()),
+                Err(error) => Err(error),
+            };
             let _ = owner.update(cx, |this, cx| {
                 let Some(s) = this.sessions.get_mut(&key).filter(|s| {
                     s.binding == binding && matches!(s.submission, Submission::Sending { .. })

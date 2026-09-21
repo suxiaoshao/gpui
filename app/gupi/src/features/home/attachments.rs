@@ -133,15 +133,15 @@ impl HomeView {
                         Content::File { .. } => {
                             AttachmentMedia::new().child(Icon::new(IconName::FileText))
                         }
-                        Content::Image { preview, .. } => {
-                            AttachmentMedia::new().src(preview.clone())
-                        }
+                        Content::Image { image } => AttachmentMedia::new().src(image.path()),
                     };
                     let format = attachment
                         .format_name()
                         .unwrap_or_else(|| t(cx, "attachment-file"));
                     let description =
                         format!("{format} · {}", format_file_size(attachment.byte_len()));
+                    let host = self.image_preview.clone();
+                    let button_host = host.clone();
                     let button_content = content.clone();
                     let button_name = name.clone();
                     let card = AttachmentView::new()
@@ -164,14 +164,20 @@ impl HomeView {
                                         .tooltip(name.clone())
                                         .child(AttachmentTitle::new(name.clone()))
                                         .on_click(move |_, window, cx| {
-                                            show_preview(&button_content, &button_name, window, cx)
+                                            show_preview(
+                                                &button_host,
+                                                &button_content,
+                                                &button_name,
+                                                window,
+                                                cx,
+                                            )
                                         }),
                                 )
                                 .description(AttachmentDescription::new(description)),
                         )
                         .on_click(move |_, window, cx| {
                             cx.stop_propagation();
-                            show_preview(&content, &name, window, cx);
+                            show_preview(&host, &content, &name, window, cx);
                         });
                     card.actions(
                         AttachmentActions::new().child(
@@ -202,11 +208,17 @@ impl HomeView {
     }
 }
 
-fn show_preview(content: &Content, name: &str, window: &mut Window, cx: &mut App) {
+fn show_preview(
+    host: &Entity<super::image_preview::PreviewHost>,
+    content: &Content,
+    name: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
     match content {
         Content::File { path, .. } => cx.open_with_system(path),
-        Content::Image { preview, .. } => {
-            super::image_preview::open(preview.clone(), name.to_owned(), window, cx);
+        Content::Image { image } => {
+            super::image_preview::open(host, image.clone(), name.to_owned(), window, cx);
         }
     }
 }

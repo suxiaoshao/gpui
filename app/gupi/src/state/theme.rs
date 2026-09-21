@@ -2,6 +2,12 @@ use super::config::{AppConfig, ThemeMode};
 use gpui_kit::component::{ThemeMode as Mode, ThemeRegistry};
 use gpui_kit::{App, Window};
 
+/// Image viewing needs a dark scrim in both modes, independently of the
+/// deliberately subtle backdrop used by ordinary themed dialogs.
+pub(crate) fn image_preview_backdrop() -> gpui_kit::Hsla {
+    gpui_kit::black().opacity(0.8)
+}
+
 pub(crate) fn init(cx: &mut App) {
     let registry = ThemeRegistry::global_mut(cx);
     for source in [
