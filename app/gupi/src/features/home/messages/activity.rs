@@ -32,6 +32,7 @@ pub(super) enum ActivityBlock<'a> {
     Group { id: String, items: &'a [Activity] },
 }
 
+#[derive(Clone, PartialEq)]
 pub(super) struct Tool {
     pub id: String,
     pub entries: Vec<String>,

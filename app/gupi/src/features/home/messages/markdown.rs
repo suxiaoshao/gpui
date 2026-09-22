@@ -1,11 +1,10 @@
 //! Adapt Pi text snapshots to the component's incremental Markdown parser.
 use gpui_kit::component::{
     message_scroller::MessageScrollerState,
-    text::{TextView, TextViewState, TextViewStyle},
+    text::{TextView, TextViewState},
 };
 use gpui_kit::{
-    App, AppContext, Entity, IntoElement, RenderOnce, StyleRefinement, Styled, Subscription,
-    WeakEntity, Window, rems, transparent_black,
+    App, AppContext, Entity, IntoElement, RenderOnce, Subscription, WeakEntity, Window,
 };
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
@@ -19,7 +18,6 @@ pub(super) struct Markdown {
     text: String,
     scroller: WeakEntity<MessageScrollerState>,
     row: RowTarget,
-    embedded: bool,
     stream_fade: bool,
 }
 
@@ -30,7 +28,6 @@ impl Markdown {
             text,
             scroller,
             row: None,
-            embedded: false,
             stream_fade: false,
         }
     }
@@ -41,11 +38,6 @@ impl Markdown {
     }
     pub fn stream_fade(mut self) -> Self {
         self.stream_fade = true;
-        self
-    }
-
-    pub fn embedded(mut self) -> Self {
-        self.embedded = true;
         self
     }
 }
@@ -107,28 +99,9 @@ impl RenderOnce for Markdown {
             *state.row.borrow_mut() = self.row;
             state.sync(self.text, cx);
         });
-        let view = TextView::new(&state.read(cx).view)
+        TextView::new(&state.read(cx).view)
             .selectable(true)
-            .stream_fade(self.stream_fade);
-        if self.embedded {
-            view.style(
-                TextViewStyle::default()
-                    .paragraph_gap(rems(0.5))
-                    .code_block(
-                        StyleRefinement::default()
-                            .p_0()
-                            .border_0()
-                            .rounded_none()
-                            .bg(transparent_black()),
-                    )
-                    .inline_code(gpui_kit::HighlightStyle {
-                        background_color: Some(transparent_black()),
-                        ..Default::default()
-                    }),
-            )
-        } else {
-            view
-        }
+            .stream_fade(self.stream_fade)
     }
 }
 

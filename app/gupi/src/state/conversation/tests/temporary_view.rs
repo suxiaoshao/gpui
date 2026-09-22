@@ -688,3 +688,43 @@ fn user_message_images_are_compact_separate_and_open_preview(cx: &mut TestAppCon
         assert_eq!(state.read(cx).current().unwrap().live.len(), 2);
     });
 }
+
+#[gpui_kit::test]
+fn temporary_summary_dialog_escape_preserves_window_and_conversation(cx: &mut TestAppContext) {
+    use gpui_kit::{Modifiers, component::WindowExt as _};
+    init_interactions(cx);
+    let state = cx.new(|cx| ConversationState::temporary("unused-pi".into(), cx));
+    state.update(cx, |state, _| {
+        let mut session = fixture_session("summary");
+        session.transcript.receive_message();
+        session.live.push(crate::state::history::DisplayMessage {
+            id: "summary-entry".into(), entry: None, completed_at: None, final_answer_part: None,
+            value: serde_json::json!({"role":"compaction", "content":"# Summary\n\nOriginal **Markdown**."}),
+        });
+        session.content_revision += 1;
+        state.sessions.insert("summary".into(), session);
+        state.selected = Some("summary".into());
+    });
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| TemporaryView::new(state.clone(), window, cx));
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(960.), px(620.)));
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let button = visual
+        .debug_bounds("summary-details-summary-entry")
+        .expect("summary trigger");
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|window, cx| assert!(window.has_active_dialog(cx)));
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        assert!(!window.has_active_dialog(cx));
+        assert!(window.is_window_active());
+        assert_eq!(state.read(cx).selected.as_deref(), Some("summary"));
+        assert!(!state.read(cx).sessions["summary"].stopping);
+    });
+}

@@ -688,7 +688,13 @@ impl HomeView {
             ));
         }
         Sidebar::new("sessions-sidebar")
-            .collapsible(SidebarCollapsible::Offcanvas)
+            // The collapse transition animates clip-width, which must not lag
+            // behind the content width during a pointer-driven resize.
+            .collapsible(if self.resizing_sidebar() {
+                SidebarCollapsible::None
+            } else {
+                SidebarCollapsible::Offcanvas
+            })
             .collapsed(!self.show_sidebar)
             .border_r_0()
             .header(header)
