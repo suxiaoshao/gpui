@@ -2,7 +2,7 @@
 use super::{
     actions::copy_button,
     activity::Tool,
-    presentation::{fenced, tool_action, tool_title},
+    presentation::{code_fence, tool_action, tool_title},
     tool_details::{self, Detail, Section},
     *,
 };
@@ -31,6 +31,13 @@ struct DetailsView {
     scroll: ScrollHandle,
     follow: bool,
     _subscription: Option<Subscription>,
+}
+
+fn code_source(language: &str, text: &str) -> String {
+    // Each TextView contains one code block. EOF closes it for rendering;
+    // omitting the closing fence keeps cumulative output append-compatible.
+    // A longer fence in the payload changes the opener and correctly replaces it.
+    format!("{}{language}\n{text}", code_fence(text))
 }
 
 impl HomeView {
@@ -237,7 +244,7 @@ impl DetailsView {
                 let source = if section.id == "summary" {
                     text.clone()
                 } else {
-                    fenced(language, text)
+                    code_source(language, text)
                 };
                 if let Some(block) = self.text.get_mut(&id) {
                     if source != block.source {
@@ -372,7 +379,7 @@ impl Render for DetailsView {
 
 #[cfg(test)]
 mod tests {
-    use super::{DetailsView, Target, find_tool};
+    use super::{DetailsView, Target, code_source, find_tool};
     use crate::state::{
         conversation::{
             Changes, ConversationEvent, ConversationState, Session, ToolActivity,
@@ -382,6 +389,51 @@ mod tests {
     };
     use gpui_kit::{AppContext, TestAppContext, component::Root};
     use serde_json::json;
+
+    #[gpui_kit::test]
+    fn cumulative_code_output_appends_and_keeps_literal_fences(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let mut source = code_source("text", "first");
+        let view = cx.new(|cx| super::TextViewState::markdown(&source, cx));
+        cx.run_until_parked();
+        for payload in [
+            "first\nsecond",
+            "first\nsecond\n",
+            "first\nsecond\n```rust\nlet a = 1;\n```",
+        ] {
+            let next = code_source("text", payload);
+            if !payload.contains('`') {
+                assert!(next.starts_with(&source), "ordinary output must append");
+            } else {
+                assert!(
+                    !next.starts_with(&source),
+                    "a longer delimiter needs replacement"
+                );
+            }
+            view.update(cx, |view, cx| {
+                if let Some(delta) = next.strip_prefix(&source) {
+                    view.push_str(delta, cx);
+                } else {
+                    view.set_text(&next, cx);
+                }
+            });
+            source = next;
+            cx.run_until_parked();
+            view.update(cx, |view, cx| {
+                view.select_all(cx);
+                // Markdown's rendered code selection terminates the last line.
+                let expected = if payload.ends_with('\n') {
+                    payload.to_owned()
+                } else {
+                    format!("{payload}\n")
+                };
+                assert_eq!(view.selected_text(), expected);
+                view.clear_selection(cx);
+            });
+        }
+        assert!(!code_source("rust", "first").starts_with(&code_source("text", "first")));
+        assert!(!code_source("text", "replacement").starts_with(&source));
+    }
 
     fn session(output: &str) -> Session {
         let mut session = Session::from_rpc_messages(&[

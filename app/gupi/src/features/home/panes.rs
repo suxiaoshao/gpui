@@ -121,6 +121,16 @@ impl Render for DragPreview {
 }
 
 impl HomeView {
+    pub(super) fn resizing_sidebar(&self) -> bool {
+        matches!(
+            self.pane_drag,
+            Some(Drag {
+                side: Side::Left,
+                ..
+            })
+        )
+    }
+
     pub(super) fn pane_handle(&self, side: Side, cx: &Context<Self>) -> impl IntoElement + use<> {
         let owner = cx.weak_entity();
         gpui_kit::base::resize_handle(
@@ -248,6 +258,74 @@ impl Element for ResizeEvents {
 mod tests {
     use super::{PaneLayout, Side};
     use crate::state::layout;
+
+    #[gpui_kit::test]
+    fn sidebar_drag_tracks_pointer_without_width_transitions(cx: &mut gpui_kit::TestAppContext) {
+        use crate::{
+            features::home::HomeView,
+            state::{conversation::ConversationState, pi},
+        };
+        use gpui_kit::{AppContext, Modifiers, MouseButton, component::Root, point, px, size};
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            app_theme::init(cx);
+            crate::state::theme::init(cx);
+            crate::foundation::i18n::apply(Default::default(), cx);
+            pi::init(cx);
+            cx.set_global(layout::LayoutState::default());
+        });
+        let state = cx.new(|cx| ConversationState::new("unused-pi".into(), cx));
+        state.update(cx, |state, _| state.selected = Some("unloaded".into()));
+        let mut home = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| HomeView::with_state(state, window, cx));
+            home = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let home = home.unwrap();
+        visual.simulate_resize(size(px(1200.), px(800.)));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let initial = visual.debug_bounds("conversation-center").unwrap().origin.x;
+        let start = point(initial, px(300.));
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        for x in [
+            initial + px(50.),
+            initial + px(120.),
+            initial + px(40.),
+            initial,
+        ] {
+            visual.simulate_mouse_move(point(x, start.y), MouseButton::Left, Modifiers::default());
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.update(|_, cx| assert!(home.read(cx).resizing_sidebar()));
+            // Inspect the first frame after each motion, without advancing the
+            // animation clock: both content and chrome must already be at x.
+            assert_eq!(
+                visual.debug_bounds("conversation-center").unwrap().origin.x,
+                x
+            );
+            assert_eq!(
+                visual.debug_bounds("titlebar-sidebar").unwrap().size.width,
+                x
+            );
+        }
+        // Return to the starting width so this UI test does not persist layout.
+        visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert!(!home.read(cx).resizing_sidebar());
+            window.draw(cx).clear(cx);
+        });
+        assert_eq!(
+            visual.debug_bounds("conversation-center").unwrap().origin.x,
+            initial
+        );
+        assert_eq!(
+            visual.debug_bounds("titlebar-sidebar").unwrap().size.width,
+            initial
+        );
+    }
+
     #[test]
     fn hidden_sidebar_keeps_animation_width_without_reserving_layout_space() {
         let preferences = layout::LayoutState {

@@ -365,15 +365,14 @@ fn group_summary(tools: &[&Tool], cx: &App) -> String {
     // Independent category labels, not fragments of a translated sentence.
     parts.join(" · ")
 }
-pub(super) fn fenced(language: &str, text: &str) -> String {
+pub(super) fn code_fence(text: &str) -> String {
     // Tool output may contain Markdown fences itself.
-    let fence = "`".repeat(
+    "`".repeat(
         text.split(|c| c != '`')
             .map(str::len)
             .max()
             .unwrap_or(0)
             .max(2)
             + 1,
-    );
-    format!("{fence}{language}\n{text}\n{fence}")
+    )
 }

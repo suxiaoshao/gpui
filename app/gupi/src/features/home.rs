@@ -804,7 +804,14 @@ impl Render for HomeView {
         // Keep the component mounted: Offcanvas owns the closing animation and
         // removes its contents from the tab order after the transition finishes.
         let mut columns = h_flex().size_full().child(self.render_sidebar(window, cx));
-        let mut center_panel = div().relative().flex_1().min_w_0().h_full().child(center);
+        let mut center_panel = div()
+            .id("conversation-center")
+            .debug_selector(|| "conversation-center".into())
+            .relative()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(center);
         if self.show_sidebar {
             center_panel = center_panel.child(self.pane_handle(panes::Side::Left, cx));
         }

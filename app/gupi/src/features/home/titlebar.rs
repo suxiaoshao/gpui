@@ -42,7 +42,9 @@ impl HomeView {
         let widths = window.use_keyed_state("titlebar-sidebar-width", cx, |_, _| {
             (target_width, target_width)
         });
-        if widths.read(cx).1 != target_width {
+        if self.resizing_sidebar() {
+            widths.update(cx, |widths, _| *widths = (target_width, target_width));
+        } else if widths.read(cx).1 != target_width {
             widths.update(cx, |widths, _| *widths = (widths.1, target_width));
         }
         let (from_width, to_width) = *widths.read(cx);
@@ -55,6 +57,8 @@ impl HomeView {
             },
         );
         let left = h_flex()
+            .id("titlebar-sidebar")
+            .debug_selector(|| "titlebar-sidebar".into())
             .h_full()
             .flex_none()
             .pl(leading)
