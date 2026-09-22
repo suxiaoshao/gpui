@@ -1,13 +1,12 @@
-//! Tool-specific bodies inside the existing disclosure, using captured RPC data only.
-use super::{activity::Tool, presentation::fenced, *};
+//! Tool-specific detail projection using captured RPC data only.
+use super::{activity::Tool, *};
 use crate::foundation::tool_presentation::{ToolKind, read_path};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use gpui_kit::prelude::FluentBuilder;
 use serde_json::Value;
 use std::sync::Arc;
 
-#[derive(Debug, PartialEq)]
-enum Detail {
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Detail {
     Path(String),
     Query(String),
     Field(&'static str, String),
@@ -27,222 +26,82 @@ impl Detail {
     }
 }
 
-impl HomeView {
-    pub(super) fn tool_details(&self, key: &str, row: &str, tool: &Tool, cx: &App) -> AnyElement {
-        let kind = tool.kind();
-        let mut primary = vec![];
-        let mut fields = vec![];
-        let mut status = vec![];
-        let mut input = vec![];
-        let mut output = vec![];
-        let mut extra = vec![];
-        let mut in_output = false;
-        let mut in_extra = false;
-        for detail in project(tool) {
-            match detail {
-                Detail::Output => in_output = true,
-                Detail::Path(value) => {
-                    if kind == ToolKind::Search {
-                        fields.push(inline_code(&value));
-                    } else {
-                        primary.push(inline_code(&value));
-                    }
-                }
-                Detail::Query(value) => primary.push(inline_code(&value)),
-                Detail::Field(label, value) => {
-                    fields.push(format!("{} {}", t(cx, label), inline_code(&value)));
-                }
-                Detail::Status(label, value) => status.push(match value {
-                    Some(value) => format!("{} {}", t(cx, label), inline_code(&value)),
-                    None => t(cx, label),
-                }),
-                Detail::Notice("tool-detail-additional") => {
-                    in_extra = true;
-                    extra.push(detail);
-                }
-                detail => {
-                    if in_extra {
-                        extra.push(detail);
-                    } else if in_output {
-                        output.push(detail);
-                    } else {
-                        input.push(detail);
-                    }
-                }
+pub(super) struct Section {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub parts: Vec<Detail>,
+}
+impl Section {
+    pub fn copy_text(&self) -> String {
+        self.parts
+            .iter()
+            .filter_map(|part| match part {
+                Detail::Code { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+pub(super) struct Document {
+    pub metadata: Vec<Detail>,
+    pub sections: Vec<Section>,
+}
+pub(super) fn document(tool: &Tool) -> Document {
+    let mut document = Document {
+        metadata: vec![],
+        sections: vec![],
+    };
+    let mut section = Section {
+        id: "input",
+        label: match tool.kind() {
+            ToolKind::Shell => "tool-detail-command",
+            ToolKind::Write => "tool-detail-content",
+            ToolKind::Edit => "tool-detail-changes",
+            _ => "tool-detail-input",
+        },
+        parts: vec![],
+    };
+    for part in project(tool) {
+        let next = match part {
+            Detail::Output => Some((
+                "output",
+                if matches!(tool.kind(), ToolKind::Read | ToolKind::Skill) {
+                    "tool-detail-content"
+                } else {
+                    "tool-detail-output"
+                },
+            )),
+            Detail::Notice("tool-detail-additional") => {
+                Some(("additional", "tool-detail-additional"))
             }
-        }
-        let mut header_content = vec![];
-        if matches!(kind, ToolKind::Shell | ToolKind::Other) {
-            header_content.append(&mut input);
-        }
-        // File mutations present the submitted content/diff as the body, and
-        // the execution result beneath it. Other tools return the main body.
-        if matches!(kind, ToolKind::Edit | ToolKind::Write)
-            || (kind == ToolKind::Shell && tool.status == ToolStatus::Failed)
-        {
-            extra.splice(0..0, output);
+            Detail::Notice("tool-detail-old-text") => Some(("old", "tool-detail-old-text")),
+            Detail::Notice("tool-detail-new-text") => Some(("new", "tool-detail-new-text")),
+            _ => None,
+        };
+        if let Some((id, label)) = next {
+            if !section.parts.is_empty() {
+                document.sections.push(section);
+            }
+            section = Section {
+                id,
+                label,
+                parts: vec![],
+            };
         } else {
-            input.append(&mut output);
-        }
-        let has_header = !primary.is_empty() || !fields.is_empty() || !header_content.is_empty();
-        let has_body = !input.is_empty();
-        let has_footer = !extra.is_empty() || !status.is_empty();
-        if !has_header && !has_body && !has_footer {
-            return div().into_any_element();
-        }
-        // Only expanded details own this surface. The Marker and disclosure
-        // button remain outside, with their existing appearance and behavior.
-        let mut card = v_flex()
-            .w_full()
-            .min_w_0()
-            .border_1()
-            .border_color(cx.theme().border)
-            .rounded_md()
-            .overflow_hidden();
-        if has_header {
-            card = card.child(
-                v_flex()
-                    .min_w_0()
-                    .gap_1()
-                    .px_3()
-                    .py_2()
-                    .bg(cx.theme().muted)
-                    .when(!primary.is_empty(), |header| {
-                        header.child(
-                            self.text_view(
-                                key,
-                                row,
-                                format!("tool-primary-{}", tool.id),
-                                primary.join(" · "),
-                            )
-                            .embedded(),
-                        )
-                    })
-                    .when(!header_content.is_empty(), |header| {
-                        header.child(self.tool_detail_content(
-                            (key, row),
-                            &tool.id,
-                            "header",
-                            header_content,
-                            cx,
-                        ))
-                    })
-                    .when(!fields.is_empty(), |header| {
-                        header.child(
-                            self.text_view(
-                                key,
-                                row,
-                                format!("tool-fields-{}", tool.id),
-                                fields.join(" · "),
-                            )
-                            .embedded(),
-                        )
-                    }),
-            );
-        }
-        if has_body {
-            card = card.child(
-                div()
-                    .min_w_0()
-                    .px_3()
-                    .py_2()
-                    .when(has_header, |body| {
-                        body.border_t_1().border_color(cx.theme().border)
-                    })
-                    .child(self.tool_detail_content((key, row), &tool.id, "body", input, cx)),
-            );
-        }
-        if has_footer {
-            card = card.child(
-                v_flex()
-                    .min_w_0()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .when(has_header || has_body, |footer| {
-                        footer.border_t_1().border_color(cx.theme().border)
-                    })
-                    .when(!extra.is_empty(), |footer| {
-                        footer.child(self.tool_detail_content(
-                            (key, row),
-                            &tool.id,
-                            "footer",
-                            extra,
-                            cx,
-                        ))
-                    })
-                    .when(!status.is_empty(), |footer| {
-                        footer.child(
-                            self.text_view(
-                                key,
-                                row,
-                                format!("tool-status-{}", tool.id),
-                                status.join("\n\n"),
-                            )
-                            .embedded(),
-                        )
-                    }),
-            );
-        }
-        card.into_any_element()
-    }
-
-    fn tool_detail_content(
-        &self,
-        location: (&str, &str),
-        tool_id: &str,
-        section: &str,
-        content: Vec<Detail>,
-        cx: &App,
-    ) -> AnyElement {
-        let (key, row) = location;
-        let mut body = v_flex().w_full().min_w_0().gap_2();
-        let mut markdown = vec![];
-        for (index, detail) in content.into_iter().enumerate() {
-            match detail {
-                Detail::Code { language, text } => markdown.push(fenced(&language, &text)),
-                Detail::Notice(label) => markdown.push(t(cx, label)),
-                Detail::Image { mime, data } => {
-                    if !markdown.is_empty() {
-                        body = body.child(
-                            self.text_view(
-                                key,
-                                row,
-                                format!("tool-body-{section}-{tool_id}-{index}"),
-                                markdown.join("\n\n"),
-                            )
-                            .embedded(),
-                        );
-                        markdown.clear();
-                    }
-                    body = body.child(ToolImage {
-                        id: format!("{key}-tool-image-{section}-{tool_id}-{index}"),
-                        mime,
-                        data,
-                    });
+            match part {
+                Detail::Path(_) | Detail::Query(_) | Detail::Field(..) => {
+                    document.metadata.push(part)
                 }
-                Detail::Path(..)
-                | Detail::Query(..)
-                | Detail::Field(..)
-                | Detail::Status(..)
-                | Detail::Output => {
-                    unreachable!("metadata was separated above")
-                }
+                Detail::Notice("tool-detail-input" | "tool-detail-output") => {}
+                _ => section.parts.push(part),
             }
         }
-        if !markdown.is_empty() {
-            body = body.child(
-                self.text_view(
-                    key,
-                    row,
-                    format!("tool-body-{section}-{tool_id}-tail"),
-                    markdown.join("\n\n"),
-                )
-                .embedded(),
-            );
-        }
-        body.into_any_element()
     }
+    if !section.parts.is_empty() {
+        document.sections.push(section);
+    }
+    document
 }
 
 fn project(tool: &Tool) -> Vec<Detail> {
@@ -458,11 +317,6 @@ fn file_language(args: &Value) -> String {
         .unwrap_or_else(|| "text".into())
 }
 
-fn inline_code(value: &str) -> String {
-    let fence = "`".repeat(value.split(|c| c != '`').map(str::len).max().unwrap_or(0) + 1);
-    format!("{fence} {} {fence}", value.replace(['\n', '\r'], " "))
-}
-
 #[derive(IntoElement)]
 pub(super) struct ToolImage {
     pub id: String,
@@ -517,6 +371,53 @@ impl RenderOnce for ToolImage {
 mod tests {
     use super::{Detail, Tool, ToolImage, ToolKind, ToolStatus, pretty, project};
     use serde_json::{Value, json};
+
+    #[test]
+    fn dialog_sections_copy_payloads_without_metadata_or_image_bytes() {
+        let custom = tool(
+            "plugin",
+            json!({"value": 1}),
+            json!({
+                "content": [
+                    {"type":"text", "text":"first"},
+                    {"type":"image", "mimeType":"image/png", "data":"secret-image-bytes"},
+                    {"type":"text", "text":"last"}
+                ],
+                "details": {"extra": true}
+            }),
+        );
+        let document = super::document(&custom);
+        assert_eq!(
+            document.sections.iter().map(|s| s.id).collect::<Vec<_>>(),
+            ["input", "output", "additional"]
+        );
+        assert_eq!(
+            document.sections[0].copy_text(),
+            pretty(&json!({"value":1}))
+        );
+        assert_eq!(document.sections[1].copy_text(), "first\nlast");
+        assert!(matches!(
+            document.sections[1].parts[1],
+            Detail::Image { .. }
+        ));
+        assert_eq!(
+            document.sections[2].copy_text(),
+            pretty(&json!({"extra":true}))
+        );
+
+        let shell = tool(
+            "bash",
+            json!({"command":"printf hi", "timeout":30}),
+            json!({"content":[{"type":"text", "text":"hi\n"}]}),
+        );
+        let document = super::document(&shell);
+        assert_eq!(document.sections[0].copy_text(), "printf hi");
+        assert_eq!(document.sections[1].copy_text(), "hi\n");
+        assert_eq!(
+            document.metadata,
+            [Detail::Field("tool-detail-timeout", "30".into())]
+        );
+    }
 
     fn tool(name: &str, args: Value, result: Value) -> Tool {
         Tool {

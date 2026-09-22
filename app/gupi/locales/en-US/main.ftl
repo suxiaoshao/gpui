@@ -517,3 +517,9 @@ conversation-retry-countdown = Retry { $attempt }/{ $total } in about { $seconds
 conversation-retry-waiting = Retry { $attempt }/{ $total }: waiting for Pi
 conversation-summary-retry-countdown = Summary retry { $attempt }/{ $total } in about { $seconds }s
 conversation-summary-retry-waiting = Summary retry { $attempt }/{ $total }: waiting for Pi
+
+message-details-open = View details…
+message-details-copy-all = Copy all
+tool-detail-command = Command
+tool-detail-content = Content
+tool-detail-changes = Changes

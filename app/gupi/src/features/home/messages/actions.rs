@@ -36,6 +36,7 @@ impl RenderOnce for MessageActions {
             state,
             id: format!("copy-{}", self.id),
             text: self.text,
+            label: None,
         });
         if !user {
             let fields = metadata::usage_fields(&self.message, cx);
@@ -114,6 +115,25 @@ struct CopyAction {
     state: Entity<CopyState>,
     id: String,
     text: String,
+    label: Option<String>,
+}
+
+pub(super) fn copy_button(
+    id: String,
+    text: String,
+    label: String,
+    window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement {
+    let state = window.use_keyed_state(format!("copy-state-{id}"), cx, |_, _| CopyState {
+        reset: None,
+    });
+    CopyAction {
+        state,
+        id,
+        text,
+        label: Some(label),
+    }
 }
 impl View for CopyAction {
     fn entity_id(&self) -> Option<EntityId> {
@@ -121,14 +141,18 @@ impl View for CopyAction {
     }
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let copied = self.state.read(cx).reset.is_some();
-        let label = t(
-            cx,
-            if copied {
-                "conversation-copied"
-            } else {
-                "conversation-copy"
-            },
-        );
+        let label = if !copied && let Some(label) = self.label {
+            label
+        } else {
+            t(
+                cx,
+                if copied {
+                    "conversation-copied"
+                } else {
+                    "conversation-copy"
+                },
+            )
+        };
         Button::new(self.id)
             .ghost()
             .xsmall()

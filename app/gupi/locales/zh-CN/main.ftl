@@ -517,3 +517,9 @@ conversation-retry-countdown = 第 { $attempt }/{ $total } 次重试，约 { $se
 conversation-retry-waiting = 第 { $attempt }/{ $total } 次重试，等待 Pi
 conversation-summary-retry-countdown = 摘要第 { $attempt }/{ $total } 次重试，约 { $seconds } 秒后重试
 conversation-summary-retry-waiting = 摘要第 { $attempt }/{ $total } 次重试，等待 Pi
+
+message-details-open = 查看详情…
+message-details-copy-all = 复制全部
+tool-detail-command = 命令
+tool-detail-content = 内容
+tool-detail-changes = 修改

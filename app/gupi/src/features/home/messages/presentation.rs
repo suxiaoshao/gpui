@@ -27,17 +27,6 @@ pub(super) struct Disclosure {
     locked: bool,
 }
 impl Disclosure {
-    pub fn compaction(title: String) -> Self {
-        Self {
-            title,
-            clock: None,
-            icon: Some(IconName::FileText),
-            level: Level::Tool,
-            loading: false,
-            failed: false,
-            locked: false,
-        }
-    }
     pub fn run(title: String) -> Self {
         Self {
             title,
@@ -268,7 +257,7 @@ impl HomeView {
 
     fn render_activity(&self, key: &str, row: &str, item: &Activity, cx: &App) -> AnyElement {
         match item {
-            Activity::Tool(tool) => self.render_tool(key, row, tool, cx),
+            Activity::Tool(tool) => self.render_tool(key, tool, cx),
             Activity::Text {
                 id, text, running, ..
             } => self.fold(
@@ -303,28 +292,12 @@ impl HomeView {
         }
     }
 
-    fn render_tool(&self, key: &str, row: &str, tool: &Tool, cx: &App) -> AnyElement {
-        let heading = Disclosure {
-            clock: None,
-            title: tool_title(tool, cx),
-            icon: Some(tool.kind().icon()),
-            level: Level::Tool,
-            loading: tool.status == ToolStatus::Running,
-            failed: tool.status == ToolStatus::Failed,
-            locked: false,
-        };
-        self.fold(
-            (key, row),
-            &tool.id,
-            heading,
-            false,
-            self.tool_details(key, row, tool, cx),
-            cx,
-        )
+    fn render_tool(&self, key: &str, tool: &Tool, cx: &App) -> AnyElement {
+        self.tool_trigger(key, tool, cx).into_any_element()
     }
 }
 
-fn tool_title(tool: &Tool, cx: &App) -> String {
+pub(super) fn tool_action(tool: &Tool, cx: &App) -> String {
     let mut args = FluentArgs::new();
     args.set(
         "state",
@@ -336,8 +309,12 @@ fn tool_title(tool: &Tool, cx: &App) -> String {
         },
     );
     args.set("name", tool.name.clone());
-    let action = t_with_args(cx, tool.kind().action_key(), &args);
-    args.set("action", action);
+    t_with_args(cx, tool.kind().action_key(), &args)
+}
+
+pub(super) fn tool_title(tool: &Tool, cx: &App) -> String {
+    let mut args = FluentArgs::new();
+    args.set("action", tool_action(tool, cx));
     args.set(
         "summary",
         tool.summary().unwrap_or_default().replace('\n', " "),

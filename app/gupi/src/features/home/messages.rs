@@ -12,6 +12,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 
 mod actions;
 mod activity;
+mod details;
 mod images;
 mod markdown;
 pub(super) mod metadata;
@@ -48,9 +49,6 @@ impl ChatRow {
             return;
         }
         match &self.kind {
-            RowKind::Compaction(_) => {
-                open.insert(self.id.clone(), true);
-            }
             RowKind::Run { messages, .. } => {
                 open.insert(self.id.clone(), true);
                 let content = RunContent::project(messages, &[], false);
@@ -61,13 +59,12 @@ impl ChatRow {
                                 && tool.entries.iter().any(|id| id == entry)
                             {
                                 open.insert(id.clone(), true);
-                                open.insert(tool.id.clone(), true);
                             }
                         }
                     }
                 }
             }
-            RowKind::User(_) | RowKind::BranchSummary(_) => {}
+            RowKind::User(_) | RowKind::Compaction(_) | RowKind::BranchSummary(_) => {}
         }
     }
 }
@@ -433,26 +430,7 @@ impl HomeView {
                     .into_any_element()
             }
             RowKind::Compaction(m) => Message::new()
-                .content(
-                    MessageContent::new().child(
-                        self.fold(
-                            (key, &row.id),
-                            &row.id,
-                            Disclosure::compaction(t(cx, "conversation-compaction")),
-                            false,
-                            div()
-                                .pl_6()
-                                .child(self.text_view(
-                                    key,
-                                    &row.id,
-                                    format!("text-{}", m.id),
-                                    m.text(),
-                                ))
-                                .into_any_element(),
-                            cx,
-                        ),
-                    ),
-                )
+                .content(MessageContent::new().child(self.summary_trigger(m, cx)))
                 .into_any_element(),
             RowKind::BranchSummary(m) => Message::new()
                 .header(
@@ -783,7 +761,7 @@ mod tests {
         }
     }
     #[test]
-    fn locating_a_compaction_expands_only_its_summary() {
+    fn locating_a_compaction_keeps_its_detail_closed() {
         let rows = project_rows(
             vec![
                 message("u", "user"),
@@ -796,7 +774,7 @@ mod tests {
         for row in &rows {
             row.reveal("c", &mut open);
         }
-        assert_eq!(open, HashMap::from([("c".to_owned(), true)]));
+        assert!(open.is_empty());
         open.clear();
         for row in &rows {
             row.reveal("u", &mut open);
