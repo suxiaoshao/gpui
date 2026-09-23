@@ -274,3 +274,63 @@ impl FrontmostApp {
         Err("Pasting into another application is unsupported")
     }
 }
+
+/// Set the Dock's unread conversation count. Zero removes the badge.
+/// Platforms without a Dock expose the count through the application's tray menu.
+pub fn set_badge_count(count: usize) -> Result<(), PlatformExtError> {
+    #[cfg(target_os = "macos")]
+    {
+        let app = NSApplication::sharedApplication(
+            MainThreadMarker::new().ok_or(PlatformExtError::MainThreadUnavailable)?,
+        );
+        let label = (count > 0).then(|| objc2_foundation::NSString::from_str(&count.to_string()));
+        app.dockTile().setBadgeLabel(label.as_deref());
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = count;
+    Ok(())
+}
+/// A single informational attention request; never activates the application.
+pub fn request_attention() -> Result<(), PlatformExtError> {
+    #[cfg(target_os = "macos")]
+    {
+        let app = NSApplication::sharedApplication(
+            MainThreadMarker::new().ok_or(PlatformExtError::MainThreadUnavailable)?,
+        );
+        app.requestUserAttention(objc2_app_kit::NSRequestUserAttentionType::InformationalRequest);
+    }
+    Ok(())
+}
+
+/// Request the notification badge capability. AppKit's Dock label obeys this
+/// permission too. Call on the main thread at the first unread result, not startup.
+/// The callback may run on a system thread; dispatch UI work to the app executor.
+pub fn request_badge_authorization(on_complete: impl Fn(bool) + Send + Sync + 'static) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::runtime::Bool;
+        use objc2_foundation::{NSBundle, NSError};
+        use objc2_user_notifications::{UNAuthorizationOptions, UNUserNotificationCenter};
+
+        // UNUserNotificationCenter raises an exception for unbundled cargo runs.
+        if MainThreadMarker::new().is_none() || NSBundle::mainBundle().bundleIdentifier().is_none()
+        {
+            on_complete(false);
+            return;
+        }
+        let completion = block2::RcBlock::new(move |granted: Bool, error: *mut NSError| {
+            // The system owns this NSError for the duration of its callback.
+            if let Some(error) = unsafe { error.as_ref() } {
+                tracing::warn!(error = %error.localizedDescription(), "badge authorization failed");
+            }
+            on_complete(granted.as_bool() && error.is_null());
+        });
+        UNUserNotificationCenter::currentNotificationCenter()
+            .requestAuthorizationWithOptions_completionHandler(
+                UNAuthorizationOptions::Badge,
+                &completion,
+            );
+    }
+    #[cfg(not(target_os = "macos"))]
+    on_complete(false);
+}

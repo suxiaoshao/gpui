@@ -87,27 +87,27 @@ GUI 附加限制的移除与预览同步见[职责边界收敛](gui-boundary.md)
 | `turn_start`、`turn_end` | 没有单独 handler；消息和工具使用更细粒度事件 | 暂无独立轮次 UI 需求，不仅为了消费事件增加界面 |
 | `message_start`、`message_update`、`message_end` | 接入消息增量、思考、文字、工具调用及结束校准 | 已有；特定消息种类的展示不能因此一概视为完整 |
 | `tool_execution_start`、`tool_execution_update`、`tool_execution_end` | 接入工具执行状态、部分结果及结果卡片 | 已有，不继承插件 TUI renderer |
-| `compaction_start`、`compaction_end` | 更新压缩状态并刷新历史 | `reason`、`errorMessage`、`aborted`、`willRetry` 没有完整反馈；手动 RPC 失败已有报错；本轮同步状态，新增自动压缩失败提示延后至通知设计 |
+| `compaction_start`、`compaction_end` | 更新压缩状态并刷新历史 | 未取消且不再重试的自动失败保留详情；手动失败由 RPC 结果单独提醒，避免双报 |
 | `auto_retry_start`、`auto_retry_end` | 已更新 retrying、尝试次数、等待倒计时及原因 | 重试等待不回读正文；已有最终错误处理保留，统一错误提醒延后 |
 | `queue_update` | 已消费，实时同步两类文字和 pending 数量 | 队列可折叠查看；状态快照仅能补充数量，逐条操作和完整附件仍受协议限制 |
 | `entry_appended` | 已接入来源会话的历史/用量同步 | Pi 0.87.0 的边界钩子还可追加 custom_message、context_edit、compaction；已有定向校准保留。display:true 插件消息的正文展示缺口见下节，不将所有结构条目都当成聊天消息 |
 | `session_info_changed`、`thinking_level_changed` | 已接入名称、思考等级与定向状态校准 | 保留清空名称语义及模型设置请求与事件的竞态保护，不因此扫描全部目录 |
 | `summarization_retry_scheduled`、`summarization_retry_attempt_start`、`summarization_retry_finished` | 已接入独立的摘要重试等待阶段 | 本地倒计时；实际尝试开始/结束清理本阶段，不误清普通模型重试或将其当作整个任务结束 |
 | `bash_execution_update` | 未消费 | 与用户 bash 功能共同评估，非模型 `tool_execution_update` |
-| `extension_error` | 未消费 | 专门错误展示未接入；用户已确认延后至[#241 通知设计](../../../app/gupi/docs/dev/issue-241/README.md)，不再作为 #236 本轮必做项 |
+| `extension_error` | 来源会话保留错误详情并按插件提醒路由 | 不改变任务结果；实现与原生验证边界见 [通知设计](../../../app/gupi/docs/dev/issue-241/README.md) |
 
 #### 事件同步、错误提示与局部刷新
 
 上述接入盘点继续作为能力索引；事件契约、局部刷新实现和验证边界统一见 [#236 实现说明](../../../app/gupi/docs/dev/issue-236/README.md)。名称/思考等级/entry 同步、压缩状态、两类重试进度及过宽刷新修正已完成受影响验证，不再列为待处理项。外部会话由用户手动刷新；首次新项目定向发现、后台删除保留选择、设置资源首次按需加载均已落实。
 
-错误、插件提示和回答完成通知的新增及统一改造继续延后，见 [#241 通知设计](../../../app/gupi/docs/dev/issue-241/README.md)。`queue_update` 已接入，逐条操作仍受协议限制；turn 事件不另建 UI，直接 Bash 仍另定范围。状态通知 `cx.notify` 与应用内/系统用户提醒是不同层次，不据通知次数推断所有 Pi 实例重新加载。
+错误、插件提示、待答和回答完成已接入应用级投递，阅读计数与业务状态分离；原生验证边界见 [通知设计](../../../app/gupi/docs/dev/issue-241/README.md)。`queue_update` 已接入，逐条操作仍受协议限制；turn 事件不另建 UI，直接 Bash 仍另定范围。状态通知 `cx.notify` 与应用内/系统用户提醒是不同层次，不据通知次数推断所有 Pi 实例重新加载。
 
 ### 9 类扩展 UI 与参数细节
 
 | 请求／回复 | 当前行为 | 剩余内容 |
 | --- | --- | --- |
 | `select`、`confirm`、`input`、`editor` | 都已接入，回复带请求 id，使用 value/confirmed/cancelled；editor 支持 prefill，前三者处理 timeout | 统一问卷组件、焦点/连续请求/取消/真实插件验收仍按 #222；不能记成四类功能都没实现 |
-| `notify` | 已通知，error 映射错误样式 | warning 与普通 info 目前未区分；分级、来源和通知路由统一延后，保留既有通知 |
+| `notify` | 保留来源/request id 和 info/warning/error，统一应用内/系统路由 | 来源保留多条临时提醒，默认不发系统通知，也不直接增加未读数字 |
 | `setStatus`、`setWidget` | 已展示/更新/清理文本状态及上下方文字 widget | 只支持 RPC 提供的字符串数组；组件工厂不是应用漏接 |
 | `setTitle`、`set_editor_text` | 已更新扩展标题和会话输入文字 | token 内容怎样与插件纯文本替换共存，留在新输入组件接入范围内 |
 | `extension_ui_response` | 已支持三种回复形态 | 它是 UI 应答，不额外计入 33 个命令 |
@@ -131,7 +131,7 @@ GUI 附加限制的移除与预览同步见[职责边界收敛](gui-boundary.md)
 | 按模型图片处理 | AgentSession 已根据当前模型 inputLimits.images.resize 和 images.autoResize 归一化 RPC prompt 图片，之后才构建持久用户消息；CLI/read/工具图片也复用 Pi 的策略。Gupi 继续发送原始字节、保留原图预览，不复制这些限制。恢复历史中的图像可能已由 Pi 处理，不能承诺一定等于导入原图。 |
 | TUI `/bug` | 内置命令从 23 增至 24，没有对应 RPC。诊断上传/本地 ZIP 导出属于独立产品与数据范围，不自动给 Gupi 增加上报功能。 |
 
-当前推荐先推进 [#223 原生体验与发行验收](https://github.com/suxiaoshao/gpui/issues/223)，在已有功能上验证 Pi 0.87 与桌面行为；会话阅读功能已由 #242 承接。输入资源标签/Questionnaire 继续等待正式版，逐条队列继续等待 Pi 正式 RPC，通知后续由 #241 承接，不作为当前验收新增前置。
+当前推荐先推进 [#223 原生体验与发行验收](https://github.com/suxiaoshao/gpui/issues/223)，在已有功能上验证 Pi 0.87 与桌面行为；会话阅读功能已由 #242 承接。输入资源标签/Questionnaire 继续等待正式版，逐条队列继续等待 Pi 正式 RPC，通知已由 #241 接入统一投递，原生验收边界见其开发文档，不作为 #223 新增前置。
 
 ## Pi TUI 有、原生 RPC 没有直接提供的能力
 
@@ -174,7 +174,7 @@ GUI 附加限制的移除与预览同步见[职责边界收敛](gui-boundary.md)
 | Issue | 已确认范围 | 归属与实施条件 |
 | --- | --- | --- |
 | [#223](https://github.com/suxiaoshao/gpui/issues/223) | 原生体验、打包验收、正式图标和 Welcome / 首次启动引导 | 当前主 Issue；复用现有设置并预填，必填/可跳过项在实施时确定 |
-| [#241](https://github.com/suxiaoshao/gpui/issues/241) | 错误、插件提示、完成及待用户操作的应用内/系统提醒 | 主 Issue 下的后续工作，不作为 #223 新增前置；[通知设计](../../../app/gupi/docs/dev/issue-241/README.md) |
+| [#241](https://github.com/suxiaoshao/gpui/issues/241) | 错误、插件提示、完成及待用户操作的应用内/系统提醒 | 统一投递与计数已接入，原生验收边界见[通知设计](../../../app/gupi/docs/dev/issue-241/README.md) |
 | [#242](https://github.com/suxiaoshao/gpui/issues/242) | display:true 插件持久消息正文、会话信息弹窗、当前分支正文查找 | 主 Issue；复用现有消息/历史与统计，不扩为跨会话索引 |
 | [#243](https://github.com/suxiaoshao/gpui/issues/243) | 原子资源标签、Skill/模板输入、Markdown 资源展示、Questionnaire | 主 Issue；[资源接入计划](../../../app/gupi/docs/dev/issue-243/README.md)，输入原子标签/问卷等待正式组件；Markdown 内联插件已在正式包提供 |
 | [#240](https://github.com/suxiaoshao/gpui/issues/240) | Jaco 与关联源码、资源、CI、打包、依赖和文档清理 | 独立后续任务，Gupi 合入后执行；[统一清单](../jaco-retirement/README.md)，不删除用户数据 |

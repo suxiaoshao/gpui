@@ -33,6 +33,7 @@ pub(crate) struct AppConfig {
     pub light_theme: Option<String>,
     pub dark_theme: Option<String>,
     pub language: AppLanguage,
+    pub notifications: super::notifications::Preferences,
 }
 impl AppConfig {
     pub fn pi_executable(&self) -> PathBuf {
@@ -103,6 +104,7 @@ impl PiSettings {
 pub(crate) enum PreferenceChange {
     Keybinding(String, Option<String>),
     ResetKeybindings,
+    Notifications(super::notifications::Preferences),
     Shortcuts(super::shortcuts::Shortcuts),
     Language(AppLanguage),
     Theme(ThemeMode),
@@ -112,6 +114,7 @@ pub(crate) enum PreferenceChange {
 impl PreferenceChange {
     fn apply(self, config: &mut AppConfig) {
         match self {
+            Self::Notifications(value) => config.notifications = value,
             Self::ResetKeybindings => {
                 config.keybindings.clear();
                 config.shortcuts.clear_bindings();
@@ -263,6 +266,9 @@ fn write_config(
             }
             if value.dark_theme != baseline.dark_theme {
                 latest.dark_theme = value.dark_theme;
+            }
+            if value.notifications != baseline.notifications {
+                latest.notifications = value.notifications;
             }
             if value.shortcuts != baseline.shortcuts {
                 latest.shortcuts = value.shortcuts;
@@ -711,6 +717,7 @@ mod tests {
                 language: AppLanguage::Chinese,
                 keybindings: Default::default(),
                 shortcuts: Default::default(),
+                notifications: Default::default(),
             }
         );
         assert!(!form.read_with(cx, |form, _| form.is_dirty()));
@@ -908,7 +915,15 @@ mod tests {
         settled(&owner, cx).await;
         let pi = owner.read_with(cx, |owner, _| owner.pi_form.clone());
         cx.update(|cx| PiSettings::COMMAND.set(&pi, Some("draft-pi".into()), cx));
+        let notifications = crate::state::notifications::Preferences {
+            waiting: false,
+            failures: false,
+            completion: crate::state::notifications::CompletionMode::Always,
+            plugins: true,
+            attention: false,
+        };
         for change in [
+            PreferenceChange::Notifications(notifications.clone()),
             PreferenceChange::Theme(ThemeMode::Dark),
             PreferenceChange::Language(AppLanguage::English),
             PreferenceChange::LightTheme(Some("test-light".into())),
@@ -936,6 +951,7 @@ mod tests {
         let saved = read_config(path, true).unwrap();
         let saved = saved.configured().unwrap();
         assert_eq!(saved.pi_command.as_deref(), Some("draft-pi"));
+        assert_eq!(saved.notifications, notifications);
         assert_eq!(saved.theme, ThemeMode::Dark);
         assert_eq!(saved.language, AppLanguage::English);
         assert_eq!(saved.light_theme.as_deref(), Some("test-light"));

@@ -903,8 +903,8 @@ async fn manual_compaction_releases_command_and_preserves_draft(cx: &mut TestApp
         let captured = notifications.clone();
         let _subscription = cx.update(|cx| {
             cx.subscribe(&owner, move |_, event, _| {
-                if let super::super::ConversationEvent::Notify { message, error } = event {
-                    captured.borrow_mut().push((message.clone(), *error));
+                if let super::super::ConversationEvent::Attention(notice) = event {
+                    captured.borrow_mut().push(notice.kind.clone());
                 }
             })
         });
@@ -950,12 +950,20 @@ async fn manual_compaction_releases_command_and_preserves_draft(cx: &mut TestApp
         assert_eq!(count(dir.path(), "abort"), usize::from(outcome == "abort"));
         {
             let notices = notifications.borrow();
-            if outcome == "success" {
+            if outcome != "fail-compact" {
                 assert!(notices.is_empty());
             } else {
                 assert_eq!(notices.len(), 1);
-                assert!(notices[0].1);
-                assert!(notices[0].0.contains("fixture read failed"));
+                assert_eq!(notices[0], crate::state::notifications::Kind::Failed);
+                owner.read_with(cx, |s, _| {
+                    assert!(
+                        s.sessions[&key]
+                            .error
+                            .as_ref()
+                            .unwrap()
+                            .contains("fixture read failed")
+                    )
+                });
             }
         }
         close(&owner, cx).await;
@@ -2784,5 +2792,171 @@ async fn streamed_body_and_repeated_draft_updates_have_distinct_batched_scopes(
         assert!(changes[0].1.is_empty());
         assert!(changes[0].2.contains(&key));
     }
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn notifications_settled_output_and_failure_are_distinct_from_progress(
+    cx: &mut TestAppContext,
+) {
+    use crate::state::{conversation::ConversationEvent, notifications::Kind};
+    let (_dir, owner, key) = begin(cx, &[]);
+    reads_settled(&owner, &key, cx).await;
+    let notices = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = notices.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&owner, move |_, e, _| {
+            if let ConversationEvent::Attention(n) = e {
+                captured.borrow_mut().push(n.kind.clone());
+            }
+        })
+    });
+    for raw in [
+        serde_json::json!({"type":"agent_start"}),
+        serde_json::json!({"type":"message_end","message":{"role":"assistant","timestamp":999,"content":[{"type":"text","text":"Complete"}],"stopReason":"stop"}}),
+        serde_json::json!({"type":"agent_end"}),
+    ] {
+        emit_session_event(&owner, &key, raw, cx);
+    }
+    assert!(notices.borrow().is_empty());
+    // The consumer may process the final event before applying prompt acceptance.
+    // Completion must follow Pi's event rather than the composer's in-flight task.
+    let (accepted, _result) = tokio::sync::oneshot::channel();
+    owner.update(cx, |s, _| {
+        s.sessions.get_mut(&key).unwrap().submission = super::super::Submission::Sending {
+            _task: gpui_kit::Task::ready(()),
+            result: accepted,
+        };
+    });
+
+    emit_session_event(
+        &owner,
+        &key,
+        serde_json::json!({"type":"agent_settled"}),
+        cx,
+    );
+    assert_eq!(&*notices.borrow(), &[Kind::Completed]);
+    owner.update(cx, |s, _| {
+        s.sessions.get_mut(&key).unwrap().finish_submission(true)
+    });
+    owner.read_with(cx, |s, _| assert!(s.sessions[&key].unread));
+    emit_session_event(
+        &owner,
+        &key,
+        serde_json::json!({"type":"agent_settled"}),
+        cx,
+    );
+    assert_eq!(notices.borrow().len(), 1);
+    reads_settled(&owner, &key, cx).await;
+    owner.update(cx, |s, cx| s.mark_read(&key, cx));
+    for raw in [
+        serde_json::json!({"type":"agent_start"}),
+        serde_json::json!({"type":"message_end","message":{"role":"assistant","timestamp":1000,"content":[],"stopReason":"error","errorMessage":"failed"}}),
+        serde_json::json!({"type":"auto_retry_start","delayMs":10}),
+    ] {
+        emit_session_event(&owner, &key, raw, cx);
+    }
+    assert_eq!(notices.borrow().len(), 1);
+    emit_session_event(
+        &owner,
+        &key,
+        serde_json::json!({"type":"agent_settled"}),
+        cx,
+    );
+    assert_eq!(&*notices.borrow(), &[Kind::Completed, Kind::Failed]);
+    owner.read_with(cx, |s, _| assert!(!s.sessions[&key].unread));
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn notifications_plugin_levels_and_requests_preserve_source_without_badge(
+    cx: &mut TestAppContext,
+) {
+    use crate::state::{
+        conversation::ConversationEvent,
+        notifications::{Kind, Severity},
+    };
+    let (_dir, owner, key) = begin(cx, &[]);
+    reads_settled(&owner, &key, cx).await;
+    let notices = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = notices.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&owner, move |_, e, _| {
+            if let ConversationEvent::Attention(n) = e {
+                captured.borrow_mut().push(n.clone());
+            }
+        })
+    });
+    for raw in [
+        serde_json::json!({"id":"notice","method":"notify","message":"First","notifyType":"warning"}),
+        serde_json::json!({"id":"notice2","method":"notify","message":"Second","notifyType":"custom"}),
+        serde_json::json!({"id":"question","method":"editor","title":"Edit"}),
+        serde_json::json!({"id":"question","method":"editor","title":"Edit"}),
+        serde_json::json!({"id":"question2","method":"editor","title":"Edit again"}),
+    ] {
+        owner.update(cx, |s, cx| {
+            s.on_event(
+                &pi::PiEvent {
+                    instance: s.sessions[&key].instance.unwrap(),
+                    event: pi_rpc::protocol::Event::ExtensionUi {
+                        request: serde_json::from_value(raw.clone()).unwrap(),
+                        raw,
+                    },
+                },
+                cx,
+            )
+        });
+    }
+    assert_eq!(notices.borrow().len(), 4);
+    assert!(notices.borrow().iter().all(|n| n.key == key));
+    assert_eq!(notices.borrow()[2].kind, Kind::Waiting("question".into()));
+    owner.read_with(cx, |s, _| {
+        let session = &s.sessions[&key];
+        assert_eq!(session.notices.len(), 2);
+        assert_eq!(session.notices[0].severity, Severity::Warning);
+        assert_eq!(session.notices[1].severity, Severity::Info);
+        assert_eq!(session.pending_ui.len(), 2);
+        assert!(!session.unread);
+    });
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
+async fn notifications_click_returns_to_existing_source_without_reply_or_new_instance(
+    cx: &mut TestAppContext,
+) {
+    let (dir, owner, key) = begin(cx, &[]);
+    reads_settled(&owner, &key, cx).await;
+    cx.update(|cx| {
+        cx.set_app_identity("top.sushao.gupi.test", "Gupi Test");
+        crate::app::notifications::init(cx);
+        crate::app::notifications::attach(&owner, cx);
+    });
+    let instance = owner.read_with(cx, |s, _| s.sessions[&key].instance);
+    owner.update(cx, |s, cx| {
+        s.insert_draft(None);
+        let raw = serde_json::json!({"id":"click-source","method":"confirm","title":"Question","message":"Continue?"});
+        s.on_event(&pi::PiEvent {
+            instance: instance.unwrap(),
+            event: pi_rpc::protocol::Event::ExtensionUi {
+                request: serde_json::from_value(raw.clone()).unwrap(), raw,
+            },
+        }, cx);
+    });
+    cx.run_until_parked();
+    let notification = cx.delivered_system_notifications().pop().unwrap();
+    cx.simulate_system_notification_response(gpui_kit::SystemNotificationResponse {
+        tag: notification.tag,
+        action_id: None,
+    });
+    cx.run_until_parked();
+    owner.read_with(cx, |s, _| {
+        assert_eq!(s.selected.as_ref(), Some(&key));
+        assert_eq!(s.sessions.len(), 2);
+        assert_eq!(s.sessions[&key].instance, instance);
+        assert_eq!(s.sessions[&key].pending_ui.len(), 1);
+    });
+    assert_eq!(count(dir.path(), "prompt"), 0);
+    assert_eq!(count(dir.path(), "extension_ui_response"), 0);
     close(&owner, cx).await;
 }

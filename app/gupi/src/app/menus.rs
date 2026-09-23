@@ -22,6 +22,7 @@ pub(crate) fn refresh(cx: &mut App) {
     }
     cx.set_global(AppliedLocale(locale));
     super::tray::refresh(cx);
+    super::notifications::refresh_labels(cx);
     refresh_native(cx);
 }
 

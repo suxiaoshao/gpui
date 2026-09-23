@@ -55,6 +55,61 @@ impl HomeView {
             .and_then(|v| v.preview.as_deref())
             .is_some_and(|id| !session.history().on_current_path(id));
         let mut shell = v_flex().w_full().max_w(px(820.)).gap_2();
+        if !session.notices.is_empty() {
+            use crate::state::notifications::Severity;
+            use gpui_kit::component::collapsible::Collapsible;
+            let open = self.views.get(&key).is_some_and(|v| v.notices_open);
+            let toggle = key.clone();
+            let clear = key.clone();
+            let notices = v_flex().gap_2().children(session.notices.iter().map(|n| {
+                div()
+                    .text_sm()
+                    .whitespace_normal()
+                    .text_color(match n.severity {
+                        Severity::Info => cx.theme().foreground,
+                        Severity::Warning => cx.theme().warning,
+                        Severity::Error => cx.theme().danger,
+                    })
+                    .child(n.message.clone())
+            }));
+            shell = shell.child(
+                Collapsible::new()
+                    .open(open)
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("session-notices")
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::Bell)
+                                    .label(format!(
+                                        "{} ({})",
+                                        t(cx, "notification-session-notices"),
+                                        session.notices.len()
+                                    ))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(view) = this.views.get_mut(&toggle) {
+                                            view.notices_open = !view.notices_open;
+                                            cx.notify();
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Button::new("clear-session-notices")
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::X)
+                                    .tooltip(t(cx, "notification-clear"))
+                                    .accessibility_label(t(cx, "notification-clear"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.state.update(cx, |s, cx| s.clear_notices(&clear, cx));
+                                    })),
+                            ),
+                    )
+                    .content(notices),
+            );
+        }
         let runtime_error = match session.body_state() {
             BodyState::New
             | BodyState::Ready
