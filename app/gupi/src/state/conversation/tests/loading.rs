@@ -2960,3 +2960,68 @@ async fn notifications_click_returns_to_existing_source_without_reply_or_new_ins
     assert_eq!(count(dir.path(), "extension_ui_response"), 0);
     close(&owner, cx).await;
 }
+
+#[gpui_kit::test]
+async fn notifications_failure_click_preserves_disconnected_session_until_explicit_reconnect(
+    cx: &mut TestAppContext,
+) {
+    let (dir, owner, key) = begin(cx, &[]);
+    reads_settled(&owner, &key, cx).await;
+    cx.update(|cx| {
+        cx.set_app_identity("top.sushao.gupi.test", "Gupi Test");
+        crate::app::notifications::init(cx);
+        crate::app::notifications::attach(&owner, cx);
+    });
+    owner.update(cx, |state, cx| {
+        state.set_draft(&key, "keep this draft".into(), cx);
+        state.insert_draft(None);
+    });
+    let client = owner.read_with(cx, |state, cx| state.client(&key, cx).unwrap());
+    assert!(
+        client
+            .request_raw(serde_json::json!({"type":"disconnect"}))
+            .await
+            .is_err()
+    );
+    cx.condition(&owner, |state, _| state.sessions[&key].instance.is_none())
+        .await;
+    cx.run_until_parked();
+    let (binding, error) = owner.read_with(cx, |state, _| {
+        let session = &state.sessions[&key];
+        assert!(session.error.is_some());
+        (session.binding, session.error.clone())
+    });
+    let notification = cx.delivered_system_notifications().pop().unwrap();
+    cx.simulate_system_notification_response(gpui_kit::SystemNotificationResponse {
+        tag: notification.tag,
+        action_id: None,
+    });
+    cx.run_until_parked();
+    owner.read_with(cx, |state, _| {
+        assert_eq!(state.selected.as_ref(), Some(&key));
+        assert_eq!(state.sessions.len(), 2);
+        let session = &state.sessions[&key];
+        assert!(session.instance.is_none());
+        assert!(!session.core_read.running());
+        assert_eq!(session.binding, binding);
+        assert_eq!(session.error, error);
+        assert_eq!(session.draft, "keep this draft");
+    });
+    let starts = || {
+        std::fs::read_to_string(dir.path().join("process.log"))
+            .unwrap()
+            .lines()
+            .filter(|line| line.starts_with("start "))
+            .count()
+    };
+    assert_eq!(starts(), 1);
+    assert_eq!(count(dir.path(), "prompt"), 0);
+    owner.update(cx, |state, cx| state.connect(&key, cx));
+    reads_settled(&owner, &key, cx).await;
+    owner.read_with(cx, |state, _| {
+        assert!(state.sessions[&key].instance.is_some());
+        assert!(state.sessions[&key].error.is_none());
+    });
+    assert_eq!(starts(), 2);
+    close(&owner, cx).await;
+}

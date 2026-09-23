@@ -117,6 +117,18 @@ Gupi 应从已消费的标准 `extension_ui_request` / `pending_ui` 得到“需
 - `webview/assets/app-initial-512cdcfeac48.js`：`[desktop-notifications] service starting`、`serverRequest/resolved`、`electron-set-badge-count`、`tray-menu-threads-changed`；本次构建中的 `Qoa` 为聚合 badge selector，`Cqr` 判断本地未读/待请求。
 - `webview/assets/notifications-settings-87a871019579.js`：turnMode、permissionsEnabled、questionsEnabled、sound。
 
+### 提交失败与通知点击补充核对（2026-09-24）
+
+通知点击仅选择已保留的来源会话，不调用普通打开会话所用的连接路径。Pi 断开后的失败通知仍保留原错误与草稿，用户主动重新连接才启动新进程。回归测试使用模拟 Pi 子进程，待其退出后模拟系统通知点击回调，检查没有新进程、没有新增 prompt，并检查显式重连仍有效；未重新进行原生通知点击实测。
+
+重新只读提取本机 Codex Electron **26.917.62051**（build 10789）的 `app.asar`，核对 `webview/assets/app-initial-37097744327a.js`：
+
+- `turn/start` 请求明确失败时，提交路径将本地 turn 标成 `failed`，添加 `type: error`、`willRetry: false` 的消息并向调用者抛出错误；这一分支没有发布 `emitTurnCompleted`。
+- `lNc` 桌面通知服务订阅 `addTurnCompletedListener`、审批及用户输入请求；`emitTurnCompleted` 的业务发布点来自 `turn/completed` 事件处理，并非本地提交失败后的状态更新。正常结束通知受 off / unfocused / always 等设置约束。
+- 因此，核对到的普通本地提交失败路径不会单独触发系统失败通知。若服务端另行发出 `turn/completed`，则属于另一条结束事件路径，不能与请求被拒绝混同。
+
+这是安装包静态源码核对，未在日常 Codex 会话中注入失败做实机验证。Gupi 当前提交失败保留会话错误和应用内 toast；是否额外发送后台系统通知属于产品选择，不能以“Codex 已如此实现”为依据。本轮只修复通知点击的隐式重连，保留提交失败路由不变。
+
 ### 实施前的依赖能力核对
 
 以下是实施前基线；当前接入见“当前实现”。核对锁定版本 `gpui-pre 0.3.5`、`gpui-pre-macos 0.3.5`、`tray-icon 0.25.1`：

@@ -946,10 +946,16 @@ impl ConversationState {
                 return;
             }
         }
-        let changed = self.selected.as_ref() != Some(&key);
-        self.selected = Some(key.clone());
+        self.select_existing(&key, cx);
         self.connect(&key, cx);
-        if changed {
+    }
+    /// Navigate to a retained session without starting or reconnecting Pi.
+    pub(crate) fn select_existing(&mut self, key: &str, cx: &mut Context<Self>) {
+        if self.draining || !self.sessions.contains_key(key) {
+            return;
+        }
+        if self.selected.as_deref() != Some(key) {
+            self.selected = Some(key.to_owned());
             notify_selection(cx);
         }
     }

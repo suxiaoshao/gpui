@@ -63,7 +63,7 @@ impl Target {
         let temporary = owner.read(cx).temporary;
         let key = self.key.clone();
         // A notification is navigation, never a new request or automatic reply.
-        owner.update(cx, |state, cx| state.open(&key, cx));
+        owner.update(cx, |state, cx| state.select_existing(&key, cx));
         cx.defer(move |cx| {
             if temporary {
                 super::temporary::show(cx);
