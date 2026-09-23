@@ -13,7 +13,7 @@
 
 已确定会话发现范围、新建/恢复流程、Pi 原生能力、草稿与会话选择持久化，以及下文的两级 Sidebar、项目/session 右键菜单和整体布局。整体参考 Codex 的阅读与导航结构，内容只承接本阶段 Pi 原生能力。
 
-设置页重设计及手动会话目录管理延后，不属于本轮设计或实现的完成条件。本轮保留现有设置入口，会话发现使用默认目录和已知 Pi 配置目录。
+统一设置已由 #231 实现；Pi/项目配置后续归 #244。会话发现继续使用默认目录和已知 Pi 配置目录，手动存储目录管理不默认纳入。
 
 新建页面、共用输入框、发送/换行快捷键、统计圆环、Command 弹出搜索、扩展交互临时替换主输入区，以及下文消息过程折叠规则均已确定。后台运行、等待输入和会话级失败先只通过侧边栏状态提示，不自动切换会话；普通 prompt 提交失败在来源会话显示通知并保留输入，便于重试。
 
@@ -231,7 +231,7 @@ Pi 的 `setFooter` / `setHeader` 接口接受创建 TUI Component 的函数，RP
 
 ### 消息组件与过程折叠
 
-复用 gpui-component 0.6.0 的 Message/MessageContent/MessageFooter、Bubble、Marker、TextView 和 MessageScroller，折叠容器使用现有 Collapsible。Message 提供行与内容布局，TextView 承接 Markdown、选择和代码块操作，MessageScroller 承接虚拟列表、流式尾随、锚点保持与返回底部；Gupi 只负责 Pi 内容映射和本轮过程/最终回答的分组策略，不复制这些通用实现。
+复用当前 gpui-component 的 Message/MessageContent/MessageFooter、Bubble、Marker、TextView 和 MessageScroller，折叠容器使用现有 Collapsible。Message 提供行与内容布局，TextView 承接 Markdown、选择和代码块操作，MessageScroller 承接虚拟列表、流式尾随、锚点保持与返回底部；Gupi 只负责 Pi 内容映射和本轮过程/最终回答的分组策略，不复制这些通用实现。
 
 - 用户消息通过 MessageAlignment::End 靠右排列，轻背景气泡沿用 Bubble 的最大宽度；正文仍左对齐。
 - 过程采用三层折叠：整轮过程 → 文字之间的活动组 → 单个工具详情。运行时默认只展开第一层，模型文字用 Message 直接排版；连续工具调用及思考内容保持在同一组，只有模型的正文输出切断工具组。工具组与单项详情默认收起，不因新调用或执行更新自动展开。

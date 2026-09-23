@@ -55,6 +55,6 @@ HTML 导出与复制接入时，另使用隔离临时会话运行过真实 Pi �
 
 - 后续紧凑布局、输入间距、描述单行截断及外部点击关闭的最终组合未重新做原生验收；构建通过不替代点击验证。
 - 曾出现测试应用启动后无 Dock 图标、窗口不可点击的反馈，未确认根因或修复；后续能展示窗口的截图不作为根因已解决的证明。本次不启动或注册临时 `.app`。
-- 运行时 loading 和消息展示反馈已由 #229 的[运行展示计划](../issue-229/runtime-display-plan.md)和[工具详情](../issue-229/tool-details-research.md)承接实现，不再列为尚待描述的问题。
+- 运行时 loading 和消息展示反馈已由 #229 的[运行展示计划](../issue-229/runtime-display-plan.md)和[工具详情](../issue-238/README.md)承接实现，不再列为尚待描述的问题。
 - Windows/Linux、中文 IME 组词、完整插件 UI、真实模型压缩和系统级进程关闭失败未在本轮原生验证。
 - Cmd/Ctrl+F 正文查找与 question UI 仍属后续范围；插件管理已由 [#231](../issue-231/README.md)接入。RPC 能力限制见[能力缺口记录](../pi-rpc-gaps.md)，跨阶段剩余项见[主 Issue 索引](../../../../../docs/dev/issue-217/follow-ups.md)。

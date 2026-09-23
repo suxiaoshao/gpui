@@ -22,7 +22,7 @@ Gupi 负责输入与附件交互、预览、界面状态和连接生命周期。
 | Pi 诊断 | SemVer 解析接受预发布和构建后缀；--version 仍只用于诊断，不是建立会话的门槛。 |
 | 图片预览 | 保留 InputGroup 中 Attachment 卡片；仅点击后的预览采用 Jaco 的浮动文件名、独立关闭按钮和底部缩放胶囊。适配、滚动、捏合、快捷滚轮、Esc/空白关闭保持可用。 |
 
-Pi 参考为本地 0.86.0 的 rpc-mode.ts、agent-session.ts、file-processor.ts 和 provider adapter：RPC 图片载荷无统一 2000px/4.5 MiB 规则，CLI/工具图片处理逻辑不能套到所有 RPC 输入上。
+2026-09-23 复核 Pi v0.87.0：rpc-mode.ts 的图片载荷契约未变，但 AgentSession._normalizePromptImages 已按当前模型 inputLimits.images.resize 及 images.autoResize 处理 RPC 图片，然后构造用户消息；CLI/read/工具图片也使用 Pi 策略。因此 Gupi 继续原始字节发送，不自行压缩或复制模型规则。本地附件预览用原图，恢复会话中的图片则以 Pi 记录为准，可能已是 Pi 处理后的结果。
 
 保留个人资源管理、包安装参数、会话文件删除的归属核对、发送确认后清草稿及 GUI 显示用截断。这些属于现有产品行为或 GUI 生命周期，不是模型输入限制。输入框资源标签与逐条队列操作仍按各自上游能力边界执行。
 

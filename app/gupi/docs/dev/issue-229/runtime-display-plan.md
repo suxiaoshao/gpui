@@ -2,7 +2,7 @@
 
 状态：Done（2026-09-15，本轮代码实现与自动验证完成，界面效果交付用户试用）。没有待确认的产品问题。未自动操作或启动 Gupi 窗口，未创建/注册测试 .app；不把自动验证当成视觉验收。
 
-实施前的源码与样本证据见[运行展示对照报告](runtime-display-research.md)。本工作归属 Gupi #229，不扩展目录读取、搜索、连接管理或 Pi RPC 协议。
+本工作归属 Gupi #229，不扩展目录读取、搜索、连接管理或 Pi RPC 协议。
 
 ## 已确认行为与当前实现
 
@@ -95,7 +95,7 @@ Pi 不需要与 Electron 使用同名顶层字段，但必须区分内部事件�
 
 ## 实现范围与验证
 
-消息呈现沿用 gpui-kit 0.6.0：整轮 assistant 与连续过程内容用 `MessageGroup`，单条消息用 `Message` / `MessageContent` / `MessageFooter`，分支摘要标题使用 `MessageHeader`；过程折叠继续使用 `Marker` + `Collapsible`，保持既定折叠规则。
+消息呈现使用当前 gpui-kit 0.6.4：整轮 assistant 与连续过程内容用 `MessageGroup`，单条消息用 `Message` / `MessageContent` / `MessageFooter`，分支摘要标题使用 `MessageHeader`；过程折叠继续使用 `Marker` + `Collapsible`，保持既定折叠规则。
 
 Markdown 接入 `TextViewState` 与 `TextView::new`。呈现层按文本块保存最后提交的快照，末尾增长调用 `push_str`，相同内容不更新，替换或缩短调用 `set_text`。比较基准为已提交快照，避免异步解析尚未完成时重复追加。状态随可见元素存在；折叠或虚拟化后重新挂载时，以当前完整快照初始化，不修改 RPC 数据模型。解析完成通知 `MessageScroller` 重新测量高度，继续沿用列表的阅读位置与跟随规则。适配层直接返回 `TextView`，不增加 padding、margin 或布局容器。
 
