@@ -1,12 +1,13 @@
 # 临时窗口、全局快捷键与托盘
 
+后续输入资源、Markdown 资源展示与 Questionnaire 接入统一归 [#243](../issue-243/README.md)；本页保留现有实现及可复用的验证环境，不再单独确定这些功能是否实施。
 归属：[#221](https://github.com/suxiaoshao/gpui/issues/221)，父 Issue #217。设计与实现更新：2026-09-18。
 
 已按确认范围接入临时多会话、系统快捷键、模板任务、附件、托盘与手动清理。使用方式见 [Gupi README](../../../README.md)。本文保留产品契约、实现分工和验证边界；不新增保存、OCR、自动清理会话/工作目录或项目设置。窗口自身按下述方案延迟回收，与数据清理无关。
 
-当前已确认的应用侧实现已完成，剩余输入框改造见[输入框接入计划](composer-resources.md)：按用户 2026-09-18 决定，等待 [InputGroup #3042](https://github.com/longbridge/gpui-kit/pull/3042) 与[原子内联标签 #3113](https://github.com/longbridge/gpui-kit/pull/3113) 均进入兼容的 gpui-kit 正式版本，再升级并接入。共用外壳、Skill 填入正文、标签编辑、模板附带文件引用处理及可选 `@` 文件入口统一暂缓，不提前使用 Git 依赖或单独推进 Skill 行为。待确定项在恢复时讨论；原生交互与 Windows 尚未覆盖的验收见下方验证记录，两类剩余内容均汇入[总待处理文档](../../../../../docs/dev/issue-217/follow-ups.md)。
+当前已确认的应用侧实现已完成，剩余输入框改造见[输入框接入计划](../issue-243/README.md)：按用户 2026-09-18 决定，等待 [InputGroup #3042](https://github.com/longbridge/gpui-kit/pull/3042) 与[原子内联标签 #3113](https://github.com/longbridge/gpui-kit/pull/3113) 均进入兼容的 gpui-kit 正式版本，再升级并接入。共用 InputGroup 外壳与粘贴接线已通过 0.6.4 接入；Skill 填入正文、标签编辑、模板附带文件引用处理及可选 `@` 文件入口继续暂缓。2026-09-23 核对最新正式版 0.6.6 仍未包含原子标签，不提前使用 Git 依赖或单独推进 Skill 行为。待确定项在恢复时讨论；原生交互与 Windows 尚未覆盖的验收见下方验证记录，两类剩余内容均汇入[总待处理文档](../../../../../docs/dev/issue-217/follow-ups.md)。
 
-临时窗口的配置、样式与显隐差异见[Jaco 对照文档](temporary-window-comparison.md)。窗口配置（PopUp 类型、ModalPanel 等级，创建及每次显示时设置）、页面布局与显隐回收已按 Jaco 对齐；会话仍由 Global 持有，不落盘规则不变。
+临时窗口的配置与显隐规则见[窗口生命周期](temporary-window-comparison.md)。窗口配置（PopUp 类型、ModalPanel 等级，创建及每次显示时设置）、页面布局与显隐回收已按 Jaco 对齐；会话仍由 Global 持有，不落盘规则不变。
 
 ## 已确认行为
 

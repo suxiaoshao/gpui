@@ -1,6 +1,6 @@
 # 队列交互与输入框布局
 
-状态：当前 RPC 支持的队列交互已实现并通过构建与回归；原生点击/外观验证未完成，逐条操作延后。2026-09-20 更新。归属 #222。资源标签与 Skill/模板输入继续由[输入框资源接入计划](../issue-221/composer-resources.md)管理；扩展协议与体验环境见[扩展 UI 计划](README.md)。
+状态：当前 RPC 支持的队列交互已实现并通过构建与回归；原生点击/外观验证未完成，逐条操作延后。2026-09-20 更新。归属 #222。资源标签与 Skill/模板输入继续由[输入框资源接入计划](../issue-243/README.md)管理；扩展协议与体验环境见[扩展 UI 计划](README.md)。
 
 ## 本轮实施范围
 
@@ -178,7 +178,7 @@ Pi 在入队前执行 input handler，再展开 Skill 和模板；输入插件�
 | Gupi 自己持有全部待发内容 | 可控制本地编辑，但需重做调度；仅在 agent_end 发送会把 steer 变成 follow-up，也无法统一插件入队 | 不作为本轮默认方案 |
 | Pi 队列能力经正式 RPC 暴露 | 能保持 Pi 执行语义，Harness 已有部分基础 | 推荐方向；先与上游能力边界对齐，再接入 Gupi |
 
-当前范围：先交付现有 RPC 支持的文字展示和整队操作。逐条操作继续等待正式 RPC 契约，不维护平行队列，不在本轮修改 Pi 或创建上游 Issue/PR。另核对正式 v0.85.0、v0.85.1、[v0.86.0 SDK](https://github.com/earendil-works/pi/blob/v0.86.0/packages/coding-agent/src/core/sdk.ts) 和 [RPC 类型](https://github.com/earendil-works/pi/blob/v0.86.0/packages/coding-agent/src/modes/rpc/rpc-types.ts)：coding-agent 仍使用旧 Agent，升级到 0.86.0 不会解除逐条队列限制。
+当前范围：先交付现有 RPC 支持的文字展示和整队操作。逐条操作继续等待正式 RPC 契约，不维护平行队列，不在本轮修改 Pi 或创建上游 Issue/PR。另核对正式 v0.85.0、v0.85.1、[v0.86.0 SDK](https://github.com/earendil-works/pi/blob/v0.86.0/packages/coding-agent/src/core/sdk.ts) 和 [RPC 类型](https://github.com/earendil-works/pi/blob/v0.86.0/packages/coding-agent/src/modes/rpc/rpc-types.ts)：coding-agent 仍使用旧 Agent，2026-09-23 再次核对 [v0.87.1 SDK](https://github.com/earendil-works/pi/blob/v0.87.1/packages/coding-agent/src/core/sdk.ts) 与 [RPC 类型](https://github.com/earendil-works/pi/blob/v0.87.1/packages/coding-agent/src/modes/rpc/rpc-types.ts)：仍为 new Agent，rpc-types.ts/rpc-mode.ts 与 v0.86.0 完全相同。升级到 0.87.0 仍不会解除逐条队列限制；新的 context_edit、finishTurn 和插件边界钩子不构成队列 ID/单条操作接口。
 
 ## 窗口与分栏的实际约束
 

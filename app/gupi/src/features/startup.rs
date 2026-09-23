@@ -74,6 +74,7 @@ impl StartupView {
             if let Some(value) = op.data().and_then(|d| d.configured()) {
                 crate::app::temporary::set_command(value.pi_executable(), cx);
                 i18n::apply(value.language, cx);
+                crate::app::notifications::configure(value.notifications.clone(), cx);
                 theme::apply(value, window, cx);
                 crate::state::keybindings::apply(&value.keybindings, cx);
                 if !op.is_running() {
@@ -250,6 +251,11 @@ impl Render for StartupView {
             } else {
                 self.home = Some(cx.new(|cx| home::HomeView::new(command.clone(), window, cx)));
             }
+        }
+        if let Some(home) = &self.home {
+            home.update(cx, |home, cx| {
+                home.set_notification_visible(main, window, cx)
+            });
         }
         let mut content = v_flex()
             .gap_5()

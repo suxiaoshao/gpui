@@ -107,6 +107,8 @@ pub(crate) struct Session {
     pub fork_messages: ReadState<Vec<protocol::ForkMessage>>,
     pub model_change: ModelChange,
     pub pending_ui: VecDeque<PendingUi>,
+    pub unread: bool,
+    pub notices: Vec<super::notifications::NoticeContent>,
     pub statuses: BTreeMap<String, String>,
     pub widgets: BTreeMap<String, Widget>,
     pub extension_title: Option<String>,
@@ -161,6 +163,8 @@ impl Session {
             fork_messages: ReadState::Idle,
             model_change: ModelChange::Idle,
             pending_ui: VecDeque::new(),
+            unread: false,
+            notices: Vec::new(),
             statuses: BTreeMap::new(),
             widgets: BTreeMap::new(),
             extension_title: None,
@@ -264,6 +268,11 @@ impl Session {
         if self.busy() || self.interrupted || !self.pending_ui.is_empty() {
             return None;
         }
+        self.final_answer_text()
+    }
+    // The final-state event decides completion. A prompt response may still be
+    // awaiting UI processing and must not gate the event's notification.
+    fn final_answer_text(&self) -> Option<String> {
         let messages = self.messages(None);
         let last = messages
             .iter()
@@ -418,6 +427,7 @@ fn notify_progress(cx: &mut Context<ConversationState>) {
 }
 pub(crate) enum ConversationEvent {
     Changed(Changes),
+    Attention(super::notifications::Notice),
     Notify { message: String, error: bool },
 }
 pub(crate) struct ConversationState {
@@ -443,6 +453,12 @@ pub(crate) struct ConversationState {
 impl EventEmitter<ConversationEvent> for ConversationState {}
 impl ConversationState {
     pub fn new(command: PathBuf, cx: &mut Context<Self>) -> Self {
+        let owner = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            if let Some(owner) = owner.upgrade() {
+                crate::app::notifications::attach(&owner, cx);
+            }
+        });
         let pi = pi::global(cx);
         let subscriptions = vec![
             cx.subscribe(&pi, |this, _, event: &PiEvent, cx| this.on_event(event, cx)),
@@ -475,6 +491,22 @@ impl ConversationState {
             serial: 0,
             draining: false,
             _subscriptions: subscriptions,
+        }
+    }
+    pub fn mark_read(&mut self, key: &str, cx: &mut Context<Self>) {
+        if let Some(session) = self.sessions.get_mut(key)
+            && session.unread
+        {
+            session.unread = false;
+            notify_session(key, cx);
+        }
+    }
+    pub fn clear_notices(&mut self, key: &str, cx: &mut Context<Self>) {
+        if let Some(session) = self.sessions.get_mut(key)
+            && !session.notices.is_empty()
+        {
+            session.notices.clear();
+            notify_controls(key, cx);
         }
     }
     pub fn set_command(&mut self, command: PathBuf) {
@@ -914,10 +946,16 @@ impl ConversationState {
                 return;
             }
         }
-        let changed = self.selected.as_ref() != Some(&key);
-        self.selected = Some(key.clone());
+        self.select_existing(&key, cx);
         self.connect(&key, cx);
-        if changed {
+    }
+    /// Navigate to a retained session without starting or reconnecting Pi.
+    pub(crate) fn select_existing(&mut self, key: &str, cx: &mut Context<Self>) {
+        if self.draining || !self.sessions.contains_key(key) {
+            return;
+        }
+        if self.selected.as_deref() != Some(key) {
+            self.selected = Some(key.to_owned());
             notify_selection(cx);
         }
     }
@@ -1067,8 +1105,14 @@ impl ConversationState {
                         s.command.finish();
                         s.pending_count = 0;
                         s.queued = None;
-                        s.fail_submission(s.error.clone().unwrap(), cx);
+                        s.finish_submission(false);
                         s.binding += 1;
+                        cx.emit(ConversationEvent::Attention(super::notifications::Notice {
+                            key: key.clone(),
+                            binding: s.binding,
+                            kind: super::notifications::Kind::Failed,
+                            message: None,
+                        }));
                         pi::global(cx)
                             .update(cx, |pi, cx| pi.close(id, cx))
                             .detach();
@@ -1098,7 +1142,7 @@ impl ConversationState {
                 Err(error) => {
                     let s = self.sessions.get_mut(&key).unwrap();
                     s.error = Some(error.to_string());
-                    s.fail_submission(error.to_string(), cx);
+                    s.finish_submission(false);
                     s.instance = None;
                     s.reset_reads();
                     s.clear_extension_ui();
@@ -1106,6 +1150,12 @@ impl ConversationState {
                     s.queued = None;
                     s.pending_count = 0;
                     s.binding += 1;
+                    cx.emit(ConversationEvent::Attention(super::notifications::Notice {
+                        key: key.clone(),
+                        binding: s.binding,
+                        kind: super::notifications::Kind::Failed,
+                        message: None,
+                    }));
                 }
                 Ok(None) => continue,
             }
@@ -1716,6 +1766,8 @@ impl ConversationState {
         };
         let s = self.sessions.get_mut(&key).unwrap();
         let previous_activity = s.activity();
+        let previous_unread = s.unread;
+        let mut notice = None;
         let mut refresh = None;
         let mut content_changed = false;
         let mut history_event = false;
@@ -1741,6 +1793,24 @@ impl ConversationState {
                     }
                     "agent_end" => return,
                     "agent_settled" => {
+                        let was_running = s.running();
+                        // A turn with visible assistant output can become unread. Waiting,
+                        // failure state, and plugin toasts alone never increment the badge.
+                        let has_output = s.active_messages().is_some_and(|ids| {
+                            s.messages(None).iter().any(|m| {
+                                ids.contains(&m.signature())
+                                    && m.role() == "assistant"
+                                    && m.value["content"].as_array().is_some_and(|parts| {
+                                        parts.iter().any(|p| {
+                                            p["type"] == "text"
+                                                && p["text"]
+                                                    .as_str()
+                                                    .is_some_and(|t| !t.trim().is_empty())
+                                        })
+                                    })
+                            })
+                        });
+                        s.unread |= has_output && !s.interrupted;
                         s.message_stream = None;
                         s.run = RunState::Idle;
                         s.stopping = false;
@@ -1748,13 +1818,58 @@ impl ConversationState {
                         s.retry = None;
                         content_changed = true;
                         refresh = Some(ReadScope::History);
+                        if was_running && !s.interrupted {
+                            if has_output && s.final_answer_text().is_some() {
+                                notice = Some(super::notifications::Kind::Completed);
+                            } else if s.error.is_some() {
+                                notice = Some(super::notifications::Kind::Failed);
+                            }
+                        }
+                    }
+                    "extension_error" => {
+                        let message = raw["error"].as_str().unwrap_or_default().to_owned();
+                        let message = super::notifications::NoticeContent {
+                            id: None,
+                            message,
+                            severity: super::notifications::Severity::Error,
+                        };
+                        s.notices.push(message.clone());
+                        cx.emit(ConversationEvent::Attention(super::notifications::Notice {
+                            key: key.clone(),
+                            binding: s.binding,
+                            kind: super::notifications::Kind::Plugin,
+                            message: Some(message),
+                        }));
                     }
                     "compaction_start" => s.compacting = true,
                     "compaction_end" => {
                         s.compacting = false;
                         s.summary_retry = None;
+                        if s.command.compacting() && raw["aborted"] == true {
+                            s.interrupted = true;
+                        }
                         if !s.command.compacting() {
                             refresh = Some(ReadScope::History);
+                            if raw["aborted"] != true
+                                && raw["willRetry"] != true
+                                && let Some(error) =
+                                    raw["errorMessage"].as_str().filter(|s| !s.is_empty())
+                            {
+                                let message = super::notifications::NoticeContent {
+                                    id: None,
+                                    message: error.into(),
+                                    severity: super::notifications::Severity::Error,
+                                };
+                                s.notices.push(message.clone());
+                                cx.emit(ConversationEvent::Attention(
+                                    super::notifications::Notice {
+                                        key: key.clone(),
+                                        binding: s.binding,
+                                        kind: super::notifications::Kind::Failed,
+                                        message: Some(message),
+                                    },
+                                ));
+                            }
                         }
                     }
                     "auto_retry_start" => {
@@ -1872,6 +1987,10 @@ impl ConversationState {
                 UiMethod::Select { timeout, .. }
                 | UiMethod::Confirm { timeout, .. }
                 | UiMethod::Input { timeout, .. } => {
+                    if s.pending_ui.iter().any(|p| p.request.id == request.id) {
+                        return;
+                    }
+                    notice = Some(super::notifications::Kind::Waiting(request.id.clone()));
                     let timeout = *timeout;
                     s.pending_ui.push_back(PendingUi {
                         request: request.clone(),
@@ -1895,7 +2014,7 @@ impl ConversationState {
                                     let len = s.pending_ui.len();
                                     s.pending_ui.retain(|p| p.request.id != id);
                                     if len != s.pending_ui.len() {
-                                        notify_controls(&target, cx);
+                                        notify_session(&target, cx);
                                     }
                                 }
                             });
@@ -1903,11 +2022,17 @@ impl ConversationState {
                         .detach();
                     }
                 }
-                UiMethod::Editor { prefill, .. } => s.pending_ui.push_back(PendingUi {
-                    request: request.clone(),
-                    text: prefill.clone().unwrap_or_default(),
-                    deadline: None,
-                }),
+                UiMethod::Editor { prefill, .. } => {
+                    if s.pending_ui.iter().any(|p| p.request.id == request.id) {
+                        return;
+                    }
+                    notice = Some(super::notifications::Kind::Waiting(request.id.clone()));
+                    s.pending_ui.push_back(PendingUi {
+                        request: request.clone(),
+                        text: prefill.clone().unwrap_or_default(),
+                        deadline: None,
+                    });
+                }
                 UiMethod::SetEditorText { text } => {
                     if s.draft == *text {
                         return;
@@ -1951,10 +2076,20 @@ impl ConversationState {
                 UiMethod::Notify {
                     message,
                     notify_type,
-                } => cx.emit(ConversationEvent::Notify {
-                    message: message.clone(),
-                    error: notify_type.as_deref() == Some("error"),
-                }),
+                } => {
+                    let message = super::notifications::NoticeContent {
+                        id: Some(request.id.clone()),
+                        message: message.clone(),
+                        severity: super::notifications::Severity::from_pi(notify_type.as_deref()),
+                    };
+                    s.notices.push(message.clone());
+                    cx.emit(ConversationEvent::Attention(super::notifications::Notice {
+                        key: key.clone(),
+                        binding: s.binding,
+                        kind: super::notifications::Kind::Plugin,
+                        message: Some(message),
+                    }));
+                }
                 UiMethod::Unknown => return,
             },
         }
@@ -1968,7 +2103,16 @@ impl ConversationState {
                 ..
             }
         );
-        let navigation_changed = name_changed || s.activity() != previous_activity;
+        if let Some(kind) = notice {
+            cx.emit(ConversationEvent::Attention(super::notifications::Notice {
+                key: key.clone(),
+                binding: s.binding,
+                kind,
+                message: None,
+            }));
+        }
+        let navigation_changed =
+            name_changed || s.activity() != previous_activity || s.unread != previous_unread;
         if name_changed {
             let info = self.sessions[&key].info.clone();
             if !info.path.as_os_str().is_empty() {

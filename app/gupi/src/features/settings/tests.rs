@@ -151,7 +151,7 @@ fn every_settings_page_renders_with_resources_at_narrow_width(cx: &mut TestAppCo
         crate::state::theme::init(cx);
         crate::foundation::i18n::apply(AppLanguage::Chinese, cx);
     });
-    for page in 0..8 {
+    for page in 0..9 {
         let (_, window_cx) = cx.add_window_view(|window, cx| {
             let form = cx.new(|_| Form::new(AppConfig::default()));
             let controller = cx.new(|cx| ConfigController::new(&form, cx));
@@ -227,7 +227,7 @@ fn every_settings_page_renders_with_resources_at_narrow_width(cx: &mut TestAppCo
                 }
             }
         }
-        if page == 3 {
+        if page == 4 {
             for width in [760., 1600.] {
                 window_cx.simulate_resize(gpui_kit::size(gpui_kit::px(width), gpui_kit::px(1200.)));
                 window_cx.update(|window, cx| window.draw(cx).clear(cx));

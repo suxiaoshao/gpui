@@ -15,9 +15,11 @@ Gupi 是独立 GPUI 桌面应用，通过用户本机 Pi 的 RPC 能力提供原
 | 3 | [#220](https://github.com/suxiaoshao/gpui/issues/220) | 会话目录、恢复、主对话、只读树与时间线、原生 fork | [第三阶段开发计划](../issue-220/README.md) |
 | 4 | [#221](https://github.com/suxiaoshao/gpui/issues/221) | 临时窗口与全局快捷翻译 | [临时窗口开发计划](../../../app/gupi/docs/dev/issue-221/README.md) |
 | 5 | [#222](https://github.com/suxiaoshao/gpui/issues/222) | 完整队列与更完整的扩展 UI；基础历史、fork 和工具详情已有前序实现 | [扩展 UI 子计划](../../../app/gupi/docs/dev/issue-222/README.md)；其余内容开工时再展开 |
-| 6 | [#223](https://github.com/suxiaoshao/gpui/issues/223) | 原生体验、完整打包与发行验收 | 到该阶段再建立 |
+| 6 | [#223](https://github.com/suxiaoshao/gpui/issues/223) | 原生体验、正式图标、首次启动引导与发行验收 | 到该阶段再建立 |
 
 按表中顺序推进，阶段分支通过 PR 汇入总 Issue 分支 `codex/217-gupi-pi-rpc-client`，后续阶段从更新后的总 Issue 分支开始。第一阶段的基础打包用于验证桌面启动链路，第六阶段承担完整发行验收。开发期 logo 的使用决定与许可状态见第一阶段 D-04。
+
+后续范围：[#241](https://github.com/suxiaoshao/gpui/issues/241) 通知、[#242](https://github.com/suxiaoshao/gpui/issues/242) 会话阅读、[#243](https://github.com/suxiaoshao/gpui/issues/243) 输入资源与扩展问答。独立后续 #240 Jaco 清理、#244 Pi/项目设置、#245 市场不属于本主 Issue 子任务，详细归属见[统一索引](follow-ups.md#已确认的后续工作归属)。
 
 ## 文档归属
 

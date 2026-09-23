@@ -1,10 +1,26 @@
-# Pi RPC 能力缺口与社区调研
+# Pi RPC 能力缺口与接入边界
 
-核对日期：2026-09-14。本地基线：Pi `71dca871bc80b6bc97be37f0ca3189399d651fff`；Gupi 当前工作区。本文记录能力边界和公开社区证据，不把调查结果自动转为实现计划。
+核对日期：2026-09-23。Gupi 基线 `4e160e4f`；Pi 正式版 **v0.87.1**：`f07218c4d4bbc12bef056a7058c3dd49dfe41abe`；本地最新 main：`898ab804050730e9dcefb4443875d5a932aa6a32`。官方 latest 发布和标签查询没有 v0.97.0，本次不宣称核验了该版本。本机安装 Pi 仍为 0.87.0，未升级。
 
-2026-09-16 补充应用侧进展：个人包、Skill、模板与系统提示词管理已由 [#231](issue-231/README.md)接入；下文社区状态仍为原调查快照。跨阶段后续工作见[主 Issue 未完成项索引](../../../../docs/dev/issue-217/follow-ups.md)。
+本文维护协议缺口、现有替代及源码依据。完整 **33 个 RPC 命令、事件、9 类扩展 UI 与 Gupi 接入状态**集中维护在[统一待处理文档](../../../../docs/dev/issue-217/follow-ups.md#pi-rpc-全量接入盘点)，不在这里重复一份接入表。已立项的后续功能见该文档的[工作归属](../../../../docs/dev/issue-217/follow-ups.md#已确认的后续工作归属)。
 
-2026-09-19 重新核对官方 Pi `36b60d2e`（0.85.1）的 RPC 类型、分发、AgentSession 事件和 TUI 实现；RPC 类型与分发与原本地基线相同。**全部 33 个 RPC 命令、事件与扩展 UI 的接入状态，以及 TUI 无直接 RPC 的能力，集中维护在[主 Issue 待处理文档](../../../../docs/dev/issue-217/follow-ups.md#pi-rpc-全量接入盘点)**，不在本文件复制第二份清单。下方社区 issue/PR 的状态仍为 2026-09-14 调查快照，本轮未重新进行社区 fork 搜索。
+## 正式版和 main 复核
+
+| 检查 | 结论 |
+| --- | --- |
+| v0.86.0 → v0.87.0 → v0.87.1 → 本次 main | `rpc-types.ts`、`rpc-mode.ts` 无差异，仍为 33 个命令、9 类扩展 UI。下方补全、插件键位、自定义 UI、树导航、reload 和完整队列缺口继续成立 |
+| SDK 与 Harness | `sdk.ts` 仍构造 `new Agent(...)`，未切到实验 Harness。Harness 的队列 ID、完整消息与 cancelQueued 不能作为标准 RPC 可用接口 |
+| main 新增 durable JSONL storage / node environment | 位于 `packages/durable`；SDK、RPC 类型和分发未改变。这些底层/实验设施不等于 Gupi 所用会话协议增加命令，也不要求 Gupi迁移存储 |
+| 0.87.1 发行变化 | 新模型/思考能力、split-turn 压缩提示修复、无效 --mode 报错，以及部分 OpenAI-compatible provider 的纯图片消息修复。无新的 GUI 队列或扩展 UI 接口；动态模型读取和图片提交继续由 Pi 处理 |
+| 已有运行证据 | 两项隔离 installed_pi 集成测试在本机 **0.87.0** 通过，无真实模型请求。0.87.1/main 本次仅做源码比较，不能将旧测试写成新版本运行验收 |
+
+## 0.87 引入的语义仍需正确理解
+
+- `context_edit` 改变模型上下文贡献，不重写原始历史。`get_messages` / `get_last_assistant_text` 的结果可能与界面可见历史不同；Gupi 复制可见回答，不为模拟模型上下文删改正文。
+- `agent_before_settle`、`context_with_system` 是扩展钩子；扩展 `turn_end` 的 boundary 字段不是同名基础 AgentEvent 的新增 RPC 字段。Gupi 沿用 `agent_settled` 判定收尾。
+- `entry_appended` 可来自 custom/custom_message/context_edit/compaction。Gupi 已定向回读历史；消息是否进入正文是另一层职责，display:true 插件消息归 #242。
+- retain-none compaction 的 firstKeptEntryId 可以指向压缩记录自身。GUI 展示原始历史与摘要，不复制 Pi 的上下文裁剪规则。
+- RPC 图片由 Pi 按 `inputLimits.images.resize` 和配置处理；GUI 保留本地原图预览并发送原始内容，恢复历史的图像可能已经由 Pi 处理。见[职责边界](../../../../docs/dev/issue-217/gui-boundary.md)。
 
 ## 原生 RPC 的主要缺口
 
@@ -35,7 +51,7 @@
 | --- | --- |
 | 插件／包管理 | 已由 #231 使用 Pi CLI 接入个人包安装、更新、移除及资源启停；无需把无 RPC 等同为无法管理 |
 | Skill、模板、全局提示词管理 | #231 已接入个人资源文件、配置及 SYSTEM.md/APPEND_SYSTEM.md；包内资源只读，修改后由用户手动刷新会话 |
-| Pi 设置、模型范围管理 | 部分设置有专用 RPC；其他配置需明确读写归属，没有通用设置编辑 RPC |
+| Pi 设置、模型范围管理 | 部分设置有专用 RPC；其余读写由独立后续 #244 确定，没有通用设置编辑 RPC |
 | 登录／退出登录、信任管理 | 无对应 RPC 工作流，需要单独接入认证／信任机制 |
 | JSONL 导入导出、分享 | 可由应用提供文件管理或发布能力；不属于复用一个现成 RPC 的工作 |
 | 参数表单、必填项及忙碌可用性 | get_commands 缺少结构化元数据，无法自动生成可靠 UI；不自行猜测 |
@@ -46,69 +62,31 @@
 - 删除会话：没有专用 RPC，Gupi 已通过本地文件管理实现。
 - 模型／思考选择、会话统计：已有 RPC 与应用接入。队列已有 `queue_update` 文本事件、`clear_queue` 和模式设置，但没有主动读取完整队列、按 ID 逐项修改/删除或附件无损恢复接口；不能笼统称为完整队列管理已被 RPC 覆盖。
 - select/confirm/input/editor、通知、状态、文字 widget、标题、设置输入文本：九类标准 UI 已支持。
-- Questionnaire、InputGroup、原子内联标签统一等待兼容正式版本，按用户 2026-09-19 决定接入；三项已合并，v0.6.4 尚不全包含。组件发布不改变 Pi 问卷协议。
+- InputGroup 已接入；#243 承接 Questionnaire 和原子内联标签，等待兼容正式版本，v0.6.6 尚未包含。Markdown 内联插件已发布；它不提供输入编辑能力，组件发布也不改变 Pi 问卷协议。
+- `custom_message display:true`：数据已通过原生历史/事件提供，Gupi 缺正文投影，由 #242 接入；不是 RPC 阻塞，也不是 #241 的插件通知。
 
 已有设计参见 [命令能力对照](issue-226/builtin-commands.md)、[命令面板](issue-226/command-palette.md)、[扩展 UI](issue-222/README.md)。
 
-## 社区调研
+## 有保留价值的上游参考
 
-调查范围和公开证据见下文。关闭不等于已合入；fork 最近更新不等于对应功能仍在开发；新协议不等于已有 stdio RPC 得到兼容增强。
+当前可用性以以上固定源码为准。删除旧的逐人 fork 活动时间、已失效预计日期和“近期活跃”表述；它们不再影响当前实现决定。以下只保留与具体缺口直接相关的历史方案入口，不承诺当前审查状态或上线时间。
 
-### 调查范围与状态解释
-
-2026-09-14 通过 GitHub API 核对官方仓库 issue、PR（包括 merged_at）、评论、公开分支及提交日期；检查维护者 badlogic、mitsuhiko、christianklotz、cristinaponcela 的相关公开工作，以及由相关 PR 指向的社区 fork。搜索词覆盖 rpc、argument completions、navigate_tree、reload、protocol/server、shortcut、custom UI、getEditorText、multi-select。分支时间均使用 UTC 提交时间，不以 PR 评论时间或仓库 pushed_at 代替功能进展。
-
-部分 issue 有 `no-action` / `not_planned` 标签，但评论只有贡献者准入机器人的自动关闭通知；这不能当作维护者已技术评审并否决方案。以下状态是调查时的快照，不承诺更新，也未设置自动监控。
-
-### 与现有缺口直接对应的讨论和 PR
-
-| 需求 | 社区证据 | 核实结果 |
+| 缺口 | 历史方案／讨论 | 使用边界 |
 | --- | --- | --- |
-| 插件参数补全 | [Issue #8214](https://github.com/earendil-works/pi/issues/8214)、[PR #7621](https://github.com/earendil-works/pi/pull/7621) | 与 Gupi 问题一致。PR 增加 get_argument_completions，并有插件补全测试；2026-08-04 被准入机器人关闭，未合入。Issue 也被自动关闭，无维护者技术回复 |
-| 原 session 内树导航 | [Issue #8645](https://github.com/earendil-works/pi/issues/8645)、[PR #1762](https://github.com/earendil-works/pi/pull/1762) | Issue 明确区分 navigate_tree 与另建文件的 fork，当前关闭。PR 包含导航、标签、会话列表和导航总结取消，未合入 |
-| 较早的一组 RPC 扩展 | [PR #1522](https://github.com/earendil-works/pi/pull/1522) | dnouri 提出树导航、会话管理、工作提示转发等，2026-02-16 关闭，未合入；不能作为可用上游 API |
-| 进程内 reload | [Issue #6173](https://github.com/earendil-works/pi/issues/6173) | 报告缺 reload handler，2026-06-30 关闭。报告者关于旧版本曾有接口的说法未另行验证；当前本地源码确实没有直接 reload 命令 |
-| RPC 登录／认证 | [Issue #8451](https://github.com/earendil-works/pi/issues/8451)、[#8095](https://github.com/earendil-works/pi/issues/8095) | 请求将 provider 认证流程暴露给客户端；当前均关闭。#8451 作者提到自己维护补丁，不构成上游接入完成 |
-| RPC 能力发现 | [Issue #6345](https://github.com/earendil-works/pi/issues/6345) | 提议机器可读的 RPC 命令、字段与事件元数据；2026-07-06 关闭，未找到已合入实现 |
-| RPC 与 TUI 能力一致 | [Issue #885](https://github.com/earendil-works/pi/issues/885)、[#2737](https://github.com/earendil-works/pi/issues/2737) | 维护者明确讨论 server 方向；issue 关闭为 completed 不表示旧 RPC 已达到全部功能一致 |
-| 插件消费 prompt 后的结果说明 | [Issue #9098](https://github.com/earendil-works/pi/issues/9098) | 仍开放，最近更新 2026-09-12。提议返回 handled/queued/started；作者称已有本地补丁并申请提交 PR，本轮未发现对应开放 PR。不据此恢复 Gupi 已删除的“Pi 已接受”常驻状态 |
+| 参数补全 | [#7621](https://github.com/earendil-works/pi/pull/7621) | get_argument_completions 的实现参考，正式 0.87.1 和本次 main 仍无该命令 |
+| 同文件树导航 | [#1762](https://github.com/earendil-works/pi/pull/1762) | 区分导航与另建文件 fork；当前没有公开 navigate_tree RPC |
+| 更广的 Web GUI/RPC 接口 | [#8840](https://github.com/earendil-works/pi/pull/8840) | 社区私有协议参考，不作为官方能力或替换依赖依据 |
+| 输入 disposition 与队列关联 | [#9098](https://github.com/earendil-works/pi/issues/9098)、[#9832](https://github.com/earendil-works/pi/pull/9832) | 正式 RPC 未提供逐项身份和完整队列，不能据方案名称恢复客户端调度或“已接受”状态 |
 
-没有找到旧 stdio RPC 下插件快捷键调用、getEditorText 回读、任意 TUI 组件跨端渲染或组合多选 schema 的直接可用、正在审查的官方实现。检索中的近似 UI/TUI 议题不算协议补齐；例如 TUI Tab 接续补全问题与 RPC 根本没有补全查询接口是不同问题。该结论限定于上述公开检索范围。
+## 实验协议的边界
 
-已完成的上游工作也需区分：
+Pi 的 `packages/protocol`、`packages/server`、`packages/durable` 和实验 Harness 是另一层架构。标准 coding-agent stdio 仍走 RPC mode；研究这些设施时应检查实际 SDK 接线、发行入口与协议契约，不以目录存在、包版本号或底层 JSONL 存储支持推断 Gupi 已可使用。当前继续按用户确认使用标准 RPC，不采用社区 fork 或自建桥接。
 
-- [PR #6078](https://github.com/earendil-works/pi/pull/6078) 于 2026-06-28 合入 get_entries/get_tree，只补历史读取，没有补 navigate_tree。
-- [PR #8355](https://github.com/earendil-works/pi/pull/8355) 于 2026-08-27 合入 ui_prompt_start/ui_prompt_end 生命周期事件；没有把 custom Component 变成可传输 UI。
+## 固定源码依据与后续复核方法
 
-### 官方与主要维护者的路线
+- 正式 [v0.87.1 release](https://github.com/earendil-works/pi/releases/tag/v0.87.1) 与 [CHANGELOG](https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/CHANGELOG.md)。
+- [RPC 类型](https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/src/modes/rpc/rpc-types.ts)、[分发/扩展降级](https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/src/modes/rpc/rpc-mode.ts)、[SDK](https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/src/core/sdk.ts)。
+- [AgentSession](https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/src/core/agent-session.ts)、[SessionManager](https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/src/core/session-manager.ts)、[扩展 API](https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/src/core/extensions/types.ts)。
+- [本次 main](https://github.com/earendil-works/pi/tree/898ab804050730e9dcefb4443875d5a932aa6a32)；新版文档已拆为 `docs/rpc-commands.md` 与 `docs/rpc-extension-ui.md`，拆分本身不表示协议增加。
 
-badlogic 在 #1762 的 2026-03-25 评论中表示正在重构，RPC 可能建立在新 server 上；在 #2737 的 2026-04-01 评论中再次说明 server 方向。其当时预计时间已过去，不作为当前交付承诺。
-
-现在有实际合入的基础设施：christianklotz 的 [PR #7344](https://github.com/earendil-works/pi/pull/7344)（2026-07-30，远程协议）与 [PR #7386](https://github.com/earendil-works/pi/pull/7386)（2026-07-31，server）。但 [#7396](https://github.com/earendil-works/pi/pull/7396) 显示关闭且 merged_at 为空，不能因标题相关就视为该 PR 已合入。
-
-后续主要工作在官方 main，不能只查个人 fork：
-
-| 工作 | 最近可核对的实质证据 | 对 Gupi 的意义 |
-| --- | --- | --- |
-| Chord 服务与 server/client | mitsuhiko 于 2026-08-31 [把 lane RPC 改成 Chord service](https://github.com/earendil-works/pi/commit/ae2cc5116f5adc2ed9d2c88c3d6093fae2f960b7)，随后[把服务语义移入 Chord](https://github.com/earendil-works/pi/commit/1a7bc80e7cf57822726aa8cd9554b2f986976eb7)；09-01 继续清理兼容层 | 是近期真实推进的另一套协议／运行架构；不是在旧 JSONL RPC 上追加几个命令 |
-| 实验远程 harness | 2026-09-05 [明确隔离开发入口并从发行包排除远程 harness](https://github.com/earendil-works/pi/commit/1382777ed8000e8a84f81053d66f6bb713dccd92) | 不能承诺升级稳定 Pi 即可使用；新协议 README 仍声明 experimental、无兼容保证 |
-| `experiment/client-capability-bindings` | christianklotz [2026-07-24 提交](https://github.com/earendil-works/pi/commit/fec371a33f8b1168a75f1177531397eadf407cab)，分支头仍停留此处 | 演示服务端扩展调用 TUI/浏览器绑定，有 HTTP/SSE 和 Cap'n Web 实验；明确是本地 spike，不能作为近期活跃、完整插件 UI 桥接实现 |
-| `bigrefactor`、`harness-v2/j4`、`switchable-tui` | 公开分支头分别为 2026-05-08、08-07、08-02 | 分支仍存在不表示最近继续开发；相关方向部分已转到 main |
-
-当前实现说明见 [pi-protocol README](https://github.com/earendil-works/pi/blob/71dca871bc80b6bc97be37f0ca3189399d651fff/packages/protocol/README.md) 与 [pi-server README](https://github.com/earendil-works/pi/blob/71dca871bc80b6bc97be37f0ca3189399d651fff/packages/server/README.md)。它们描述 CBOR、服务路由、多客户端挂接和状态订阅，不能据此推出旧插件 UI／补全全部可用。
-
-个人 fork 核对：
-
-- [mitsuhiko/pi-mono](https://github.com/mitsuhiko/pi-mono) 的 `hot-reload-in-vm` 最后提交 2026-01-09，`custom-commands` 为 2025-12-29，`session-metadata-change-event` 为 2026-01-27；本轮未见个人 fork 上新的、独立活跃的 RPC 补齐路线。他最近相关提交主要在官方 main。
-- [cristinaponcela/pi-mono](https://github.com/cristinaponcela/pi-mono) 的 `feat/ui-prompt-hooks` 更新于 2026-08-27，对应已经合入的 #8355；`feat/thinking-model-rpc` 为 2026-07-20，当前思考档位读取已在上游。不能当成仍待接入的完整 RPC 增强分支。
-- christianklotz 的相关分支和 PR 直接位于官方仓库；本轮公开仓库检索未找到需要另查的 Pi 个人 fork。
-
-### 仍有近期活动的社区实现
-
-| fork／分支 | 已核实范围 | 活动与限制 |
-| --- | --- | --- |
-| [fan92rus/pi:livecraft](https://github.com/fan92rus/pi/tree/livecraft) | 当前 rpc-mode.ts 仍有 get_argument_completions handler，调用插件补全函数；对应 #7621 | 参数补全提交为 2026-08-04；分支 2026-08-30、09-05 继续同步上游，09-05 已同步 v0.85.1。补全代码在近期维护分支中保留；不宣称补全本身 9 月有新功能开发 |
-| [btvn-nghia-tnh/pi:feat/pi-web-gui](https://github.com/btvn-nghia-tnh/pi/tree/feat/pi-web-gui) | [PR #8840](https://github.com/earendil-works/pi/pull/8840) 描述共享 RpcCore、22 个新增命令，包括会话列表、树导航、设置、主题、认证、文件搜索及 Web UI | PR 2026-08-30 被准入机器人关闭且未合入；分支仍在 09-05 修插件事件归属，09-08 [修自定义消息内容渲染](https://github.com/btvn-nghia-tnh/pi/commit/4676c5987788ef4e812cf28a7c5fa716c692cb68)。作者虽称 full parity，但说明终端专用 API 仍按 RPC 降级，不能理解为任意 TUI 组件均支持 |
-| [dnouri/pi-mono:rpc-browsing-surface](https://github.com/dnouri/pi-mono/tree/rpc-browsing-surface) | 旧 #1762 的树导航方案 | 分支头停在 2026-03-25；作者 07-18 表示转向 Emacs 客户端自己的会话处理，08-27 链接其客户端 [PR #266](https://github.com/dnouri/pi-coding-agent/pull/266)。这是历史参考，不列为当前活跃上游 RPC 补丁 |
-
-本轮没有发现上述关键缺口对应、仍开放等待合入的官方 PR。找到的是：已有历史补丁、近期维护的社区 fork，以及仍在变化的官方实验协议。未运行这些 fork、未验证其全部功能、未替换 Gupi 依赖；不根据 PR 作者自述宣称可直接投入使用。
+升级复核时先比较正式标签与 main 的 rpc-types/rpc-mode、SDK、事件及历史格式，再核对 Gupi 实际调用与消息投影。版本号、PR 合并日期和社区自述不能替代发布源码和针对性运行证据。

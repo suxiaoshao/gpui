@@ -38,11 +38,19 @@ impl ConversationState {
                     return;
                 };
                 session.command.finish();
-                if let Err(error) = result {
-                    cx.emit(ConversationEvent::Notify {
-                        message: error.to_string(),
-                        error: true,
-                    });
+                if let Err(error) = result
+                    && !session.interrupted
+                    && !session.stopping
+                {
+                    session.error = Some(error.to_string());
+                    cx.emit(ConversationEvent::Attention(
+                        crate::state::notifications::Notice {
+                            key: target.clone(),
+                            binding,
+                            kind: crate::state::notifications::Kind::Failed,
+                            message: None,
+                        },
+                    ));
                 }
                 this.read_session(&target, ReadScope::History, cx);
                 notify_session(&target, cx);

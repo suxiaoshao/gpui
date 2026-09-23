@@ -11211,6 +11211,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
+ "objc2-user-notifications",
  "thiserror 2.0.20",
  "tracing",
  "windows 0.62.2",

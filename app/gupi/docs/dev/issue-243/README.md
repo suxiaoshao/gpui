@@ -1,6 +1,8 @@
-# 输入框中的 Skill、模板与文件引用
+# 输入资源、Markdown 展示与扩展问答
 
-阶段：共用输入外壳与粘贴接线纳入依赖升级；资源标签及相关交互继续等待上游正式版本，尚未实施。2026-09-20 更新。归属 #221 的输入能力，与 #226 命令入口联动；统一入口见[总待处理文档](../../../../../docs/dev/issue-217/follow-ups.md)。
+归属 [#243](https://github.com/suxiaoshao/gpui/issues/243)，父 Issue #217。立项范围已确定；状态：Blocked（输入 Token / Questionnaire 等待正式发布），下文只保留影响实施的真实待决细节。
+
+阶段：共用输入外壳与粘贴接线纳入依赖升级；资源标签及相关交互继续等待上游正式版本，尚未实施。2026-09-23 复核。承接 #221/#222 的剩余输入与问答能力，与 #226 命令入口联动；统一入口见[总待处理文档](../../../../../docs/dev/issue-217/follow-ups.md)。
 
 ## 当前决定：先复用已发布控件，资源交互继续等待
 
@@ -12,13 +14,13 @@
 | [InputGroup #3042](https://github.com/longbridge/gpui-kit/pull/3042) | 用上游组合输入容器承接主输入框与模板任务编辑器的共用外壳、附加控件和底部布局，保留现有草稿、模型选择和发送归属。 |
 | [原子内联标签 #3113](https://github.com/longbridge/gpui-kit/pull/3113)（对应 [#3110](https://github.com/longbridge/gpui-kit/issues/3110)） | 在正文编辑层提供 Skill/模板标签、点击回调和可定制展示，以及原子编辑、历史和布局能力；资源身份与 Pi 命令语义仍由 Gupi 决定。 |
 
-- 暂停应用侧自定义 token 编辑器路线，不移植 Jaco 的正文编辑内核，也不以拦截退格等局部处理代替完整能力。下文 Jaco/Zed 调研保留为行为参考。
+- 暂停应用侧自定义 token 编辑器路线，不移植 Jaco 的正文编辑内核，也不以拦截退格等局部处理代替完整能力。仅保留整体编辑与真实文本分离的已确认原则。
 - InputGroup 接入保留现有 TextareaState，替换 Composer 手写外壳；后续原子标签发布接入后，上游再承担对应文本范围、内联布局、整体编辑、IME、剪贴板和撤销重做；Gupi 仍负责资源查询、补全候选、Pi 命令语法及发送。
 - 恢复时核对实际发布且可接入的 API：标签图标/文本与换行布局、光标边界、整体删除/替换/剪切、撤销恢复标签身份、Unicode/IME、禁用/只读以及复制/发送表示。仅有高亮、只读 TextView 内联内容或 tracked decorations 不等于满足这些要求。
 - 原子标签与 Questionnaire 合并后仍需等待正式发布，不提前改用 Git/main 或本地补丁依赖；它们发布并与 InputGroup 兼容后再恢复其余输入资源交互。已发布的外壳替换不受这一等待限制。
 - “Skill 选择后填入正文、不直接发送”的产品决定保留，当前仍未实现；按用户决定与其他输入交互一起暂缓，不单独提前实施。下文待确定项在恢复这项工作时再讨论。
 
-2026-09-19 核对：三项均已合并，但正式版 v0.6.4 只包含其中的 InputGroup，尚不包含 Questionnaire 与原子内联标签；除已纳入升级的 InputGroup 外壳与粘贴接线外，其余交互继续等待兼容正式版本。版本证据与完整 RPC/TUI 待处理盘点统一见[总待处理文档](../../../../../docs/dev/issue-217/follow-ups.md)。
+2026-09-23 核对：三项均已合并，但最新正式版 v0.6.6 仍只包含其中的 InputGroup，尚不包含 Questionnaire 与原子内联标签；除已纳入升级的 InputGroup 外壳与粘贴接线外，其余交互继续等待兼容正式版本。版本证据与完整 RPC/TUI 待处理盘点统一见[总待处理文档](../../../../../docs/dev/issue-217/follow-ups.md)。
 
 ## 已确认方向
 
@@ -32,31 +34,19 @@
 
 ## 协议边界
 
+2026-09-23 已按 Pi v0.87.1 复核：RPC 命令和扩展 UI 类型没有变化，下列 Skill、模板、文件引用及待确定项的协议前提仍成立。新版图片归一化由 Pi 承担，不要求本输入框增加模型限制。
+
 Pi 在消息开头识别 Skill 和模板；它们不是可在正文任意位置放置多个的通用 mention。Pi CLI 的 `pi @文件` 会读取文件内容，但 RPC `prompt.message` 中的 `@路径` 只是文本引用。可视标签与附件区域不应改变这些协议语义。
 
-## 源码调研
+## 实现依据
 
-2026-09-17 核对本地源码：Zed `ba7da93e5c`、Pi `71dca871b`；Jaco 与 Gupi 使用当前工作区代码。本次没有拉取参考仓库，也没有执行参考应用的交互测试。以下是源码证据，不当作实机验收。
+Jaco 的自有 token 编辑器与 Zed 的 Editor 内联折叠提供了“真实内容与标签展示分离、整体编辑、撤销一致”的参考。当前已决定使用上游 Input 原子 Token，不移植两者编辑内核；其旧逐文件复制方案不再保留为实施路线。Pi 语法和发送契约仍以正式版本源码为准。
 
-### Jaco：自己维护编辑器与 token
+### Markdown 资源展示
 
-- `app/jaco/src/components/chat/input/composer_editor.rs` 的 `confirm_skill_completion` 只将候选替换为 `$名称 ` 并关闭候选。`on_submit` 先处理补全，命中后立即返回，不继续发出 SubmitRequested。这正好对应用户此次提出的“选择后继续输入”。
-- `composer_editor/token.rs` 保存 token ID、UTF-8 文本范围和 Skill 身份；提供 token 前后边界、光标吸附、扩大编辑范围。删除、部分选区替换、从 token 内输入都扩大到整块处理。
-- `composer_editor/element.rs` 把普通文本与 token 分片布局，自行测量、绘制标签并处理命中；不是用 TextareaState 的背景色模拟标签。
-- `composer_editor/history.rs` 让文本、选区、输入法标记范围和 tokens 一起进入撤销历史。`composer_editor.rs` 实现 EntityInputHandler，承担 UTF-16 输入法接口与内部文本位置转换。
-- `snapshot.rs` 输出 Jaco 的 ContentPart 和 SkillActivationRequest。Gupi 不能照搬此发送契约，也不能照搬任意位置多个 `$skill` 的解析规则。
-- 文件和图片使用 `components/chat/form.rs::render_attachments` 的共同附件栏，卡片按类型分支；不要求普通文件成为正文内 token。
+已直接检查 gpui-base 0.6.6 正式包：`MarkdownPlugin`、`MarkdownExtensions::plugin`、`render_inline`、`InlineElement` 已提供自定义原子行内组件，`MarkdownNode.text` / `markdown` 给出文本表示。该能力已经发布，与输入框 Token 尚未发布分开判断。
 
-可借鉴：token 编辑边界、文字与标签布局、补全确认不发送、编辑历史一致性。不能只复制标签绘制函数而丢掉剪切、输入法和撤销规则。
-
-### Zed：已有 Editor + 内联折叠
-
-- `crates/agent_ui/src/message_editor.rs` 创建现有 `editor::Editor`，配置软换行与 completion provider。`insert_skill_crease` 先插入资源链接文本和空格，再登记 mention，不在此发送消息。
-- `crates/agent_ui/src/mention_set.rs::insert_crease_for_mention` 使用文本 anchors 和 `Crease::Inline`，为范围设置 FoldPlaceholder，随后 fold；标签是折叠后的自定义展示，底层内容仍在文本 buffer 中。相邻标签设置 `merge_adjacent: false`。
-- Zed Editor 的 Backspace 通过 display map 移动并映射回 buffer 范围，从而能跨过整个折叠区。`message_editor.rs` 有删除 mention 后不再发送资源链接的测试；不能把已删除标签的资源对象遗留到发送快照中。
-- `build_chunks_from_creases` 按顺序输出正文与 ACP ContentBlock；MentionSet 跟踪资源身份并移除失效范围。此 ACP 表达能力不等于 Pi RPC 能力。
-
-可借鉴：真实内容与显示标签分离、稳定范围、发送时从当前编辑内容生成快照。当前 Gupi 的 gpui-kit 0.6.0 没有公开的 Zed Editor/Crease/自定义内联标签等价接口；不能直接移植 Zed 的调用代码，也不建议为输入框引入 Zed 整套编辑器依赖。
+已确认把消息中明确识别的资源独立显示并统一名称/图标/点击含义；输入阶段负责编辑和删除，消息阶段负责查看、选择、复制与打开资源。实施时核对 Pi 实际持久化内容能否保留资源身份、识别范围及复制格式；不扫描任意普通单词猜 Skill，不把只读行内组件误当作输入编辑器，也不另建重复会话数据。
 
 ### Gupi 现状与具体接入点
 
@@ -71,16 +61,16 @@ Pi 在消息开头识别 Skill 和模板；它们不是可在正文任意位置�
 ## 上游能力可用后的接入考虑（尚未实施）
 
 1. **Skill 选择行为**：恢复工作后保留候选类型，增加一次性写入正文路径，覆盖点击和 Enter；本项随整体输入交互暂缓。命令模板是否同步采用这条规则见待确定项。
-2. **接入输入容器与标签能力**：在共用 Composer 内采用 InputGroup，由上游输入状态管理编辑状态和 token 生命周期；Gupi 提供资源身份、图标、标签、点击行为与 Pi 文本表示，不移植或重写 Jaco 编辑器。具体 API 以正式发布版本为准，主窗口与临时窗口共享接入路径。
+2. **接入标签能力**：沿用共用 Composer 中已接入的 InputGroup，由上游输入状态管理编辑状态和 token 生命周期；Gupi 提供资源身份、图标、标签、点击行为与 Pi 文本表示，不移植或重写 Jaco 编辑器。具体 API 以正式发布版本为准，主窗口与临时窗口共享接入路径。
 3. **token 最小范围**：消息开头最多一个已识别的 Skill/模板命令；后面是普通参数文本。展示图标与名称，复制/提交还原 `/skill:名称` 或 `/模板名称`，不把展开后的 Skill/模板正文塞进可编辑草稿。未知命令继续保留为普通文本，不臆造资源身份。
 4. **保留附件模型**：文件和图片仍使用现有 Attachment 集合；增加 `@` 候选时选中后复用相同添加路径，取消候选不删除原始文字。不另建一套“文件 token + 附件”重复状态。
 5. **单独解决模板与文件引用顺序**：普通 `/模板` 的参数追加不是可靠的附带上下文通道。不能简单在命令前面加路径，否则 Pi 不再识别开头的命令。需要明确选定模板的展开责任，见下节。
 
 仅“按一次 Backspace 删除整段命令”可通过现有 TextareaState 的选区/replace 接口扩展；完整标签仍须统一处理鼠标选区、Delete、剪切、粘贴、输入法、撤销和重做，不能用输入 Change 后补删文本的方式拼凑。
 
-## 待确定项
+## 本 Issue 实施时待确定的细节
 
-以下推荐尚未代替用户决定，实施前一起确认。
+功能归属及整体范围已经确定，以下具体交互和 Pi 模板语义仍需在实施时确认，不能因创建 Issue 就标为全部已确定。
 
 | 问题 | 建议与影响 |
 | --- | --- |
@@ -101,7 +91,5 @@ Pi 在消息开头识别 Skill 和模板；它们不是可在正文任意位置�
 
 ## 参考入口
 
-- [Jaco 编辑器](../../../../jaco/src/components/chat/input/composer_editor.rs)、[token](../../../../jaco/src/components/chat/input/composer_editor/token.rs)、[布局](../../../../jaco/src/components/chat/input/composer_editor/element.rs)、[历史](../../../../jaco/src/components/chat/input/composer_editor/history.rs)。
-- Zed 本地：`/Users/sushao/Documents/code/zed/crates/agent_ui/src/{message_editor,mention_set}.rs`、`crates/editor/src/editor.rs`。
 - Pi 本地：`/Users/sushao/Documents/code/pi/packages/coding-agent/src/core/{agent-session,prompt-templates}.ts`、`src/modes/rpc/rpc-mode.ts`、`src/cli/file-processor.ts`。
-- [现有命令入口](../issue-226/command-palette.md)、[当前输入能力](README.md)。
+- [现有命令入口](../issue-226/command-palette.md)、[临时窗口输入能力](../issue-221/README.md)。

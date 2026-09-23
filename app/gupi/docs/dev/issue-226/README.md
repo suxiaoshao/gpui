@@ -30,7 +30,7 @@
 
 ### 独立于 #226 的正文查找
 
-Cmd/Ctrl+F 预留给“当前查看分支的正文查找”，不复用为目录搜索。建议独立 Issue，尚未创建；开工时再建立精确实现文档。
+Cmd/Ctrl+F 预留给“当前查看分支的正文查找”，不复用为目录搜索。已确认归 [#242](https://github.com/suxiaoshao/gpui/issues/242)，与会话信息弹窗和插件持久消息展示一起实施；开工时明确搜索行为。
 
 它涉及稳定的消息/片段定位、折叠的工具与思考展开、Markdown 展示文本与源文本对应、长列表滚动、匹配高亮，以及流式增长后的当前命中保持，超过绑定一个快捷键的范围。建议首版只做当前查看分支的已加载文本：普通子串、不区分大小写、匹配计数、上/下一个、定位、Esc 关闭；不同时做跨会话全文检索、磁盘索引或正则。搜索是否包含工具/思考/压缩内容及高亮能力，需要在该 Issue 中确定。
 
@@ -124,7 +124,7 @@ Zed 的有用结构：
 | 控件局部 | 消息展开、思考滑杆和设置等存在局部按键处理 | 对应 presentation/pickers/preferences 模块 |
 | Pi 命令 | pi-rpc 有 get_commands；主窗口没有调用，也没有命令面板或 Cmd+P | `crates/pi-rpc/src/client.rs` 与 app/gupi/src 搜索 |
 
-不要误解 `super`：cmd/super/win 都视为 platform modifier，非 macOS 的 Super/Win 不等于 Ctrl；secondary 表示 macOS Cmd、其他平台 Ctrl。本轮进一步核对 Gupi 的 gpui-kit 0.6.0 实际使用 gpui-pre，当前本地解析实现 gpui-pre 0.3.3 支持 secondary，可用于这组可移植桌面动作。既有 super-enter 是已有行为，不在本次文档阶段悄悄改动。
+不要误解 `super`：cmd/super/win 都视为 platform modifier，非 macOS 的 Super/Win 不等于 Ctrl；secondary 表示 macOS Cmd、其他平台 Ctrl。初次接入时已核对 gpui-kit 0.6.0 配套的 gpui-pre 0.3.3 支持 secondary；当前配套版本见根 manifest，该语义继续用于现有绑定，可用于这组可移植桌面动作。既有 super-enter 是已有行为，不在本次文档阶段悄悄改动。
 
 ## 5. Pi 之外应补的桌面动作与候选键位
 

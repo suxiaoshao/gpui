@@ -117,6 +117,7 @@ impl SettingsView {
                 .keywords(["temporary cleanup 临时对话 清理"]),
             ),
         );
+        let notifications = self.notification_settings(cx);
         let appearance = SettingPage::new(t(cx, "settings-theme"))
             .icon(IconName::Sparkles)
             .resettable(false)
@@ -330,7 +331,7 @@ impl SettingsView {
             );
         Settings::new("gupi-settings")
             .with_group_variant(GroupBoxVariant::Normal)
-            .page(general).page(appearance).page(pi).page(keyboard)
+            .page(general).page(appearance).page(notifications).page(pi).page(keyboard)
             .page(resource_page("settings-page-plugins",Kind::Extension,"package plugin extension install update remove source version path enable disable 插件 扩展 包 安装 更新 移除 启停"))
             .page(resource_page("settings-page-skills",Kind::Skill,"skill name description source path create edit delete enable disable 技能 创建 编辑 删除 启停"))
             .page(resource_page("settings-page-prompts",Kind::Prompt,"prompt template 创建 编辑 删除 模板"))
@@ -394,5 +395,86 @@ impl SettingsView {
             self.controller.read(cx).busy(cx),
             cx,
         )
+    }
+}
+
+impl SettingsView {
+    fn notification_settings(&self, cx: &Context<Self>) -> SettingPage {
+        use crate::state::notifications::{CompletionMode, Preferences};
+        let controller = self.controller.clone();
+        let mut group = SettingGroup::new();
+        type Toggle = (&'static str, fn(&mut Preferences) -> &mut bool);
+        for (label, field) in [
+            (
+                "settings-notification-waiting",
+                (|p: &mut Preferences| &mut p.waiting) as fn(&mut Preferences) -> &mut bool,
+            ),
+            ("settings-notification-failures", |p: &mut Preferences| {
+                &mut p.failures
+            }),
+            ("settings-notification-plugins", |p: &mut Preferences| {
+                &mut p.plugins
+            }),
+            ("settings-notification-attention", |p: &mut Preferences| {
+                &mut p.attention
+            }),
+        ] as [Toggle; 4]
+        {
+            let controller = controller.clone();
+            group = group.item(
+                SettingItem::new(
+                    t(cx, label),
+                    SettingField::render(move |_, _, cx| {
+                        let mut p = controller.read(cx).preferences(cx).notifications;
+                        let controller = controller.clone();
+                        gpui_kit::component::switch::Switch::new(label)
+                            .checked(*field(&mut p))
+                            .disabled(controller.read(cx).busy(cx))
+                            .on_click(move |checked, _, cx| {
+                                let mut p = controller.read(cx).preferences(cx).notifications;
+                                *field(&mut p) = *checked;
+                                controller.update(cx, |c, cx| {
+                                    c.set_preference(PreferenceChange::Notifications(p), cx)
+                                });
+                            })
+                    }),
+                )
+                .keywords(["notifications 提醒 通知"]),
+            );
+        }
+        group = group.item(
+            SettingItem::new(
+                t(cx, "settings-notification-completion"),
+                SettingField::render(move |_, _, cx| {
+                    let modes = [
+                        CompletionMode::Off,
+                        CompletionMode::Background,
+                        CompletionMode::Always,
+                    ];
+                    let value = controller.read(cx).preferences(cx).notifications.completion;
+                    let controller = controller.clone();
+                    gpui_kit::component::radio::RadioGroup::horizontal("notification-completion")
+                        .children([
+                            t(cx, "notification-off"),
+                            t(cx, "notification-background"),
+                            t(cx, "notification-always"),
+                        ])
+                        .selected_index(modes.iter().position(|m| *m == value))
+                        .disabled(controller.read(cx).busy(cx))
+                        .on_click(move |index, _, cx| {
+                            let mut p = controller.read(cx).preferences(cx).notifications;
+                            p.completion = modes[*index];
+                            controller.update(cx, |c, cx| {
+                                c.set_preference(PreferenceChange::Notifications(p), cx)
+                            });
+                        })
+                }),
+            )
+            .keywords(["notifications completion 回答完成 通知"]),
+        );
+        SettingPage::new(t(cx, "settings-notifications"))
+            .icon(IconName::Bell)
+            .resettable(false)
+            .group(group.description(t(cx, "settings-notification-help")))
     }
 }

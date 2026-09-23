@@ -1,19 +1,19 @@
 # Pi TUI 内置命令能力对照
 
-状态：调研完成；HTML 导出、复制会话与手动压缩已接入，其余新增能力范围待确定。按本地 Pi `71dca871bc80b6bc97be37f0ca3189399d651fff` 核对全部 **23 项**公开 TUI 内置命令。本表用于比较能力与选择接入范围，不预设某个命令的实施顺序，不展开单项功能开发方案。
+状态：调研完成；HTML 导出、复制会话与手动压缩已接入，其余新增能力范围待确定。2026-09-23 按正式 Pi v0.87.1（`f07218c4`）复核全部 **24 项**公开 TUI 内置命令，较旧盘点增加 `/bug`。本表用于比较能力与选择接入范围，不预设某个命令的实施顺序，不展开单项功能开发方案。
 
 ## 统计与判断口径
 
-- 统计来源为 `packages/coding-agent/src/core/slash-commands.ts` 的 BUILTIN_SLASH_COMMANDS。扩展注册的命令、内部调试与彩蛋不计入这 23 项。
+- 统计来源为 `packages/coding-agent/src/core/slash-commands.ts` 的 BUILTIN_SLASH_COMMANDS。扩展注册的命令、内部调试与彩蛋不计入这 24 项。
 - Pi RPC 的 get_commands 仅枚举 extension、prompt、skill；TUI 内置命令由交互层另行分发。RPC 有对应接口时，Gupi 可以接入该接口；仅发送 /xxx 文本不能假定执行 TUI 内置操作。
 - 下表分别记录 **Pi RPC 支持、Gupi 当前实现、接入建议及理由**。Gupi 缺少 typed API/界面不代表 Pi RPC 缺少接口。
 - 建议是待选择的能力范围，不等于已批准实现。已有 Gupi 替代入口保留多会话归属，产品行为不必为复刻命令名字而改变。
 
-## 全部 23 项
+## 全部 24 项
 
 | TUI 命令 | Pi RPC 支持 | Gupi 当前实现 | 接入建议与理由 |
 | --- | --- | --- | --- |
-| `/settings` | 无通用 Pi 设置界面接口 | 有 Gupi 自身设置 | Pi 设置管理另定范围；不能把 Gupi 设置当作等价实现 |
+| `/settings` | 无通用 Pi 设置界面接口 | 有 Gupi 自身设置 | Pi 配置图形化及项目覆盖归 #244；不能把 Gupi 设置当作等价实现 |
 | `/model` | get_available_models、set_model | 已有模型选择器与动作 | 复用已有能力；可作为命令模式入口 |
 | `/tree` | get_tree/get_entries 可读；无 navigate_tree | 有历史树预览，无同文件切分支续聊 | tree、fork 作为会话历史候选的搜索别名，打开现有面板；不冒充节点导航 |
 | `/thinking` | get_available_thinking_levels、set_thinking_level | 已有思考等级选择 | 复用已有能力；修改会话等级与保存默认值区分 |
@@ -21,9 +21,10 @@
 | `/export` | export_html；没有完整复制 TUI HTML/JSONL 导出交互的单一接口 | 标题栏右上角导出按钮，系统保存窗口选择路径后调用 export_html | 已接入 HTML 导出；JSONL 导出未接入 |
 | `/import` | 无通用 import；switch_session 仅切换已有文件 | 无外部 JSONL 导入入口 | 独立评估导入、复制及目录归属，不能把 switch_session 直接当作 import |
 | `/share` | 无 TUI GitHub gist 分享接口 | 无分享动作 | 暂不接入；需新增认证和外部发布能力 |
-| `/copy` | get_last_assistant_text；也可读取当前分支文本 | 已有逐条消息复制及面板“复制最后回答” | copy 搜索映射最后回答动作，来源为实际执行分支 |
+| `/bug` | 无对应 RPC；TUI 有诊断上传及本地 ZIP 导出 | 无诊断上报入口 | 不自动接入上传；若需要，独立确定用户审阅、脱敏和发送范围 |
+| `/copy` | get_last_assistant_text；也可读取当前分支文本 | 已有逐条消息复制及面板“复制最后回答” | copy 搜索映射最后回答动作，来源为实际执行分支原始历史；0.87 的 RPC 返回值来自经过 context_edit 的上下文投影，二者不保证相同 |
 | `/name` | set_session_name | 已有在线/离线改名 | 复用统一 RPC 改名；离线会话先建立连接，再由 Pi 写入 |
-| `/session` | get_state、get_session_stats 等 | 已有 token/context 统计提示，缺统一信息页 | 值得完善会话信息入口，集中展示身份、路径、模型与统计 |
+| `/session` | get_state、get_session_stats 等 | 已有 token/context 统计提示，缺统一信息页 | 已确认归 #242，会话信息弹窗集中展示身份、路径、模型与统计 |
 | `/changelog` | 无专用接口 | 无 Pi 更新日志入口 | 无需照搬；Gupi 自身更新说明属于应用帮助 |
 | `/hotkeys` | 无 TUI 键位表查询接口 | #231 已有 Gupi 快捷键查看、修改、清除及恢复默认；面板已有键位提示 | `hotkeys` 搜索别名尚未映射；不再将快捷键总览列为缺失能力，不展示未接入的 Pi TUI 键位冒充可用 |
 | `/fork` | get_fork_messages、fork | 已有用户消息按钮和历史消息 fork | fork 搜索打开历史面板，由用户选择明确源消息 |
@@ -44,8 +45,8 @@
 | 复用已有能力 | model、thinking、name、fork、new、resume、reload、quit | 已有业务入口，主要确定是否在命令模式展示及如何路由 |
 | 已新增能力 | export（HTML）、clone | 分别位于标题栏右上角和会话上下文菜单；连接就绪且空闲时可用，复制还要求存在当前历史节点 |
 | 已新增能力 | compact | 当前会话组发起默认手动压缩，停止沿用 abort |
-| 值得完善入口 | session；hotkeys 搜索别名 | 统一会话信息页仍待确定；快捷键设置已由 #231 接入，仅命令搜索别名尚未映射 |
-| 独立管理范围或暂不映射 | settings、tree、scoped-models、import、share、changelog、trust、login、logout | TUI 专属行为、RPC 缺口或涉及独立配置/认证/数据管理；具体理由见逐项表 |
+| 值得完善入口 | session；hotkeys 搜索别名 | 会话信息弹窗已归 #242；快捷键设置已由 #231 接入，仅命令搜索别名尚未映射 |
+| 独立管理范围或暂不映射 | settings、tree、scoped-models、import、share、bug、changelog、trust、login、logout | TUI 专属行为、RPC 缺口或涉及独立配置/认证/数据管理；具体理由见逐项表 |
 
 统一面板已确定原始命令名搜索与现有 UI 映射，具体清单见 [command-palette.md](command-palette.md)。其他新增/完善项仍需确定交付范围。统一待确定项见 [decisions.md](decisions.md)。
 
@@ -57,9 +58,9 @@
 
 ## 源码依据
 
-命令清单按本地源码核对，未拉取远程。HTML 导出与复制接入后，已通过应用层取消/失败/成功及连接归属回归，并使用隔离临时会话验证真实 Pi RPC 的 HTML 输出、复制后历史保留和原文件不变；未进行原生界面点击验收。
+命令清单已按更新后的本地源码和 v0.87.0 固定标签复核；新命令不改变已确认的应用范围。HTML 导出与复制接入后，已通过应用层取消/失败/成功及连接归属回归，并使用隔离临时会话验证真实 Pi RPC 的 HTML 输出、复制后历史保留和原文件不变；未进行原生界面点击验收。
 
-- Pi `packages/coding-agent/src/core/slash-commands.ts`：23 项公开内置注册表。
+- Pi `packages/coding-agent/src/core/slash-commands.ts`：24 项公开内置注册表。
 - Pi `packages/coding-agent/src/modes/interactive/interactive-mode.ts`：内置命令的参数解析与 TUI 分发。
 - Pi `packages/coding-agent/src/modes/rpc/rpc-mode.ts`：compact、export_html、clone、get_last_assistant_text、get_commands 等支持情况。
 - Pi `packages/coding-agent/src/core/agent-session.ts`：各会话操作语义。

@@ -174,7 +174,9 @@ impl TemporaryView {
                 .get(&key)
                 .map(|s| s.activity())
                 .unwrap_or(Activity::Idle);
+            let unread = state.sessions.get(&key).is_some_and(|s| s.unread);
             Some(Row {
+                unread,
                 key,
                 title,
                 activity,
@@ -582,6 +584,7 @@ struct Row {
     key: String,
     title: String,
     activity: Activity,
+    unread: bool,
 }
 struct Sessions {
     rows: Vec<Row>,
@@ -638,6 +641,7 @@ impl RenderOnce for SessionItem {
                     .truncate()
                     .child(self.row.title),
             )
+            .children(self.row.unread.then(|| navigation::unread_mark(cx)))
             .child(navigation::activity_mark(self.row.activity, cx))
             .children(self.shortcut.and_then(|n| {
                 crate::features::command_palette::binding(Kind::TemporarySession(n), window)

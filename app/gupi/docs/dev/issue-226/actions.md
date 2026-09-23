@@ -73,7 +73,7 @@
 
 ### 组件能力与实现归属
 
-当前 gpui-component 0.6.0 已提供 Button::tooltip_with_action、Tooltip::action 和 Kbd::binding_for_action；本次不需要依赖升级。前两者关联动作以显示键位，不替代按钮点击处理，也不自动为业务函数注册 action。
+当前 gpui-component 已提供 Button::tooltip_with_action、Tooltip::action 和 Kbd::binding_for_action；本次不需要依赖升级。前两者关联动作以显示键位，不替代按钮点击处理，也不自动为业务函数注册 action。
 
 优先让现有按钮和键盘共用动作处理/业务门禁，再为提示关联实际绑定。对于 Run 包装到 menus 动作的情况，使用实际绑定 action 查询或统一既有映射，避免复制一份手写快捷键表。侧栏自定义 navigation_row 可接收可选动作元数据并投影 Kbd，无需新建全局快捷键框架。
 

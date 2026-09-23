@@ -1,6 +1,6 @@
 # 会话目录读取优化
 
-同一问题下的运行展示工作另见[实施计划](runtime-display-plan.md)、[对照报告](runtime-display-research.md)、[工具详情调研](tool-details-research.md)与[Zed / Codex / Gupi 工具卡片布局对比](tool-card-layout-research.md)；本页保留目录读取优化与 Gallery 使用说明。
+同一问题下的运行展示见[当前实现](runtime-display-plan.md)，摘要与工具详情见[Dialog 实现说明](../issue-238/README.md)。本页保留目录读取优化、性能依据和 Gallery 使用说明。
 
 状态：读取优化已实现，受影响构建和目录回归已通过。保留现有搜索，采用顺序字节读取与 sonic-rs 按字段解析；本计划只覆盖这项读取优化。运行时 loading、消息展示的其他反馈另按具体问题确定范围。
 
@@ -53,7 +53,7 @@ Pi session 是 JSONL 文件，首行是 session header，后续消息与元数�
 
 最终代码由临时 release 对照程序直接引用，以修改前模块作为基线，使用下述同一目录范围轮换执行 5 次。本次快照为 238 个文件、920,781,686 字节；目录集合和全部元数据逐项相等，文件运行前后未变化。数据准备中位数为 **325.99ms → 108.05ms**，同轮减少约 **66.9%**；基线范围 288.66–388.54ms，优化后 101.67–124.37ms。绝对耗时存在波动，不与此前原型的其他轮次拼接计算提升，也不据此承诺固定首屏时间。
 
-材料：[正式模块对照程序](/private/tmp/gupi-reverse-catalog-research/src/bin/sidebar_integrated.rs)、[最终复测结果](/private/tmp/gupi-reverse-catalog-research/sidebar-integrated-final/results.json)。
+材料：`/private/tmp/gupi-reverse-catalog-research/src/bin/sidebar_integrated.rs`、`/private/tmp/gupi-reverse-catalog-research/sidebar-integrated-final/results.json`。
 
 ### 方案确认时的原型测量
 
@@ -92,9 +92,9 @@ Pi session 是 JSONL 文件，首行是 session header，后续消息与元数�
 
 临时研究材料（本机临时目录可能被清理，上述数据已记录于本文）：
 
-- [字节版完整流程原型](/private/tmp/gupi-reverse-catalog-research/src/bin/sidebar_bytes.rs)、[原始结果](/private/tmp/gupi-reverse-catalog-research/sidebar-bytes/results.json)。
-- [读取路径对照](/private/tmp/gupi-reverse-catalog-research/src/bin/explain_gap.rs)、[原始结果](/private/tmp/gupi-reverse-catalog-research/gap-reading/results.json)。
-- [头尾串行/并发对照](/private/tmp/gupi-reverse-catalog-research/src/bin/concurrent_ends.rs)、[原始结果](/private/tmp/gupi-reverse-catalog-research/concurrent-ends/results.json)。
+- `/private/tmp/gupi-reverse-catalog-research/src/bin/sidebar_bytes.rs`、`/private/tmp/gupi-reverse-catalog-research/sidebar-bytes/results.json`。
+- `/private/tmp/gupi-reverse-catalog-research/src/bin/explain_gap.rs`、`/private/tmp/gupi-reverse-catalog-research/gap-reading/results.json`。
+- `/private/tmp/gupi-reverse-catalog-research/src/bin/concurrent_ends.rs`、`/private/tmp/gupi-reverse-catalog-research/concurrent-ends/results.json`。
 
 ## 实施顺序与必要验证
 
@@ -106,11 +106,10 @@ Pi session 是 JSONL 文件，首行是 session header，后续消息与元数�
 
 验证命令：`cargo build -p gupi --locked --offline`、`cargo test -p gupi session_catalog --locked --offline`（7 个通过）、`cargo clippy -p gupi --all-targets --locked --offline -- -D warnings`、`cargo fmt --all -- --check`。没有启动或注册测试 .app，真实窗口呈现不属于本次计时。
 
-前期目录与 Codex 时间来源证据见[扫描调研记录](../session-catalog-scan-draft.md)。
 
 ## 运行场景体验
 
-用户体验反馈及 Codex Electron / Pi TUI 对照见[运行中状态与过程展示调研](runtime-display-research.md)。报告记录了首字前反馈、第一级折叠、计时动效、多工具汇总、Skill 读取，以及实际 Gallery 样本中时间戳碰撞造成旧过程覆盖的原因；当前实现与验证结果见实施计划。
+当前运行展示与验证见[实施说明](runtime-display-plan.md)；旧差异调研已由实现覆盖，不再作为待办。
 
 在仓库根目录运行 `node script/gupi-runtime-gallery --no-build`，使用当前 `target/debug/gupi`；省略 `--no-build` 会先构建。脚本创建隔离配置、Pi agent/session 目录与测试项目，直接启动原有 Gupi 可执行文件，不创建或注册新的 `.app`。`--prepare-only` 只准备环境，不启动窗口。退出后保留临时目录，路径在终端输出，便于检查会话文件。
 
@@ -123,3 +122,5 @@ Pi session 是 JSONL 文件，首行是 session header，后续消息与元数�
 已完成 JavaScript 语法检查、隔离环境准备和安装版 Pi 的模型注册检查，并在实际 RPC 发送中确认能收到思考输出。另用临时副本仅加速输出和工具等待，连续完整运行两次：26 次工具调用、10 段思考、2 次最终回答、无工具或扩展错误。正式插件仍保留慢速参数；未自动操作 Gupi 窗口，实际界面展示由用户体验。
 
 2026-09-15 修复：Gallery 改用响应工厂，在每次实际请求时构造回答时间戳，避免批量创建的 13 条 assistant 共用时间戳。此前两次加速 RPC 检查未覆盖此问题或实际界面；本轮做语法与消息投影回归，完整慢速场景留给用户体验。
+
+上述基准数值保留原测量日期的决策依据；临时目录产物现已不可用，不作为当前可运行入口或新的性能验收结果。当前回归入口以仓库内源码与测试为准。

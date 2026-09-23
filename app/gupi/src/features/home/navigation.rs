@@ -21,7 +21,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 
-type SessionRow = (String, SessionInfo, Activity);
+type SessionRow = (String, SessionInfo, Activity, bool);
 
 #[derive(Clone)]
 enum NavigationItem {
@@ -224,12 +224,13 @@ impl SidebarItem for ProjectItem {
         let activity = if self.closed {
             self.rows
                 .iter()
-                .map(|(_, _, a)| *a)
+                .map(|(_, _, a, _)| *a)
                 .max()
                 .unwrap_or(Activity::Idle)
         } else {
             Activity::Idle
         };
+        let unread = self.rows.iter().filter(|r| r.3).count();
         let context_path = project.clone();
         let menu_state = self.state.clone();
         let new_state = self.state.clone();
@@ -256,13 +257,30 @@ impl SidebarItem for ProjectItem {
             },
         )
         .group(group.clone())
-        .pr_8()
+        .pr_12()
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-        .when(activity != Activity::Idle, |row| {
+        .when(activity != Activity::Idle || unread > 0, |row| {
             row.child(
                 action_slot()
+                    .w_10()
                     .group_hover(group.clone(), |style| style.opacity(0.))
-                    .child(activity_mark(activity, cx)),
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .children((unread > 0).then(|| {
+                                div()
+                                    .id("project-unread")
+                                    .text_xs()
+                                    .text_color(cx.theme().primary)
+                                    .child(unread.to_string())
+                                    .role(Role::Status)
+                                    .aria_label(format!(
+                                        "{}: {unread}",
+                                        t(cx, "notification-unread")
+                                    ))
+                            }))
+                            .child(activity_mark(activity, cx)),
+                    ),
             )
         })
         .child(
@@ -320,7 +338,7 @@ impl SidebarItem for ProjectItem {
                 .ml_3p5()
                 .pl_2p5()
                 .py_0p5();
-            for (index, (key, info, activity)) in self.rows.iter().enumerate() {
+            for (index, (key, info, activity, unread)) in self.rows.iter().enumerate() {
                 if index >= 5 && !self.more && self.selected.as_ref() != Some(key) {
                     continue;
                 }
@@ -340,9 +358,15 @@ impl SidebarItem for ProjectItem {
                     move |_, cx| state.update(cx, |s, cx| s.open(&open_key, cx)),
                 )
                 .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                .when(*activity != Activity::Idle, |row| {
-                    row.pr_8()
-                        .child(action_slot().child(activity_mark(*activity, cx)))
+                .when(*activity != Activity::Idle || *unread, |row| {
+                    row.pr_10().child(
+                        action_slot().w_8().child(
+                            h_flex()
+                                .gap_1()
+                                .children(unread.then(|| unread_mark(cx)))
+                                .child(activity_mark(*activity, cx)),
+                        ),
+                    )
                 })
                 .context_menu(move |menu, _, cx| {
                     session_menu(
@@ -768,7 +792,12 @@ impl HomeView {
         match source {
             Some(key) => {
                 if let Some(session) = state.sessions.get(key) {
-                    let row = (key.to_owned(), session.info.clone(), session.activity());
+                    let row = (
+                        key.to_owned(),
+                        session.info.clone(),
+                        session.activity(),
+                        session.unread,
+                    );
                     if self.navigation.rows.get(key) != Some(&row) {
                         if let Some(old) = self.navigation.rows.insert(key.to_owned(), row) {
                             affected.insert(old.1.cwd);
@@ -797,7 +826,10 @@ impl HomeView {
                             .get(&key)
                             .map(|s| s.activity())
                             .unwrap_or(Activity::Idle);
-                        (key.clone(), (key, info, activity))
+                        {
+                            let unread = state.sessions.get(&key).is_some_and(|s| s.unread);
+                            (key.clone(), (key, info, activity, unread))
+                        }
                     })
                     .collect();
                 for (key, row) in self.navigation.rows.iter().chain(rows.iter()) {
@@ -824,17 +856,19 @@ impl HomeView {
                 .navigation
                 .rows
                 .values()
-                .filter(|(_, info, _)| info.cwd == cwd)
+                .filter(|(_, info, _, _)| info.cwd == cwd)
                 .cloned()
                 .collect::<Vec<_>>();
-            rows.sort_by(|(ak, a, _), (bk, b, _)| b.activity.cmp(&a.activity).then(ak.cmp(bk)));
+            rows.sort_by(|(ak, a, _, _), (bk, b, _, _)| {
+                b.activity.cmp(&a.activity).then(ak.cmp(bk))
+            });
             if rows.is_empty() {
                 changed |= self.navigation.groups.remove(&cwd).is_some();
                 continue;
             }
             let selected = selected_key
                 .as_ref()
-                .filter(|key| rows.iter().any(|(k, _, _)| k == *key))
+                .filter(|key| rows.iter().any(|(k, _, _, _)| k == *key))
                 .cloned();
             let item = ProjectItem {
                 closed: !self.open_projects.contains(&cwd),
@@ -886,7 +920,7 @@ impl HomeView {
             let current = group.read(cx);
             let selected = selected
                 .as_ref()
-                .filter(|key| current.0.rows.iter().any(|(k, _, _)| k == *key))
+                .filter(|key| current.0.rows.iter().any(|(k, _, _, _)| k == *key))
                 .cloned();
             let closed = !self.open_projects.contains(cwd);
             let more = self.projects_with_more.contains(cwd);
@@ -920,6 +954,16 @@ impl HomeView {
             cx.notify();
         }
     }
+}
+
+pub(crate) fn unread_mark(cx: &App) -> impl IntoElement + use<> {
+    div()
+        .id("session-unread")
+        .size_1p5()
+        .rounded_full()
+        .bg(cx.theme().primary)
+        .role(Role::Status)
+        .aria_label(t(cx, "notification-unread"))
 }
 
 #[cfg(test)]

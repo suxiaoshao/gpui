@@ -47,6 +47,7 @@ struct SessionView {
     preview: Option<String>,
     process_open: HashMap<String, bool>,
     queue_open: bool,
+    notices_open: bool,
     scroller: Entity<MessageScrollerState>,
     rows: Rc<Vec<messages::ChatRow>>,
     row_positions: Rc<std::cell::RefCell<HashMap<String, usize>>>,
@@ -57,6 +58,7 @@ pub(crate) struct HomeView {
     pub(crate) input: Entity<TextareaState>,
     extension_input: Entity<TextareaState>,
     shown_key: Option<String>,
+    notification_visible: bool,
     shown_request: Option<(String, String)>,
     views: BTreeMap<String, SessionView>,
     history_list: Entity<ListState<history::HistoryDelegate>>,
@@ -216,7 +218,16 @@ impl HomeView {
         let history_list = cx.new(|cx| {
             ListState::new(history::HistoryDelegate::new(owner), window, cx).searchable(false)
         });
+        crate::app::notifications::present(&state, window, true, cx);
         let subscriptions = vec![
+            cx.observe_window_activation(window, |this, window, cx| {
+                crate::app::notifications::present(
+                    &this.state,
+                    window,
+                    this.notification_visible,
+                    cx,
+                );
+            }),
             cx.observe(&input, |_, _, cx| cx.notify()),
             cx.observe(&history_list, |_, _, cx| cx.notify()),
             cx.subscribe_in(
@@ -253,17 +264,7 @@ impl HomeView {
                             cx.notify();
                         }
                     }
-                    ConversationEvent::Notify { message, error } => {
-                        use gpui_kit::component::notification::Notification;
-                        window.push_notification(
-                            if *error {
-                                Notification::error(message.clone())
-                            } else {
-                                Notification::info(message.clone())
-                            },
-                            cx,
-                        );
-                    }
+                    ConversationEvent::Notify { .. } | ConversationEvent::Attention(_) => {}
                 },
             ),
             cx.subscribe_in(&input, window, |this, input, event, window, cx| {
@@ -330,6 +331,7 @@ impl HomeView {
             input,
             extension_input,
             shown_key: None,
+            notification_visible: true,
             shown_request: None,
             views: BTreeMap::new(),
             history_list,
@@ -357,6 +359,17 @@ impl HomeView {
         view.sync(false, window, cx);
         view.focus_composer(window, cx);
         view
+    }
+    pub fn set_notification_visible(
+        &mut self,
+        visible: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.notification_visible != visible {
+            self.notification_visible = visible;
+            crate::app::notifications::present(&self.state, window, visible, cx);
+        }
     }
     fn sync(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
         let key = self.state.read(cx).selected.clone();
@@ -475,6 +488,7 @@ impl HomeView {
                     preview: None,
                     process_open: HashMap::new(),
                     queue_open: false,
+                    notices_open: false,
                     scroller,
                     rows: Rc::new(vec![]),
                     row_positions: Rc::default(),

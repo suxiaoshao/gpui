@@ -1,4 +1,5 @@
 pub(crate) mod menus;
+pub(crate) mod notifications;
 pub(crate) mod shortcuts;
 pub(crate) mod temporary;
 mod tray;
@@ -36,7 +37,9 @@ pub(crate) fn run() {
     let app = gpui_kit::application().with_assets(Assets::default());
     app.on_reopen(|cx| cx.defer(|cx| show(None, cx)));
     app.run(move |cx| {
+        cx.set_app_identity("top.sushao.gupi", "Gupi");
         gpui_kit::init(cx);
+        notifications::init(cx);
         gpui_tokio::init(cx);
         crate::state::pi::init(cx);
         temporary::init(cx);

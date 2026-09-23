@@ -1,5 +1,7 @@
 # Jaco 退役与关联清理
 
+归属 [#240](https://github.com/suxiaoshao/gpui/issues/240)，独立于 Gupi 主 Issue 的后续清理任务。
+
 ## 范围与结论
 
 - 核对日期：2026-09-20；依据当前工作区源码、manifest、CI、脚本与文档引用。
