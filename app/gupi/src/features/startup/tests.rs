@@ -8,19 +8,10 @@ use gpui_operation::{Cancel, Retry, Settle, Transition};
 
 #[gpui_kit::test]
 fn configured_windows_and_sessions_do_not_wait_for_a_probe(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        gpui_tokio::init(cx);
-        app_theme::init(cx);
-        crate::state::theme::init(cx);
-        crate::foundation::i18n::apply(Default::default(), cx);
-        crate::state::pi::init(cx);
-        temporary::init(cx);
-        cx.set_global(crate::state::layout::LayoutState::default());
-    });
+    init(cx);
     let mut startup = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| StartupView::new(false, window, cx));
+        let view = cx.new(|cx| StartupView::new(Ok(()), false, window, cx));
         // Replace the pending filesystem read before it runs; this test never
         // reads or writes the user's configuration.
         let store = view.read(cx).config.read(cx).store.clone();
@@ -57,6 +48,48 @@ fn configured_windows_and_sessions_do_not_wait_for_a_probe(cx: &mut TestAppConte
         });
         assert!(matches!(view.screen(cx), StartupScreen::Home(_)));
         view.applied_pi.update(cx, |pi, _| pi.stop());
+    });
+}
+
+#[gpui_kit::test]
+fn instance_failure_stays_in_recovery_without_loading_configuration(cx: &mut TestAppContext) {
+    init(cx);
+    cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            StartupView::new(
+                Err(std::io::ErrorKind::PermissionDenied.into()),
+                false,
+                window,
+                cx,
+            )
+        });
+        view.update(cx, |view, cx| {
+            assert!(matches!(view.screen(cx), StartupScreen::InstanceFailure(_)));
+            view.config.read(cx).store.read(cx, |op| {
+                assert!(!op.is_running());
+                assert!(op.data().is_none());
+            });
+            assert!(cx.global::<temporary::Temporary>().config.is_none());
+            assert!(temporary::state(cx).is_none());
+            // The always-available Settings menu must not bypass recovery.
+            view.set_settings_visible(true, window, cx);
+            assert!(matches!(view.screen(cx), StartupScreen::InstanceFailure(_)));
+            assert!(view.home.is_none());
+        });
+        Root::new(view, window, cx)
+    });
+}
+
+fn init(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        gpui_tokio::init(cx);
+        app_theme::init(cx);
+        crate::state::theme::init(cx);
+        crate::foundation::i18n::apply(Default::default(), cx);
+        crate::state::pi::init(cx);
+        temporary::init(cx);
+        cx.set_global(crate::state::layout::LayoutState::default());
     });
 }
 

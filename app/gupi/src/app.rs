@@ -1,4 +1,4 @@
-mod instance;
+pub(crate) mod instance;
 mod logging;
 pub(crate) mod menus;
 pub(crate) mod notifications;
@@ -21,26 +21,10 @@ impl Global for MainWindow {}
 pub(crate) fn run() {
     let instance =
         match paths::config_dir().and_then(|directory| instance::Instance::acquire(&directory)) {
-            Ok(Some(instance)) => instance,
+            Ok(Some(instance)) => Ok(instance),
             Ok(None) => return,
-            Err(error) => {
-                eprintln!("Gupi instance startup failed: {error}");
-                return;
-            }
+            Err(error) => Err(error),
         };
-    let log = paths::log_dir().and_then(logging::LogWriter::open);
-    let log_warning = log.is_err();
-    match log {
-        Ok(file) => {
-            let _ = tracing_subscriber::fmt()
-                .with_writer(std::sync::Mutex::new(file))
-                .try_init();
-        }
-        Err(error) => {
-            eprintln!("Gupi log initialization: {error}");
-            let _ = tracing_subscriber::fmt().try_init();
-        }
-    }
     let system_locale = sys_locale::get_locale();
     // AppKit resolves system dialog languages before the async configuration
     // controller loads. Read only the startup locale here; the controller still
@@ -56,13 +40,11 @@ pub(crate) fn run() {
     app.on_reopen(|cx| cx.defer(|cx| show(None, cx)));
     app.run(move |cx| {
         cx.set_app_identity("top.sushao.gupi", "Gupi");
-        if let Err(error) = instance.listen(cx) {
-            tracing::error!(%error, "start instance listener failed");
-            cx.quit();
-            return;
+        let instance = instance.and_then(|instance| instance.listen(cx));
+        if let Err(error) = &instance {
+            eprintln!("Gupi instance startup failed: {error}");
         }
         gpui_kit::init(cx);
-        notifications::init(cx);
         gpui_tokio::init(cx);
         crate::state::pi::init(cx);
         temporary::init(cx);
@@ -73,21 +55,35 @@ pub(crate) fn run() {
         i18n::apply(initial_language, cx);
         menus::init(cx);
         menus::refresh(cx);
-        tray::init(cx);
         crate::state::keybindings::apply(&Default::default(), cx);
-        cx.on_action(|_: &menus::ShowTemporaryWindow, cx| cx.defer(temporary::toggle));
+        cx.on_action(|_: &menus::ShowTemporaryWindow, cx| {
+            cx.defer(|cx| {
+                if instance::is_owner(cx) {
+                    temporary::toggle(cx);
+                } else {
+                    show(None, cx);
+                }
+            })
+        });
         cx.on_action(|_: &menus::ShowSettings, cx| cx.defer(|cx| show(Some(true), cx)));
         cx.on_action(|_: &menus::ShowMainWindow, cx| cx.defer(|cx| show(Some(false), cx)));
         cx.on_action(|_: &menus::Quit, cx| cx.defer(quit));
+        let log_warning = instance.is_ok() && instance_ready(cx);
         let layout = paths::config_dir()
-            .map_err(|e| e.to_string())
-            .map(|dir| layout::load(&dir.join("state.toml")))
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "layout directory unavailable; using default layout");
-                layout::LayoutState::default()
-            });
-        cx.set_global(layout.clone());
-        let bounds = layout
+            .map(|directory| {
+                let path = directory.join("state.toml");
+                if instance.is_ok() {
+                    layout::load(&path)
+                } else {
+                    // Recovery may reuse saved geometry, but must not discard
+                    // invalid state belonging to another instance.
+                    layout::read(&path).unwrap_or_default()
+                }
+            })
+            .unwrap_or_default();
+        cx.set_global(layout);
+        let bounds = cx
+            .global::<layout::LayoutState>()
             .main_window
             .map(|p| p.restored(cx))
             .unwrap_or_else(|| {
@@ -121,7 +117,7 @@ pub(crate) fn run() {
                 }
                 false
             });
-            let view = cx.new(|cx| StartupView::new(log_warning, window, cx));
+            let view = cx.new(|cx| StartupView::new(instance, log_warning, window, cx));
             let root = cx.new(|cx| Root::new(view.clone(), window, cx));
             cx.set_global(MainWindow {
                 window: window
@@ -139,6 +135,26 @@ pub(crate) fn run() {
             }
         }
     });
+}
+/// These services may touch shared state and start conversations. Start them
+/// only after owning the configuration directory, including after a retry.
+pub(crate) fn instance_ready(cx: &mut App) -> bool {
+    let log = paths::log_dir().and_then(logging::LogWriter::open);
+    let log_warning = log.is_err();
+    match log {
+        Ok(file) => {
+            let _ = tracing_subscriber::fmt()
+                .with_writer(std::sync::Mutex::new(file))
+                .try_init();
+        }
+        Err(error) => {
+            eprintln!("Gupi log initialization: {error}");
+            let _ = tracing_subscriber::fmt().try_init();
+        }
+    }
+    notifications::init(cx);
+    tray::init(cx);
+    log_warning
 }
 fn quit(cx: &mut App) {
     let main = cx

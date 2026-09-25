@@ -20,6 +20,10 @@ struct Owner {
     _listener: Task<()>,
 }
 impl Global for Owner {}
+
+pub(crate) fn is_owner(cx: &App) -> bool {
+    cx.has_global::<Owner>()
+}
 #[derive(Serialize, Deserialize)]
 struct Endpoint {
     port: u16,
@@ -127,6 +131,27 @@ fn notify(directory: &Path) -> io::Result<()> {
 mod tests {
     use super::Instance;
     use std::io::{Read, Write};
+
+    #[test]
+    fn failed_endpoint_publication_can_be_retried() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = directory.path().join("instance.json");
+        std::fs::create_dir(&endpoint).unwrap();
+        assert!(Instance::acquire(directory.path()).is_err());
+        std::fs::remove_dir(endpoint).unwrap();
+        assert!(Instance::acquire(directory.path()).unwrap().is_some());
+    }
+
+    #[test]
+    fn unreachable_owner_does_not_allow_another_instance() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = Instance::acquire(directory.path()).unwrap().unwrap();
+        std::fs::remove_file(directory.path().join("instance.json")).unwrap();
+        assert!(Instance::acquire(directory.path()).is_err());
+        drop(owner);
+        assert!(Instance::acquire(directory.path()).unwrap().is_some());
+    }
+
     #[test]
     fn second_launch_reuses_owner_and_released_lock_can_be_reacquired() {
         let directory = tempfile::tempdir().unwrap();

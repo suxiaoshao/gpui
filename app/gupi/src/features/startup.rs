@@ -3,7 +3,7 @@ mod palette;
 #[cfg(test)]
 mod tests;
 use crate::{
-    app::menus,
+    app::{instance::Instance, menus},
     components::recovery::recovery,
     foundation::{
         i18n::{self, t},
@@ -25,6 +25,7 @@ use gpui_kit::*;
 enum StartupScreen {
     Quitting,
     LoadingConfig,
+    InstanceFailure(String),
     ConfigFailure(&'static str),
     Onboarding,
     Settings,
@@ -46,18 +47,24 @@ pub(crate) struct StartupView {
     pub show_settings: bool,
     config_confirm: bool,
     log_warning: bool,
+    instance_error: Option<String>,
+    instance_retry: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
     quit_task: Option<Task<()>>,
     palette: Option<Entity<super::command_palette::CommandPalette>>,
 }
 impl StartupView {
-    pub fn new(log_warning: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        instance: std::io::Result<()>,
+        log_warning: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         let form = cx.new(|_| Form::new(AppConfig::default()));
         let config = cx.new(|cx| ConfigController::new(&form, cx));
         let applied_pi = cx.new(|_| PiProbeController::new());
         let draft_pi = cx.new(|_| PiProbeController::new());
-        cx.global_mut::<crate::app::temporary::Temporary>().config = Some(config.clone());
         let settings = cx.new(|cx| {
             SettingsView::new(
                 form.clone(),
@@ -101,8 +108,7 @@ impl StartupView {
                 theme::accent_changed(&accent_config.read(cx).preferences(cx), window, cx);
             },
         );
-        config.update(cx, |owner, cx| owner.reload(cx));
-        Self {
+        let mut view = Self {
             focus_handle,
             config,
             applied_pi,
@@ -112,13 +118,62 @@ impl StartupView {
             show_settings: false,
             config_confirm: false,
             log_warning,
+            instance_error: instance.err().map(|error| error.to_string()),
+            instance_retry: None,
             _subscriptions: vec![config_sub, form_sub, appearance, accent],
             quit_task: None,
             palette: None,
+        };
+        if view.instance_error.is_none() {
+            view.load_config(cx);
         }
+        view
+    }
+    fn load_config(&mut self, cx: &mut Context<Self>) {
+        cx.global_mut::<crate::app::temporary::Temporary>().config = Some(self.config.clone());
+        self.config.update(cx, |owner, cx| owner.reload(cx));
+    }
+    fn retry_instance(&mut self, cx: &mut Context<Self>) {
+        if self.instance_retry.is_some() || self.instance_error.is_none() {
+            return;
+        }
+        self.instance_retry = Some(cx.spawn(async move |view, cx| {
+            let result = smol::unblock(|| {
+                paths::config_dir().and_then(|directory| Instance::acquire(&directory))
+            })
+            .await;
+            let _ = view.update(cx, |view, cx| {
+                let result = match result {
+                    Ok(Some(instance)) => instance.listen(cx),
+                    Ok(None) => {
+                        // The existing owner opened its window. This recovery
+                        // process must exit without saving shared state.
+                        cx.quit();
+                        return;
+                    }
+                    Err(error) => Err(error),
+                };
+                view.instance_retry = None;
+                view.instance_error = result.err().map(|error| {
+                    tracing::error!(%error, "instance startup retry failed");
+                    error.to_string()
+                });
+                if view.instance_error.is_none() {
+                    view.log_warning = crate::app::instance_ready(cx);
+                    view.load_config(cx);
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
     }
     pub fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_quitting() {
+            return;
+        }
+        if self.instance_error.is_some() {
+            self.instance_retry = None;
+            cx.quit();
             return;
         }
         tracing::info!("managed quit started");
@@ -204,6 +259,9 @@ impl StartupView {
         if self.is_quitting() {
             return StartupScreen::Quitting;
         }
+        if let Some(error) = &self.instance_error {
+            return StartupScreen::InstanceFailure(error.clone());
+        }
         self.config
             .read(cx)
             .store
@@ -238,6 +296,7 @@ impl Render for StartupView {
         let page_title = match &screen {
             StartupScreen::Settings => t(cx, "menu-settings"),
             StartupScreen::ConfigFailure(_) => t(cx, "recovery-config-title"),
+            StartupScreen::InstanceFailure(_) => t(cx, "recovery-startup-title"),
             StartupScreen::Onboarding => t(cx, "startup-welcome"),
             StartupScreen::Quitting => t(cx, "startup-quitting"),
             StartupScreen::LoadingConfig | StartupScreen::Home(_) => t(cx, "app-title"),
@@ -272,6 +331,41 @@ impl Render for StartupView {
         match screen {
             StartupScreen::Quitting => content = content.child(t(cx, "startup-quitting")),
             StartupScreen::LoadingConfig => content = content.child(t(cx, "startup-checking")),
+            StartupScreen::InstanceFailure(error) => {
+                content = content
+                    .child(recovery(
+                        t(cx, "recovery-startup-title"),
+                        t(cx, "error-instance-startup"),
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(error),
+                    )
+                    .child(
+                        Button::new("instance-retry")
+                            .label(t(cx, "action-retry"))
+                            .loading(self.instance_retry.is_some())
+                            .disabled(self.instance_retry.is_some())
+                            .on_click(cx.listener(|this, _, _, cx| this.retry_instance(cx))),
+                    )
+                    .child(
+                        Button::new("instance-locate")
+                            .label(t(cx, "action-locate"))
+                            .on_click(|_, _, cx| {
+                                if let Ok(path) = paths::config_dir() {
+                                    cx.reveal_path(&path);
+                                }
+                            }),
+                    )
+                    .child(
+                        Button::new("instance-quit")
+                            .label(t(cx, "menu-quit"))
+                            .on_click(cx.listener(|this, _, window, cx| this.quit(window, cx))),
+                    );
+            }
             StartupScreen::ConfigFailure(problem) => {
                 content = content
                     .child(recovery(t(cx, "recovery-config-title"), t(cx, problem), cx))
