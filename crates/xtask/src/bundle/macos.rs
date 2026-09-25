@@ -5,13 +5,18 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tracing::{info, warn};
 
-use crate::bundle::{common::BundleIconAssets, settings::macos_bundle_localizations};
+use crate::bundle::{common::BundleIconAssets, settings::BundleLocalization};
 use crate::cmd::{command_exists, run_cmd_os};
 use crate::error::{Result, XtaskError};
 use tauri_bundler::{BundleSettings, PlistKind};
 
-pub fn prepare_bundle_settings(bundle_settings: &mut BundleSettings) -> Result<()> {
-    bundle_settings.macos.info_plist = Some(PlistKind::Plist(bundle_info_plist_overrides().into()));
+pub fn prepare_bundle_settings(
+    bundle_settings: &mut BundleSettings,
+    localizations: &[BundleLocalization],
+) -> Result<()> {
+    bundle_settings.macos.info_plist = Some(PlistKind::Plist(
+        bundle_info_plist_overrides(localizations).into(),
+    ));
     Ok(())
 }
 
@@ -73,8 +78,8 @@ pub fn inject_liquid_glass_icon(
     app_path: &Path,
     bundle_icon_assets: &BundleIconAssets,
 ) -> Result<()> {
-    let Some(icon_dir) = find_liquid_glass_icon_dir(app_dir)? else {
-        warn!(app_dir = %app_dir.display(), "未找到唯一 .icon 目录，跳过 Liquid Glass 图标注入");
+    let Some((icon_dir, icon_dirs)) = find_liquid_glass_icon_dirs(app_dir)? else {
+        warn!(app_dir = %app_dir.display(), "未找到 .icon 目录，跳过 Liquid Glass 图标注入");
         return Ok(());
     };
     let icon_name = icon_dir
@@ -111,16 +116,21 @@ pub fn inject_liquid_glass_icon(
             actool_output_dir.display()
         ))
     })?;
-    let staged_icon_dir = stage_liquid_glass_icon_dir(
-        &icon_dir,
-        &bundle_icon_assets.source_base_icon(),
-        &actool_source_dir,
-    )?;
+    let staged_icons = icon_dirs
+        .iter()
+        .map(|icon| {
+            stage_liquid_glass_icon_dir(
+                icon,
+                &bundle_icon_assets.source_base_icon(),
+                &actool_source_dir,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let actool_plist = actool_output_dir.join("assetcatalog_generated_info.plist");
-    let actool_args: Vec<&OsStr> = vec![
-        OsStr::new("actool"),
-        staged_icon_dir.as_os_str(),
+    let mut actool_args: Vec<&OsStr> = vec![OsStr::new("actool")];
+    actool_args.extend(staged_icons.iter().map(|icon| icon.as_os_str()));
+    actool_args.extend([
         OsStr::new("--compile"),
         actool_output_dir.as_os_str(),
         OsStr::new("--output-format"),
@@ -143,7 +153,7 @@ pub fn inject_liquid_glass_icon(
         OsStr::new("macosx"),
         OsStr::new("--minimum-deployment-target"),
         OsStr::new("26.0"),
-    ];
+    ]);
 
     let actool_result = run_cmd_os("xcrun", &actool_args, None);
 
@@ -275,7 +285,7 @@ fn copy_dir_all(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-fn find_liquid_glass_icon_dir(app_dir: &Path) -> Result<Option<PathBuf>> {
+fn find_liquid_glass_icon_dirs(app_dir: &Path) -> Result<Option<(PathBuf, Vec<PathBuf>)>> {
     let icon_root = app_dir.join("build-assets/icon");
     if !icon_root.exists() {
         return Ok(None);
@@ -294,11 +304,25 @@ fn find_liquid_glass_icon_dir(app_dir: &Path) -> Result<Option<PathBuf>> {
     }
 
     icon_dirs.sort();
-    Ok(if icon_dirs.len() == 1 {
-        icon_dirs.pop()
+    if icon_dirs.is_empty() {
+        return Ok(None);
+    }
+    let selection = icon_root.join("default-icon");
+    let default = if selection.exists() {
+        let name = fs::read_to_string(&selection)?;
+        icon_dirs
+            .iter()
+            .find(|path| path.file_stem().and_then(OsStr::to_str) == Some(name.trim()))
+            .cloned()
+            .ok_or_else(|| XtaskError::msg("default-icon must name an existing .icon directory"))?
+    } else if icon_dirs.len() == 1 {
+        icon_dirs[0].clone()
     } else {
-        None
-    })
+        return Err(XtaskError::msg(
+            "multiple .icon directories require build-assets/icon/default-icon",
+        ));
+    };
+    Ok(Some((default, icon_dirs)))
 }
 
 fn update_bundle_icon_name(plist_path: &Path, icon_name: &str) -> Result<()> {
@@ -317,7 +341,7 @@ fn update_bundle_icon_name(plist_path: &Path, icon_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn bundle_info_plist_overrides() -> plist::Dictionary {
+fn bundle_info_plist_overrides(localizations: &[BundleLocalization]) -> plist::Dictionary {
     let mut dict = plist::Dictionary::new();
     dict.insert(
         "CFBundleDevelopmentRegion".to_string(),
@@ -330,7 +354,7 @@ fn bundle_info_plist_overrides() -> plist::Dictionary {
     dict.insert(
         "CFBundleLocalizations".to_string(),
         plist::Value::Array(
-            macos_bundle_localizations()
+            localizations
                 .iter()
                 .map(|localization| {
                     plist::Value::String(localization.bundle_locale_tag.to_string())
@@ -344,6 +368,7 @@ fn bundle_info_plist_overrides() -> plist::Dictionary {
 #[cfg(test)]
 mod tests {
     use super::{bundle_info_plist_overrides, find_app_bundle, first_app_bundle};
+    use crate::bundle::settings::resolve_bundle_localizations;
     use crate::error::Result;
     use std::fs;
     use std::path::PathBuf;
@@ -373,6 +398,27 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn icon_catalog_requires_an_explicit_default_for_multiple_themes() -> Result<()> {
+        let temp = TestDir::new()?;
+        let icons = temp.path.join("build-assets/icon");
+        let classic = icons.join("Classic.icon");
+        fs::create_dir_all(&classic)?;
+        assert_eq!(
+            super::find_liquid_glass_icon_dirs(&temp.path)?.unwrap().0,
+            classic
+        );
+        fs::create_dir_all(icons.join("Color.icon"))?;
+        assert!(super::find_liquid_glass_icon_dirs(&temp.path).is_err());
+        fs::write(icons.join("default-icon"), "Classic\n")?;
+        let (default, all) = super::find_liquid_glass_icon_dirs(&temp.path)?.unwrap();
+        assert_eq!(default, classic);
+        assert_eq!(all.len(), 2);
+        fs::write(icons.join("default-icon"), "Missing")?;
+        assert!(super::find_liquid_glass_icon_dirs(&temp.path).is_err());
+        Ok(())
     }
 
     #[test]
@@ -416,7 +462,8 @@ mod tests {
 
     #[test]
     fn plist_overrides_include_bundle_localizations() {
-        let dict = bundle_info_plist_overrides();
+        let localizations = resolve_bundle_localizations(None).unwrap();
+        let dict = bundle_info_plist_overrides(&localizations);
 
         assert_eq!(
             dict.get("CFBundleDevelopmentRegion"),

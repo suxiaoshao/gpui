@@ -1,4 +1,7 @@
-use super::{AppConfig, AppLanguage, ConfigController, PiProbeController, SettingsView};
+use super::{
+    AppConfig, AppLanguage, ConfigController, PiProbeController, PreferenceChange, SettingsView,
+    ThemeMode,
+};
 use gpui_form::Form;
 use gpui_kit::component::Root;
 use gpui_kit::{AppContext, TestAppContext};
@@ -51,6 +54,90 @@ fn shared_settings_layout_renders_without_reentrant_entity_access(cx: &mut TestA
         Root::new(view, window, cx)
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+}
+
+#[gpui_kit::test]
+async fn onboarding_finishes_and_saves_its_draft_without_a_pi_probe(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        gpui_tokio::init(cx);
+        app_theme::init(cx);
+        crate::state::theme::init(cx);
+        crate::foundation::i18n::apply(AppLanguage::English, cx);
+        crate::state::pi::init(cx);
+        crate::app::temporary::init(cx);
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let mut settings_entity = None;
+    let mut controller_entity = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let form = cx.new(|_| Form::new(AppConfig::default()));
+        let controller = cx.new(|cx| ConfigController::at_path(&form, Ok(path.clone()), cx));
+        controller.update(cx, |owner, cx| owner.reload(cx));
+        let draft = cx.new(|_| PiProbeController::new());
+        let applied = cx.new(|_| PiProbeController::new());
+        let settings = cx.new(|cx| {
+            let mut view = SettingsView::new(
+                form,
+                controller.clone(),
+                draft,
+                applied,
+                cx.focus_handle(),
+                window,
+                cx,
+            );
+            view.step = 3;
+            view
+        });
+        settings_entity = Some(settings.clone());
+        controller_entity = Some(controller);
+        Root::new(settings, window, cx)
+    });
+    let settings = settings_entity.unwrap();
+    let controller = controller_entity.unwrap();
+    visual
+        .condition(&controller, |owner, cx| !owner.busy(cx))
+        .await;
+
+    settings.update(visual, |view, cx| {
+        AppConfig::LANGUAGE.set(&view.form, AppLanguage::English, cx);
+        AppConfig::THEME.set(&view.form, ThemeMode::Dark, cx);
+        let mut notifications = view.controller.read(cx).preferences(cx).notifications;
+        notifications.waiting = false;
+        notifications.completion = crate::state::notifications::CompletionMode::Always;
+        view.controller.update(cx, |owner, cx| {
+            owner.set_preference(PreferenceChange::Notifications(notifications), cx)
+        });
+    });
+    assert!(!settings.read_with(visual, |view, cx| view.probe_ready(cx)));
+    assert!(
+        !path.exists(),
+        "onboarding preferences remain a draft until Finish"
+    );
+
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    visual.update(|window, cx| settings.update(cx, |view, cx| view.submit(window, cx)));
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    visual
+        .condition(&controller, |owner, cx| !owner.busy(cx))
+        .await;
+
+    let saved = crate::state::config::read_config(path, true)
+        .unwrap()
+        .configured()
+        .unwrap()
+        .clone();
+    assert_eq!(saved.language, AppLanguage::English);
+    assert_eq!(saved.theme, ThemeMode::Dark);
+    assert_eq!(saved.pi_command, None);
+    assert!(!saved.notifications.waiting);
+    assert_eq!(
+        saved.notifications.completion,
+        crate::state::notifications::CompletionMode::Always
+    );
 }
 
 #[gpui_kit::test]
@@ -134,9 +221,7 @@ impl gpui_kit::Render for ThemeGridFixture {
                 ),
                 &AppConfig::default(),
                 &self.controller,
-                None,
                 false,
-                cx,
             ))
     }
 }

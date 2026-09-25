@@ -1,3 +1,5 @@
+mod instance;
+mod logging;
 pub(crate) mod menus;
 pub(crate) mod notifications;
 pub(crate) mod shortcuts;
@@ -17,27 +19,48 @@ struct MainWindow {
 }
 impl Global for MainWindow {}
 pub(crate) fn run() {
-    let log = paths::log_dir().and_then(|dir| {
-        std::fs::create_dir_all(&dir)?;
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join("gupi.log"))
-    });
+    let instance =
+        match paths::config_dir().and_then(|directory| instance::Instance::acquire(&directory)) {
+            Ok(Some(instance)) => instance,
+            Ok(None) => return,
+            Err(error) => {
+                eprintln!("Gupi instance startup failed: {error}");
+                return;
+            }
+        };
+    let log = paths::log_dir().and_then(logging::LogWriter::open);
     let log_warning = log.is_err();
     match log {
         Ok(file) => {
-            let _ = tracing_subscriber::fmt().with_writer(file).try_init();
+            let _ = tracing_subscriber::fmt()
+                .with_writer(std::sync::Mutex::new(file))
+                .try_init();
         }
         Err(error) => {
             eprintln!("Gupi log initialization: {error}");
             let _ = tracing_subscriber::fmt().try_init();
         }
     }
+    let system_locale = sys_locale::get_locale();
+    // AppKit resolves system dialog languages before the async configuration
+    // controller loads. Read only the startup locale here; the controller still
+    // owns configuration, recovery, editing and persistence.
+    let initial_language = paths::config_dir()
+        .ok()
+        .and_then(|dir| crate::state::config::read_config(dir.join("config.toml"), false).ok())
+        .and_then(|data| data.configured().map(|config| config.language))
+        .unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    platform_ext::app::set_application_language_override(i18n::native_locale(initial_language));
     let app = gpui_kit::application().with_assets(Assets::default());
     app.on_reopen(|cx| cx.defer(|cx| show(None, cx)));
     app.run(move |cx| {
         cx.set_app_identity("top.sushao.gupi", "Gupi");
+        if let Err(error) = instance.listen(cx) {
+            tracing::error!(%error, "start instance listener failed");
+            cx.quit();
+            return;
+        }
         gpui_kit::init(cx);
         notifications::init(cx);
         gpui_tokio::init(cx);
@@ -46,7 +69,9 @@ pub(crate) fn run() {
         shortcuts::init(cx);
         app_theme::init(cx);
         crate::state::theme::init(cx);
-        i18n::apply(Default::default(), cx);
+        cx.set_global(i18n::SystemLocale(system_locale));
+        i18n::apply(initial_language, cx);
+        menus::init(cx);
         menus::refresh(cx);
         tray::init(cx);
         crate::state::keybindings::apply(&Default::default(), cx);

@@ -8,14 +8,12 @@ impl ConversationState {
             return None;
         }
         let info = self.infos().into_iter().find(|(k, _)| k == key)?.1;
-        if info.path.as_os_str().is_empty()
-            || self.sessions.values().any(|s| {
-                s.info.path == info.path
-                    && (s.settings_busy()
-                        || s.core_read.running()
-                        || s.instance.is_some() && s.state.is_none())
-            })
-        {
+        if self.sessions.iter().any(|(candidate, session)| {
+            matches_target(key, &info, candidate, session)
+                && (session.settings_busy()
+                    || session.core_read.running()
+                    || session.instance.is_some() && session.state.is_none())
+        }) {
             return None;
         }
         Some(info)
@@ -50,11 +48,10 @@ impl ConversationState {
             .entry(key.to_owned())
             .or_insert_with(|| Session::new(info.clone(), String::new()));
         let mut closing = Vec::new();
-        for s in self
-            .sessions
-            .values_mut()
-            .filter(|s| s.info.path == info.path)
-        {
+        for (candidate, s) in &mut self.sessions {
+            if !matches_target(key, &info, candidate, s) {
+                continue;
+            }
             s.binding += 1;
             s.reset_reads();
             s.state = None;
@@ -74,8 +71,12 @@ impl ConversationState {
                         return Err("Pi process exit could not be confirmed".to_owned());
                     }
                 }
-                let target = info.clone();
-                smol::unblock(move || remove(&target)).await
+                if info.path.as_os_str().is_empty() {
+                    Ok(())
+                } else {
+                    let target = info.clone();
+                    smol::unblock(move || remove(&target)).await
+                }
             }
             .await;
             let _ = owner.update(cx, |this, cx| {
@@ -84,31 +85,31 @@ impl ConversationState {
                 }
                 match result {
                     Ok(()) => {
-                        let selected_deleted = this.selected.as_ref().is_some_and(|key| {
-                            this.sessions
-                                .get(key)
-                                .is_some_and(|s| s.info.path == info.path)
-                        });
                         let removed: Vec<_> = this
                             .sessions
                             .iter()
-                            .filter(|(_, s)| s.info.path == info.path)
+                            .filter(|(key, session)| matches_target(&task_key, &info, key, session))
                             .map(|(key, _)| key.clone())
                             .collect();
+                        let selected_deleted = this
+                            .selected
+                            .as_ref()
+                            .is_some_and(|key| removed.contains(key));
                         let saved_draft = removed
                             .iter()
                             .any(|key| !this.sessions[key].draft.is_empty());
-                        this.sessions.retain(|_, s| s.info.path != info.path);
-                        notify_session(&info.key(), cx);
-                        this.catalog
-                            .transition(CatalogMessage::RemoveSession(info.path));
-                        this.discover_pending_projects(cx);
                         for key in removed {
+                            this.sessions.remove(&key);
                             notify_session(&key, cx);
                         }
+                        if !info.path.as_os_str().is_empty() {
+                            notify_session(&info.key(), cx);
+                            this.catalog
+                                .transition(CatalogMessage::RemoveSession(info.path));
+                            this.discover_pending_projects(cx);
+                        }
                         if selected_deleted {
-                            this.insert_draft(Some(info.cwd));
-                            notify_session(this.selected.as_ref().unwrap(), cx);
+                            this.selected = None;
                             notify_selection(cx);
                         }
                         if saved_draft {
@@ -130,6 +131,16 @@ impl ConversationState {
         });
         self.sessions.get_mut(&key).unwrap().command = SessionCommand::Deleting { task };
         notify_session(&key, cx);
+    }
+}
+
+// Unsaved sessions all have an empty path, but remain distinct conversations.
+// Persisted sessions may also have a live draft key for the same file.
+fn matches_target(key: &str, info: &SessionInfo, candidate: &str, session: &Session) -> bool {
+    if info.path.as_os_str().is_empty() {
+        candidate == key
+    } else {
+        session.info.path == info.path
     }
 }
 

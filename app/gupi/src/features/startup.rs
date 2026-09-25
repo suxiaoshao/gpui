@@ -230,6 +230,9 @@ impl Render for StartupView {
         let screen = self.screen(cx);
         let configured = screen.configured();
         let main = matches!(screen, StartupScreen::Home(_));
+        if !main {
+            crate::app::menus::conversation_commands([false; 6], window, cx);
+        }
         let onboarding = matches!(screen, StartupScreen::Onboarding);
         let settings_page = matches!(screen, StartupScreen::Settings);
         let page_title = match &screen {
@@ -359,6 +362,9 @@ impl Render for StartupView {
                             .child(page_title),
                     ),
                 )
+            })
+            .when(!main, |view| {
+                view.children(chrome::app_menu_bar(window, cx))
             })
             .child(
                 div()

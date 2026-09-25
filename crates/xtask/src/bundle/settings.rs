@@ -3,31 +3,126 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tauri_bundler::{AppCategory, BundleSettings, PackageSettings};
+use tauri_bundler::{
+    AppCategory, BundleSettings, PackageSettings, WixLanguage, WixLanguageConfig, WixSettings,
+};
 use tauri_utils::config::DeepLinkProtocol;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct MacOsBundleLocalization {
+pub(crate) struct BundleLocalization {
+    pub(crate) locale_tag: &'static str,
     pub(crate) bundle_locale_tag: &'static str,
     pub(crate) source_lproj_dir: &'static str,
     pub(crate) bundle_lproj_dir: &'static str,
+    pub(crate) wix_language: &'static str,
+    pub(crate) wix_locale_file: &'static str,
 }
 
-const MACOS_BUNDLE_LOCALIZATIONS: [MacOsBundleLocalization; 2] = [
-    MacOsBundleLocalization {
+const BUNDLE_LOCALIZATIONS: [BundleLocalization; 9] = [
+    BundleLocalization {
+        locale_tag: "en-US",
         bundle_locale_tag: "en",
         source_lproj_dir: "en-US.lproj",
         bundle_lproj_dir: "en.lproj",
+        wix_language: "en-US",
+        wix_locale_file: "en-US.wxl",
     },
-    MacOsBundleLocalization {
+    BundleLocalization {
+        locale_tag: "zh-CN",
         bundle_locale_tag: "zh_CN",
         source_lproj_dir: "zh-Hans.lproj",
         bundle_lproj_dir: "zh_CN.lproj",
+        wix_language: "zh-CN",
+        wix_locale_file: "zh-CN.wxl",
+    },
+    BundleLocalization {
+        locale_tag: "zh-TW",
+        bundle_locale_tag: "zh_TW",
+        source_lproj_dir: "zh-Hant.lproj",
+        bundle_lproj_dir: "zh_TW.lproj",
+        wix_language: "zh-TW",
+        wix_locale_file: "zh-TW.wxl",
+    },
+    BundleLocalization {
+        locale_tag: "ja",
+        bundle_locale_tag: "ja",
+        source_lproj_dir: "ja.lproj",
+        bundle_lproj_dir: "ja.lproj",
+        wix_language: "ja-JP",
+        wix_locale_file: "ja-JP.wxl",
+    },
+    BundleLocalization {
+        locale_tag: "ko",
+        bundle_locale_tag: "ko",
+        source_lproj_dir: "ko.lproj",
+        bundle_lproj_dir: "ko.lproj",
+        wix_language: "ko-KR",
+        wix_locale_file: "ko-KR.wxl",
+    },
+    BundleLocalization {
+        locale_tag: "de",
+        bundle_locale_tag: "de",
+        source_lproj_dir: "de.lproj",
+        bundle_lproj_dir: "de.lproj",
+        wix_language: "de-DE",
+        wix_locale_file: "de-DE.wxl",
+    },
+    BundleLocalization {
+        locale_tag: "fr",
+        bundle_locale_tag: "fr",
+        source_lproj_dir: "fr.lproj",
+        bundle_lproj_dir: "fr.lproj",
+        wix_language: "fr-FR",
+        wix_locale_file: "fr-FR.wxl",
+    },
+    BundleLocalization {
+        locale_tag: "es",
+        bundle_locale_tag: "es",
+        source_lproj_dir: "es.lproj",
+        bundle_lproj_dir: "es.lproj",
+        wix_language: "es-ES",
+        wix_locale_file: "es-ES.wxl",
+    },
+    BundleLocalization {
+        locale_tag: "pt-BR",
+        bundle_locale_tag: "pt_BR",
+        source_lproj_dir: "pt-BR.lproj",
+        bundle_lproj_dir: "pt_BR.lproj",
+        wix_language: "pt-BR",
+        wix_locale_file: "pt-BR.wxl",
     },
 ];
 
-pub(crate) fn macos_bundle_localizations() -> &'static [MacOsBundleLocalization] {
-    &MACOS_BUNDLE_LOCALIZATIONS
+const DEFAULT_MACOS_LOCALIZATION_TAGS: [&str; 2] = ["en-US", "zh-CN"];
+
+pub(crate) fn resolve_bundle_localizations(
+    declared_localizations: Option<&[String]>,
+) -> Result<Vec<BundleLocalization>> {
+    let requested = match declared_localizations {
+        Some([]) => {
+            return Err(XtaskError::msg(
+                "bundle.localizations must contain at least one locale",
+            ));
+        }
+        Some(localizations) => localizations.iter().map(String::as_str).collect::<Vec<_>>(),
+        None => DEFAULT_MACOS_LOCALIZATION_TAGS.to_vec(),
+    };
+    let mut seen = std::collections::HashSet::new();
+    requested
+        .into_iter()
+        .map(|tag| {
+            if !seen.insert(tag) {
+                return Err(XtaskError::msg(format!(
+                    "duplicate bundle localization {tag}"
+                )));
+            }
+            BUNDLE_LOCALIZATIONS
+                .iter()
+                .find(|localization| localization.locale_tag == tag)
+                .copied()
+                .ok_or_else(|| XtaskError::msg(format!("unsupported bundle localization {tag}")))
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -80,6 +175,8 @@ struct ManifestBundle {
     #[serde(default)]
     deep_link_protocols: Option<Vec<DeepLinkProtocol>>,
     #[serde(default)]
+    localizations: Option<Vec<String>>,
+    #[serde(default)]
     deb: Option<ManifestDeb>,
 }
 
@@ -89,7 +186,9 @@ struct ManifestDeb {
     depends: Option<Vec<String>>,
 }
 
-pub fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, BundleSettings)> {
+pub fn read_bundle_settings(
+    manifest_path: &Path,
+) -> Result<(PackageSettings, BundleSettings, Vec<BundleLocalization>)> {
     let content = fs::read_to_string(manifest_path).map_err(|err| {
         XtaskError::msg(format!("failed to read {}: {err}", manifest_path.display()))
     })?;
@@ -118,6 +217,11 @@ pub fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bu
         license_file,
         metadata,
     } = package;
+    let declared_localizations = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.bundle.as_ref())
+        .and_then(|bundle| bundle.localizations.clone());
+    let localizations = resolve_bundle_localizations(declared_localizations.as_deref())?;
     let bundle = metadata.and_then(|metadata| metadata.bundle);
 
     let product_name = bundle
@@ -156,7 +260,38 @@ pub fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bu
     bundle_settings.license = license;
     bundle_settings.license_file =
         license_file.map(|path| resolve_manifest_path(manifest_dir, &path));
-    bundle_settings.resources_map = Some(macos_bundle_localization_resources(manifest_dir)?);
+    bundle_settings.resources_map = Some(macos_bundle_localization_resources(
+        manifest_dir,
+        &localizations,
+    )?);
+
+    if declared_localizations.is_some() {
+        let wix_languages = localizations
+            .iter()
+            .map(|localization| {
+                let relative_path =
+                    Path::new("build-assets/locales/wix").join(localization.wix_locale_file);
+                let locale_path =
+                    resolve_manifest_path(manifest_dir, &relative_path.to_string_lossy());
+                if !locale_path.is_file() {
+                    return Err(XtaskError::msg(format!(
+                        "missing WiX localization file {}",
+                        locale_path.display()
+                    )));
+                }
+                Ok((
+                    localization.wix_language.to_string(),
+                    WixLanguageConfig {
+                        locale_path: Some(locale_path),
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        bundle_settings.windows.wix = Some(WixSettings {
+            language: WixLanguage(wix_languages),
+            ..WixSettings::default()
+        });
+    }
 
     let package_settings = PackageSettings {
         product_name,
@@ -167,7 +302,7 @@ pub fn read_bundle_settings(manifest_path: &Path) -> Result<(PackageSettings, Bu
         default_run,
     };
 
-    Ok((package_settings, bundle_settings))
+    Ok((package_settings, bundle_settings, localizations))
 }
 
 fn resolve_manifest_path(manifest_dir: &Path, path: &str) -> PathBuf {
@@ -179,7 +314,10 @@ fn resolve_manifest_path(manifest_dir: &Path, path: &str) -> PathBuf {
     }
 }
 
-fn macos_bundle_localization_resources(manifest_dir: &Path) -> Result<HashMap<String, String>> {
+fn macos_bundle_localization_resources(
+    manifest_dir: &Path,
+    localizations: &[BundleLocalization],
+) -> Result<HashMap<String, String>> {
     let resources_root = fs::canonicalize(manifest_dir.join("locales/macos")).map_err(|err| {
         XtaskError::msg(format!(
             "failed to resolve macOS localization root relative to {}: {err}",
@@ -188,7 +326,7 @@ fn macos_bundle_localization_resources(manifest_dir: &Path) -> Result<HashMap<St
     })?;
     let mut resources_map = HashMap::new();
 
-    for localization in macos_bundle_localizations() {
+    for localization in localizations {
         let lproj_dir = resources_root.join(localization.source_lproj_dir);
         if !lproj_dir.exists() {
             return Err(XtaskError::msg(format!(
@@ -303,6 +441,84 @@ mod tests {
         })
     }
 
+    #[test]
+    fn declared_localizations_are_per_app_and_configure_wix_languages() -> Result<()> {
+        let temp_dir = TestDir::new()?;
+        let locales = [
+            ("en-US", "en-US.lproj", "en.lproj", "en-US"),
+            ("zh-CN", "zh-Hans.lproj", "zh_CN.lproj", "zh-CN"),
+            ("zh-TW", "zh-Hant.lproj", "zh_TW.lproj", "zh-TW"),
+            ("ja", "ja.lproj", "ja.lproj", "ja-JP"),
+            ("ko", "ko.lproj", "ko.lproj", "ko-KR"),
+            ("de", "de.lproj", "de.lproj", "de-DE"),
+            ("fr", "fr.lproj", "fr.lproj", "fr-FR"),
+            ("es", "es.lproj", "es.lproj", "es-ES"),
+            ("pt-BR", "pt-BR.lproj", "pt_BR.lproj", "pt-BR"),
+        ];
+        let macos_root = temp_dir.path.join("locales/macos");
+        let wix_root = temp_dir.path.join("build-assets/locales/wix");
+        for (_, source_dir, _, wix_locale) in locales {
+            fs::create_dir_all(macos_root.join(source_dir))?;
+            fs::write(
+                macos_root.join(source_dir).join("InfoPlist.strings"),
+                "\"CFBundleName\" = \"Gupi\";\n",
+            )?;
+            fs::create_dir_all(&wix_root)?;
+            fs::write(
+                wix_root.join(format!("{wix_locale}.wxl")),
+                "<WixLocalization></WixLocalization>",
+            )?;
+        }
+
+        let manifest_path = temp_dir.path.join("Cargo.toml");
+        fs::write(
+            &manifest_path,
+            r#"[package]
+name = "gupi"
+version = "0.1.0"
+
+[package.metadata.bundle]
+name = "Gupi"
+localizations = ["en-US", "zh-CN", "zh-TW", "ja", "ko", "de", "fr", "es", "pt-BR"]
+"#,
+        )?;
+
+        let (_, bundle_settings, resolved) = read_bundle_settings(&manifest_path)?;
+        assert_eq!(resolved.len(), 9);
+        let resources = bundle_settings.resources_map.as_ref().unwrap();
+        assert_eq!(resources.len(), 9);
+        assert!(contains_localization_resource(
+            resources,
+            Path::new("locales/macos/zh-Hant.lproj/InfoPlist.strings"),
+            Path::new("zh_TW.lproj/InfoPlist.strings"),
+        ));
+
+        let wix_languages = &bundle_settings.windows.wix.as_ref().unwrap().language.0;
+        assert_eq!(
+            wix_languages
+                .iter()
+                .map(|(language, _)| language.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "en-US", "zh-CN", "zh-TW", "ja-JP", "ko-KR", "de-DE", "fr-FR", "es-ES", "pt-BR",
+            ]
+        );
+        assert!(wix_languages.iter().all(|(_, config)| {
+            config
+                .locale_path
+                .as_ref()
+                .is_some_and(|path| path.is_file())
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_or_duplicate_bundle_localizations_fail() {
+        assert!(resolve_bundle_localizations(Some(&["en-US".into(), "en-US".into()])).is_err());
+        assert!(resolve_bundle_localizations(Some(&["en-GB".into()])).is_err());
+        assert!(resolve_bundle_localizations(Some(&[])).is_err());
+    }
+
     #[allow(deprecated)]
     #[test]
     fn read_bundle_settings_resolves_relative_bundle_paths() -> Result<()> {
@@ -338,7 +554,9 @@ depends = ["libasound2"]
 "#,
         )?;
 
-        let (_, bundle_settings) = read_bundle_settings(&manifest_path)?;
+        let (_, bundle_settings, localizations) = read_bundle_settings(&manifest_path)?;
+        assert_eq!(localizations.len(), 2);
+        assert!(bundle_settings.windows.wix.is_none());
 
         assert!(bundle_settings.icon.is_none());
         assert_eq!(

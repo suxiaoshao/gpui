@@ -1,9 +1,8 @@
 use super::*;
 use crate::pi::ProbeFailureKey;
 use crate::state::theme;
-use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::{
-    Sizable, ThemeMode as Mode, ThemeRegistry,
+    Sizable, ThemeMode as Mode,
     combobox::Combobox,
     form::{field, v_form},
     searchable_list::SearchableListItem,
@@ -39,13 +38,48 @@ pub(super) fn language_items(cx: &App) -> SearchableVec<LanguageItem> {
         },
         LanguageItem {
             value: AppLanguage::English,
-            title: "English".into(),
+            title: t(cx, "language-english").into(),
             keywords: "en english 英语 英文",
         },
         LanguageItem {
             value: AppLanguage::Chinese,
-            title: "简体中文".into(),
-            keywords: "zh chinese 中文 汉语",
+            title: t(cx, "language-chinese").into(),
+            keywords: "zh zh-cn chinese simplified 简体中文 简体 中文 汉语",
+        },
+        LanguageItem {
+            value: AppLanguage::TraditionalChinese,
+            title: t(cx, "language-traditional-chinese").into(),
+            keywords: "zh-tw zh-hant traditional chinese 繁体中文 繁體中文",
+        },
+        LanguageItem {
+            value: AppLanguage::Japanese,
+            title: t(cx, "language-japanese").into(),
+            keywords: "ja japanese 日本語 日语 日文",
+        },
+        LanguageItem {
+            value: AppLanguage::Korean,
+            title: t(cx, "language-korean").into(),
+            keywords: "ko korean 한국어 조선어 韩语 韓語",
+        },
+        LanguageItem {
+            value: AppLanguage::German,
+            title: t(cx, "language-german").into(),
+            keywords: "de german deutsch 德语 德文",
+        },
+        LanguageItem {
+            value: AppLanguage::French,
+            title: t(cx, "language-french").into(),
+            keywords: "fr french français francais 法语 法文",
+        },
+        LanguageItem {
+            value: AppLanguage::Spanish,
+            title: t(cx, "language-spanish").into(),
+            keywords: "es spanish español espanol 西班牙语 西语",
+        },
+        LanguageItem {
+            value: AppLanguage::BrazilianPortuguese,
+            title: t(cx, "language-portuguese-brazil").into(),
+            keywords: "pt pt-br portuguese português portugues brasil brazilian 巴西葡萄牙语",
         },
     ])
 }
@@ -71,78 +105,16 @@ impl SettingsView {
                 div()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .child(t(
-                        cx,
-                        if crate::foundation::i18n::system_is_chinese() {
-                            "setup-system-chinese"
-                        } else {
-                            "setup-system-english"
-                        },
-                    )),
+                    .child({
+                        let mut args = fluent_bundle::FluentArgs::new();
+                        args.set(
+                            "language",
+                            crate::foundation::i18n::system_language_autonym(cx).to_owned(),
+                        );
+                        crate::foundation::i18n::t_with_args(cx, "setup-system-language", &args)
+                    }),
             )
             .into_any_element()
-    }
-    pub(super) fn render_appearance(&self, _window: &Window, cx: &Context<Self>) -> AnyElement {
-        let draft = self.controller.read(cx).preferences(cx);
-        let busy = self.controller.read(cx).busy(cx);
-        let modes = [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark];
-        let mode_control = gpui_kit::component::radio::RadioGroup::horizontal("color-mode")
-            .children([
-                t(cx, "theme-system"),
-                t(cx, "theme-light"),
-                t(cx, "theme-dark"),
-            ])
-            .selected_index(modes.iter().position(|mode| *mode == draft.theme))
-            .disabled(busy)
-            .on_click(cx.listener(move |this, index, _, cx| {
-                if this.controller.read(cx).busy(cx) {
-                    return;
-                }
-                this.controller.update(cx, |owner, cx| {
-                    owner.set_preference(PreferenceChange::Theme(modes[*index]), cx)
-                });
-            }));
-        let controller = self.controller.clone();
-        let light = app_theme::theme_choices(ThemeRegistry::global(cx), Mode::Light, &[]);
-        let dark = app_theme::theme_choices(ThemeRegistry::global(cx), Mode::Dark, &[]);
-        let controls = v_form().child(field().label(t(cx, "setup-color-mode")).child(mode_control));
-        let scroll = self.theme_scroll.clone();
-        container_query(move |size, _, cx| {
-            let columns = theme_columns(size.width.as_f32());
-            div()
-                .relative()
-                .size_full()
-                .overflow_hidden()
-                .child(
-                    v_flex()
-                        .id("theme-scroll")
-                        .size_full()
-                        .min_h_0()
-                        .overflow_y_scroll()
-                        .track_scroll(&scroll)
-                        .gap_6()
-                        .child(div().flex_shrink_0().child(controls))
-                        .child(theme_grid(
-                            ("light-themes", Mode::Light, light),
-                            &draft,
-                            &controller,
-                            Some(columns),
-                            busy,
-                            cx,
-                        ))
-                        .child(theme_grid(
-                            ("dark-themes", Mode::Dark, dark),
-                            &draft,
-                            &controller,
-                            Some(columns),
-                            busy,
-                            cx,
-                        )),
-                )
-                .child(super::sticky::overlay(scroll.clone()))
-                .child(Scrollbar::vertical(&scroll))
-        })
-        .into_any_element()
     }
     pub(super) fn probe_matches(&self, cx: &App) -> bool {
         let command = self.pi_command(cx);
@@ -244,7 +216,9 @@ impl SettingsView {
                         .text_color(cx.theme().danger)
                         .child(t(cx, problem.key())),
                 );
-            } else if let Some(data) = pi.operation.data() {
+            } else if self.probe_ready(cx)
+                && let Some(data) = pi.operation.data()
+            {
                 view = view.child(
                     v_flex()
                         .gap_1()
@@ -287,28 +261,15 @@ pub(super) fn theme_grid(
     group: (&'static str, Mode, Vec<app_theme::ThemeChoice>),
     draft: &AppConfig,
     controller: &Entity<ConfigController>,
-    columns: Option<u16>,
     busy: bool,
-    cx: &App,
 ) -> AnyElement {
-    let Some(columns) = columns else {
-        return super::theme_grid::ThemeGrid {
-            group,
-            draft: draft.clone(),
-            controller: controller.clone(),
-            busy,
-        }
-        .into_any_element();
-    };
-    v_flex()
-        .w_full()
-        .flex_shrink_0()
-        .gap_3()
-        .child(super::sticky::heading(group.0, cx))
-        .child(theme_grid_content(
-            group, draft, controller, columns, busy, cx,
-        ))
-        .into_any_element()
+    super::theme_grid::ThemeGrid {
+        group,
+        draft: draft.clone(),
+        controller: controller.clone(),
+        busy,
+    }
+    .into_any_element()
 }
 
 pub(super) fn theme_grid_content(

@@ -4,7 +4,6 @@ mod layout;
 mod onboarding;
 mod preferences;
 mod resources;
-mod sticky;
 #[cfg(test)]
 mod tests;
 mod theme_grid;
@@ -51,10 +50,10 @@ pub(crate) struct SettingsView {
     keys: Entity<keys::KeysView>,
     global_keys: Entity<global_keys::GlobalKeys>,
     step: usize,
+    startup_appearance_open: bool,
     transition: Option<onboarding::PageTransition>,
     transition_serial: u64,
     page_scroll: [ScrollHandle; 4],
-    theme_scroll: ScrollHandle,
     language: Entity<ComboboxState<SearchableVec<LanguageItem>>>,
 }
 impl SettingsView {
@@ -214,10 +213,10 @@ impl SettingsView {
             keys,
             global_keys,
             step: 0,
+            startup_appearance_open: false,
             transition: None,
             transition_serial: 0,
             page_scroll: std::array::from_fn(|_| ScrollHandle::new()),
-            theme_scroll: ScrollHandle::new(),
             language,
             error: None,
             confirmation: None,

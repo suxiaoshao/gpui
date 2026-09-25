@@ -1,7 +1,11 @@
 use super::*;
 use gpui_kit::component::{
-    ElementExt, Sizable,
+    ElementExt, Sizable, ThemeMode as Mode, ThemeRegistry,
     animation::ease_in_out_cubic,
+    collapsible::Collapsible,
+    form::{field, v_form},
+    link::Link,
+    radio::RadioGroup,
     stepper::{Stepper, StepperItem},
 };
 use gpui_kit::prelude::FluentBuilder;
@@ -23,6 +27,12 @@ impl SettingsView {
         {
             return;
         }
+        if step == 2 && self.step != 2 {
+            self.error = None;
+            let command = self.pi_command(cx);
+            self.draft_pi
+                .update(cx, |pi, cx| pi.request(command, false, cx));
+        }
         self.focus_handle.focus(window, cx);
         self.transition_serial += 1;
         self.transition = (!cx.reduce_motion()).then_some(PageTransition {
@@ -34,7 +44,11 @@ impl SettingsView {
         cx.notify();
     }
 
-    pub(super) fn render_onboarding(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
+    pub(super) fn render_onboarding(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let busy = self.controller.read(cx).busy(cx) || self.transition.is_some();
         let mut viewport = div()
             .relative()
@@ -134,8 +148,8 @@ impl SettingsView {
     fn render_onboarding_page(
         &self,
         step: usize,
-        window: &Window,
-        cx: &Context<Self>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         let busy = self.controller.read(cx).busy(cx);
         let logo =
@@ -183,12 +197,20 @@ impl SettingsView {
                             this.navigate(1, window, cx);
                         })),
                 )
+                .child(
+                    Button::new("setup-skip-all")
+                        .ghost()
+                        .label(t(cx, "setup-skip-all"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.submit(window, cx);
+                        })),
+                )
                 .into_any_element();
         }
         let title = match step {
-            1 => "setup-language-title",
-            2 => "setup-appearance-title",
-            _ => "setup-pi-title",
+            1 => "setup-preferences-title",
+            2 => "setup-pi-title",
+            _ => "setup-desktop-title",
         };
         let mut view = v_flex()
             .size_full()
@@ -210,14 +232,18 @@ impl SettingsView {
                     .selected_index(step - 1)
                     .small()
                     .items(
-                        ["settings-language", "settings-theme", "setup-pi-step"]
-                            .into_iter()
-                            .enumerate()
-                            .map(|(index, key)| {
-                                StepperItem::new()
-                                    .disabled(busy || index + 1 > step)
-                                    .child(t(cx, key))
-                            }),
+                        [
+                            "setup-preferences-step",
+                            "setup-pi-step",
+                            "setup-desktop-step",
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, key)| {
+                            StepperItem::new()
+                                .disabled(busy || index + 1 > step)
+                                .child(t(cx, key))
+                        }),
                     )
                     .on_click(cx.listener(|this, index, window, cx| {
                         if !this.controller.read(cx).busy(cx) && *index < this.step {
@@ -234,26 +260,46 @@ impl SettingsView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(t(cx, title)),
                     )
-                    .when(step == 3, |view| {
+                    .when(step == 2, |view| {
                         view.child(
                             div()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(t(cx, "setup-pi-help")),
                         )
+                        .child(
+                            h_flex()
+                                .gap_4()
+                                .child(
+                                    Link::new("setup-pi-quickstart")
+                                        .href("https://pi.dev/docs/latest/quickstart")
+                                        .child(t(cx, "setup-pi-install-guide")),
+                                )
+                                .child(
+                                    Link::new("setup-pi-models")
+                                        .href("https://pi.dev/docs/latest/models")
+                                        .child(t(cx, "setup-pi-model-guide")),
+                                ),
+                        )
                     }),
             )
+            .when(step == 3, |view| {
+                view.child(
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t(cx, "setup-desktop-help")),
+                )
+            })
             .child(
                 div()
                     .id("setup-page-body")
                     .track_scroll(&self.page_scroll[step])
                     .flex_1()
                     .min_h_0()
-                    .when(step == 2, |view| view.overflow_hidden())
-                    .when(step != 2, |view| view.overflow_y_scroll())
+                    .overflow_y_scroll()
                     .child(match step {
-                        1 => self.render_language(cx),
-                        2 => self.render_appearance(window, cx),
-                        _ => self.render_pi(cx),
+                        1 => self.render_startup_preferences(cx),
+                        2 => self.render_pi(cx),
+                        _ => self.render_startup_desktop(window, cx),
                     }),
             );
         let store = self.controller.read(cx).store.clone();
@@ -305,21 +351,200 @@ impl SettingsView {
                 ),
             );
         }
-        if step == 3 {
+        if step < 3 {
+            let label = if step == 2 {
+                "setup-pi-later"
+            } else {
+                "setup-page-skip"
+            };
+            view = view.child(
+                h_flex().justify_end().child(
+                    Button::new("setup-skip-page")
+                        .ghost()
+                        .label(t(cx, label))
+                        .disabled(busy)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if !this.controller.read(cx).busy(cx) {
+                                this.navigate(step + 1, window, cx);
+                            }
+                        })),
+                ),
+            );
+        } else {
             view = view.child(
                 Button::new("setup-finish")
                     .icon(IconName::Check)
                     .primary()
                     .label(t(cx, if busy { "setup-saving" } else { "setup-finish" }))
-                    .disabled(busy || !self.probe_ready(cx))
+                    .disabled(busy)
                     .on_click(cx.listener(|this, _, window, cx| {
-                        if !this.controller.read(cx).busy(cx) && this.probe_ready(cx) {
+                        if !this.controller.read(cx).busy(cx) {
                             this.submit(window, cx);
                         }
                     })),
             );
         }
         view.into_any_element()
+    }
+
+    fn render_startup_preferences(&self, cx: &Context<Self>) -> AnyElement {
+        let draft = self.controller.read(cx).preferences(cx);
+        let busy = self.controller.read(cx).busy(cx);
+        let modes = [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark];
+        let mode_control = RadioGroup::horizontal("setup-color-mode")
+            .children([
+                t(cx, "theme-system"),
+                t(cx, "theme-light"),
+                t(cx, "theme-dark"),
+            ])
+            .selected_index(modes.iter().position(|mode| *mode == draft.theme))
+            .disabled(busy)
+            .on_click(cx.listener(move |this, index, _, cx| {
+                if !this.controller.read(cx).busy(cx) {
+                    this.controller.update(cx, |owner, cx| {
+                        owner.set_preference(PreferenceChange::Theme(modes[*index]), cx)
+                    });
+                }
+            }));
+        let light = app_theme::theme_choices(ThemeRegistry::global(cx), Mode::Light, &[]);
+        let dark = app_theme::theme_choices(ThemeRegistry::global(cx), Mode::Dark, &[]);
+        let open = self.startup_appearance_open;
+        let appearance_options = Collapsible::new()
+            .open(open)
+            .gap_3()
+            .child(
+                Button::new("setup-appearance-options")
+                    .ghost()
+                    .icon(if open {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
+                    .label(t(cx, "setup-appearance-options"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.startup_appearance_open = !this.startup_appearance_open;
+                        cx.notify();
+                    })),
+            )
+            .content(
+                v_flex()
+                    .gap_6()
+                    .child(
+                        v_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(t(cx, "light-themes")),
+                            )
+                            .child(super::preferences::theme_grid(
+                                ("light-themes", Mode::Light, light),
+                                &draft,
+                                &self.controller,
+                                busy,
+                            )),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(t(cx, "dark-themes")),
+                            )
+                            .child(super::preferences::theme_grid(
+                                ("dark-themes", Mode::Dark, dark),
+                                &draft,
+                                &self.controller,
+                                busy,
+                            )),
+                    )
+                    .child(self.render_icon_themes(cx)),
+            );
+
+        v_flex()
+            .gap_6()
+            .child(self.render_language(cx))
+            .child(v_form().child(field().label(t(cx, "setup-color-mode")).child(mode_control)))
+            .child(appearance_options)
+            .into_any_element()
+    }
+
+    fn render_startup_desktop(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let busy = self.controller.read(cx).busy(cx);
+        let notifications = self.controller.read(cx).preferences(cx).notifications;
+        let completion_modes = [
+            crate::state::notifications::CompletionMode::Off,
+            crate::state::notifications::CompletionMode::Background,
+            crate::state::notifications::CompletionMode::Always,
+        ];
+        let completion = RadioGroup::horizontal("setup-notification-completion")
+            .children([
+                t(cx, "notification-off"),
+                t(cx, "notification-background"),
+                t(cx, "notification-always"),
+            ])
+            .selected_index(
+                completion_modes
+                    .iter()
+                    .position(|mode| *mode == notifications.completion),
+            )
+            .disabled(busy)
+            .on_click(cx.listener(move |this, index, _, cx| {
+                if this.controller.read(cx).busy(cx) {
+                    return;
+                }
+                let mut notifications = this.controller.read(cx).preferences(cx).notifications;
+                notifications.completion = completion_modes[*index];
+                this.controller.update(cx, |owner, cx| {
+                    owner.set_preference(PreferenceChange::Notifications(notifications), cx)
+                });
+            }));
+        let waiting = gpui_kit::component::switch::Switch::new("setup-notification-waiting")
+            .checked(notifications.waiting)
+            .disabled(busy)
+            .on_click(cx.listener(|this, checked, _, cx| {
+                if this.controller.read(cx).busy(cx) {
+                    return;
+                }
+                let mut notifications = this.controller.read(cx).preferences(cx).notifications;
+                notifications.waiting = *checked;
+                this.controller.update(cx, |owner, cx| {
+                    owner.set_preference(PreferenceChange::Notifications(notifications), cx)
+                });
+            }));
+
+        v_flex()
+            .gap_6()
+            .when(
+                cfg!(any(target_os = "macos", target_os = "windows")),
+                |view| {
+                    view.child(
+                        v_form().child(field().label(t(cx, "shortcut-launcher")).child(
+                            super::global_keys::GlobalKeys::launcher_control(
+                                &self.global_keys,
+                                window,
+                                cx,
+                            ),
+                        )),
+                    )
+                },
+            )
+            .child(
+                v_form().child(
+                    field()
+                        .label(t(cx, "settings-notification-completion"))
+                        .child(completion),
+                ),
+            )
+            .child(
+                v_form().child(
+                    field()
+                        .label(t(cx, "settings-notification-waiting"))
+                        .child(waiting),
+                ),
+            )
+            .into_any_element()
     }
 }
 

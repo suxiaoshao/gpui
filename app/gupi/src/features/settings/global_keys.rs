@@ -58,6 +58,13 @@ impl GlobalKeys {
         groups.push(group);
         groups
     }
+    pub(super) fn launcher_control(
+        owner: &Entity<Self>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        owner.update(cx, |this, cx| this.render_binding("", window, cx))
+    }
     pub(super) fn add_button(owner: &Entity<Self>, cx: &App) -> Button {
         let disabled = owner.read(cx).controller.read(cx).busy(cx);
         let owner = owner.clone();
@@ -179,6 +186,7 @@ struct BindingInput {
     controller: Entity<ConfigController>,
     input: Entity<InputState>,
     saved: String,
+    error: Option<String>,
     capture: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
@@ -215,6 +223,7 @@ impl BindingInput {
                 this.capture = None;
             }
             if matches!(e, InputEvent::Change) {
+                this.error = None;
                 cx.notify();
             }
             let _ = window;
@@ -237,6 +246,7 @@ impl BindingInput {
             controller,
             input,
             saved,
+            error: None,
             capture: None,
             _subscriptions: vec![sub, config],
         }
@@ -245,16 +255,32 @@ impl BindingInput {
         if self.controller.read(cx).busy(cx) || self.capture.is_some() {
             return;
         }
-        let mut config = self.controller.read(cx).preferences(cx).shortcuts;
+        let mut candidate = self.controller.read(cx).preferences(cx);
         let binding = self.input.read(cx).value().trim().to_owned();
         if self.id.is_empty() {
-            config.launcher = binding;
-        } else if let Some(task) = config.tasks.iter_mut().find(|t| t.id == self.id) {
-            task.binding = binding;
+            candidate.shortcuts.launcher = binding.clone();
+        } else if let Some(task) = candidate
+            .shortcuts
+            .tasks
+            .iter_mut()
+            .find(|t| t.id == self.id)
+        {
+            task.binding = binding.clone();
         }
+        self.error = crate::app::shortcuts::validate_registration(&candidate, cx).err();
+        if self.error.is_some() {
+            cx.notify();
+            return;
+        }
+        let config = candidate.shortcuts;
+        let onboarding = self.controller.read(cx).is_onboarding(cx);
         self.controller.update(cx, |c, cx| {
             c.set_preference(PreferenceChange::Shortcuts(config), cx)
         });
+        if onboarding {
+            self.saved = binding;
+        }
+        cx.notify();
     }
 }
 impl Render for BindingInput {
@@ -326,15 +352,26 @@ impl Render for BindingInput {
                     })),
             )
         });
-        InputGroup::new("binding-input")
+        v_flex()
+            .gap_1()
             .w(px(360.))
-            .readonly(true)
-            .disabled(busy)
-            .input(Input::new(&self.input))
-            .addon(
-                InputGroupAddon::new("actions")
-                    .align(InputGroupAddonAlignment::InlineEnd)
-                    .child(actions),
+            .child(
+                InputGroup::new("binding-input")
+                    .w_full()
+                    .readonly(true)
+                    .disabled(busy)
+                    .input(Input::new(&self.input))
+                    .addon(
+                        InputGroupAddon::new("actions")
+                            .align(InputGroupAddonAlignment::InlineEnd)
+                            .child(actions),
+                    ),
             )
+            .children(self.error.as_ref().map(|error| {
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().danger)
+                    .child(t(cx, error))
+            }))
     }
 }

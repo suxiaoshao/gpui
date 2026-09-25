@@ -34,13 +34,13 @@ app/gupi/
 ├── src/components/recovery.rs       # F-115 新增；共享恢复页面布局
 ├── src/app/menus.rs                 # F-116 新增；应用菜单与 action 接入
 ├── assets/                          # F-105 新增；仅实际使用的运行时资源
-├── locales/{en-US,zh-CN}/main.ftl    # F-104 新增；运行时文案
-├── locales/macos/*/InfoPlist.strings # F-104 新增；按现有 bundle 管线提供中英文
+├── locales/*/main.ftl               # F-104 运行时文案；现有九种语言见 #223
+├── locales/macos/*/InfoPlist.strings # F-104 新增；按应用声明提供 bundle 本地化
 ├── build-assets/icon/app-icon.png   # F-105 新增；开发期 bundle 图标
 └── README.md                        # F-113 实施时新增；运行、目录与验收边界
 ```
 
-features/ 按功能组织页面与交互：settings 拥有设置表单，startup 拥有启动界面的编排与分类恢复页面，home 拥有检查通过后的主窗口业务外壳。配置持久化 owner 仍在 state/config.rs，Pi 探测 owner 仍在 pi.rs；不因页面归入 features/ 而移动底层状态职责。components/recovery.rs 仅保存跨功能共用的 RecoveryLayout；菜单与 action 接入归 app/menus.rs，不建立笼统的 src/ui.rs。
+features/ 按功能组织页面与交互：settings 拥有设置表单，startup 拥有启动界面的编排与分类恢复页面，home 拥有配置加载后的主窗口业务界面。配置持久化 owner 仍在 state/config.rs，Pi 探测 owner 仍在 pi.rs；不因页面归入 features/ 而移动底层状态职责。components/recovery.rs 仅保存跨功能共用的 RecoveryLayout；菜单与 action 接入归 app/menus.rs，不建立笼统的 src/ui.rs。
 
 features 调用状态 owner，并消费 components；components 不反向依赖 features。状态 owner 调用 foundation/Pi 边界；foundation 不依赖 UI。所有新模块使用 `.rs`。不增加 Gupi 专用共享 crate，不依赖 jaco-core。应用经 gpui_kit 及其 component/assets 接入；版本与 feature 以根 manifest 和锁文件为准。
 
@@ -50,7 +50,10 @@ features 调用状态 owner，并消费 components；components 不反向依赖 
 
 ```rust
 pub(crate) enum ThemeMode { System, Light, Dark }
-pub(crate) enum AppLanguage { System, English, Chinese }
+pub(crate) enum AppLanguage {
+    System, English, Chinese, TraditionalChinese, Japanese, Korean,
+    German, French, Spanish, BrazilianPortuguese,
+}
 pub(crate) struct AppConfig {
     pub pi_command: Option<String>,
     pub theme: ThemeMode,
@@ -67,7 +70,7 @@ pub(crate) struct LayoutState {
 
 配置路径为 `dirs_next::config_dir()/gupi/config.toml`，布局为同目录 `state.toml`；`GUPI_CONFIG_DIR` 覆盖整个目录，启动时归一化绝对路径。日志目录独立解析，采用 `GUPI_LOG_DIR` 覆盖。系统目录不可确定时给出路径错误，不改用工作目录。日志默认目录沿用 Jaco 平台约定：macOS 为 home_dir()/Library/Logs/gupi，其他平台为 data_local_dir()/gupi/logs；覆盖值忽略空值并归一化绝对路径。窗口布局恢复规则见下文。
 
-实际读取 config 并区分 NotFound、读取失败与解析/校验失败，不用 exists() 推断读取结果。NotFound 是正常的“尚未设置”数据，展示欢迎、语言、外观、Pi 配置四页引导；首次明确保存成功前不自动创建配置文件。引导末页先显式检测草稿 Pi，成功且命令仍匹配时才允许完成并保存；下次从有效配置与 Pi 检查继续。损坏或权限错误进入配置恢复，不能当作首次缺失。
+实际读取 config 并区分 NotFound、读取失败与解析/校验失败，不用 exists() 推断读取结果。NotFound 是正常的“尚未设置”数据，展示欢迎页及语言与外观、连接 Pi、快捷键与通知三个任务页；首次明确保存成功前不自动创建配置文件。Pi 页可以稍后配置，不要求检测成功；下次从有效配置进入应用，Pi 检查仍只用于设置诊断。具体交互见[原生体验设计](../issue-223/README.md)。损坏或权限错误进入配置恢复，不能当作首次缺失。
 
 不保存 onboarding_completed，也不判断用户是否曾经使用过应用。用户手动放入有效配置时直接采用；启动时配置被删除则重新进入设置。运行中重读发现文件被删除，仍保留已应用配置和草稿，按配置恢复处理，不清空当前工作。state.toml 不存在只代表没有窗口布局；读取、解析或校验失败时记录日志并尝试删除失效文件，使用默认窗口继续启动，不决定 welcome 是否显示。
 
@@ -117,9 +120,9 @@ pub(crate) struct LayoutState {
 首次显示 Pi/插件页面 -> 按需检查并复用已保存命令的版本诊断（不阻塞会话界面）
 ```
 
-Missing 的引导共用一个 Form；主题和语言即时预览，最后检测草稿 Pi，通过后完成保存并变为 Configured。多项问题按配置、Pi 的依赖顺序呈现；布局不可用不阻塞启动，只丢弃窗口状态，不创建、删除或重置用户配置。参考 JacoRoot 从资源状态呈现内容的方式，正常启动仍由数据状态决定；Missing 内部以 Stepper 管理设置步骤。
+Missing 的引导共用一个 Form；主题和语言即时预览，Pi 检测可跳过，完成保存后变为 Configured。多项问题按配置、Pi 的依赖顺序呈现；布局不可用不阻塞启动，只丢弃窗口状态，不创建、删除或重置用户配置。参考 JacoRoot 从资源状态呈现内容的方式，正常启动仍由数据状态决定；Missing 内部以 Stepper 管理设置步骤。
 
-已有主界面运行期间的配置重读失败通过设置页反馈，保留当前内容；Pi 命令变化则暂停进入依赖 Pi 的入口。第一阶段外壳仅有应用标题、环境状态和设置入口，不做可输入却无法提交的假对话框。
+已有主界面运行期间的配置重读失败通过设置页反馈，保留当前内容；Pi 命令变化影响后续会话连接，不暂停本地页面或已建立的会话。
 
 配置恢复页面归 features/startup.rs；Pi 环境诊断位于 features/settings.rs 的设置页面。共享 RecoveryLayout 归 components/recovery.rs，只负责标题、说明、诊断和按钮排版。恢复按钮由各页提供，不能把所有业务错误转换为一个万能 reset。Config 页使用基础主题/语言渲染，不能依赖加载成功的配置 Store。
 
@@ -129,9 +132,9 @@ ShowSettings、ShowMainWindow、Quit actions 在 app 层注册；macOS/Windows �
 
 ## L-105：主题、本地化与诊断
 
-复用 app-theme 的系统外观能力；语言检测与菜单刷新参考 Jaco 的 foundation/i18n.rs。仅应用本地配置类型，所有用户文字从 Fluent 获取；zh 系统语言选中文，其余英文，手动选择覆盖系统检测。语言切换同时更新页面、菜单、校验与后续错误消息，错误值保存语义和参数，不保存翻译后的字符串。
+复用 app-theme 的系统外观能力；语言检测与菜单刷新参考 Jaco 的 foundation/i18n.rs。仅应用本地配置类型，所有用户文字从 Fluent 获取；系统语言按已支持的九种语言与繁简脚本/地区解析，未知语言回退英语；手动选择覆盖系统检测。语言切换同时更新页面、菜单、校验与后续错误消息，错误值保存语义和参数，不保存翻译后的字符串。
 
-Fluent 两份文件同步维护以下键组：`app-title`；`menu-{settings,show-main,quit}`；`startup-{checking,welcome,continue}`；`settings-{pi-command,theme,language,save,reload,write-current}`；`recovery-{config,pi}-title`；`action-{retry,locate,reset,cancel,confirm}`；`error-{config-read,config-parse,config-validation,config-write,pi-probe}`。错误参数只包含已筛选的路径、状态或版本，不嵌入整份配置和 stderr。界面采用 Form 布局、Stepper、可搜索语言 Combobox 与真实主题预览网格；Input 和语言控件通过 Form 的 typed control binding 连接。主题和语言草稿立即投影到整个窗口和菜单，亮暗主题独立保存，系统外观与强调色变化重新应用当前草稿。Fluent 完整键位于应用 locales。
+所有 Fluent 语言文件同步维护键与参数；基础键组包括：`app-title`；`menu-{settings,show-main,quit}`；`startup-{checking,welcome,continue}`；`settings-{pi-command,theme,language,save,reload,write-current}`；`recovery-{config,pi}-title`；`action-{retry,locate,reset,cancel,confirm}`；`error-{config-read,config-parse,config-validation,config-write,pi-probe}`。错误参数只包含已筛选的路径、状态或版本，不嵌入整份配置和 stderr。界面采用 Form 布局、Stepper、可搜索语言 Combobox 与真实主题预览网格；Input 和语言控件通过 Form 的 typed control binding 连接。主题和语言草稿立即投影到整个窗口和菜单，亮暗主题独立保存，系统外观与强调色变化重新应用当前草稿。Fluent 完整键位于应用 locales。
 
 日志记录操作种类、耗时、结果分类和操作系统错误码；不记录配置原文、环境变量全表或 Pi 认证。用户可主动展开有限诊断，控制字符清理后显示。日志初始化失败保留 stderr 诊断与界面提示，不连带使设置不可访问。
 

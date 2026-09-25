@@ -14,6 +14,7 @@ publisher = "CN=Sushao"
 short_description = "A GPUI desktop host for Pi"
 long_description = "Gupi provides a native desktop environment for Pi."
 category = "DeveloperTool"
+localizations = ["en-US", "zh-CN", "zh-TW", "ja", "ko", "de", "fr", "es", "pt-BR"]
 
 [dependencies]
 # UI and workspace services.

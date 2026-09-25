@@ -64,6 +64,10 @@ const LOGO_BLACK: &str = "brand/logo-black.svg";
 const LOGO_WHITE: &str = "brand/logo-white.svg";
 pub(crate) fn app_logo(cx: &gpui_kit::App) -> &'static str {
     use gpui_kit::component::ActiveTheme;
+    let icon = crate::state::icons::current(cx);
+    if icon != crate::state::icons::IconTheme::Classic {
+        return icon.logo();
+    }
     if cx.theme().is_dark() {
         LOGO_WHITE
     } else {
@@ -81,16 +85,71 @@ impl AssetSource for BrandAssets {
             LOGO_WHITE => Ok(Some(Cow::Borrowed(include_bytes!(
                 "../../assets/brand/logo-white.svg"
             )))),
+            "brand/icon-classic.png" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../assets/brand/icon-classic.png"
+            )))),
+            "brand/icon-classic-gradient.png" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../assets/brand/icon-classic-gradient.png"
+            )))),
+            "brand/icon-classic-gradient.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../assets/brand/icon-classic-gradient.svg"
+            )))),
+            "brand/icon-color.png" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../assets/brand/icon-color.png"
+            )))),
+            "brand/icon-color.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../assets/brand/icon-color.svg"
+            )))),
+            "brand/icon-color-gradient.png" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../assets/brand/icon-color-gradient.png"
+            )))),
+            "brand/icon-color-gradient.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../assets/brand/icon-color-gradient.svg"
+            )))),
+            "brand/icon-pride.png" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../assets/brand/icon-pride.png"
+            )))),
+            "brand/icon-pride.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../assets/brand/icon-pride.svg"
+            )))),
+            "brand/icon-ukraine.png" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../assets/brand/icon-ukraine.png"
+            )))),
+            "brand/icon-ukraine.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../assets/brand/icon-ukraine.svg"
+            )))),
+            "brand/icon-ukraine-gradient.png" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../assets/brand/icon-ukraine-gradient.png"
+            )))),
+            "brand/icon-ukraine-gradient.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../assets/brand/icon-ukraine-gradient.svg"
+            )))),
             _ => gpui_kit::assets::Assets.load(path),
         }
     }
     fn list(&self, path: &str) -> gpui_kit::Result<Vec<SharedString>> {
         let mut items = gpui_kit::assets::Assets.list(path)?;
         items.extend(
-            [LOGO_BLACK, LOGO_WHITE]
-                .into_iter()
-                .filter(|name| name.starts_with(path))
-                .map(SharedString::from),
+            [
+                LOGO_BLACK,
+                LOGO_WHITE,
+                "brand/icon-classic.png",
+                "brand/icon-classic-gradient.png",
+                "brand/icon-classic-gradient.svg",
+                "brand/icon-color.png",
+                "brand/icon-color.svg",
+                "brand/icon-color-gradient.png",
+                "brand/icon-color-gradient.svg",
+                "brand/icon-pride.png",
+                "brand/icon-pride.svg",
+                "brand/icon-ukraine.png",
+                "brand/icon-ukraine.svg",
+                "brand/icon-ukraine-gradient.png",
+                "brand/icon-ukraine-gradient.svg",
+            ]
+            .into_iter()
+            .filter(|name| name.starts_with(path))
+            .map(SharedString::from),
         );
         Ok(items)
     }

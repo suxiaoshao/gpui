@@ -386,6 +386,20 @@ impl HomeView {
         }
         self.shown_key = key.clone();
         let Some(key) = key else {
+            if changed {
+                self.shown_request = None;
+                self.input
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+                self.extension_input
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+                let owner = cx.weak_entity();
+                self.history_list.update(cx, |list, cx| {
+                    *list.delegate_mut() = history::HistoryDelegate::new(owner);
+                    list.set_selected_index(None, window, cx);
+                    cx.notify();
+                });
+                self.focus_handle.focus(window, cx);
+            }
             self.progress
                 .update(cx, |progress, cx| progress.sync(None, None, cx));
             cx.notify();
@@ -766,6 +780,12 @@ impl HomeView {
 }
 impl Render for HomeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let commands = crate::app::menus::CONVERSATION_COMMANDS.map(|kind| {
+            !window.has_active_dialog(cx)
+                && !self.has_image_preview(cx)
+                && self.action_enabled(kind, cx)
+        });
+        crate::app::menus::conversation_commands(commands, window, cx);
         if self.state.read(cx).temporary {
             let empty =
                 self.state.read(cx).current().is_some_and(|s| {
@@ -862,9 +882,15 @@ impl Render for HomeView {
             .key_context("Gupi")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::run_action))
+            .on_action(cx.listener(
+                |this, _: &crate::app::menus::ShowCommandPalette, window, cx| {
+                    this.run_action(&actions::Run(actions::Kind::Palette), window, cx)
+                },
+            ))
             .size_full()
             .relative()
             .child(titlebar)
+            .children(crate::features::chrome::app_menu_bar(window, cx))
             .child(shell)
             .children(self.render_session_search(window, cx))
             .child(self.image_preview.clone())

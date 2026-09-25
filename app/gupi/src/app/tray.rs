@@ -21,23 +21,36 @@ pub fn init(_cx: &mut App) {
 fn build(cx: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     use tray_icon::{
         Icon, TrayIconBuilder,
-        menu::{Menu, MenuEvent, MenuItem},
+        menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     };
     let menu = Menu::new();
     let temporary = MenuItem::new(t(cx, "temporary-title"), true, None);
     let main = MenuItem::new(t(cx, "menu-show-main"), true, None);
     let settings = MenuItem::new(t(cx, "menu-settings"), true, None);
     let quit = MenuItem::new(t(cx, "menu-quit"), true, None);
-    menu.append_items(&[&temporary, &main, &settings, &quit])?;
-    let image = image::load_from_memory(include_bytes!("../../build-assets/icon/app-icon.png"))?
-        .thumbnail(32, 32)
-        .into_rgba8();
+    menu.append_items(&[
+        &temporary,
+        &main,
+        &PredefinedMenuItem::separator(),
+        &settings,
+        &quit,
+    ])?;
+    #[cfg(target_os = "macos")]
+    let bytes = include_bytes!("../../assets/brand/tray-template.png").as_slice();
+    #[cfg(target_os = "windows")]
+    let bytes = include_bytes!("../../build-assets/icon/app-icon.png").as_slice();
+    let image = image::load_from_memory(bytes)?;
+    #[cfg(target_os = "windows")]
+    let image = image.thumbnail(32, 32);
+    let image = image.into_rgba8();
     let icon = Icon::from_rgba(image.as_raw().clone(), image.width(), image.height())?;
-    let icon = TrayIconBuilder::new()
+    let builder = TrayIconBuilder::new()
         .with_menu(Box::new(menu.clone()))
         .with_icon(icon)
-        .with_tooltip("Gupi")
-        .build()?;
+        .with_tooltip("Gupi");
+    #[cfg(target_os = "macos")]
+    let builder = builder.with_icon_as_template(true);
+    let icon = builder.build()?;
     let items = [
         temporary.clone(),
         main.clone(),
@@ -88,7 +101,30 @@ pub fn refresh(_cx: &App) {
             "menu-settings",
             "menu-quit",
         ]) {
-            item.set_text(t(_cx, key));
+            let action: Option<Box<dyn Action>> = match key {
+                "menu-show-main" => Some(Box::new(super::menus::ShowMainWindow)),
+                "menu-settings" => Some(Box::new(super::menus::ShowSettings)),
+                "menu-quit" => Some(Box::new(super::menus::Quit)),
+                _ => None,
+            };
+            let binding = if key == "temporary-title" {
+                super::shortcuts::launcher_binding(_cx).and_then(|key| Keystroke::parse(key).ok())
+            } else {
+                action.and_then(|action| {
+                    _cx.key_bindings()
+                        .borrow()
+                        .bindings()
+                        .rfind(|binding| binding.action().partial_eq(action.as_ref()))
+                        .and_then(|binding| binding.keystrokes().first())
+                        .map(|key| key.as_keystroke().clone())
+                })
+            };
+            // Display only: OS global shortcuts already own their registration.
+            let label = t(_cx, key);
+            item.set_text(match binding {
+                Some(key) => format!("{label}    {}", gpui_kit::component::kbd::Kbd::format(&key)),
+                None => label,
+            });
         }
     }
 }
@@ -120,18 +156,25 @@ pub fn update(count: usize, entries: Vec<Entry>, cx: &mut App) {
         let _ = tray
             .icon
             .set_tooltip(Some(format!("Gupi — {unread}: {count}")));
-        while tray.menu.items().len() > 4 {
-            tray.menu.remove_at(4);
+        // Two window entries and the separator/settings/quit footer stay in place.
+        while tray.menu.items().len() > 5 {
+            tray.menu.remove_at(2);
         }
         tray.targets.clear();
         if entries.is_empty() {
             return;
         }
-        let _ = tray.menu.append(&PredefinedMenuItem::separator());
+        let _ = tray.menu.insert(&PredefinedMenuItem::separator(), 2);
         let _ = tray
             .menu
-            .append(&MenuItem::new(format!("{unread}: {count}"), false, None));
+            .insert(&MenuItem::new(format!("{unread}: {count}"), false, None), 3);
         // One entry per source. Waiting is the actionable state even when unread too.
+        let mut entries = entries;
+        entries.sort_by_key(|entry| match (entry.activity, entry.unread) {
+            (Activity::Waiting, _) => 0,
+            (_, true) => 1,
+            _ => 2,
+        });
         for entry in entries {
             let label = if entry.activity == Activity::Waiting {
                 &waiting
@@ -141,7 +184,8 @@ pub fn update(count: usize, entries: Vec<Entry>, cx: &mut App) {
                 &running
             };
             let item = MenuItem::new(format!("{label} — {}", entry.title), true, None);
-            if tray.menu.append(&item).is_ok() {
+            let position = tray.menu.items().len() - 3;
+            if tray.menu.insert(&item, position).is_ok() {
                 tray.targets.insert(item.id().clone(), entry.target);
             }
         }

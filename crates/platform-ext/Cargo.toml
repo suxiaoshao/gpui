@@ -31,6 +31,9 @@ objc2-core-graphics = { version = "0.3.2", features = [
 ] }
 objc2-foundation = { version = "0.3.2", features = [
   "block2",
+  "NSArray",
+  "NSDictionary",
+  "NSObject",
   "NSUserDefaults",
   "NSString",
 ] }
