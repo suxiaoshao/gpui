@@ -203,7 +203,7 @@ impl HomeView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(key) = self.shown_key.clone() else {
-            return div().flex_1().into_any_element();
+            return self.render_welcome(None, cx);
         };
         let Some(view) = self.views.get(&key) else {
             return div().flex_1().into_any_element();
@@ -220,7 +220,7 @@ impl HomeView {
         match session.body_state() {
             BodyState::New => {
                 return body
-                    .child(self.render_welcome(session, cx))
+                    .child(self.render_welcome(Some(session), cx))
                     .into_any_element();
             }
             BodyState::Loading(stage) => {
@@ -235,7 +235,7 @@ impl HomeView {
                 if session.empty_conversation() && session.info.path.as_os_str().is_empty() =>
             {
                 return body
-                    .child(self.render_welcome(session, cx))
+                    .child(self.render_welcome(Some(session), cx))
                     .into_any_element();
             }
             BodyState::Ready => {}

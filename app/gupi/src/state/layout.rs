@@ -130,7 +130,7 @@ pub(crate) fn load(path: &Path) -> LayoutState {
     }
 }
 
-fn read(path: &Path) -> Result<LayoutState, String> {
+pub(crate) fn read(path: &Path) -> Result<LayoutState, String> {
     let Some(bytes) = persistence::read(path).map_err(|e| e.to_string())? else {
         return Ok(LayoutState::default());
     };

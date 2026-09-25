@@ -69,6 +69,7 @@ pub(crate) fn accent_changed(config: &AppConfig, window: &mut Window, cx: &mut A
     apply_with(config, window, true, cx);
 }
 fn apply_with(config: &AppConfig, window: &mut Window, force: bool, cx: &mut App) {
+    super::icons::apply(config.icon_theme, cx);
     let mode = resolved_mode(config.theme, window);
     let id = selected_id(config, mode);
     if !force

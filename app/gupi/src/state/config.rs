@@ -21,6 +21,13 @@ pub(crate) enum AppLanguage {
     System,
     English,
     Chinese,
+    TraditionalChinese,
+    Japanese,
+    Korean,
+    German,
+    French,
+    Spanish,
+    BrazilianPortuguese,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, FormSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -30,6 +37,7 @@ pub(crate) struct AppConfig {
     pub shortcuts: super::shortcuts::Shortcuts,
     pub pi_command: Option<String>,
     pub theme: ThemeMode,
+    pub icon_theme: super::icons::IconTheme,
     pub light_theme: Option<String>,
     pub dark_theme: Option<String>,
     pub language: AppLanguage,
@@ -108,6 +116,7 @@ pub(crate) enum PreferenceChange {
     Shortcuts(super::shortcuts::Shortcuts),
     Language(AppLanguage),
     Theme(ThemeMode),
+    IconTheme(super::icons::IconTheme),
     LightTheme(Option<String>),
     DarkTheme(Option<String>),
 }
@@ -130,6 +139,7 @@ impl PreferenceChange {
             },
             Self::Language(value) => config.language = value,
             Self::Theme(value) => config.theme = value,
+            Self::IconTheme(value) => config.icon_theme = value,
             Self::LightTheme(value) => config.light_theme = value,
             Self::DarkTheme(value) => config.dark_theme = value,
         }
@@ -261,6 +271,9 @@ fn write_config(
             if value.theme != baseline.theme {
                 latest.theme = value.theme;
             }
+            if value.icon_theme != baseline.icon_theme {
+                latest.icon_theme = value.icon_theme;
+            }
             if value.light_theme != baseline.light_theme {
                 latest.light_theme = value.light_theme;
             }
@@ -326,7 +339,7 @@ impl ConfigController {
             cx,
         )
     }
-    fn at_path(
+    pub(crate) fn at_path(
         form: &Entity<Form<AppConfig>>,
         path: Result<PathBuf, String>,
         cx: &mut Context<Self>,
@@ -712,6 +725,7 @@ mod tests {
             AppConfig {
                 pi_command: Some("external-pi".into()),
                 theme: ThemeMode::Dark,
+                icon_theme: Default::default(),
                 light_theme: None,
                 dark_theme: Some("chosen-dark".into()),
                 language: AppLanguage::Chinese,
@@ -925,6 +939,7 @@ mod tests {
         for change in [
             PreferenceChange::Notifications(notifications.clone()),
             PreferenceChange::Theme(ThemeMode::Dark),
+            PreferenceChange::IconTheme(crate::state::icons::IconTheme::Pride),
             PreferenceChange::Language(AppLanguage::English),
             PreferenceChange::LightTheme(Some("test-light".into())),
             PreferenceChange::DarkTheme(Some("test-dark".into())),
@@ -952,6 +967,7 @@ mod tests {
         let saved = saved.configured().unwrap();
         assert_eq!(saved.pi_command.as_deref(), Some("draft-pi"));
         assert_eq!(saved.notifications, notifications);
+        assert_eq!(saved.icon_theme, crate::state::icons::IconTheme::Pride);
         assert_eq!(saved.theme, ThemeMode::Dark);
         assert_eq!(saved.language, AppLanguage::English);
         assert_eq!(saved.light_theme.as_deref(), Some("test-light"));

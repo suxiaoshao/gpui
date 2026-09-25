@@ -5,6 +5,7 @@ use gpui_kit::component::{
     group_box::GroupBoxVariant,
     setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
 };
+use gpui_kit::prelude::FluentBuilder;
 
 impl SettingsView {
     pub(super) fn settings_panel(&self, cx: &mut Context<Self>) -> Settings {
@@ -56,6 +57,7 @@ impl SettingsView {
                         .unwrap_or_else(|_| div().into_any_element())
                     }),
                 )
+                .description(t(cx, "settings-native-language-help"))
                 .keywords(["通用 general language locale 语言"])
             }))
             .group(SettingGroup::new().item({
@@ -117,6 +119,13 @@ impl SettingsView {
                 .keywords(["temporary cleanup 临时对话 清理"]),
             ),
         );
+        #[cfg(target_os = "macos")]
+        let general = general.group(SettingGroup::new().title(t(cx, "settings-permissions")).item(
+            SettingItem::new(t(cx, "settings-accessibility-open"), SettingField::render(|_, _, cx| {
+                Button::new("accessibility-settings").small().label(t(cx, "action-open"))
+                    .on_click(|_, _, cx| cx.open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"))
+            })).description(t(cx, "settings-accessibility-help"))
+        ));
         let notifications = self.notification_settings(cx);
         let appearance = SettingPage::new(t(cx, "settings-theme"))
             .icon(IconName::Sparkles)
@@ -135,6 +144,11 @@ impl SettingsView {
                     "外观 appearance color mode dark light system 颜色模式 深色 浅色 跟随系统",
                 ])
             }))
+            .group(SettingGroup::new().item(item(
+                "settings-icon-theme",
+                "icon logo dock 图标 标记 配色",
+                |this, _, cx| this.render_icon_themes(cx),
+            )))
             .group(
                 SettingGroup::new()
                     .title(t(cx, "light-themes"))
@@ -322,7 +336,34 @@ impl SettingsView {
         let about = SettingPage::new(t(cx, "settings-page-about"))
             .icon(IconName::Info)
             .resettable(false)
-            .group(SettingGroup::new().title("Gupi").item(gupi_item))
+            .group(
+                SettingGroup::new().title("Gupi").item(gupi_item).item(
+                    SettingItem::new(
+                        t(cx, "menu-copy-diagnostics"),
+                        SettingField::render(|_, _, cx| {
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new("diagnostics-copy")
+                                        .small()
+                                        .label(t(cx, "menu-copy-diagnostics"))
+                                        .on_click(|_, _, cx| {
+                                            crate::app::menus::copy_diagnostics(cx)
+                                        }),
+                                )
+                                .child(
+                                    Button::new("diagnostics-logs")
+                                        .small()
+                                        .icon(IconName::FolderOpen)
+                                        .tooltip(t(cx, "menu-logs"))
+                                        .accessibility_label(t(cx, "menu-logs"))
+                                        .on_click(|_, _, cx| crate::app::menus::show_logs(cx)),
+                                )
+                        }),
+                    )
+                    .description(t(cx, "settings-diagnostics-help")),
+                ),
+            )
             .group(
                 SettingGroup::new()
                     .title("Pi")
@@ -354,6 +395,70 @@ impl SettingsView {
                     .map(|key| div().text_color(cx.theme().danger).child(t(cx, key))),
             )
             .child(div().flex_1().min_h_0().child(panel))
+            .into_any_element()
+    }
+    pub(super) fn render_icon_themes(&self, cx: &Context<Self>) -> AnyElement {
+        use crate::state::icons::IconTheme;
+        let config = self.controller.read(cx).preferences(cx);
+        let busy = self.controller.read(cx).busy(cx);
+        let mut group = gpui_kit::base::RadioGroup::new("icon-themes")
+            .aria_label(t(cx, "settings-icon-theme"))
+            .axis(Axis::Horizontal)
+            .flex()
+            .flex_wrap()
+            .gap_2();
+        for icon in IconTheme::ALL {
+            let controller = self.controller.clone();
+            let selected = config.icon_theme == icon;
+            group = group.child(
+                gpui_kit::base::Radio::new(icon.label())
+                    .checked(selected)
+                    .disabled(busy)
+                    .accessibility_label(t(cx, icon.label()))
+                    .p_2()
+                    .w_32()
+                    .rounded(cx.theme().radius)
+                    .border_1()
+                    .border_color(if selected {
+                        cx.theme().primary
+                    } else {
+                        cx.theme().border
+                    })
+                    .focus(|s| s.border_color(cx.theme().ring))
+                    .on_change(move |_, _, _, cx| {
+                        controller.update(cx, |owner, cx| {
+                            owner.set_preference(PreferenceChange::IconTheme(icon), cx)
+                        });
+                    })
+                    .child(
+                        v_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(img(SharedString::from(icon.preview())).size_12())
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .child(div().text_sm().child(t(cx, icon.label())))
+                                    .when(selected, |row| {
+                                        row.child(
+                                            gpui_kit::component::Icon::new(IconName::Check)
+                                                .size_4(),
+                                        )
+                                    }),
+                            ),
+                    ),
+            );
+        }
+        v_flex()
+            .gap_2()
+            .child(t(cx, "settings-icon-theme"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t(cx, "settings-icon-theme-help")),
+            )
+            .child(group)
             .into_any_element()
     }
     fn render_mode(&self, cx: &Context<Self>) -> AnyElement {
@@ -391,9 +496,7 @@ impl SettingsView {
             ),
             &draft,
             &self.controller,
-            None,
             self.controller.read(cx).busy(cx),
-            cx,
         )
     }
 }
@@ -471,6 +574,18 @@ impl SettingsView {
                 }),
             )
             .keywords(["notifications completion 回答完成 通知"]),
+        );
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        let group = group.item(
+            SettingItem::new(t(cx, "settings-notification-permission-open"), SettingField::render(|_, _, cx| {
+                Button::new("notification-system-settings").small().label(t(cx, "action-open"))
+                    .on_click(|_, _, cx| {
+                        #[cfg(target_os = "macos")]
+                        cx.open_url("x-apple.systempreferences:com.apple.Notifications-Settings.extension");
+                        #[cfg(target_os = "windows")]
+                        cx.open_url("ms-settings:notifications");
+                    })
+            })).description(t(cx, "settings-notification-permission-help"))
         );
         SettingPage::new(t(cx, "settings-notifications"))
             .icon(IconName::Bell)

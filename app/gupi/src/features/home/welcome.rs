@@ -4,7 +4,11 @@ use fluent_bundle::FluentArgs;
 use gpui_kit::component::{Icon, label::Label};
 
 impl HomeView {
-    pub(super) fn render_welcome(&self, session: &Session, cx: &Context<Self>) -> AnyElement {
+    pub(super) fn render_welcome(
+        &self,
+        session: Option<&Session>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let welcome = v_flex()
             .id("conversation-welcome")
             .test_support()
@@ -13,6 +17,21 @@ impl HomeView {
             .px_6()
             .justify_center()
             .items_center();
+        let Some(session) = session else {
+            return welcome
+                .gap_4()
+                .child(div().text_2xl().child(t(cx, "conversation-welcome")))
+                .child(
+                    Button::new("empty-new-conversation")
+                        .outline()
+                        .icon(IconName::Plus)
+                        .label(t(cx, "conversation-new"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.new_conversation(window, cx);
+                        })),
+                )
+                .into_any_element();
+        };
         if self.state.read(cx).temporary
             || !session.info.path.as_os_str().is_empty()
             || !session.pending_ui.is_empty()

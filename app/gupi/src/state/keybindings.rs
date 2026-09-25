@@ -460,7 +460,7 @@ mod tests {
             ] {
                 cx.set_menus(Vec::new());
                 apply(&overrides, cx);
-                assert_eq!(cx.get_menus().unwrap().len(), 1);
+                assert_eq!(cx.get_menus().unwrap().len(), 6);
 
                 cx.set_menus(Vec::new());
                 apply(&overrides, cx);

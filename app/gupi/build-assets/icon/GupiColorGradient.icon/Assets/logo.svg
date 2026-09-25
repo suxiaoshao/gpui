@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800">
+  <defs>
+    <clipPath id="mark"><path d="M165.29 165.29H517.36V400H400V282.65H165.29Z"/><path d="M165.29 282.65H282.65V400H400V517.36H282.65V634.72H165.29Z"/><path d="M517.36 400H634.72V634.72H517.36Z"/></clipPath>
+    <linearGradient id="base" x1="224" y1="517" x2="576" y2="517" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4D9ABF"/>
+      <stop offset="1" stop-color="#F1BE58"/>
+    </linearGradient>
+    <linearGradient id="top" x1="341" y1="205" x2="341" y2="540" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F09082"/>
+      <stop offset="1" stop-color="#F09082" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#mark)">
+    <rect width="800" height="800" fill="url(#base)"/>
+    <rect width="800" height="800" fill="url(#top)"/>
+  </g>
+</svg>

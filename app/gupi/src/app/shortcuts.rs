@@ -143,7 +143,7 @@ impl ShortcutsRuntime {
         Ok(())
     }
 }
-fn validate_registration(value: &AppConfig, cx: &App) -> Result<(), String> {
+pub(crate) fn validate_registration(value: &AppConfig, cx: &App) -> Result<(), String> {
     value.clone().normalized()?;
     for binding in std::iter::once(value.shortcuts.launcher.as_str()).chain(
         value
@@ -182,6 +182,14 @@ pub fn apply(value: &AppConfig, cx: &mut App) {
         rt.error = validation.and_then(|()| rt.replace(&value.shortcuts)).err();
         rt.paused = false;
     });
+    super::tray::refresh(cx);
+}
+/// The registered launcher, projected into the tray without another accelerator.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) fn launcher_binding(cx: &App) -> Option<&str> {
+    let runtime = cx.try_global::<ShortcutsRuntime>()?;
+    (!runtime.paused && !runtime.draining && !runtime.config.launcher.is_empty())
+        .then_some(runtime.config.launcher.as_str())
 }
 pub fn shutdown(cx: &mut App) {
     if !cx.has_global::<ShortcutsRuntime>() {

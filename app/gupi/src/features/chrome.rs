@@ -42,3 +42,35 @@ pub(crate) fn title_bar(cx: &App) -> TitleBar {
             window.dispatch_action(Box::new(menus::Quit), cx);
         })
 }
+
+/// A window retains its own menu interaction/focus state; menu definitions come
+/// from the same source as the native macOS menus.
+pub(crate) fn app_menu_bar(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        use gpui_kit::component::menu::AppMenuBar;
+        let state = window.use_keyed_state("gupi-app-menu", cx, |_, cx| {
+            let menu = AppMenuBar::new(cx);
+            let weak = menu.downgrade();
+            let subscription = cx.observe_global::<crate::app::menus::MenusChanged>(move |cx| {
+                let _ = weak.update(cx, |menu, cx| menu.reload(cx));
+            });
+            (menu, subscription)
+        });
+        Some(
+            div()
+                .h_8()
+                .w_full()
+                .flex_none()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .child(state.read(cx).0.clone())
+                .into_any_element(),
+        )
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (window, cx);
+        None
+    }
+}

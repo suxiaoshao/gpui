@@ -7,7 +7,13 @@ use crate::state::pi;
 use gpui_kit::{AppContext, Entity, TestAppContext};
 use gpui_operation::Transition;
 use pi_rpc::{Client, protocol::StreamingBehavior};
-use std::{path::PathBuf, sync::OnceLock};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 fn fixture() -> PathBuf {
     static FIXTURE: OnceLock<(tempfile::TempDir, PathBuf)> = OnceLock::new();
@@ -228,7 +234,7 @@ async fn rename_waits_for_reconnection_then_uses_existing_rpc(cx: &mut TestAppCo
 }
 
 #[gpui_kit::test]
-async fn deletion_waits_for_exit_removes_draft_and_catalog_then_opens_new_page(
+async fn deletion_waits_for_exit_removes_saved_session_without_opening_a_replacement(
     cx: &mut TestAppContext,
 ) {
     let (dir, owner, key) = begin(cx, &[]);
@@ -264,16 +270,18 @@ async fn deletion_waits_for_exit_removes_draft_and_catalog_then_opens_new_page(
     })
     .await;
     owner.read_with(cx, |state, _| {
-        assert_eq!(state.infos().len(), 1);
+        assert!(state.infos().is_empty());
+        assert!(state.sessions.is_empty());
+        assert!(state.selected.is_none());
+        assert!(state.current().is_none());
         assert!(state.file().drafts.is_empty());
-        let current = state.current().unwrap();
-        assert!(current.info.path.as_os_str().is_empty());
-        assert_eq!(current.info.cwd, dir.path());
-        assert_eq!(current.body_state(), BodyState::New);
-        assert!(current.instance.is_none());
     });
     assert!(!path.exists());
     assert!(destination.exists());
+    let lifecycle = std::fs::read_to_string(dir.path().join("process.log")).unwrap();
+    let lines = lifecycle.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 2, "{lifecycle}");
+    assert!(lines[0].starts_with("start ") && lines[1].starts_with("exit "));
 }
 
 #[gpui_kit::test]
@@ -330,6 +338,143 @@ async fn deletion_of_catalog_only_session_does_not_launch_pi(cx: &mut TestAppCon
         assert!(state.current().unwrap().instance.is_none());
     });
     assert!(!dir.path().join("commands.log").exists());
+}
+
+#[gpui_kit::test]
+async fn failed_startup_deletion_preserves_other_empty_path_draft(cx: &mut TestAppContext) {
+    let (dir, owner, key) = prepare(cx, &[]);
+    owner.update(cx, |state, cx| {
+        state.set_command(dir.path().join("missing-pi"));
+        state.connect(&key, cx);
+    });
+    cx.condition(&owner, |state, _| {
+        state.sessions[&key].error.is_some() && !state.sessions[&key].command.running()
+    })
+    .await;
+
+    let remove_called = Arc::new(AtomicBool::new(false));
+    let other = owner.update(cx, |state, cx| {
+        let target = &state.sessions[&key];
+        assert!(target.info.path.as_os_str().is_empty());
+        assert!(target.error.is_some());
+
+        state.insert_draft(Some(dir.path().join("other-project")));
+        let other = state.selected.clone().unwrap();
+        state.set_draft(&other, "preserved draft".into(), cx);
+        state.sessions.get_mut(&other).unwrap().attachments.push(
+            crate::foundation::attachments::Attachment::file(dir.path().join("keep.txt"), 0),
+        );
+        state.select_existing(&key, cx);
+        assert_eq!(state.selected.as_deref(), Some(key.as_str()));
+        assert!(state.can_delete(&key));
+
+        let called = remove_called.clone();
+        state.delete_with(
+            &key,
+            move |_| {
+                called.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+            cx,
+        );
+        assert!(state.sessions[&key].command.running());
+        assert_eq!(state.selected.as_deref(), Some(key.as_str()));
+        other
+    });
+    cx.condition(&owner, |state, _| !state.sessions.contains_key(&key))
+        .await;
+
+    owner.read_with(cx, |state, _| {
+        assert!(!state.sessions.contains_key(&key));
+        let sibling = &state.sessions[&other];
+        assert!(sibling.info.path.as_os_str().is_empty());
+        assert_eq!(sibling.info.cwd, dir.path().join("other-project"));
+        assert_eq!(sibling.draft, "preserved draft");
+        assert_eq!(sibling.attachments.len(), 1);
+        assert_eq!(sibling.attachments[0].name, "keep.txt");
+        assert_eq!(state.sessions.len(), 1);
+        assert_eq!(state.infos().len(), 1);
+        assert_eq!(state.infos()[0].0, other);
+        assert!(state.selected.is_none());
+        assert!(state.current().is_none());
+    });
+    assert!(!remove_called.load(Ordering::SeqCst));
+    assert!(!dir.path().join("process.log").exists());
+}
+
+#[gpui_kit::test]
+async fn connected_unsaved_deletion_waits_for_exit_without_relaunching_pi(cx: &mut TestAppContext) {
+    let (dir, owner, key) = begin(cx, &[]);
+    cx.condition(&owner, |state, _| {
+        state.sessions[&key].state.is_some() && !state.sessions[&key].core_read.running()
+    })
+    .await;
+    let client = owner.read_with(cx, |state, cx| {
+        assert!(state.sessions[&key].info.path.as_os_str().is_empty());
+        state.client(&key, cx).unwrap()
+    });
+    let remove_called = Arc::new(AtomicBool::new(false));
+    owner.update(cx, |state, cx| {
+        assert_eq!(state.selected.as_deref(), Some(key.as_str()));
+        assert!(state.can_delete(&key));
+        let called = remove_called.clone();
+        state.delete_with(
+            &key,
+            move |_| {
+                called.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+            cx,
+        );
+        assert!(state.sessions[&key].command.running());
+        assert!(state.sessions[&key].instance.is_none());
+        assert_eq!(state.selected.as_deref(), Some(key.as_str()));
+    });
+    cx.condition(&owner, |state, _| {
+        !state
+            .sessions
+            .get(&key)
+            .is_some_and(|session| session.command.running())
+    })
+    .await;
+
+    owner.read_with(cx, |state, _| {
+        assert!(!state.sessions.contains_key(&key));
+        assert!(state.sessions.is_empty());
+        assert!(state.infos().is_empty());
+        assert!(state.selected.is_none());
+        assert!(state.current().is_none());
+    });
+    assert!(!remove_called.load(Ordering::SeqCst));
+    assert!(matches!(
+        client.state(),
+        pi_rpc::ConnectionState::Closed(ref report) if report.status.is_some()
+    ));
+    let lifecycle = std::fs::read_to_string(dir.path().join("process.log")).unwrap();
+    let lines = lifecycle.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 2, "{lifecycle}");
+    assert!(lines[0].starts_with("start ") && lines[1].starts_with("exit "));
+
+    owner.update(cx, |state, cx| {
+        state.new_or_reuse(Some(dir.path().into()), cx)
+    });
+    cx.condition(&owner, |state, cx| {
+        state
+            .selected
+            .as_ref()
+            .is_some_and(|selected| selected != &key && state.can_submit(selected, cx))
+    })
+    .await;
+    owner.read_with(cx, |state, _| {
+        assert!(!state.sessions.contains_key(&key));
+        assert_eq!(state.sessions.len(), 1);
+        assert_eq!(state.infos().len(), 1);
+        let new_key = state.selected.as_ref().unwrap();
+        assert_ne!(new_key, &key);
+        assert_eq!(&state.infos()[0].0, new_key);
+        assert_eq!(state.current().unwrap().info.cwd, dir.path());
+    });
+    close(&owner, cx).await;
 }
 fn begin(
     cx: &mut TestAppContext,

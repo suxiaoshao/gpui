@@ -3,13 +3,17 @@ use crate::error::PlatformExtError;
 #[cfg(target_os = "macos")]
 pub use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
+use objc2::runtime::AnyObject;
+#[cfg(target_os = "macos")]
 use objc2::{AnyThread, MainThreadMarker};
 #[cfg(target_os = "macos")]
 pub use objc2_app_kit::NSRunningApplication;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSApplication, NSEvent, NSImage, NSScreen};
 #[cfg(target_os = "macos")]
-use objc2_foundation::NSData;
+use objc2_foundation::{
+    NSArgumentDomain, NSArray, NSData, NSMutableDictionary, NSString, NSUserDefaults,
+};
 #[cfg(target_os = "windows")]
 use windows::Win32::{
     Foundation::POINT,
@@ -117,6 +121,55 @@ pub fn set_application_icon_from_bytes(icon_bytes: &[u8]) -> Result<(), Platform
 #[cfg(not(target_os = "macos"))]
 pub fn set_application_icon_from_bytes(_: &[u8]) -> Result<(), PlatformExtError> {
     Ok(())
+}
+
+/// Select a compiled app icon on the main thread; None restores the bundle default.
+/// Returns false when the named image is absent (for example an unbundled debug run).
+#[cfg(target_os = "macos")]
+pub fn set_application_icon_named(name: Option<&str>) -> Result<bool, PlatformExtError> {
+    let app = NSApplication::sharedApplication(
+        MainThreadMarker::new().ok_or(PlatformExtError::MainThreadUnavailable)?,
+    );
+    let image = match name {
+        Some(name) => match NSImage::imageNamed(&objc2_foundation::NSString::from_str(name)) {
+            Some(image) => Some(image),
+            None => return Ok(false),
+        },
+        None => None,
+    };
+    // Called on the main thread; AppKit retains the supplied image.
+    unsafe {
+        app.setApplicationIconImage(image.as_deref());
+    }
+    Ok(true)
+}
+
+/// Set the native language for this process before AppKit initializes.
+///
+/// The override is volatile and process-local. None leaves NSArgumentDomain
+/// untouched so the operating system's per-app language remains authoritative.
+#[cfg(target_os = "macos")]
+pub fn set_application_language_override(locale: Option<&str>) {
+    let Some(locale) = locale else {
+        return;
+    };
+
+    let defaults = NSUserDefaults::standardUserDefaults();
+    // Foundation exports this immutable NSString constant for the argument domain.
+    let current_domain = unsafe { defaults.volatileDomainForName(NSArgumentDomain) };
+    let domain = NSMutableDictionary::<NSString, AnyObject>::new();
+    domain.addEntriesFromDictionary(&current_domain);
+
+    let key = NSString::from_str("AppleLanguages");
+    let value = NSArray::<NSString>::arrayWithObject(&NSString::from_str(locale));
+    let value: Retained<AnyObject> = value.into_super().into();
+    domain.insert(&*key, &value);
+
+    // The domain contains only the existing command-line values plus a
+    // property-list AppleLanguages array, as required by NSUserDefaults.
+    unsafe {
+        defaults.setVolatileDomain_forName(&domain, NSArgumentDomain);
+    }
 }
 
 #[cfg(target_os = "macos")]

@@ -35,7 +35,7 @@ pub(crate) enum ConfigRepair {
 }
 ```
 
-Configured 保存成功读入或写入的配置值，不保留用于冲突比较的文件字节。初次文件不存在可返回 Ready(Missing)，表示读取事实可靠，不代表配置已应用。运行时主题和语言从唯一 Form 草稿投影，立即预览；持久化权威仍为 Configured。引导末页可显式检测草稿中的 Pi，完成按钮要求检测结果与当前命令匹配且成功；正常启动从 Configured 检测。运行中已有 Configured 后的 NotFound 返回错误，保留旧数据，不能完成为 Missing。
+Configured 保存成功读入或写入的配置值，不保留用于冲突比较的文件字节。初次文件不存在可返回 Ready(Missing)，表示读取事实可靠，不代表配置已应用。运行时主题和语言从唯一 Form 草稿投影，立即预览；持久化权威仍为 Configured。引导的 Pi 页可检测草稿命令，也可稍后配置；完成只要求配置本身合法，不要求 Pi 检测成功。正常启动从 Configured 进入本地界面，Pi 检测留在设置，连接错误由实际会话呈现。运行中已有 Configured 后的 NotFound 返回错误，保留旧数据，不能完成为 Missing。
 
 ConfigController 是唯一命令入口，持有 ConfigStore 及设置表单弱引用；根组件/主题持有订阅。Store 按应用寿命存活，完成回调更新同一个 Store，不由 Task 强引用 Store 形成环。features/settings.rs 的 SettingsView 只拥有编辑 Form；关闭窗口不销毁配置任务。
 
