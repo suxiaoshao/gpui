@@ -1728,6 +1728,127 @@ async fn snapshot_cannot_replace_events_delivered_during_its_read(cx: &mut TestA
 }
 
 #[gpui_kit::test]
+async fn custom_history_reads_survive_deltas_without_replacing_newer_runtime(
+    cx: &mut TestAppContext,
+) {
+    for kind in ["message_end", "entry_appended"] {
+        let (dir, owner, key) = begin(cx, &[]);
+        reads_settled(&owner, &key, cx).await;
+        let client = owner.read_with(cx, |state, cx| state.client(&key, cx).unwrap());
+        let entry = serde_json::json!({
+            "id":"plugin", "type":"custom_message", "parentId":"assistant",
+            "timestamp":"2026-09-26T00:00:00Z", "customType":"notice",
+            "display":true, "content":"persisted notice"
+        });
+        let old = serde_json::json!({
+            "id":"old", "type":"message", "parentId":null,
+            "timestamp":"2026-09-11T00:00:00Z", "message":{"role":"user","content":"hello"}
+        });
+        let assistant = serde_json::json!({
+            "id":"assistant", "type":"message", "parentId":"old",
+            "timestamp":"2026-09-26T00:00:00Z", "message":{
+                "role":"assistant", "timestamp":9, "content":[{"type":"text","text":"older saved text"}]
+            }
+        });
+        std::fs::write(
+            dir.path().join("entries.json"),
+            serde_json::json!({
+                "leafId":"plugin", "entries":[old, assistant, entry]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("hold-get_entries"), "").unwrap();
+        let reads = count(dir.path(), "get_entries");
+        let event = if kind == "message_end" {
+            serde_json::json!({"type":kind, "message":{
+                "role":"custom", "timestamp":1, "customType":"notice", "display":true,
+                "content":"persisted notice"
+            }})
+        } else {
+            serde_json::json!({"type":kind, "entry":entry})
+        };
+        emit_session_event(&owner, &key, event, cx);
+        control(&client, "wait_for", "get_entries", reads + 1).await;
+        control(&client, "emit_newer", "", 0).await;
+        control(&client, "emit_queue", "", 0).await;
+        cx.condition(&owner, |state, _| state.sessions[&key].pending_count == 2)
+            .await;
+        control(&client, "release", "get_entries", 0).await;
+        cx.condition(&owner, |state, _| !state.sessions[&key].core_read.running())
+            .await;
+        owner.read_with(cx, |state, _| {
+            let session = &state.sessions[&key];
+            assert!(session.running());
+            assert_eq!(session.live.len(), 1);
+            assert_eq!(session.live[0].text(), "new live text");
+            assert_eq!(session.pending_count, 2);
+            assert_eq!(session.state.as_ref().unwrap().thinking_level, "high");
+            let messages = session.messages(None);
+            let assistants = messages
+                .iter()
+                .filter(|m| m.role() == "assistant")
+                .collect::<Vec<_>>();
+            assert_eq!(assistants.len(), 1);
+            assert_eq!(assistants[0].entry.as_deref(), Some("assistant"));
+            assert_eq!(assistants[0].text(), "new live text");
+            assert!(
+                session
+                    .active_messages()
+                    .unwrap()
+                    .contains(&assistants[0].signature())
+            );
+            let notices = messages
+                .iter()
+                .filter(|m| m.role() == "custom")
+                .collect::<Vec<_>>();
+            assert_eq!(notices.len(), 1);
+            assert_eq!(notices[0].entry.as_deref(), Some("plugin"));
+            assert_eq!(notices[0].text(), "persisted notice");
+            assert_eq!(state.scan_serial, 0);
+        });
+        close(&owner, cx).await;
+    }
+}
+
+#[gpui_kit::test]
+async fn delayed_history_cannot_replace_a_newer_branch(cx: &mut TestAppContext) {
+    let (dir, owner, key) = begin(cx, &[]);
+    reads_settled(&owner, &key, cx).await;
+    let client = owner.read_with(cx, |state, cx| state.client(&key, cx).unwrap());
+    let reads = count(dir.path(), "get_entries");
+    std::fs::write(dir.path().join("hold-get_entries"), "").unwrap();
+    owner.update(cx, |state, cx| state.refresh(&key, cx));
+    control(&client, "wait_for", "get_entries", reads + 1).await;
+    control(&client, "emit_newer", "", 0).await;
+    cx.condition(&owner, |state, _| state.sessions[&key].running())
+        .await;
+    owner.update(cx, |state, _| {
+        state.sessions.get_mut(&key).unwrap().transcript.replace(
+            serde_json::from_value(serde_json::json!({"entries":[{
+                "id":"branch", "type":"custom_message", "parentId":null,
+                "timestamp":"2026-09-26T00:00:00Z", "customType":"notice",
+                "display":true, "content":"new branch"
+            }], "leafId":"branch"}))
+            .unwrap(),
+        );
+    });
+    control(&client, "release", "get_entries", 0).await;
+    cx.condition(&owner, |state, _| !state.sessions[&key].core_read.running())
+        .await;
+    owner.read_with(cx, |state, _| {
+        let session = &state.sessions[&key];
+        assert_eq!(session.history().leaf.as_deref(), Some("branch"));
+        assert_eq!(
+            session.history().messages(Some("branch"))[0].text(),
+            "new branch"
+        );
+        assert!(session.running());
+    });
+    close(&owner, cx).await;
+}
+
+#[gpui_kit::test]
 async fn submission_keeps_draft_until_ack_blocks_duplicates_and_is_session_local(
     cx: &mut TestAppContext,
 ) {

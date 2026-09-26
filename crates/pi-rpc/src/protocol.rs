@@ -192,6 +192,20 @@ pub struct ContextUsage {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStats {
+    #[serde(default)]
+    pub session_file: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub user_messages: Option<u64>,
+    #[serde(default)]
+    pub assistant_messages: Option<u64>,
+    #[serde(default)]
+    pub tool_calls: Option<u64>,
+    #[serde(default)]
+    pub tool_results: Option<u64>,
+    #[serde(default)]
+    pub total_messages: Option<u64>,
     pub tokens: TokenUsage,
     pub cost: f64,
     pub context_usage: Option<ContextUsage>,
@@ -351,5 +365,38 @@ mod tests {
             serde_json::to_value(image).unwrap(),
             serde_json::json!({"type":"image","data":"abc","mimeType":"image/png"})
         );
+    }
+
+    #[test]
+    fn session_stats_maps_pi_identity_and_counters_and_accepts_older_payloads() {
+        let stats: SessionStats = serde_json::from_value(serde_json::json!({
+            "sessionFile": "/tmp/session.jsonl",
+            "sessionId": "session-1",
+            "userMessages": 2,
+            "assistantMessages": 3,
+            "toolCalls": 4,
+            "toolResults": 4,
+            "totalMessages": 9,
+            "tokens": {"input": 10, "output": 20, "cacheRead": 30, "cacheWrite": 40, "total": 100},
+            "cost": 0.125,
+            "contextUsage": {"tokens": 50, "contextWindow": 1000, "percent": 5.0}
+        }))
+        .unwrap();
+
+        assert_eq!(stats.session_file.as_deref(), Some("/tmp/session.jsonl"));
+        assert_eq!(stats.session_id.as_deref(), Some("session-1"));
+        assert_eq!(stats.user_messages, Some(2));
+        assert_eq!(stats.assistant_messages, Some(3));
+        assert_eq!(stats.tool_calls, Some(4));
+        assert_eq!(stats.tool_results, Some(4));
+        assert_eq!(stats.total_messages, Some(9));
+
+        let older: SessionStats = serde_json::from_value(serde_json::json!({
+            "tokens": {"input": 1},
+            "cost": 0.0
+        }))
+        .unwrap();
+        assert!(older.session_id.is_none());
+        assert!(older.total_messages.is_none());
     }
 }

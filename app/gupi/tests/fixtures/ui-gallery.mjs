@@ -7,6 +7,7 @@ const scenes = {
   editor: "编辑器 · 多行预填",
   sequence: "问卷 · 连续四步交互",
   notify: "通知 · 三种级别",
+  "custom-message": "插件持久消息 · 文字、图片与隐藏条目",
   status: "状态 · 多项与更新",
   "status-clear": "状态 · 清除",
   "widget-above": "Widget · 输入区上方",
@@ -85,6 +86,22 @@ export default function (pi) {
         case "notify":
           for (const type of ["info", "warning", "error"]) ctx.ui.notify(`${type}：这是一条演示通知，不代表实际故障。`, type);
           break;
+        case "custom-message": {
+          const message = {
+            customType: "gallery-check",
+            display: true,
+            content: [
+              { type: "text", text: "## 插件检查结果\n\n这是图片之前的 **Markdown**。" },
+              { type: "image", mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAKAAAABQCAIAAAARP+ljAAABIklEQVR4nO3OAQkAMQDEsEqbtEl7aa+iHIxCBIRzvzyM+SAq5oOomA+iYj6IivkgKuaDqJgPomI+iIr5ICrmg6iYD6JiPoiK+SAq5oOomA+iYj6IivkgKuaDqJgPomI+iIr5ICrmg6iYD6JiPoiK+SAq5oOomA+iYj6IivkgKuaDqJgPomI+iIr5ICrmg6iYD6JiPoiK+SAq5oOomA+iYj6IivkgKuaDqJgPomI+iIr5ICrmg6iYD6JiPoiK+SAq5oOomA+iYj6IivkgKuaDqJgPomI+iIr5ICrmg6iYD6JiPoiK+SAq5oOomA+iYj6IivkgKuaDqJgPomI+iIr5ICrmg6iYD6JiPoiK+SAq5oOomA+iYj6IivkgKuaDqJgPovoB7vcEZrh1VbQAAAAASUVORK5CYII=" },
+              { type: "text", text: "图片之后的文字。可以复制整条消息并点击预览图片。" },
+            ],
+            details: { scene: "custom-message", privateMetadata: true },
+          };
+          pi.sendMessage(message, { triggerTurn: false });
+          pi.sendMessage({ customType: "gallery-hidden", display: false, content: "此条只留在原始历史，不应出现在正文中。" }, { triggerTurn: false });
+          pi.sendMessage(message, { triggerTurn: false });
+          break;
+        }
         case "status":
           ctx.ui.setStatus("gupi-gallery-state", `测试状态 · 第 ${++revision} 次更新`);
           ctx.ui.setStatus("gupi-gallery-hint", "再次运行 status 更新同一项；status-clear 清除");

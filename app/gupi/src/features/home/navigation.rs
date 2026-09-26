@@ -424,7 +424,19 @@ pub(crate) fn session_menu(
         let can_delete = state.read(cx).can_delete(&key);
         let reveal_state = state.clone();
         let reveal_key = key.clone();
+        let info_owner = owner.clone();
+        let info_key = key.clone();
         return menu
+            .item(
+                PopupMenuItem::new(t(cx, "conversation-session-info-command")).on_click(
+                    move |_, window, cx| {
+                        let _ = info_owner.update(cx, |this, cx| {
+                            this.open_session_info(info_key.clone(), window, cx)
+                        });
+                    },
+                ),
+            )
+            .separator()
             .item(
                 PopupMenuItem::new(t(cx, "temporary-reveal-workspace")).on_click(
                     move |_, _, cx| {
@@ -469,7 +481,19 @@ pub(crate) fn session_menu(
     let can_clone = state.read(cx).can_clone(&key, cx);
     let clone_key = key.clone();
     let clone_state = state.clone();
+    let info_owner = owner.clone();
+    let info_key = key.clone();
     let mut menu = menu
+        .item(
+            PopupMenuItem::new(t(cx, "conversation-session-info-command")).on_click(
+                move |_, window, cx| {
+                    let _ = info_owner.update(cx, |this, cx| {
+                        this.open_session_info(info_key.clone(), window, cx)
+                    });
+                },
+            ),
+        )
+        .separator()
         .item(
             PopupMenuItem::new(t(cx, "conversation-rename"))
                 .disabled(!can_rename || path.as_os_str().is_empty())

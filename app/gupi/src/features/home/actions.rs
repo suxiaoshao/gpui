@@ -34,6 +34,7 @@ pub(crate) enum Kind {
     Reveal,
     CopyPath,
     Delete,
+    SessionInfo,
 }
 impl Kind {
     pub(crate) fn temporary_only(self) -> bool {
@@ -79,6 +80,7 @@ impl Kind {
             Self::Reveal => "reveal locate file",
             Self::CopyPath => "copy path",
             Self::Delete => "delete trash",
+            Self::SessionInfo => "session information info details 会话信息",
         }
     }
 }
@@ -140,6 +142,7 @@ impl HomeView {
                 .as_ref()
                 .is_some_and(|key| state.can_clone(key, cx)),
             Kind::CopyLastAnswer => s.and_then(|s| s.last_assistant_text()).is_some(),
+            Kind::SessionInfo => s.is_some(),
             Kind::Compact => state
                 .selected
                 .as_ref()
@@ -220,6 +223,11 @@ impl HomeView {
                     .and_then(|s| s.last_assistant_text())
                 {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            }
+            Kind::SessionInfo => {
+                if let Some(key) = key {
+                    self.open_session_info(key, window, cx);
                 }
             }
             Kind::Scan => self.state.update(cx, |s, cx| s.scan(cx)),

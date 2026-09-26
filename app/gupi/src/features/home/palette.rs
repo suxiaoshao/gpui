@@ -37,6 +37,7 @@ pub(crate) const SESSION: &[Kind] = &[
     Kind::Export,
     Kind::Clone,
     Kind::CopyLastAnswer,
+    Kind::SessionInfo,
     Kind::Reconnect,
     Kind::Rename,
     Kind::Stop,
@@ -76,6 +77,7 @@ pub(crate) fn label(kind: Kind, sidebar: bool, history: bool, cx: &App) -> Strin
             Kind::Export => "conversation-export",
             Kind::Clone => "conversation-clone",
             Kind::CopyLastAnswer => "command-copy-last-answer",
+            Kind::SessionInfo => "conversation-session-info-command",
             Kind::History => {
                 if history {
                     "command-hide-history"

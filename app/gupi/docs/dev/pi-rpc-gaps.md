@@ -18,7 +18,7 @@
 
 - `context_edit` 改变模型上下文贡献，不重写原始历史。`get_messages` / `get_last_assistant_text` 的结果可能与界面可见历史不同；Gupi 复制可见回答，不为模拟模型上下文删改正文。
 - `agent_before_settle`、`context_with_system` 是扩展钩子；扩展 `turn_end` 的 boundary 字段不是同名基础 AgentEvent 的新增 RPC 字段。Gupi 沿用 `agent_settled` 判定收尾。
-- `entry_appended` 可来自 custom/custom_message/context_edit/compaction。Gupi 已定向回读历史；消息是否进入正文是另一层职责，display:true 插件消息归 #242。
+- `entry_appended` 可来自 custom/custom_message/context_edit/compaction。Gupi 已定向回读历史；display:true 插件消息已按原块顺序展示在正文，display:false 保留原历史但不显示。
 - retain-none compaction 的 firstKeptEntryId 可以指向压缩记录自身。GUI 展示原始历史与摘要，不复制 Pi 的上下文裁剪规则。
 - RPC 图片由 Pi 按 `inputLimits.images.resize` 和配置处理；GUI 保留本地原图预览并发送原始内容，恢复历史的图像可能已经由 Pi 处理。见[职责边界](../../../../docs/dev/issue-217/gui-boundary.md)。
 
@@ -63,7 +63,7 @@
 - 模型／思考选择、会话统计：已有 RPC 与应用接入。队列已有 `queue_update` 文本事件、`clear_queue` 和模式设置，但没有主动读取完整队列、按 ID 逐项修改/删除或附件无损恢复接口；不能笼统称为完整队列管理已被 RPC 覆盖。
 - select/confirm/input/editor、通知、状态、文字 widget、标题、设置输入文本：九类标准 UI 已支持。
 - InputGroup 已接入；#243 承接 Questionnaire 和原子内联标签，等待兼容正式版本，v0.6.6 尚未包含。Markdown 内联插件已发布；它不提供输入编辑能力，组件发布也不改变 Pi 问卷协议。
-- `custom_message display:true`：数据已通过原生历史/事件提供，Gupi 缺正文投影，由 #242 接入；不是 RPC 阻塞，也不是 #241 的插件通知。
+- `custom_message display:true`：已通过原生历史/事件接入正文投影，支持 Markdown、图片、复制和预览；与 #241 的短期插件通知分别处理。
 
 已有设计参见 [命令能力对照](issue-226/builtin-commands.md)、[命令面板](issue-226/command-palette.md)、[扩展 UI](issue-222/README.md)。
 

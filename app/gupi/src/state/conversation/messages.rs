@@ -10,6 +10,11 @@ pub(super) struct MessageStream {
 
 impl Session {
     pub(super) fn receive_message(&mut self, kind: &str, raw: &Value) {
+        // Custom messages gain their identity only in Pi's persisted entries.
+        // Keep the assistant stream intact until the authoritative history read.
+        if raw["message"]["role"] == "custom" {
+            return;
+        }
         let index = if let Some(value) = raw.get("message") {
             let candidate = DisplayMessage {
                 id: format!(
@@ -200,6 +205,26 @@ impl Session {
 mod tests {
     use super::*;
 
+    #[test]
+    fn custom_events_do_not_overlay_messages_or_interrupt_the_assistant_stream() {
+        let mut session = Session::from_rpc_messages(&[
+            json!({"type":"message_start", "message":{"role":"assistant", "timestamp":1, "content":[]}}),
+            json!({"type":"message_update", "assistantMessageEvent":{"type":"text_start", "contentIndex":0}}),
+            json!({"type":"message_start", "message":{"role":"custom", "timestamp":1, "content":"notice", "display":true}}),
+            json!({"type":"message_end", "message":{"role":"custom", "timestamp":1, "content":"notice", "display":true}}),
+            json!({"type":"message_end", "message":{"role":"custom", "timestamp":1, "content":"hidden", "display":false}}),
+        ]);
+        session.receive_message(
+            "message_update",
+            &json!({"assistantMessageEvent":{
+                "type":"text_delta", "contentIndex":0, "delta":"still streaming"
+            }}),
+        );
+        assert_eq!(session.live.len(), 1);
+        assert_eq!(session.live[0].role(), "assistant");
+        assert_eq!(session.live[0].text(), "still streaming");
+        assert!(session.message_stream.is_some());
+    }
     #[test]
     fn final_snapshot_replaces_stream_even_when_abort_changes_timestamp() {
         let mut session = Session::from_rpc_messages(&[

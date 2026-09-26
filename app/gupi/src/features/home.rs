@@ -10,6 +10,7 @@ pub(crate) mod palette;
 mod panes;
 pub(crate) mod pickers;
 mod progress;
+mod session_info;
 mod slash;
 mod titlebar;
 mod welcome;

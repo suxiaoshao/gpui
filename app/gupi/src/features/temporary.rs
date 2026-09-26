@@ -288,6 +288,7 @@ impl TemporaryView {
                     | Kind::Stop
                     | Kind::FocusInput
                     | Kind::Model
+                    | Kind::SessionInfo
             ) {
                 self.close_actions(window, cx);
             } else {

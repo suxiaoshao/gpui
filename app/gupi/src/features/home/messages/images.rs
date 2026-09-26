@@ -1,4 +1,4 @@
-//! Compact user-message thumbnails; the Pi message remains the image authority.
+//! Compact message thumbnails; the Pi message remains the image authority.
 use crate::foundation::i18n::t;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gpui_kit::{
@@ -11,7 +11,7 @@ use gpui_kit::{
 use std::{io::Cursor, sync::Arc};
 
 #[derive(IntoElement)]
-pub(super) struct UserImage {
+pub(super) struct MessageImage {
     pub preview_host: Entity<super::super::image_preview::PreviewHost>,
     pub id: String,
     pub mime: String,
@@ -28,7 +28,7 @@ struct ImageState {
     thumbnail: Option<Thumbnail>,
 }
 
-impl UserImage {
+impl MessageImage {
     fn decode(&self) -> Option<Thumbnail> {
         let format = ImageFormat::from_mime_type(&self.mime)?;
         let bytes = STANDARD.decode(&self.data).ok()?;
@@ -47,7 +47,7 @@ impl UserImage {
     }
 }
 
-impl RenderOnce for UserImage {
+impl RenderOnce for MessageImage {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let id = self.id.clone();
         let preview_host = self.preview_host.clone();

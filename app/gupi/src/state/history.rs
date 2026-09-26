@@ -242,6 +242,13 @@ impl DisplayMessage {
     pub fn from_entry(e: &SessionEntry) -> Option<Self> {
         let value = if e.kind == "message" {
             e.data.get("message")?.clone()
+        } else if e.kind == "custom_message" {
+            if e.data.get("display") != Some(&Value::Bool(true)) {
+                return None;
+            }
+            let mut value = Value::Object(e.data.clone());
+            value["role"] = Value::String("custom".into());
+            value
         } else if matches!(e.kind.as_str(), "compaction" | "branch_summary") {
             serde_json::json!({"role":e.kind,"content":e.data.get("summary").and_then(Value::as_str).unwrap_or("")})
         } else {
@@ -303,6 +310,44 @@ mod tests {
         let mut h = History::default();
         h.replace(entries);
         h
+    }
+    #[test]
+    fn custom_messages_keep_entry_identity_content_order_and_hidden_history() {
+        let content = serde_json::json!([
+            {"type":"text","text":"before"},
+            {"type":"image","mimeType":"image/png","data":"image"},
+            {"type":"text","text":"after"}
+        ]);
+        let entries: Entries = serde_json::from_value(serde_json::json!({
+            "leafId":"second", "entries":[
+                {"type":"custom_message","id":"first","parentId":null,"timestamp":"2026-09-26T00:00:00Z","customType":"notice","display":true,"content":content,"details":{"private":42}},
+                {"type":"custom_message","id":"hidden","parentId":"first","timestamp":"2026-09-26T00:00:00Z","customType":"notice","display":false,"content":"hidden"},
+                {"type":"custom_message","id":"second","parentId":"hidden","timestamp":"2026-09-26T00:00:00Z","customType":"notice","display":true,"content":content,"details":{"private":42}}
+            ]
+        })).unwrap();
+        let mut history = History::default();
+        history.replace(entries);
+        let messages = history.messages(history.leaf.as_deref());
+        assert_eq!(
+            messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        for message in messages {
+            assert_eq!(message.entry.as_deref(), Some(message.id.as_str()));
+            assert_eq!(message.role(), "custom");
+            assert_eq!(message.value["customType"], "notice");
+            assert_eq!(message.value["content"], content);
+            assert_eq!(message.value["details"]["private"], 42);
+            assert_eq!(message.text(), "before\nafter");
+        }
+        assert!(history.entry("hidden").is_some());
+        assert_eq!(history.tree_rows(HistoryDetail::All).len(), 3);
+        assert!(
+            history
+                .messages(Some("first"))
+                .iter()
+                .all(|m| m.id == "first")
+        );
     }
     #[test]
     fn projection_keeps_chains_flat_and_preview_does_not_change_leaf() {

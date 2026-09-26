@@ -1202,6 +1202,7 @@ impl ConversationState {
         let binding = s.binding;
         let event_revision = s.event_revision;
         let model_revision = s.model_revision;
+        let history_revision = s.history().revision;
         let task_key = key.to_owned();
         let task = cx.spawn(async move |owner, cx| {
             let key = task_key;
@@ -1227,16 +1228,24 @@ impl ConversationState {
                 let again = s
                     .core_read
                     .finish(result.as_ref().err().map(ToString::to_string));
-                if stale && result.is_ok() {
-                    // A later settled event supplies another read while streaming;
-                    // otherwise fetch once more now. Never erase newer live data.
-                    if !s.running() && !s.compacting && !s.retrying {
-                        this.read_session(&key, scope.max(again.unwrap_or(scope)), cx);
-                    }
-                    notify_session(&key, cx);
-                    return;
-                }
                 match result {
+                    Ok(mut snapshot) if stale => {
+                        // Deltas invalidate get_state, not the persisted entries returned
+                        // by get_entries. Never replace a newer transcript or clear live
+                        // output while applying this independent portion of the read.
+                        let accept_entries = s.history().revision == history_revision;
+                        let idle = !s.running() && !s.compacting && !s.retrying;
+                        if accept_entries && let Some(entries) = snapshot.entries.take() {
+                            this.apply_history(&key, entries, cx);
+                        }
+                        // A queued append still needs its read while streaming. Without
+                        // another request, the settled event will reconcile runtime state.
+                        if let Some(next) = again {
+                            this.read_session(&key, if idle { scope.max(next) } else { next }, cx);
+                        } else if idle {
+                            this.read_session(&key, scope, cx);
+                        }
+                    }
                     Ok(snapshot) => {
                         this.apply_snapshot(&key, snapshot, scope, cx);
                         if let Some(next) = again {
@@ -1258,6 +1267,18 @@ impl ConversationState {
             pending: None,
         };
         notify_session(key, cx);
+    }
+    /// Accept persisted entries without applying an older runtime snapshot.
+    fn apply_history(&mut self, key: &str, entries: protocol::Entries, cx: &mut Context<Self>) {
+        let s = self.sessions.get_mut(key).unwrap();
+        let previous_revision = s.history().revision;
+        s.transcript.replace(entries);
+        s.history_dirty = false;
+        if s.history().revision != previous_revision {
+            s.content_revision += 1;
+            self.refresh_stats(key, cx);
+            self.refresh_fork_messages(key, cx);
+        }
     }
     fn apply_snapshot(
         &mut self,
@@ -1925,12 +1946,22 @@ impl ConversationState {
                     }
                     "summarization_retry_finished" => s.summary_retry = None,
                     "message_start" | "message_update" | "message_end" => {
-                        s.retry = None;
-                        s.receive_message(kind, raw);
-                        if kind == "message_end" {
-                            s.usage_revision += 1;
+                        if raw["message"]["role"] == "custom" {
+                            if kind == "message_end" {
+                                s.history_dirty = true;
+                                history_event = true;
+                                refresh = Some(ReadScope::History);
+                            } else {
+                                return;
+                            }
+                        } else {
+                            s.retry = None;
+                            s.receive_message(kind, raw);
+                            if kind == "message_end" {
+                                s.usage_revision += 1;
+                            }
+                            content_changed = true;
                         }
-                        content_changed = true;
                     }
                     "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
                         content_changed = true;
