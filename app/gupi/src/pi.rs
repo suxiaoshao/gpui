@@ -1,7 +1,7 @@
 use gpui_kit::*;
 use gpui_operation::{Cancel, Complete, Load, Refresh, Retry, Transition, refresh};
 use gpui_tokio::Tokio;
-use pi_rpc::probe::{PROBE_TIMEOUT, PiProbeData, ProbeFailure, probe};
+use pi_rpc::probe::{PROBE_TIMEOUT, PiProbeData, ProbeFailure, probe_with_env};
 use tokio::time::Instant;
 
 type PiOperation = refresh::Operation<PiProbeData, ProbeFailure, Task<()>>;
@@ -55,15 +55,28 @@ impl PiProbeController {
         if changed {
             self.operation = PiOperation::new();
         }
-        self.start(command, cx);
+        self.start(command, retry, cx);
     }
     pub fn stop(&mut self) {
         self.draining = true;
         self.operation.transition(Cancel);
     }
-    fn start(&mut self, command: String, cx: &mut Context<Self>) {
-        let deadline = Instant::now() + PROBE_TIMEOUT;
-        let worker = Tokio::spawn(cx, probe(command, deadline));
+    fn start(&mut self, command: String, reload_environment: bool, cx: &mut Context<Self>) {
+        let environment = crate::state::environment::current(cx);
+        let worker = Tokio::spawn(cx, async move {
+            let snapshot = environment.load(reload_environment).await;
+            probe_with_env(
+                command,
+                snapshot.variables(),
+                Instant::now() + PROBE_TIMEOUT,
+            )
+            .await
+            .map_err(|error| match error {
+                ProbeFailure::Command(error) => ProbeFailure::Command(snapshot.explain(error)),
+                ProbeFailure::Io(error) => ProbeFailure::Command(snapshot.explain(error)),
+                error => error,
+            })
+        });
         let task = cx.spawn(async move |owner, cx| {
             let started = std::time::Instant::now();
             let result = worker

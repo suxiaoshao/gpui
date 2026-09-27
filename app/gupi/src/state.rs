@@ -1,5 +1,6 @@
 pub(crate) mod config;
 pub(crate) mod conversation;
+pub(crate) mod environment;
 pub(crate) mod history;
 pub(crate) mod icons;
 pub(crate) mod keybindings;

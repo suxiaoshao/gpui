@@ -8,7 +8,7 @@ GUI 附加限制的移除与预览同步见[职责边界收敛](gui-boundary.md)
 
 ## Gupi 合入后的 Jaco 清理
 
-用户已确认 Jaco 停止维护，Gupi 合入后按 [#240](https://github.com/suxiaoshao/gpui/issues/240) 清理。专用源码、旧图标库/Lucide 子模块、MCP 测试工具、CI、打包、依赖与文档的删除和调整范围统一见 [Jaco 退役与关联清理](../jaco-retirement/README.md)。当前不执行删除，不删除本机用户数据；共享能力的保留边界也由该文档记录。
+用户已确认 Jaco 停止维护，Gupi 合入后按 [#240](https://github.com/suxiaoshao/gpui/issues/240) 清理。专用源码、旧图标库/Lucide 子模块、MCP 测试工具、Quick Look 文件预览、OCR、CI、打包、依赖与文档的删除和调整范围统一见 [Jaco 退役与关联清理](../jaco-retirement/README.md)。Quick Look、OCR 随唯一应用消费者 Jaco 一起删除，不再暂留为通用能力；OCR 专用绑定生成链与无用依赖一并清理。当前不执行删除，不删除本机用户数据；其他共享能力的保留边界也由该文档记录。
 
 ## 等待上游或依赖更新
 
@@ -20,13 +20,14 @@ GUI 附加限制的移除与预览同步见[职责边界收敛](gui-boundary.md)
 | 设置搜索无结果反馈 | 已升级 v0.6.4，原过滤索引错位不再复现；macOS 实测跨页定位、无结果、清空恢复均对应正确分类。但无结果时正文仍为空白，缺少提示，后续检查上游空状态能力 | [#231 设置计划](../../../app/gupi/docs/dev/issue-231/README.md)、[本轮验证](../dependency-refresh-2026-09/README.md#最终验证与限制) |
 | 输入框组件与资源交互（部分等待） | 用户 2026-09-20 要求升级时复用上游能力：已发布的 InputGroup 外壳、on_paste 接线和 Markdown 流式呈现已完成接入，见[依赖更新计划](../dependency-refresh-2026-09/README.md#changelog-对照接入上游能力并删除重复实现)。Skill 选择后填入正文、Skill/模板标签、模板附带文件引用及可选 `@` 入口仍等待下表三项能力进入兼容正式版本；不提前使用 Git 依赖或自建编辑器 | [输入框接入计划](../../../app/gupi/docs/dev/issue-243/README.md) |
 | Questionnaire 与扩展 UI 完整体验 | Questionnaire 尚未正式发布，继续等待兼容正式版本。恢复后映射现有标准 select/confirm/input/editor，验证取消/超时、连续请求和来源会话；控件发布不代表 Pi 新增了多选/多题组合协议 | [#222 扩展 UI 与体验环境](../../../app/gupi/docs/dev/issue-222/README.md) |
-| Pi RPC 能力缺口 | 插件参数/子命令补全、自定义快捷键、任意 TUI UI/渲染、组合问卷、输入回读、显示控制等受协议限制；同文件树节点续聊和进程内 reload 也缺直接 RPC。逐项依据、现有降级、社区方案及调查时点统一见原文；后续恢复时重新核对上游，不自动采用私有桥接或社区 fork | [RPC 能力缺口与社区调研](../../../app/gupi/docs/dev/pi-rpc-gaps.md)；[树导航边界](../../../app/gupi/docs/dev/issue-220/history.md)、[刷新重连](../../../app/gupi/docs/dev/issue-226/reconnect.md) |
+| 逐条队列编辑、删除与返回草稿 | Pi 标准 RPC 缺少队列条目 ID、单条修改/删除及完整附件快照；当前只支持整队清除/文字取回。等待正式协议，不维护第二套客户端队列；新 Harness 的内部能力不代表 RPC 已提供 | [#222 队列边界](../../../app/gupi/docs/dev/issue-222/queue-composer.md#逐条操作的可行性与实现边界) |
+| Pi RPC 其他能力缺口 | 插件参数/子命令补全、自定义快捷键、任意 TUI UI/渲染、组合问卷、输入回读、显示控制等受协议限制；同文件树节点续聊和进程内 reload 也缺直接 RPC。逐项依据、现有降级、社区方案及调查时点统一见原文；后续恢复时重新核对上游，不自动采用私有桥接或社区 fork。这些是协议边界，不等于全部已立项或均需补齐 | [RPC 能力缺口与社区调研](../../../app/gupi/docs/dev/pi-rpc-gaps.md)；[树导航边界](../../../app/gupi/docs/dev/issue-220/history.md)、[刷新重连](../../../app/gupi/docs/dev/issue-226/reconnect.md) |
 
 ### 三项组件的统一恢复条件
 
-2026-09-23 通过官方 PR 元数据、最新正式 release v0.6.6 和提交祖先关系重新核对（日期为 UTC）：
 输入组件下表保留对 v0.6.6 正式包的核对结论。2026-09-26 已确认 #3215 / #3216 的高亮、定位契约；#242 不再等待 API 设计，转为正式包可用性与应用接入核实。这里没有将上游合并或“正式包已含接口”的执行前提写成依赖升级已完成；InputGroup 已接入，不再算独立等待项。
 
+2026-09-23 通过官方 PR 元数据、最新正式 release v0.6.6 和提交祖先关系重新核对（日期为 UTC）：
 
 | 能力 | 合并日期 | 最新正式版 v0.6.6 是否包含 |
 | --- | --- | --- |
@@ -90,8 +91,8 @@ GUI 附加限制的移除与预览同步见[职责边界收敛](gui-boundary.md)
 | `turn_start`、`turn_end` | 没有单独 handler；消息和工具使用更细粒度事件 | 暂无独立轮次 UI 需求，不仅为了消费事件增加界面 |
 | `message_start`、`message_update`、`message_end` | 接入消息增量、思考、文字、工具调用及结束校准 | 已有；特定消息种类的展示不能因此一概视为完整 |
 | `tool_execution_start`、`tool_execution_update`、`tool_execution_end` | 接入工具执行状态、部分结果及结果卡片 | 已有，不继承插件 TUI renderer |
-| `compaction_start`、`compaction_end` | 更新压缩状态并刷新历史 | 未取消且不再重试的自动失败保留详情；手动失败由 RPC 结果单独提醒，避免双报 |
-| `auto_retry_start`、`auto_retry_end` | 已更新 retrying、尝试次数、等待倒计时及原因 | 重试等待不回读正文；已有最终错误处理保留，统一错误提醒延后 |
+| `compaction_start`、`compaction_end` | 更新压缩状态并刷新历史；#241 已保留未取消且不再重试的自动压缩失败详情 | 手动压缩以 RPC 结果提示，避免与事件双报；中间重试/取消不增加最终失败通知 |
+| `auto_retry_start`、`auto_retry_end` | 已更新 retrying、尝试次数、等待倒计时及原因 | 重试等待不回读正文；最终错误提醒已纳入 #241，中间重试不逐次通知 |
 | `queue_update` | 已消费，实时同步两类文字和 pending 数量 | 队列可折叠查看；状态快照仅能补充数量，逐条操作和完整附件仍受协议限制 |
 | `entry_appended` | 已接入来源会话的历史/用量同步 | Pi 0.87.0 的边界钩子还可追加 custom_message、context_edit、compaction；已有定向校准保留。display:true 插件消息已接入正文，不将所有结构条目都当成聊天消息 |
 | `session_info_changed`、`thinking_level_changed` | 已接入名称、思考等级与定向状态校准 | 保留清空名称语义及模型设置请求与事件的竞态保护，不因此扫描全部目录 |
@@ -103,7 +104,7 @@ GUI 附加限制的移除与预览同步见[职责边界收敛](gui-boundary.md)
 
 上述接入盘点继续作为能力索引；事件契约、局部刷新实现和验证边界统一见 [#236 实现说明](../../../app/gupi/docs/dev/issue-236/README.md)。名称/思考等级/entry 同步、压缩状态、两类重试进度及过宽刷新修正已完成受影响验证，不再列为待处理项。外部会话由用户手动刷新；首次新项目定向发现、后台删除保留选择、设置资源首次按需加载均已落实。
 
-错误、插件提示、待答和回答完成已接入应用级投递，阅读计数与业务状态分离；原生验证边界见 [通知设计](../../../app/gupi/docs/dev/issue-241/README.md)。`queue_update` 已接入，逐条操作仍受协议限制；turn 事件不另建 UI，直接 Bash 仍另定范围。状态通知 `cx.notify` 与应用内/系统用户提醒是不同层次，不据通知次数推断所有 Pi 实例重新加载。
+错误、插件提示、待答和回答完成已接入应用级投递，阅读计数与业务状态分离；原生验证边界见 [通知设计](../../../app/gupi/docs/dev/issue-241/README.md)。提交阶段失败保留应用内错误反馈，不额外发系统通知；点击已有通知仅回来源，不隐式重连。`queue_update` 已接入，逐条操作仍受协议限制；turn 事件不另建 UI，直接 Bash 仍另定范围。状态通知 `cx.notify` 与应用内/系统用户提醒是不同层次，不据通知次数推断所有 Pi 实例重新加载。
 
 ### 9 类扩展 UI 与参数细节
 
@@ -186,6 +187,17 @@ GUI 附加限制的移除与预览同步见[职责边界收敛](gui-boundary.md)
 
 逐条队列仍归 [#222](../../../app/gupi/docs/dev/issue-222/queue-composer.md)，受 Pi 契约限制。未选择的额外能力（JSONL 导入/导出、hotkeys 搜索别名、分享/认证等）保留在[命令能力对照](../../../app/gupi/docs/dev/issue-226/builtin-commands.md)，不是上述 Issue 的隐含实施任务。
 
+## 仍需在实施时确定的事项
+
+已确认的功能不重复询问；下面只保留会影响用户行为或公共接口的真实选择。具体原文继续归所属文档。
+
+| 范围 | 仍需确定 | 详细记录 |
+| --- | --- | --- |
+| #243 输入资源交互 | 模板选择是否也只填入正文；已有命令/参数/草稿的合并规则与面板 Tab 行为；手输/粘贴的已知命令是否自动转标签；是否同时做 `@` 候选及其范围；模板展开后追加文件引用是否接受改变插件看到的输入 | [五项具体交互问题](../../../app/gupi/docs/dev/issue-243/README.md#本-issue-实施时待确定的细节) |
+| #222 逐条队列交互 | 原始命令与完整附件的恢复口径；主输入框编辑还是队列行内编辑；取消/返回草稿/回原队列位置的行为和现有草稿合并。等待正式队列契约后一起确认 | [延后功能的待确定项](../../../app/gupi/docs/dev/issue-222/queue-composer.md#延后功能的待确定项) |
+
+Pi/项目设置 #244 与包市场 #245 是已确认的后续范围；还未开始的详细设计不在这里凭空拆成一批待定问题。模型循环快捷操作、直接 Bash、JSONL 文件入口等仍为未选择的能力候选，不是阻塞当前任务的决策。
+
 ## 发行与验证边界
 
 | 项目 | 已有证据与尚未覆盖部分 | 归属与详细记录 |
@@ -199,6 +211,7 @@ GUI 附加限制的移除与预览同步见[职责边界收敛](gui-boundary.md)
 
 ## 已有结论，不重新列为未完成项
 
+- #241 的应用内/系统通知、插件分级、未读、Dock/Tray 数字和点击回源已实现并完成相关自动化验证；用户确认 macOS 完成通知及 Dock/Tray 数字正常。原生点击、Dock 跳动、Windows 等未实测边界仍见[通知文档](../../../app/gupi/docs/dev/issue-241/README.md)，不把整个通知功能重列为待开发。已发现的正文与输入区重复错误文本仍是独立的展示问题，尚未修复，不属于上游依赖。
 - 目录读取已完成顺序字节读取与 sonic-rs 按字段解析，用户选择保留原有搜索。分批加载、头尾并发、Rayon/Tokio fs 迁移、全文索引和数据库不是遗留实施任务。见[读取优化方案](../../../app/gupi/docs/dev/issue-229/README.md)。
 - 手动压缩、HTML 导出、复制会话、消息 fork、会话删除，以及个人级插件/Skill/提示词管理已有实现。不能因早期 RPC 调研或旧命令表写过“缺管理接口”而重复列为缺失。见[命令能力对照](../../../app/gupi/docs/dev/issue-226/builtin-commands.md)、[设置计划](../../../app/gupi/docs/dev/issue-231/README.md)。
 - 摘要与工具详情 Dialog、原始摘要/分区复制、定向工具更新及侧边栏拖动修复已完成，见[详情方案](../../../app/gupi/docs/dev/issue-238/README.md)。不再列为下一项实施任务。

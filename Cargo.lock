@@ -6424,6 +6424,7 @@ dependencies = [
  "gpui-tokio",
  "ignore",
  "image",
+ "libc",
  "markdown",
  "pi-rpc",
  "platform-ext",

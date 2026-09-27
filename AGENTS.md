@@ -24,4 +24,4 @@
 
 - 根据改动选择受影响 crate 的验证；沿用已有覆盖，仅为未覆盖的具体回归风险补测试。删除实现时同步删除其专用测试。
 - Issue、PR 使用 `.github/` 模板，标题说明应用或 crate；PR 描述覆盖分支相对远程最新 `main` 的整体差异，默认普通 PR。
-- 提交和集成遵循实际 hooks 与 `.github/workflows/ci.yml`。Linux 系统依赖集中维护在 `script/bootstrap` 和 `script/install-linux.sh`。
+- 提交和集成遵循实际 hooks 与 `.github/workflows/ci.yml`。macOS / Linux 的工具链与原生依赖集中维护在 `flake.nix` / `flake.lock`，Rust 版本由 `rust-toolchain.toml` 统一声明。

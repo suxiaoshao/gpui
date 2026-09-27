@@ -14,11 +14,18 @@ pub(super) struct Palette {
     state: Entity<ConversationState>,
     search: Entity<CommandState>,
     sessions: Vec<(String, SessionInfo)>,
+    mode: Mode,
+    projects: Vec<PathBuf>,
     available: HashSet<String>,
     error: Option<String>,
     original_focus: Option<FocusHandle>,
     focus: FocusHandle,
     _subscription: Subscription,
+}
+#[derive(PartialEq, Eq)]
+enum Mode {
+    Sessions,
+    Projects,
 }
 pub(crate) const APP: &[Kind] = &[
     Kind::New,
@@ -107,10 +114,18 @@ impl HomeView {
             self.open_commands(false, window, cx);
             return;
         }
+        self.open_picker(Mode::Sessions, window, cx);
+    }
+    pub(super) fn open_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_picker(Mode::Projects, window, cx);
+    }
+    fn open_picker(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
         if self.command_panel.is_some() {
             self.close_commands(window, cx);
         }
-        if let Some(panel) = &self.palette {
+        if let Some(panel) = &self.palette
+            && panel.read(cx).mode == mode
+        {
             panel
                 .read(cx)
                 .search
@@ -121,14 +136,33 @@ impl HomeView {
         if window.has_active_dialog(cx) || self.has_image_preview(cx) {
             return;
         }
+        self.close_session_search(window, cx);
         let focus = window.focused(cx);
         let owner = cx.weak_entity();
         let state = self.state.clone();
         let sessions = state.read(cx).infos();
+        let mut projects = Vec::new();
+        for (_, info) in &sessions {
+            if !projects.contains(&info.cwd) {
+                projects.push(info.cwd.clone());
+            }
+        }
         let panel = cx.new(|cx| Palette {
             owner: owner.clone(),
             _subscription: cx.subscribe(&state, |this: &mut Palette, _, event, cx| {
                 if let ConversationEvent::Changed(changes) = event {
+                    if this.mode == Mode::Projects {
+                        if changes.catalog || changes.sessions.values().any(|v| *v) {
+                            // Keep row indices stable while catalog discovery finishes.
+                            for (_, info) in this.state.read(cx).infos() {
+                                if !this.projects.contains(&info.cwd) {
+                                    this.projects.push(info.cwd);
+                                }
+                            }
+                            cx.notify();
+                        }
+                        return;
+                    }
                     if changes.catalog {
                         this.sync_catalog(cx);
                     } else {
@@ -162,6 +196,8 @@ impl HomeView {
                 }
             }),
             state,
+            mode,
+            projects,
             available: sessions.iter().map(|(key, _)| key.clone()).collect(),
             sessions,
             search: cx.new(|cx| CommandState::new(window, cx)),
@@ -271,6 +307,22 @@ impl Palette {
         });
     }
     fn confirm(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == Mode::Projects {
+            if row == 0 {
+                self.dismiss(window, cx);
+                let _ = self
+                    .owner
+                    .update(cx, |home, cx| home.pick_directory(window, cx));
+            } else if let Some(path) = self.projects.get(row - 1).cloned() {
+                self.dismiss(window, cx);
+                let _ = self.owner.update(cx, |home, cx| {
+                    home.state
+                        .update(cx, |s, cx| s.new_or_reuse(Some(path), cx));
+                    home.input.update(cx, |input, cx| input.focus(window, cx));
+                });
+            }
+            return;
+        }
         let Some((key, _)) = self.sessions.get(row) else {
             return;
         };
@@ -286,30 +338,35 @@ impl Palette {
 }
 impl Render for Palette {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let items = self
-            .sessions
-            .iter()
-            .map(|(key, info)| {
-                let title = navigation::display_title(info, cx);
-                let path = info.cwd.to_string_lossy().into_owned();
-                let row_id = format!("session-search-row-{key}");
+        let projects = self.mode == Mode::Projects;
+        let items = if projects {
+            std::iter::once(
                 CommandItem::new()
-                    .label(title.clone())
-                    .keywords([path.clone(), info.first_message.clone()])
-                    .disabled(!self.available.contains(key))
+                    .label(t(cx, "conversation-open-folder"))
+                    .icon(IconName::FolderOpen),
+            )
+            .chain(self.projects.iter().map(|path| {
+                let name = path
+                    .file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy()
+                    .into_owned();
+                let path = path.to_string_lossy().into_owned();
+                CommandItem::new()
+                    .label(name.clone())
+                    .keywords([path.clone()])
                     .child(move |_, cx| {
-                        let tooltip = format!("{title}\n{path}");
                         h_flex()
                             .w_full()
                             .min_w_0()
                             .gap_3()
-                            .child(Icon::new(IconName::MessageCircle).size_4().flex_none())
+                            .child(Icon::new(IconName::Folder).size_4().flex_none())
                             .child(
                                 v_flex()
                                     .flex_1()
                                     .min_w_0()
                                     .gap_0p5()
-                                    .child(div().w_full().truncate().child(title.clone()))
+                                    .child(div().w_full().truncate().child(name.clone()))
                                     .child(
                                         div()
                                             .w_full()
@@ -319,13 +376,55 @@ impl Render for Palette {
                                             .child(path.clone()),
                                     ),
                             )
-                            .id(row_id.clone())
-                            .tooltip(move |window, cx| {
-                                Tooltip::new(tooltip.clone()).build(window, cx)
+                            .id(format!("project-picker-row-{path}"))
+                            .tooltip({
+                                let path = path.clone();
+                                move |window, cx| Tooltip::new(path.clone()).build(window, cx)
                             })
                     })
-            })
-            .collect::<Vec<_>>();
+            }))
+            .collect::<Vec<_>>()
+        } else {
+            self.sessions
+                .iter()
+                .map(|(key, info)| {
+                    let title = navigation::display_title(info, cx);
+                    let path = info.cwd.to_string_lossy().into_owned();
+                    let row_id = format!("session-search-row-{key}");
+                    CommandItem::new()
+                        .label(title.clone())
+                        .keywords([path.clone(), info.first_message.clone()])
+                        .disabled(!self.available.contains(key))
+                        .child(move |_, cx| {
+                            let tooltip = format!("{title}\n{path}");
+                            h_flex()
+                                .w_full()
+                                .min_w_0()
+                                .gap_3()
+                                .child(Icon::new(IconName::MessageCircle).size_4().flex_none())
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .gap_0p5()
+                                        .child(div().w_full().truncate().child(title.clone()))
+                                        .child(
+                                            div()
+                                                .w_full()
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .truncate()
+                                                .child(path.clone()),
+                                        ),
+                                )
+                                .id(row_id.clone())
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(tooltip.clone()).build(window, cx)
+                                })
+                        })
+                })
+                .collect::<Vec<_>>()
+        };
         let scanning = self.state.read(cx).scanning();
         let empty = self.sessions.is_empty();
         let mut content = v_flex().min_w_0().key_context("GupiSessionSearch");
@@ -413,7 +512,14 @@ impl Render for Palette {
                                 Button::new("session-search-open")
                                     .ghost()
                                     .small()
-                                    .label(t(cx, "session-search-open"))
+                                    .label(t(
+                                        cx,
+                                        if projects {
+                                            "conversation-project"
+                                        } else {
+                                            "session-search-open"
+                                        },
+                                    ))
                                     .disabled(selected.is_none())
                                     .children(Kbd::binding_for_action(
                                         &gpui_kit::base::actions::Confirm { secondary: false },
@@ -429,11 +535,20 @@ impl Render for Palette {
                                     }),
                             )
                     })
-                    .placeholder(t(cx, "conversation-search-placeholder"))
+                    .placeholder(t(
+                        cx,
+                        if projects {
+                            "conversation-project-search-placeholder"
+                        } else {
+                            "conversation-search-placeholder"
+                        },
+                    ))
                     .empty(move |_, _, cx| {
                         div().p_4().child(t(
                             cx,
-                            if scanning {
+                            if projects {
+                                "conversation-project-search-empty"
+                            } else if scanning {
                                 "command-scanning"
                             } else if empty {
                                 "conversation-catalog-empty"
@@ -472,6 +587,8 @@ mod tests {
             app_theme::init(cx);
             crate::state::theme::init(cx);
             crate::foundation::i18n::apply(AppLanguage::Chinese, cx);
+            crate::state::keybindings::apply(&Default::default(), cx);
+            gpui_tokio::init(cx);
             pi::init(cx);
             cx.set_global(crate::state::layout::LayoutState::default());
         });
@@ -501,7 +618,7 @@ mod tests {
         visual.simulate_resize(size(px(960.), px(740.)));
         visual.update(|window, cx| {
             home.update(cx, |home, cx| {
-                home.focus_handle.focus(window, cx);
+                assert!(home.focus_handle.is_focused(window));
                 home.open_palette(true, window, cx);
             })
         });
@@ -534,5 +651,97 @@ mod tests {
         let button = cx.debug_bounds("session-search-dismiss").unwrap();
         cx.simulate_click(button.center(), Modifiers::default());
         cx.update(|_, cx| assert!(home.read(cx).palette.is_none()));
+    }
+
+    #[gpui_kit::test]
+    fn empty_page_new_shortcut_works_after_cancelling_the_picker(cx: &mut TestAppContext) {
+        let (home, cx) = setup(cx);
+        cx.simulate_keystrokes("escape");
+        for _ in 0..2 {
+            cx.simulate_keystrokes("secondary-n");
+            cx.update(|_, cx| {
+                let panel = home.read(cx).palette.as_ref().unwrap().read(cx);
+                assert!(panel.mode == super::Mode::Projects);
+                assert!(home.read(cx).state.read(cx).sessions.is_empty());
+            });
+            cx.simulate_keystrokes("escape");
+            cx.update(|window, cx| {
+                assert!(home.read(cx).palette.is_none());
+                assert!(home.read(cx).focus_handle.is_focused(window));
+            });
+        }
+    }
+
+    #[gpui_kit::test]
+    fn new_conversation_waits_for_project_and_reuses_its_draft(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let (home, cx) = setup(cx);
+        cx.update(|window, cx| {
+            home.update(cx, |home, cx| home.new_conversation(window, cx));
+            let state = home.read(cx).state.read(cx);
+            assert_eq!(state.selected.as_deref(), Some("unloaded"));
+            assert!(state.sessions.is_empty());
+            assert!(!window.has_active_dialog(cx));
+        });
+        cx.simulate_keystrokes("escape");
+        cx.update(|_, cx| {
+            assert!(home.read(cx).palette.is_none());
+            assert!(home.read(cx).state.read(cx).sessions.is_empty());
+        });
+        cx.update(|window, cx| home.update(cx, |home, cx| home.new_conversation(window, cx)));
+        cx.simulate_input("long-project-path");
+        cx.simulate_keystrokes("enter");
+        let key = cx.update(|_, cx| {
+            let state = home.read(cx).state.clone();
+            let session = state.read(cx).current().unwrap();
+            assert_eq!(
+                session.info.cwd,
+                std::path::Path::new("/tmp/long-project-path")
+            );
+            let key = state.read(cx).selected.clone().unwrap();
+            state.update(cx, |state, cx| {
+                state.set_draft(&key, "keep draft".into(), cx)
+            });
+            key
+        });
+        cx.update(|window, cx| home.update(cx, |home, cx| home.new_conversation(window, cx)));
+        cx.simulate_input("long-project-path");
+        cx.simulate_keystrokes("enter");
+        cx.update(|_, cx| {
+            let state = home.read(cx).state.read(cx);
+            assert_eq!(state.selected.as_ref(), Some(&key));
+            assert_eq!(state.sessions.len(), 1);
+            assert_eq!(state.current().unwrap().draft, "keep draft");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn opening_a_folder_only_creates_a_conversation_after_confirmation(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let project = tempfile::tempdir().unwrap();
+        let (home, cx) = setup(cx);
+        for choose in [false, true] {
+            cx.update(|window, cx| home.update(cx, |home, cx| home.new_conversation(window, cx)));
+            // Open folder is the first command, including when there are no known projects.
+            cx.simulate_keystrokes("enter");
+            assert!(cx.did_prompt_for_paths());
+            cx.update(|_, cx| assert!(home.read(cx).state.read(cx).sessions.is_empty()));
+            cx.simulate_path_prompt_response(|options| {
+                assert!(!options.files);
+                assert!(options.directories);
+                assert!(!options.multiple);
+                choose.then(|| vec![project.path().to_path_buf()])
+            });
+            cx.run_until_parked();
+            cx.update(|_, cx| {
+                let state = home.read(cx).state.read(cx);
+                if choose {
+                    assert_eq!(state.current().unwrap().info.cwd, project.path());
+                } else {
+                    assert!(state.sessions.is_empty());
+                    assert_eq!(state.selected.as_deref(), Some("unloaded"));
+                }
+            });
+        }
     }
 }

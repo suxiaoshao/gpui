@@ -665,159 +665,63 @@ async fn new_conversation_model_options_and_catalog_have_independent_lifecycles(
 }
 
 #[gpui_kit::test]
-async fn project_switch_reuses_empty_sessions_and_their_model_connections(cx: &mut TestAppContext) {
-    let (dir, owner, a) = prepare(cx, &["empty-entries"]);
-    let project_b = dir.path().join("project-b");
-    std::fs::create_dir(&project_b).unwrap();
-    std::fs::write(project_b.join("empty-entries"), "").unwrap();
-    owner.update(cx, |state, cx| state.refresh_models(&a, cx));
-    cx.condition(&owner, |state, _| {
-        state.sessions[&a].models.data().is_some()
-            && state.sessions[&a].thinking_levels.data().is_some()
-    })
-    .await;
-    owner.update(cx, |state, cx| {
-        state.set_model(&a, state.sessions[&a].model_options()[1].clone(), cx);
-    });
-    cx.condition(&owner, |state, _| {
-        !state.sessions[&a].model_change.running() && !state.sessions[&a].thinking_levels.running()
-    })
-    .await;
-    owner.update(cx, |state, cx| state.set_thinking(&a, "off".into(), cx));
-    cx.condition(&owner, |state, _| {
-        !state.sessions[&a].model_change.running()
-    })
-    .await;
-    let instance_a = owner.read_with(cx, |state, _| state.sessions[&a].instance.unwrap());
-    let b = owner.update(cx, |state, cx| {
-        state.set_cwd(&a, project_b.clone(), cx);
-        let b = state.selected.clone().unwrap();
-        state.refresh_models(&b, cx);
-        b
-    });
-    cx.condition(&owner, |state, _| {
-        state.sessions[&b].models.data().is_some()
-            && state.sessions[&b].thinking_levels.data().is_some()
-    })
-    .await;
-    let instance_b = owner.read_with(cx, |state, _| state.sessions[&b].instance.unwrap());
-    let reads_a = count(dir.path(), "get_state");
-    for _ in 0..3 {
-        owner.update(cx, |state, cx| {
-            state.set_cwd(&b, dir.path().into(), cx);
-            assert_eq!(state.selected.as_deref(), Some(a.as_str()));
-            assert_eq!(state.current().unwrap().instance, Some(instance_a));
-            assert_eq!(
-                state.current().unwrap().model_identity(),
-                Some(("fixture".into(), "beta".into()))
-            );
-            assert_eq!(
-                state
-                    .current()
-                    .unwrap()
-                    .state
-                    .as_ref()
-                    .unwrap()
-                    .thinking_level,
-                "off"
-            );
-            state.set_cwd(&a, project_b.clone(), cx);
-            assert_eq!(state.selected.as_deref(), Some(b.as_str()));
-            assert_eq!(state.current().unwrap().instance, Some(instance_b));
-            assert_eq!(state.sessions.len(), 2);
-            assert_eq!(state.infos().len(), 2);
-        });
-    }
-    assert_eq!(count(dir.path(), "get_state"), reads_a);
-    assert_eq!(count(&project_b, "get_state"), 2);
-    for project in [dir.path(), project_b.as_path()] {
-        assert_eq!(count(project, "get_available_models"), 1);
-        assert_eq!(
-            count(project, "get_entries"),
-            usize::from(project == project_b.as_path())
-        );
-    }
-    std::fs::remove_file(dir.path().join("empty-entries")).unwrap();
-    // Sending after returning uses A's retained client and promotes it to a conversation.
-    owner.update(cx, |state, cx| {
-        state.set_cwd(&b, dir.path().into(), cx);
-        state.set_draft(&a, "send on the retained connection".into(), cx);
-        state.send(&a, StreamingBehavior::Steer, cx);
-    });
-    cx.condition(&owner, |state, _| {
-        !state.sessions[&a].submitting() && !state.sessions[&a].history().entries.is_empty()
-    })
-    .await;
-    owner.update(cx, |state, cx| {
-        assert_eq!(state.sessions[&a].instance, Some(instance_a));
-        assert!(state.sessions[&a].draft.is_empty());
-        state.set_cwd(&a, project_b, cx);
-        state.set_cwd(&b, dir.path().into(), cx);
-        assert_ne!(
-            state.selected.as_deref(),
-            Some(a.as_str()),
-            "a conversation with history must not be reused as an empty session"
-        );
-    });
-    assert_eq!(count(dir.path(), "prompt"), 1);
-    assert_eq!(count(dir.path(), "set_model"), 1);
-    close(&owner, cx).await;
-}
-
-#[gpui_kit::test]
-async fn project_switch_from_unconnected_draft_rejoins_pending_model_load(cx: &mut TestAppContext) {
-    let (dir, owner, a) = prepare(cx, &["hold-get_available_models"]);
-    let project_b = dir.path().join("project-b");
-    std::fs::create_dir(&project_b).unwrap();
-    owner.update(cx, |state, cx| state.refresh_models(&a, cx));
-    cx.condition(&owner, |state, _| state.sessions[&a].models.running())
+async fn new_conversation_discovers_project_session_dir_without_changing_selection(
+    cx: &mut TestAppContext,
+) {
+    let (dir, owner, original) = begin(cx, &[]);
+    cx.condition(&owner, |state, cx| state.can_submit(&original, cx))
         .await;
-    let client = owner.read_with(cx, |state, cx| state.client(&a, cx).unwrap());
-    control(&client, "wait_for", "get_available_models", 1).await;
-    owner.update(cx, |state, cx| {
-        let instance = state.sessions[&a].instance;
-        state.set_cwd(&a, project_b.clone(), cx);
-        let b = state.selected.clone().unwrap();
-        assert!(state.sessions[&b].instance.is_some());
-        state.set_cwd(&b, dir.path().into(), cx);
-        assert_eq!(state.selected.as_deref(), Some(a.as_str()));
-        assert_eq!(state.sessions[&b].info.cwd, project_b);
-        assert_eq!(state.sessions[&a].instance, instance);
-        assert!(state.sessions[&a].models.running());
-        state.refresh_models(&a, cx);
+
+    let project = dir.path().join("selected-project");
+    let session_dir = project.join("custom-history");
+    std::fs::create_dir_all(project.join(".pi")).unwrap();
+    std::fs::create_dir_all(&session_dir).unwrap();
+    std::fs::write(
+        project.join(".pi/settings.json"),
+        r#"{"sessionDir":"custom-history"}"#,
+    )
+    .unwrap();
+    let history = session_dir.join("existing.jsonl");
+    std::fs::write(
+        &history,
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "session",
+                "id": "existing-history",
+                "version": 3,
+                "cwd": project,
+            })
+        ),
+    )
+    .unwrap();
+    let history_key = history
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+
+    let selected = owner.update(cx, |state, cx| {
+        state.set_draft(&original, "keep the current session".into(), cx);
+        state.new_or_reuse(Some(project.clone()), cx);
+        state.selected.clone().unwrap()
     });
-    control(&client, "release", "get_available_models", 0).await;
     cx.condition(&owner, |state, _| {
-        state.sessions[&a].models.data().is_some()
+        state.catalog.data().is_some_and(|catalog| {
+            catalog
+                .sessions
+                .iter()
+                .any(|session| session.key() == history_key && session.cwd == project)
+        }) && !state.catalog.running()
     })
     .await;
-    assert_eq!(count(dir.path(), "get_state"), 1);
-    assert_eq!(count(dir.path(), "get_available_models"), 1);
-    close(&owner, cx).await;
-}
 
-#[gpui_kit::test]
-async fn project_switch_preserves_nonempty_drafts(cx: &mut TestAppContext) {
-    let (dir, owner, a) = prepare(cx, &["empty-entries"]);
-    let project_b = dir.path().join("project-b");
-    std::fs::create_dir(&project_b).unwrap();
-    std::fs::write(project_b.join("empty-entries"), "").unwrap();
-    owner.update(cx, |state, cx| {
-        state.set_draft(&a, "keep A's draft".into(), cx);
-        state.new_draft(Some(project_b.clone()), cx);
-        let b = state.selected.clone().unwrap();
-        assert!(state.sessions[&b].instance.is_some());
-        state.set_cwd(&b, dir.path().into(), cx);
-        let next_a = state.selected.clone().unwrap();
-        assert_ne!(next_a, a);
-        assert_ne!(next_a, b);
-        assert_eq!(state.sessions[&a].draft, "keep A's draft");
-        assert_eq!(state.sessions[&b].info.cwd, project_b);
-        state.set_draft(&next_a, "keep the connected A draft".into(), cx);
-        state.set_cwd(&next_a, project_b.clone(), cx);
-        assert_eq!(state.sessions[&next_a].draft, "keep the connected A draft");
-        assert_eq!(state.current().unwrap().info.cwd, project_b);
-        assert!(state.current().unwrap().draft.is_empty());
+    owner.read_with(cx, |state, _| {
+        assert_eq!(state.selected.as_deref(), Some(selected.as_str()));
+        assert_eq!(state.current().unwrap().info.cwd, project);
+        assert_eq!(state.sessions[&original].draft, "keep the current session");
+        assert!(state.sessions[&original].instance.is_some());
+        assert!(state.infos().iter().any(|(key, _)| key == &history_key));
     });
     close(&owner, cx).await;
 }

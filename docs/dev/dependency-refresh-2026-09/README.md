@@ -167,10 +167,10 @@ Rig/RMCP 和 Diesel/libsqlite3-sys 属于 Jaco 专用范围，本轮排除，不
 | 对象 | 当前状态 | 更新目标或处理 |
 | --- | --- | --- |
 | Lucide 来源 | 新 gpui-lucide 使用 gpui-kit-assets 0.6.4 随包目录（Lucide 1.43.0 + 保留图标），构建时无网络 | 原 third_party/lucide 不再为 Gupi/Feiwen 提供图标；它与 app-assets/app-assets-macros 暂留给 Jaco，按 Gupi 合入后的清理计划一起删除。无需同步到独立 Lucide 1.47.0 |
-| Rust / Cargo | 本机 1.98.1；官方 stable 1.98.1；CI 跟随 stable，无 rust-toolchain 文件 | 当前无需升级；候选依赖的 MSRV 仍须结合新锁图验证，不额外改成 nightly |
-| GitHub Actions | checkout v7.0.1、rust-cache v2.9.2 均固定 SHA，均为当前最新 release；rust-toolchain@stable 为滚动引用 | 无版本更新；保留现有策略，不把“滚动引用”误记成落后 |
+| Rust / Cargo | `rust-toolchain.toml` 固定 1.98.1；macOS/Linux 的 Nix 环境及 Windows Rustup 共用该声明 | 候选依赖的 MSRV 仍须结合新锁图验证，不额外改成 nightly |
+| GitHub Actions | checkout v7.0.1、rust-cache v2.9.2 与 install-nix-action v31 均固定 SHA；Rust 版本由仓库统一声明 | macOS/Linux 通过 `nix develop --command` 执行检查；Windows 使用原生工具链 |
 | Pi 运行时 | 用户安装/配置的可执行文件；当前审计协议 0.85.1，官方最新 v0.85.1 | 非 Cargo 内嵌库，不擅自替用户升级全局 Pi；沿用独立进程启动和 RPC 契约 |
-| Linux 系统库 | script/install-linux.sh 使用 runner apt 源，没有固定单独版本 | 随支持平台安装；保留音频、字体、GTK/WebKit、Wayland/X11、Vulkan 等现有依赖，新图确有变化时再调整脚本和 bundle 系统依赖 |
+| macOS/Linux 系统库 | `flake.nix` 定义开发环境，`flake.lock` 固定输入；旧 apt 安装脚本已移除 | 原生依赖变化统一调整 flake，并核对 bundle 的系统依赖；macOS Metal 仍使用宿主 Xcode |
 | Windows WinMD | platform-ext/winmd 下 6 个签入文件 | 属于绑定生成输入；当前未从文件本身确定可比较的上游 SDK 包版本，不杜撰“已最新”。本次先保持，与 Windows 配套迁移共同核对来源 |
 | 项目内 path crate | 与 workspace 源码一起维护，见下方成员清单 | 没有独立“crates.io 最新版”目标，随直接依赖/API 变化调整；不替换为同名第三方包 |
 | 应用内主题、图标和字体文件 | 静态资源，不是独立可解析的包依赖 | 除已明确的 Lucide 来源外，不凭更新依赖之名重绘/替换用户界面资源 |
@@ -336,7 +336,7 @@ Rig/RMCP 和 Diesel/libsqlite3-sys 属于 Jaco 专用范围，本轮排除，不
 - [GPUI Kit v0.6.4](https://github.com/longbridge/gpui-kit/releases/tag/v0.6.4)、[固定 main README](https://github.com/longbridge/gpui-kit/blob/f698b4bcac037b8d208b34eca86cc940081c498f/README.md)、[官方 skill 目录](https://github.com/longbridge/gpui-kit/tree/f698b4bcac037b8d208b34eca86cc940081c498f/skills)。
 - [skills 安装工具说明](https://github.com/vercel-labs/skills#readme)：项目范围、指定 agent/skill、链接与更新方式。
 - [Lucide 1.47.0](https://github.com/lucide-icons/lucide/releases/tag/1.47.0)、[Rust 1.98.1](https://github.com/rust-lang/rust/releases/tag/1.98.1)、[Pi 0.85.1](https://github.com/earendil-works/pi/releases/tag/v0.85.1)。
-- 本项目：[root manifest](../../../Cargo.toml)、[主锁](../../../Cargo.lock)、[独立工具](../../../tools/mcp-auth-test-server/Cargo.toml)、[CI](../../../.github/workflows/ci.yml)、[系统依赖](../../../script/install-linux.sh)、[图标来源](../../../.gitmodules)。
+- 本项目：[root manifest](../../../Cargo.toml)、[主锁](../../../Cargo.lock)、[独立工具](../../../tools/mcp-auth-test-server/Cargo.toml)、[CI](../../../.github/workflows/ci.yml)、[开发环境](../../../flake.nix)、[图标来源](../../../.gitmodules)。
 
 前期版本与 changelog 调查记录保留作基线；以下记录实际实施与验证。未进行漏洞审计。
 

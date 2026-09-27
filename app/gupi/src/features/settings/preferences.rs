@@ -214,7 +214,8 @@ impl SettingsView {
                     div()
                         .text_sm()
                         .text_color(cx.theme().danger)
-                        .child(t(cx, problem.key())),
+                        .child(t(cx, problem.key()))
+                        .child(div().text_xs().child(problem.to_string())),
                 );
             } else if self.probe_ready(cx)
                 && let Some(data) = pi.operation.data()

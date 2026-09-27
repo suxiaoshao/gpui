@@ -710,25 +710,21 @@ impl HomeView {
         }
         self.sync(true, window, cx);
     }
-    fn pick_directory(&mut self, cx: &mut Context<Self>) {
-        let key = self.shown_key.clone();
+    fn pick_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
             multiple: false,
             prompt: Some(t(cx, "conversation-project").into()),
         });
-        cx.spawn(async move |owner, cx| {
+        cx.spawn_in(window, async move |owner, cx| {
             if let Ok(Ok(Some(paths))) = prompt.await
                 && let Some(path) = paths.into_iter().next()
             {
-                let _ = owner.update(cx, |this, cx| {
-                    if let Some(key) = key {
-                        this.state.update(cx, |s, cx| s.set_cwd(&key, path, cx));
-                    } else {
-                        this.state
-                            .update(cx, |s, cx| s.new_or_reuse(Some(path), cx));
-                    }
+                let _ = owner.update_in(cx, |this, window, cx| {
+                    this.state
+                        .update(cx, |s, cx| s.new_or_reuse(Some(path), cx));
+                    this.input.update(cx, |input, cx| input.focus(window, cx));
                 });
             }
         })

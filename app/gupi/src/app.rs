@@ -46,6 +46,7 @@ pub(crate) fn run() {
         }
         gpui_kit::init(cx);
         gpui_tokio::init(cx);
+        crate::state::environment::init(cx);
         crate::state::pi::init(cx);
         temporary::init(cx);
         shortcuts::init(cx);

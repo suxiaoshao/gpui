@@ -287,6 +287,8 @@ impl HomeView {
                 return;
             }
             self.input.update(cx, |input, cx| input.focus(window, cx));
+        } else {
+            self.focus_handle.focus(window, cx);
         }
     }
     pub(super) fn toggle_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
