@@ -53,15 +53,34 @@ python3 app/gupi/docs/dev/issue-223/icon-probe/build.py
 
 脚本不下载资源，不安装应用。生成的 `.icon`、`.car`、`.icns`、PNG 和 app bundle 不提交 Git；可从同一脚本重建。经典主源继续归属 `build-assets/icon/Gupi.icon`。
 
-## macOS 命令搜索环境
+## 命令搜索环境
 
 Finder/Dock 启动不会获得终端设置的 pnpm/fnm 路径。Gupi 的应用级环境服务在后台读取用户默认登录交互式 Shell 的 `PATH`，成功或失败结果在本次进程内共享。只向子进程传递路径快照，不在多线程应用中修改全局环境，也不改变 Pi 配置目录与会话目录的来源。
 
 - 界面启动不等待环境检测；RPC 连接、版本检测、插件操作和资源发现中的包管理器命令在各自后台任务中等待同一份路径。
 - 终端启动继承当前环境，Windows/Linux 沿用进程环境。设置里的显式 Pi 路径继续有效；子进程显式指定的环境优先。
 - Shell 执行有超时和输出上限，只提取内部 helper 输出的路径，不把启动脚本输出写入错误或日志。失败后继续尝试继承的路径；命令失败时显示诊断。设置中的“检测 Pi”重新读取环境，已有 Pi 实例继续运行。
-- 已验证路径中空格/引号、带噪声的 Shell 输出、超时与取消、输出超限、缓存与重试，以及 Pi 和包管理器子进程的路径传递。Gupi 269 项测试、Pi RPC 26 项单元/集成测试及 1 项文档测试、受影响 crate 的 Clippy 均通过。
+- macOS 显式区分 Shell：sh/bash/zsh/dash/ksh 使用 `-l -i -c`；Fish 保留 `fish_prompt` 钩子；csh/tcsh 使用 `argv[0] = "-"` 加 `-i -c` 读取 `.login`；Nushell 使用 `-l -e` 加 `exec $env.GUPI_SHELL_PATH_HELPER ...`，配置加载后直接替换进程，不进入 REPL。helper 路径通过环境变量传递，支持空格、引号等字符。未知 Shell 返回明确的 unsupported 原因，交由现有失败回退处理。
+- 已验证路径中空格/引号、带噪声的 Shell 输出、超时与取消、输出超限、缓存与重试，以及 Pi 和包管理器子进程的路径传递。
 - macOS release `.app` 已打包。使用独立配置、无终端和仅 `/usr/bin:/bin:/usr/sbin:/sbin` 的 PATH 启动包内程序，原生设置页显示自动找到 Pi 0.87.1；打开测试项目草稿后成功建立 RPC 会话并取得 Pi 返回的会话 ID。没有发送模型请求，没有修改用户配置；测试实例及临时文件已清理。
+
+### Zed 的 Shell 差异与 Windows 边界
+
+按本地 Zed `4f70d91bda`（2026-09-28）核对：
+
+| 场景 | Zed 的处理 | Gupi 对应行为 |
+| --- | --- | --- |
+| 应用启动 | 登录 Shell 环境加载仅编译于 Unix；终端启动保留原环境 | macOS GUI 启动读取登录 Shell PATH；Windows/Linux 继承进程环境 |
+| Unix Shell | Fish 触发 prompt；csh/tcsh 改 `argv[0]`；Nu 用 `-e`；另外按 Shell 改输出重定向语法 | 接入前三种与命令启动相关的差异；继续直接读取 stdout 中的 NUL 帧，无须复制 Zed 的特殊文件描述符重定向 |
+| Windows 项目环境 | PowerShell/Pwsh 使用 `-NonInteractive -NoProfile -Command` 与 `&`；cmd 用 `/d /c`；Nu 用 `-c` 与 `^` | Pi 为直接子进程，不经过这些 Shell 脚本；继承启动 Gupi 的环境，不另行加载 PowerShell profile |
+| Windows Shell 发现 | 搜索 Program Files、MSIX、Scoop、dotnet tools、PATH 和系统 PowerShell，最后回退系统 cmd | 当前无需选择终端 Shell；Pi 命令由 `which` 按 PATH/PATHEXT 查找，Pi 检测与 RPC 都支持 PATH 大小写并设置 `CREATE_NO_WINDOW` |
+
+Windows 中若 Node/Pi 路径只由 PowerShell profile 设置，从 Explorer 启动不会得到这些路径；需把命令目录加入用户/系统 PATH，或从已加载配置的终端启动。系统环境修改后，已经运行的应用仍持有原来的环境快照。
+
+参考：[Zed 环境捕获](https://github.com/zed-industries/zed/blob/4f70d91bda7ec5f5600a000a0dc34391d9f1e96f/crates/util/src/shell_env.rs)、[启动入口](https://github.com/zed-industries/zed/blob/4f70d91bda7ec5f5600a000a0dc34391d9f1e96f/crates/zed/src/main.rs)、[Windows Shell 发现](https://github.com/zed-industries/zed/blob/4f70d91bda7ec5f5600a000a0dc34391d9f1e96f/crates/gpui_util/src/lib.rs)。
+
+回归覆盖实际登录配置读取、Nu 的列表 PATH 导出、Fish prompt、带特殊字符的 helper 路径及未知 Shell 回退。macOS 本机的 10 项 Shell 测试（含 Nushell 0.112.2、Fish 和 7 种系统 Shell）及 1 项环境缓存/重试测试通过。系统 Shell 用 macOS 自带可执行文件；Nu/Fish 测试需要安装相应 Shell 并通过 `cargo test -p gupi foundation::shell_path::tests -- --include-ignored` 显式运行。Windows 已有 `windows_cmd_shim_uses_structured_arguments` 集成测试；本机为 macOS，Windows 原生运行结果需在 Windows 验证。
+本轮 Gupi 构建、Clippy（全部 targets，警告视为错误）和格式检查通过。另用独立 Nushell 配置启动实际构建的 Gupi helper，确认读取到登录配置与交互配置的 PATH，未启动 GUI 或修改用户配置。
 
 ## 已核实的边界
 

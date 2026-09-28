@@ -70,46 +70,44 @@ fn parse_path_frame(output: &[u8]) -> Result<OsString, String> {
     Ok(OsString::from_vec(output[value_start..value_end].to_vec()))
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ShellKind {
-    Fish,
-    Posix,
-}
-
-fn shell_kind(shell: &OsStr) -> ShellKind {
-    if Path::new(shell)
-        .file_name()
-        .is_some_and(|name| name == "fish")
-    {
-        ShellKind::Fish
-    } else {
-        ShellKind::Posix
-    }
-}
-
-fn shell_script(kind: ShellKind) -> &'static str {
-    match kind {
-        ShellKind::Fish => {
-            // Some version managers (including fnm and asdf integrations) update
-            // PATH from fish_prompt rather than from fish's startup files alone.
-            "emit fish_prompt >/dev/null 2>/dev/null; exec \"$GUPI_SHELL_PATH_HELPER\" --gupi-print-shell-path"
-        }
-        ShellKind::Posix => "exec \"$GUPI_SHELL_PATH_HELPER\" --gupi-print-shell-path",
-    }
-}
-
-async fn capture_with(
-    shell: &OsStr,
-    home: &Path,
-    helper: &OsStr,
-    deadline: Duration,
-) -> Result<OsString, String> {
+fn capture_command(shell: &OsStr, home: &Path, helper: &OsStr) -> Result<Command, String> {
+    const EXEC_HELPER: &str = "exec \"$GUPI_SHELL_PATH_HELPER\" --gupi-print-shell-path";
     let mut command = Command::new(shell);
+    match Path::new(shell).file_name().and_then(OsStr::to_str) {
+        Some("sh" | "bash" | "zsh" | "dash" | "ksh") => {
+            command.args(["-l", "-i", "-c", EXEC_HELPER]);
+        }
+        Some("fish") => {
+            // Some version managers update PATH from fish_prompt hooks.
+            command.args([
+                "-l", "-i", "-c",
+                "emit fish_prompt >/dev/null 2>/dev/null; exec \"$GUPI_SHELL_PATH_HELPER\" --gupi-print-shell-path",
+            ]);
+        }
+        Some("csh" | "tcsh") => {
+            // These shells cannot combine -l with command arguments. A leading
+            // '-' in argv[0] enables login startup files, including ~/.login.
+            command.as_std_mut().arg0("-");
+            command.args(["-i", "-c", EXEC_HELPER]);
+        }
+        Some("nu") => {
+            // -e loads interactive/login configuration before executing. Nu
+            // reads environment variables through $env, not POSIX expansion.
+            // exec replaces the shell so it never enters the REPL afterwards.
+            command.args([
+                "-l",
+                "-e",
+                "exec $env.GUPI_SHELL_PATH_HELPER --gupi-print-shell-path",
+            ]);
+        }
+        _ => {
+            return Err(format!(
+                "unsupported login shell: {}",
+                Path::new(shell).display()
+            ));
+        }
+    }
     command
-        .arg("-l")
-        .arg("-i")
-        .arg("-c")
-        .arg(shell_script(shell_kind(shell)))
         .env(HELPER_ENV, helper)
         .current_dir(home)
         .stdin(Stdio::null())
@@ -119,8 +117,16 @@ async fn capture_with(
     // Keep an interactive shell or a version-manager hook from inheriting the
     // app's controlling terminal or leaving descendants holding our pipes.
     command.as_std_mut().process_group(0);
+    Ok(command)
+}
 
-    let mut child = command
+async fn capture_with(
+    shell: &OsStr,
+    home: &Path,
+    helper: &OsStr,
+    deadline: Duration,
+) -> Result<OsString, String> {
+    let mut child = capture_command(shell, home, helper)?
         .spawn()
         .map_err(|error| format!("start login shell: {error}"))?;
     let pid = child
@@ -297,8 +303,8 @@ fn account_shell_and_home() -> Result<Option<(OsString, PathBuf)>, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CAPTURE_TIMEOUT, FRAME_MARKER, OsStr, OsString, Path, capture_with, parse_path_frame,
-        path_frame,
+        CAPTURE_TIMEOUT, FRAME_MARKER, OsStr, OsString, Path, capture_command, capture_with,
+        parse_path_frame, path_frame,
     };
     use std::{
         os::unix::{
@@ -343,7 +349,7 @@ mod tests {
         );
         let shell_path = executable(
             dir.path(),
-            "fake-shell",
+            "zsh",
             "printf 'startup chatter\\n'\nexec /bin/sh -c \"$4\"",
         );
         let result = capture_with(
@@ -358,13 +364,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unsupported_shell_is_not_executed_as_posix() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = executable(dir.path(), "unknown-shell", "touch unexpectedly-started");
+        let error = capture_with(
+            shell.as_os_str(),
+            dir.path(),
+            OsStr::new("/unused/helper"),
+            CAPTURE_TIMEOUT,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.starts_with("unsupported login shell:"));
+        assert!(!dir.path().join("unexpectedly-started").exists());
+    }
+
+    async fn assert_installed_shell_loads_path(shell: &str, expected_prefix: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        std::fs::create_dir_all(config.join("nushell")).unwrap();
+        std::fs::create_dir_all(config.join("fish")).unwrap();
+        for profile in [".profile", ".bash_profile", ".zprofile"] {
+            std::fs::write(
+                dir.path().join(profile),
+                "export PATH=\"/login path:$PATH\"\n",
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            dir.path().join(".login"),
+            "setenv PATH \"/login path:$PATH\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            config.join("nushell/config.nu"),
+            "$env.PATH = [\"/config path\"] ++ $env.PATH\n",
+        )
+        .unwrap();
+        std::fs::write(
+            config.join("nushell/login.nu"),
+            "$env.PATH = [\"/login path\"] ++ $env.PATH\n",
+        )
+        .unwrap();
+        std::fs::write(
+            config.join("fish/config.fish"),
+            "status is-login; and set -gx PATH '/login path' $PATH\n\
+             function fixture_prompt --on-event fish_prompt\n\
+             set -gx PATH '/prompt path' $PATH\n\
+             end\n",
+        )
+        .unwrap();
+        let helper = executable(
+            dir.path(),
+            "helper with ' quote $ and ;",
+            "printf '\\000GUPI-SHELL-PATH-v1\\000%s\\000' \"$PATH\"",
+        );
+        let mut command =
+            capture_command(OsStr::new(shell), dir.path(), helper.as_os_str()).unwrap();
+        // Isolate startup files without modifying the test process environment.
+        command
+            .env("HOME", dir.path())
+            .env("ZDOTDIR", dir.path())
+            .env("XDG_CONFIG_HOME", config)
+            .env("TERM", "dumb");
+        let output = tokio::time::timeout(CAPTURE_TIMEOUT, command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(output.status.success(), "{shell}: {:?}", output.status);
+        let path = parse_path_frame(&output.stdout).unwrap();
+        assert!(
+            path.as_bytes().starts_with(expected_prefix.as_bytes()),
+            "{shell} did not load its login PATH"
+        );
+    }
+
+    #[tokio::test]
+    async fn system_shells_load_login_path_with_quoted_helper() {
+        for shell in [
+            "/bin/sh",
+            "/bin/bash",
+            "/bin/zsh",
+            "/bin/dash",
+            "/bin/ksh",
+            "/bin/csh",
+            "/bin/tcsh",
+        ] {
+            assert_installed_shell_loads_path(shell, "/login path:").await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires nu on PATH; run explicitly after installing Nushell"]
+    async fn nushell_loads_config_and_login_path_with_quoted_helper() {
+        assert_installed_shell_loads_path("nu", "/login path:/config path:").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires fish on PATH; run explicitly after installing Fish"]
+    async fn fish_loads_login_path_and_prompt_hooks_with_quoted_helper() {
+        assert_installed_shell_loads_path("fish", "/prompt path:/login path:").await;
+    }
+
+    #[tokio::test]
     async fn capture_reports_shell_failure_without_echoing_output() {
         let dir = tempfile::tempdir().unwrap();
-        let shell_path = executable(
-            dir.path(),
-            "failed-shell",
-            "echo secret-diagnostic >&2\nexit 9",
-        );
+        let shell_path = executable(dir.path(), "zsh", "echo secret-diagnostic >&2\nexit 9");
         let error = capture_with(
             shell_path.as_os_str(),
             dir.path(),
@@ -383,7 +488,7 @@ mod tests {
         let pid_path = dir.path().join("pid");
         let shell_path = executable(
             dir.path(),
-            "stuck-shell",
+            "zsh",
             &format!(
                 "echo $$ > '{}'\nwhile :; do sleep 1; done",
                 pid_path.display()
@@ -412,11 +517,7 @@ mod tests {
     #[tokio::test]
     async fn capture_stops_when_startup_output_exceeds_limit() {
         let dir = tempfile::tempdir().unwrap();
-        let shell_path = executable(
-            dir.path(),
-            "noisy-shell",
-            "exec /usr/bin/yes startup-output",
-        );
+        let shell_path = executable(dir.path(), "zsh", "exec /usr/bin/yes startup-output");
         let error = capture_with(
             shell_path.as_os_str(),
             dir.path(),
@@ -434,7 +535,7 @@ mod tests {
         let pid_path = dir.path().join("cancelled-pid");
         let shell_path = executable(
             dir.path(),
-            "cancelled-shell",
+            "zsh",
             &format!(
                 "echo $$ > '{}'\nwhile :; do sleep 1; done",
                 pid_path.display()
