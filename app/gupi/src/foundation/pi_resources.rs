@@ -3,7 +3,10 @@ mod discovery;
 
 use super::persistence;
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 pub(crate) use discovery::scan;
 
@@ -212,6 +215,7 @@ pub(crate) async fn package_action(
     root: PathBuf,
     action: &'static str,
     source: String,
+    env: Vec<(OsString, OsString)>,
 ) -> Result<(), Error> {
     let source = source.trim();
     if source.is_empty() || source.starts_with('-') {
@@ -219,7 +223,8 @@ pub(crate) async fn package_action(
     }
     tokio::fs::create_dir_all(&root).await?;
     let mut cmd = tokio::process::Command::new(command);
-    cmd.env("PI_CODING_AGENT_DIR", &root)
+    cmd.envs(env)
+        .env("PI_CODING_AGENT_DIR", &root)
         .current_dir(&root)
         .arg(action);
     if action == "update" {
@@ -290,7 +295,7 @@ mod tests {
         let second = prompts.join("second.md");
         std::fs::write(&first, "---\ndescription: before\n---\ntext").unwrap();
         std::fs::write(&second, "Other prompt").unwrap();
-        let mut catalog = scan(dir.path().into(), None).unwrap();
+        let mut catalog = scan(dir.path().into(), None, &[]).unwrap();
         let resource = catalog
             .resources
             .iter()
@@ -332,7 +337,7 @@ mod tests {
         let external = temp.path().join("external.md");
         std::fs::write(&external, "external").unwrap();
         register_skill(&root, &external).unwrap();
-        let catalog = scan(root.clone(), None).unwrap();
+        let catalog = scan(root.clone(), None, &[]).unwrap();
         assert!(
             catalog
                 .resources
@@ -362,17 +367,40 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("personal agent");
         let cli = temp.path().join("fake-pi");
+        let bin = temp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let path_log = temp.path().join("cli-env");
+        let helper = bin.join("path-helper");
         std::fs::write(
             &cli,
-            "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$PI_CODING_AGENT_DIR\" \"$@\" > args\n",
+            "#!/bin/sh\npath-helper\nprintf '%s\\n' \"$PWD\" \"$PI_CODING_AGENT_DIR\" \"$@\" > args\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &helper,
+            "#!/bin/sh\nprintf '%s' \"$PATH\" > \"$PATH_LOG\"\n",
         )
         .unwrap();
         std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let original_path = std::env::var_os("PATH");
+        let env = vec![
+            (OsString::from("PATH"), bin.as_os_str().to_os_string()),
+            (
+                OsString::from("PATH_LOG"),
+                path_log.as_os_str().to_os_string(),
+            ),
+            (
+                OsString::from("PI_CODING_AGENT_DIR"),
+                temp.path().join("wrong-agent").into_os_string(),
+            ),
+        ];
         package_action(
             cli.clone(),
             root.clone(),
             "update",
             "npm:test;echo unexpected".into(),
+            env.clone(),
         )
         .await
         .unwrap();
@@ -392,9 +420,14 @@ mod tests {
                 "--no-approve"
             ]
         );
+        assert_eq!(
+            std::fs::read_to_string(path_log).unwrap(),
+            bin.to_string_lossy().into_owned()
+        );
+        assert_eq!(std::env::var_os("PATH"), original_path);
         std::fs::write(&cli, "#!/bin/sh\necho failure >&2\nexit 4\n").unwrap();
         assert!(
-            package_action(cli, root, "remove", "npm:test".into())
+            package_action(cli, root, "remove", "npm:test".into(), env)
                 .await
                 .unwrap_err()
                 .to_string()

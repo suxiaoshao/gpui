@@ -2,6 +2,7 @@ pub(crate) mod actions;
 mod attachments;
 mod composer;
 mod content;
+mod find;
 mod history;
 mod image_preview;
 mod messages;
@@ -10,6 +11,7 @@ pub(crate) mod palette;
 mod panes;
 pub(crate) mod pickers;
 mod progress;
+mod session_info;
 mod slash;
 mod titlebar;
 mod welcome;
@@ -30,6 +32,7 @@ use gpui_kit::component::{
     message_scroller::MessageScrollerState,
     v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use pi_rpc::protocol::StreamingBehavior;
 use std::{
@@ -52,6 +55,7 @@ struct SessionView {
     rows: Rc<Vec<messages::ChatRow>>,
     row_positions: Rc<std::cell::RefCell<HashMap<String, usize>>>,
     content_revision: u64,
+    markdown: messages::markdown::Registry,
 }
 pub(crate) struct HomeView {
     pub state: Entity<ConversationState>,
@@ -75,6 +79,8 @@ pub(crate) struct HomeView {
     pane_layout: panes::PaneLayout,
     pane_drag: Option<panes::Drag>,
     palette: Option<Entity<palette::Palette>>,
+    find: Option<Entity<find::FindBar>>,
+    find_subscription: Option<Subscription>,
     image_preview: Entity<image_preview::PreviewHost>,
     slash: slash::Completion,
     pub(crate) command_panel: Option<Entity<super::command_palette::CommandPalette>>,
@@ -123,6 +129,13 @@ impl HomeView {
                     }
                 }
             });
+            if let Some(find) = &self.find {
+                let sources = new
+                    .iter()
+                    .flat_map(messages::ChatRow::find_sources)
+                    .collect();
+                find.update(cx, |find, cx| find.sync(sources, cx));
+            }
         }
     }
     pub(crate) fn has_image_preview(&self, cx: &App) -> bool {
@@ -348,6 +361,8 @@ impl HomeView {
             pane_layout: panes::PaneLayout::default(),
             pane_drag: None,
             palette: None,
+            find: None,
+            find_subscription: None,
             image_preview: cx.new(image_preview::PreviewHost::new),
             slash: Default::default(),
             command_panel: None,
@@ -375,6 +390,7 @@ impl HomeView {
         let key = self.state.read(cx).selected.clone();
         let changed = self.shown_key != key;
         if changed {
+            self.close_find(false, window, cx);
             self.slash = Default::default();
         }
         if changed && let Some(view) = self.shown_key.as_ref().and_then(|key| self.views.get(key)) {
@@ -507,6 +523,7 @@ impl HomeView {
                     rows: Rc::new(vec![]),
                     row_positions: Rc::default(),
                     content_revision: u64::MAX,
+                    markdown: Default::default(),
                 },
             );
         }
@@ -681,6 +698,7 @@ impl HomeView {
         cx.notify();
     }
     fn preview_node(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_find(false, window, cx);
         let Some(key) = self.shown_key.clone() else {
             return;
         };
@@ -701,6 +719,7 @@ impl HomeView {
         }
     }
     fn return_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_find(false, window, cx);
         if let Some(key) = &self.shown_key
             && let Some(view) = self.views.get_mut(key)
         {
@@ -709,25 +728,21 @@ impl HomeView {
         }
         self.sync(true, window, cx);
     }
-    fn pick_directory(&mut self, cx: &mut Context<Self>) {
-        let key = self.shown_key.clone();
+    fn pick_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
             multiple: false,
             prompt: Some(t(cx, "conversation-project").into()),
         });
-        cx.spawn(async move |owner, cx| {
+        cx.spawn_in(window, async move |owner, cx| {
             if let Ok(Ok(Some(paths))) = prompt.await
                 && let Some(path) = paths.into_iter().next()
             {
-                let _ = owner.update(cx, |this, cx| {
-                    if let Some(key) = key {
-                        this.state.update(cx, |s, cx| s.set_cwd(&key, path, cx));
-                    } else {
-                        this.state
-                            .update(cx, |s, cx| s.new_or_reuse(Some(path), cx));
-                    }
+                let _ = owner.update_in(cx, |this, window, cx| {
+                    this.state
+                        .update(cx, |s, cx| s.new_or_reuse(Some(path), cx));
+                    this.input.update(cx, |input, cx| input.focus(window, cx));
                 });
             }
         })
@@ -808,10 +823,14 @@ impl Render for HomeView {
                 v_flex()
                     .size_full()
                     .min_w_0()
+                    .children(self.find.clone())
                     .child(self.render_messages(window, cx))
                     .child(self.render_composer(window, cx))
             };
-            return content
+            return v_flex()
+                .size_full()
+                .when(empty, |view| view.children(self.find.clone()))
+                .child(content)
                 .child(self.image_preview.clone())
                 .key_context("Gupi")
                 .track_focus(&self.focus_handle)
@@ -833,6 +852,7 @@ impl Render for HomeView {
         let center = v_flex()
             .size_full()
             .min_w_0()
+            .children(self.find.clone())
             .child(self.render_messages(window, cx))
             .child(self.render_composer(window, cx));
         // Keep the component mounted: Offcanvas owns the closing animation and

@@ -284,11 +284,10 @@ mod tests {
         _subscription: Subscription,
     }
     impl Render for Fixture {
-        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             div()
                 .size_full()
                 .child(div().child("Settings remain behind the editor"))
-                .children(Root::render_dialog_layer(window, cx))
         }
     }
 

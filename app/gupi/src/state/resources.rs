@@ -55,7 +55,8 @@ impl ResourceController {
             return;
         }
         let previous = change.as_ref().and_then(|_| self.catalog.data().cloned());
-        let worker = cx.background_spawn(async move {
+        let environment = crate::state::environment::current(cx);
+        let worker = Tokio::spawn(cx, async move {
             if let (Some(change), Some(mut catalog)) = (change, previous) {
                 match change {
                     Change::Toggle(resource, enabled) => {
@@ -84,11 +85,16 @@ impl ResourceController {
                     _ => {}
                 }
             }
-            let root = io::agent_dir()?;
-            io::scan(root, dirs_next::home_dir().map(|p| p.join(".agents")))
+            let snapshot = environment.load(false).await;
+            let root = io::agent_dir().map_err(|error| Error(snapshot.explain(error)))?;
+            let variables = snapshot.variables();
+            let agents = dirs_next::home_dir().map(|p| p.join(".agents"));
+            smol::unblock(move || io::scan(root, agents, &variables))
+                .await
+                .map_err(|error| Error(snapshot.explain(error)))
         });
         let task = cx.spawn(async move |owner, cx| {
-            let result = worker.await;
+            let result = worker.await.unwrap_or_else(|e| Err(Error(e.to_string())));
             let _ = owner.update(cx, |owner, cx| {
                 let changed = result
                     .as_ref()
@@ -129,13 +135,19 @@ impl ResourceController {
             _ => None,
         };
         let updated = change.clone();
+        let environment = crate::state::environment::current(cx);
         let worker = Tokio::spawn(cx, async move {
             match change {
                 Change::Package {
                     command,
                     action,
                     source,
-                } => io::package_action(command, root, action, source).await,
+                } => {
+                    let snapshot = environment.load(false).await;
+                    io::package_action(command, root, action, source, snapshot.variables())
+                        .await
+                        .map_err(|error| Error(snapshot.explain(error)))
+                }
                 change => tokio::task::spawn_blocking(move || match change {
                     Change::Toggle(resource, active) => io::set_enabled(&root, &resource, active),
                     Change::RegisterSkill(path) => io::register_skill(&root, &path),

@@ -49,7 +49,7 @@ pub(crate) fn global(cx: &App) -> Entity<PiState> {
 impl PiState {
     pub fn start(
         &mut self,
-        options: LaunchOptions,
+        mut options: LaunchOptions,
         cx: &mut Context<Self>,
     ) -> Result<InstanceId, Error> {
         if self.draining {
@@ -57,7 +57,19 @@ impl PiState {
         }
         self.next_id += 1;
         let id = InstanceId(self.next_id);
-        let launch = Tokio::spawn(cx, Client::spawn(options));
+        let environment = super::environment::current(cx);
+        let launch = Tokio::spawn(cx, async move {
+            let snapshot = environment.load(false).await;
+            if !options.clear_env {
+                let mut variables = snapshot.variables();
+                variables.append(&mut options.env);
+                options.env = variables;
+            }
+            Client::spawn(options).await.map_err(|error| match error {
+                Error::Io(error) => Error::Io(snapshot.explain(error)),
+                error => error,
+            })
+        });
         let task = cx.spawn(async move |owner, cx| {
             let result = launch
                 .await

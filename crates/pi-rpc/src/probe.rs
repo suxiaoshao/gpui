@@ -1,5 +1,6 @@
 use std::{
-    path::PathBuf,
+    ffi::{OsStr, OsString},
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, OnceLock},
     time::Duration,
@@ -44,15 +45,50 @@ async fn bounded(reader: impl AsyncRead + Unpin) -> Result<Vec<u8>, ProbeFailure
     Ok(bytes)
 }
 pub async fn probe(command: String, deadline: Instant) -> Result<PiProbeData, ProbeFailure> {
+    probe_with_env(command, Vec::new(), deadline).await
+}
+pub async fn probe_with_env(
+    command: String,
+    env: Vec<(OsString, OsString)>,
+    deadline: Instant,
+) -> Result<PiProbeData, ProbeFailure> {
     let slots = STARTUP_SLOTS
         .get_or_init(|| Arc::new(Semaphore::new(2)))
         .clone();
-    probe_with(command, deadline, slots, resolve_command, spawn_command).await
+    let resolve_env = env.clone();
+    probe_with(
+        command,
+        deadline,
+        slots,
+        move |command| resolve_command_with_env(command, &resolve_env),
+        move |path| spawn_command_with_env(path, &env),
+    )
+    .await
 }
-fn resolve_command(command: &str) -> Result<PathBuf, ProbeFailure> {
-    which::which(command).map_err(|e| ProbeFailure::Command(e.to_string()))
+fn resolve_command_with_env(
+    command: &str,
+    env: &[(OsString, OsString)],
+) -> Result<PathBuf, ProbeFailure> {
+    let paths = env
+        .iter()
+        .rev()
+        .find(|(name, _)| is_path_env(name))
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var_os("PATH"));
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    which::which_in(command, paths, cwd).map_err(|e| ProbeFailure::Command(e.to_string()))
 }
-fn spawn_command(path: &std::path::Path) -> Result<Child, ProbeFailure> {
+fn is_path_env(name: &OsStr) -> bool {
+    if cfg!(windows) {
+        name.to_string_lossy().eq_ignore_ascii_case("PATH")
+    } else {
+        name == "PATH"
+    }
+}
+fn spawn_command_with_env(
+    path: &Path,
+    env: &[(OsString, OsString)],
+) -> Result<Child, ProbeFailure> {
     let mut process = Command::new(path);
     process
         .arg("--version")
@@ -60,6 +96,7 @@ fn spawn_command(path: &std::path::Path) -> Result<Child, ProbeFailure> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    process.envs(env.iter().cloned());
     #[cfg(windows)]
     process.creation_flags(0x08000000);
     Ok(process.spawn()?)
@@ -302,7 +339,7 @@ mod launch_tests {
 mod tests {
     use super::{
         Arc, Duration, Instant, PiProbeData, ProbeFailure, Semaphore, Stdio, oneshot, probe,
-        probe_with, resolve_command, spawn_command,
+        probe_with, probe_with_env, resolve_command_with_env, spawn_command_with_env,
     };
     use std::os::unix::fs::PermissionsExt;
     async fn fixture(body: &str, timeout: Duration) -> Result<PiProbeData, ProbeFailure> {
@@ -348,6 +385,35 @@ mod tests {
             .await,
             Err(ProbeFailure::OutputLimit)
         ));
+    }
+    #[tokio::test]
+    async fn supplied_path_resolves_probe_and_reaches_child_helpers() {
+        use std::ffi::OsString;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let pi = bin.join("pi");
+        let node = bin.join("node");
+        std::fs::write(&pi, "#!/bin/sh\nexec node --version\n").unwrap();
+        std::fs::write(&node, "#!/bin/sh\nprintf '%s' \"$PI_PROBE_VERSION\"\n").unwrap();
+        for path in [&pi, &node] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+
+        let result = probe_with_env(
+            "pi".into(),
+            vec![
+                (OsString::from("PATH"), bin.as_os_str().to_os_string()),
+                (OsString::from("PI_PROBE_VERSION"), OsString::from("0.86.3")),
+            ],
+            Instant::now() + Duration::from_secs(3),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.command, pi);
+        assert_eq!(result.version, "0.86.3");
     }
     #[tokio::test]
     async fn timeout_and_cancellation_release_the_owned_process() {
@@ -417,9 +483,9 @@ mod tests {
             path.to_string_lossy().into_owned(),
             Instant::now() + Duration::from_secs(5),
             slots.clone(),
-            resolve_command,
+            |command| resolve_command_with_env(command, &[]),
             move |path| {
-                let child = spawn_command(path)?;
+                let child = spawn_command_with_env(path, &[])?;
                 started.send(child.id().unwrap()).unwrap();
                 // Hold the real child before delivery, as a slow spawn would.
                 wait.recv_timeout(Duration::from_secs(5)).unwrap();

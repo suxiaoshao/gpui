@@ -333,7 +333,7 @@ fn bounded_source(mut source: String) -> (String, bool) {
     let limit = INLINE_PREVIEW_BYTES as usize;
     let original_len = source.len();
     if source.len() > limit {
-        let boundary = floor_char_boundary(&source, limit);
+        let boundary = source.floor_char_boundary(limit);
         source.truncate(boundary);
     }
     if let Some((boundary, _)) = source.match_indices('\n').nth(MAX_EDITOR_LINES - 1) {
@@ -341,14 +341,6 @@ fn bounded_source(mut source: String) -> (String, bool) {
     }
     let truncated = source.len() != original_len;
     (source, truncated)
-}
-
-fn floor_char_boundary(source: &str, mut index: usize) -> usize {
-    index = index.min(source.len());
-    while index > 0 && !source.is_char_boundary(index) {
-        index -= 1;
-    }
-    index
 }
 
 fn hex_projection(bytes: &[u8], complete: bool, decoding: BodyDecoding) -> ResponseProjection {

@@ -14,6 +14,12 @@ pub(crate) struct Command {
 }
 pub(crate) const COMMANDS: &[Command] = &[
     Command {
+        id: "find",
+        label: "conversation-find",
+        kind: Kind::Find,
+        default: "secondary-f",
+    },
+    Command {
         id: "temporary_trash",
         label: "temporary-trash",
         kind: Kind::TrashTemporary,

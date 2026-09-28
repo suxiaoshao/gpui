@@ -4,7 +4,7 @@
 [
   {
     "label": "http-client Dev",
-    "command": " cargo watch -x 'run -p http-client'",
+    "command": "nix develop --command cargo run -p http-client",
     //"args": [],
     // Env overrides for the command, will be appended to the terminal's environment from the settings.
     "env": {},
@@ -21,7 +21,7 @@
   },
   {
     "label": "feiwen Dev",
-    "command": " cargo watch -x 'run -p feiwen'",
+    "command": "nix develop --command cargo run -p feiwen",
     //"args": [],
     // Env overrides for the command, will be appended to the terminal's environment from the settings.
     "env": {},

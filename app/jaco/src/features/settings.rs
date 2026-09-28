@@ -345,8 +345,6 @@ impl SettingsView {
                     .min_h_0()
                     .child(settings_config_resource_view(cx)),
             )
-            .children(Root::render_dialog_layer(window, cx))
-            .children(Root::render_notification_layer(window, cx))
             .into_any_element()
     }
 }
@@ -368,8 +366,7 @@ impl Render for SettingsView {
             .expect("config pages are created when config data exists");
         let settings_title = cx.global::<I18n>().t("settings-title");
         let search_no_results = cx.global::<I18n>().t("settings-search-no-results");
-        let dialog_layer = Root::render_dialog_layer(window, cx);
-        let notification_layer = Root::render_notification_layer(window, cx);
+
         let query = self
             .settings_search_input
             .read(cx)
@@ -468,9 +465,7 @@ impl Render for SettingsView {
                         });
                     }),
                 ),
-            )
-            .children(dialog_layer)
-            .children(notification_layer);
+            );
         if !exact_ready {
             settings_config_resource_view(cx).overlay(content, cx)
         } else {

@@ -728,3 +728,150 @@ fn temporary_summary_dialog_escape_preserves_window_and_conversation(cx: &mut Te
         assert!(!state.read(cx).sessions["summary"].stopping);
     });
 }
+
+#[gpui_kit::test]
+fn custom_message_preserves_block_order_copy_and_image_preview(cx: &mut TestAppContext) {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use gpui_kit::test::TestWindowExt;
+    init_interactions(cx);
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(160, 80)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let state = cx.new(|cx| ConversationState::temporary("unused-pi".into(), cx));
+    state.update(cx, |state, _| {
+        let mut session = fixture_session("plugin");
+        session.transcript.replace(serde_json::from_value(serde_json::json!({
+            "entries":[{
+                "id":"notice", "parentId":null, "type":"custom_message",
+                "timestamp":"2026-09-26T00:00:00Z", "customType":"check", "display":true,
+                "content":[
+                    {"type":"text","text":"Before **image**"},
+                    {"type":"image","mimeType":"image/png","data":STANDARD.encode(png.get_ref())},
+                    {"type":"text","text":"After image"}
+                ], "details":{"private":"metadata"}
+            }], "leafId":"notice"
+        })).unwrap());
+        session.transcript.receive_message();
+        session.content_revision += 1;
+        state.sessions.insert("plugin".into(), session);
+        state.selected = Some("plugin".into());
+    });
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| TemporaryView::new(state.clone(), window, cx));
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(1100.), px(860.)));
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.render_frame(cx);
+        let before = window.find("plugin-plugin-notice-0").bounds();
+        let image = window.find("plugin-plugin-notice-1").bounds();
+        let after = window.find("plugin-plugin-notice-2").bounds();
+        assert!(before.bottom() <= image.top());
+        assert!(image.bottom() <= after.top());
+        window.click("copy-plugin-notice", cx);
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().unwrap(),
+            "Before **image**\nAfter image"
+        );
+        window.click("plugin-plugin-notice-1", cx);
+        assert!(window.try_find("image-preview").is_some());
+        window.press("escape", cx);
+        assert!(window.try_find("image-preview").is_none());
+        assert_eq!(state.read(cx).current().unwrap().history().entries.len(), 1);
+        assert!(state.read(cx).current().unwrap().instance.is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn session_info_dialog_from_temporary_actions_copies_updates_and_closes(cx: &mut TestAppContext) {
+    use gpui_kit::{component::WindowExt, test::TestWindowExt};
+    init_interactions(cx);
+    let state = cx.new(|cx| ConversationState::temporary("unused-pi".into(), cx));
+    state.update(cx, |state, _| {
+        let mut session = fixture_session("information");
+        session.draft = "keep this draft".into();
+        state.sessions.insert("information".into(), session);
+        state.selected = Some("information".into());
+    });
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| TemporaryView::new(state.clone(), window, cx));
+        view.update(cx, |view, cx| view.focus_search(window, cx));
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(1100.), px(860.)));
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-k");
+    visual.simulate_input("会话信息");
+    visual.run_until_parked();
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+        window.click("session-info-copy-id", cx);
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some("information")
+        );
+        assert!(window.try_find("session-info-reveal-file").is_none());
+        state.update(cx, |state, cx| {
+            state.sessions.get_mut("information").unwrap().info.cwd =
+                "/tmp/updated-directory".into();
+            super::super::notify_controls("information", cx);
+        });
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("session-info-copy-directory", cx);
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some("/tmp/updated-directory")
+        );
+        window.press("escape", cx);
+        assert!(!window.has_active_dialog(cx));
+        assert!(window.is_window_active());
+        assert_eq!(state.read(cx).current().unwrap().draft, "keep this draft");
+        assert!(state.read(cx).current().unwrap().instance.is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn temporary_find_shortcut_does_not_filter_sessions_or_edit_the_draft(cx: &mut TestAppContext) {
+    init_interactions(cx);
+    let state = cx.new(|cx| ConversationState::temporary("unused-pi".into(), cx));
+    state.update(cx, |state, _| {
+        let mut session = fixture_session("Alpha");
+        answer(&mut session, "# Searchable **needle**");
+        session.draft = "draft".into();
+        state.sessions.insert("alpha".into(), session);
+        state.selected = Some("alpha".into());
+    });
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| TemporaryView::new(state.clone(), window, cx));
+        view.update(cx, |view, cx| view.focus_search(window, cx));
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(960.), px(620.)));
+    visual.run_until_parked();
+    visual.simulate_keystrokes("secondary-f");
+    visual.simulate_input("needle");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("conversation-find-scope").is_some());
+    state.read_with(visual, |state, _| {
+        assert_eq!(state.current().unwrap().draft, "draft")
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("conversation-find-scope").is_none());
+    // Esc restores the sidebar search; its existing Tab path still focuses the composer.
+    visual.simulate_keystrokes("tab");
+    visual.dispatch_action(gpui_kit::component::input::MoveToEnd);
+    visual.simulate_input(" preserved");
+    state.read_with(visual, |state, _| {
+        assert_eq!(state.current().unwrap().draft, "draft preserved")
+    });
+}

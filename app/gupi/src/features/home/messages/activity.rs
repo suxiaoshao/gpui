@@ -1,5 +1,6 @@
 //! Pi content projection for the conversation activity stream.
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 
 use crate::foundation::tool_presentation::{ToolKind, read_path, skill_name};
 use serde_json::Value;
@@ -15,6 +16,15 @@ pub(super) struct RunContent {
     pub answer_text: String,
     pub final_started: bool,
     pub interrupted: bool,
+    pub sections: Vec<RunSection>,
+}
+
+/// Presentation boundaries do not split the run's tool/result or answer scope.
+#[derive(Debug, PartialEq)]
+pub(super) enum RunSection {
+    Process(Range<usize>),
+    Custom(usize),
+    Answer,
 }
 
 pub(super) enum Activity {
@@ -64,12 +74,23 @@ impl RunContent {
         })
     }
 
-    /// Assistant prose separates activity groups. Tool results and private
-    /// thinking blocks continue the same group, including across message_end.
-    pub fn blocks(&self) -> Vec<ActivityBlock<'_>> {
+    pub fn process_id(&self, row: &str, range: &Range<usize>) -> String {
+        if range.start == 0 {
+            return row.to_owned();
+        }
+        let first = match &self.activities[range.start] {
+            Activity::Text { id, .. } => id,
+            Activity::Tool(tool) => &tool.id,
+        };
+        format!("{row}-process-{first}")
+    }
+
+    /// Assistant prose separates activity groups within one visible process segment.
+    pub fn blocks_in(&self, range: Range<usize>) -> Vec<ActivityBlock<'_>> {
+        let activities = &self.activities[range];
         let mut blocks = vec![];
         let mut start = 0;
-        for (index, activity) in self.activities.iter().enumerate() {
+        for (index, activity) in activities.iter().enumerate() {
             if matches!(
                 activity,
                 Activity::Text {
@@ -78,20 +99,21 @@ impl RunContent {
                 }
             ) {
                 if start < index {
-                    blocks.push(activity_group(&self.activities[start..index]));
+                    blocks.push(activity_group(&activities[start..index]));
                 }
                 blocks.push(ActivityBlock::Message(activity));
                 start = index + 1;
             }
         }
-        if start < self.activities.len() {
-            blocks.push(activity_group(&self.activities[start..]));
+        if start < activities.len() {
+            blocks.push(activity_group(&activities[start..]));
         }
         blocks
     }
 
     pub fn project(messages: &[DisplayMessage], live: &[ToolActivity], active: bool) -> Self {
-        let answer = messages.len().checked_sub(1).filter(|&i| {
+        let last = messages.iter().rposition(|m| m.role() != "custom");
+        let answer = last.filter(|&i| {
             let m = &messages[i];
             m.role() == "assistant"
                 && (m.final_part().is_some() || (!m.text().is_empty() && !has_calls(&m.value)))
@@ -138,7 +160,14 @@ impl RunContent {
             .filter_map(|part| part["id"].as_str())
             .collect();
         let mut activities = vec![];
+        let mut sections = vec![];
+        let mut process_start = 0;
         for (index, m) in messages.iter().enumerate() {
+            if m.role() == "custom" {
+                flush_process(&mut sections, &mut process_start, activities.len());
+                sections.push(RunSection::Custom(index));
+                continue;
+            }
             if m.role() == "toolResult" {
                 let call_id = m.value["toolCallId"].as_str();
                 if call_id.is_some_and(|id| call_ids.contains(id)) {
@@ -220,7 +249,7 @@ impl RunContent {
                                 .unwrap_or_default();
                             let running = thinking
                                 && active
-                                && index + 1 == messages.len()
+                                && Some(index) == last
                                 && i + 1 == parts.len()
                                 && m.completed_at.is_none()
                                 && m.value["stopReason"] == "pending";
@@ -246,14 +275,27 @@ impl RunContent {
                     running: false,
                 });
             }
+            if Some(index) == answer {
+                flush_process(&mut sections, &mut process_start, activities.len());
+                sections.push(RunSection::Answer);
+            }
         }
+        flush_process(&mut sections, &mut process_start, activities.len());
         Self {
             activities,
             answer,
             answer_text,
             final_started,
             interrupted,
+            sections,
         }
+    }
+}
+
+fn flush_process(sections: &mut Vec<RunSection>, start: &mut usize, end: usize) {
+    if *start < end {
+        sections.push(RunSection::Process(*start..end));
+        *start = end;
     }
 }
 
@@ -313,6 +355,102 @@ mod tests {
     use super::*;
     use crate::foundation::session_catalog::text_content;
     use serde_json::json;
+
+    #[test]
+    fn custom_sections_preserve_tool_pairing_and_answer_order() {
+        let messages = vec![
+            message(
+                "call",
+                json!({"role":"assistant","content":[{"type":"toolCall","id":"read","name":"read","arguments":{"path":"a"}}]}),
+            ),
+            message(
+                "plugin",
+                json!({"role":"custom","customType":"check","content":"Checking"}),
+            ),
+            message(
+                "result",
+                json!({"role":"toolResult","toolCallId":"read","toolName":"read","content":"done"}),
+            ),
+            message(
+                "final",
+                json!({"role":"assistant","stopReason":"stop","content":"Answer"}),
+            ),
+            message(
+                "plugin-after",
+                json!({"role":"custom","customType":"check","content":"Checking"}),
+            ),
+        ];
+        let content = RunContent::project(&messages, &[], false);
+        assert_eq!(content.answer, Some(3));
+        assert_eq!(content.answer_text, "Answer");
+        assert!(content.final_started);
+        assert_eq!(
+            content.sections,
+            [
+                RunSection::Process(0..1),
+                RunSection::Custom(1),
+                RunSection::Answer,
+                RunSection::Custom(4)
+            ]
+        );
+        assert_eq!(content.activities.len(), 1);
+        let Activity::Tool(tool) = &content.activities[0] else {
+            panic!("missing tool")
+        };
+        assert_eq!(tool.status, ToolStatus::Complete);
+        assert_eq!(tool.entries, ["call", "result"]);
+        assert_eq!(text_content(&tool.result), "done");
+    }
+
+    #[test]
+    fn custom_does_not_end_thinking_or_become_assistant_prose() {
+        let messages = vec![
+            message(
+                "thinking",
+                json!({"role":"assistant","stopReason":"pending","content":[{"type":"thinking","thinking":"Still thinking"}]}),
+            ),
+            message("plugin", json!({"role":"custom","content":"Notice"})),
+        ];
+        let content = RunContent::project(&messages, &[], true);
+        assert!(content.answer.is_none());
+        assert!(matches!(
+            &content.activities[..],
+            [Activity::Text {
+                thinking: true,
+                running: true,
+                ..
+            }]
+        ));
+        assert_eq!(
+            content.sections,
+            [RunSection::Process(0..1), RunSection::Custom(1)]
+        );
+        let content = RunContent::project(&messages[1..], &[], false);
+        assert!(content.activities.is_empty());
+        assert_eq!(content.sections, [RunSection::Custom(0)]);
+    }
+
+    #[test]
+    fn custom_separates_process_without_changing_activity_identity() {
+        let messages = vec![
+            message("first", json!({"role":"assistant","content":"First"})),
+            message("plugin", json!({"role":"custom","content":"Notice"})),
+            message("second", json!({"role":"assistant","content":"Second"})),
+            message("final", json!({"role":"assistant","content":"Answer"})),
+        ];
+        let content = RunContent::project(&messages, &[], false);
+        assert_eq!(
+            content.sections,
+            [
+                RunSection::Process(0..1),
+                RunSection::Custom(1),
+                RunSection::Process(1..2),
+                RunSection::Answer
+            ]
+        );
+        assert_eq!(content.process_id("run", &(0..1)), "run");
+        assert_eq!(content.process_id("run", &(1..2)), "run-process-second");
+    }
 
     fn message(id: &str, value: Value) -> DisplayMessage {
         DisplayMessage {
@@ -546,7 +684,7 @@ mod tests {
             id, text, thinking: true, running: true,
         }) if id == "part-next-0" && text.is_empty()));
         assert!(
-            matches!(content.blocks().last(), Some(ActivityBlock::Group { items, .. })
+            matches!(content.blocks_in(0..content.activities.len()).last(), Some(ActivityBlock::Group { items, .. })
             if items.len() == 2 && matches!(items.last(), Some(Activity::Text { running: true, .. })))
         );
 
@@ -595,6 +733,7 @@ mod tests {
             })
         };
         let mut content = RunContent {
+            sections: vec![],
             activities: vec![
                 tool("first"),
                 Activity::Text {
@@ -617,7 +756,7 @@ mod tests {
             final_started: false,
             interrupted: false,
         };
-        let blocks = content.blocks();
+        let blocks = content.blocks_in(0..content.activities.len());
         assert_eq!(blocks.len(), 3);
         assert!(
             matches!(&blocks[0], ActivityBlock::Group { id, items } if id == "group-first" && items.len() == 3)
@@ -628,7 +767,7 @@ mod tests {
         );
         content.activities.push(tool("fourth"));
         assert!(
-            matches!(content.blocks().last(), Some(ActivityBlock::Group { id, items }) if id == "group-third" && items.len() == 2)
+            matches!(content.blocks_in(0..content.activities.len()).last(), Some(ActivityBlock::Group { id, items }) if id == "group-third" && items.len() == 2)
         );
     }
     #[test]

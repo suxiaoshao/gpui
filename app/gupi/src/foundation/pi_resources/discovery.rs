@@ -1,9 +1,13 @@
 use super::*;
-use std::{collections::BTreeSet, fs};
+use std::{collections::BTreeSet, ffi::OsString, fs};
 
 const KINDS: [Kind; 4] = [Kind::Extension, Kind::Skill, Kind::Prompt, Kind::Theme];
 
-pub(crate) fn scan(root: PathBuf, agents: Option<PathBuf>) -> Result<Catalog, Error> {
+pub(crate) fn scan(
+    root: PathBuf,
+    agents: Option<PathBuf>,
+    env: &[(OsString, OsString)],
+) -> Result<Catalog, Error> {
     let settings = read_json(&root.join("settings.json"))?;
     if !settings.is_object() {
         return Err(Error("Pi settings must be an object".into()));
@@ -16,7 +20,7 @@ pub(crate) fn scan(root: PathBuf, agents: Option<PathBuf>) -> Result<Catalog, Er
         let Some(source) = entry.as_str().or_else(|| entry["source"].as_str()) else {
             continue;
         };
-        let Some(path) = package_path(&root, source, &settings) else {
+        let Some(path) = package_path(&root, source, &settings, env) else {
             result
                 .warnings
                 .push(format!("Package location unavailable: {source}"));
@@ -490,7 +494,12 @@ fn delta_enabled(path: &Path, patterns: &[String], base: &Path) -> bool {
     active
 }
 
-fn package_path(root: &Path, source: &str, settings: &Value) -> Option<PathBuf> {
+fn package_path(
+    root: &Path,
+    source: &str,
+    settings: &Value,
+    env: &[(OsString, OsString)],
+) -> Option<PathBuf> {
     if let Some(spec) = source.strip_prefix("npm:") {
         let name = spec
             .rsplit_once('@')
@@ -516,6 +525,8 @@ fn package_path(root: &Path, source: &str, settings: &Value) -> Option<PathBuf> 
         let manager = Path::new(manager).file_stem()?.to_string_lossy();
         let run = |args: &[&str]| {
             std::process::Command::new(&command[0])
+                .envs(env.iter().cloned())
+                .env("PI_CODING_AGENT_DIR", root)
                 .args(&command[1..])
                 .args(args)
                 .current_dir(root)
@@ -623,7 +634,7 @@ mod tests {
             json!({"packages":["pkg"]}).to_string(),
         )
         .unwrap();
-        let catalog = scan(root.into(), None).unwrap();
+        let catalog = scan(root.into(), None, &[]).unwrap();
         assert_eq!(catalog.resources.len(), 2);
         assert!(
             catalog
@@ -631,6 +642,79 @@ mod tests {
                 .iter()
                 .all(|r| r.kind == Kind::Extension && r.enabled && !r.editable)
         );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn package_manager_uses_supplied_path_and_agent_root() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("agent");
+        let bin = temp.path().join("bin");
+        let global = temp.path().join("global/node_modules");
+        let package = global.join("fixture");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(package.join("extensions")).unwrap();
+
+        let path_log = temp.path().join("manager-env");
+        let manager = bin.join("npm");
+        let helper = bin.join("path-helper");
+        std::fs::write(
+            &manager,
+            "#!/bin/sh\npath-helper\nprintf '%s' \"$GLOBAL_ROOT\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &helper,
+            "#!/bin/sh\nprintf '%s|%s' \"$PATH\" \"$PI_CODING_AGENT_DIR\" > \"$PATH_LOG\"\n",
+        )
+        .unwrap();
+        for path in [&manager, &helper] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(
+            root.join("settings.json"),
+            json!({"packages":["npm:fixture"],"npmCommand":["npm"]}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            json!({"version":"1.0.0","pi":{"extensions":["./extensions/index.js"]}}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(package.join("extensions/index.js"), "export default {};\n").unwrap();
+
+        let original_path = std::env::var_os("PATH");
+        let env = vec![
+            (OsString::from("PATH"), bin.as_os_str().to_os_string()),
+            (
+                OsString::from("GLOBAL_ROOT"),
+                global.as_os_str().to_os_string(),
+            ),
+            (
+                OsString::from("PATH_LOG"),
+                path_log.as_os_str().to_os_string(),
+            ),
+            (
+                OsString::from("PI_CODING_AGENT_DIR"),
+                temp.path().join("wrong-agent").into_os_string(),
+            ),
+        ];
+        let catalog = scan(root.clone(), None, &env).unwrap();
+
+        assert_eq!(catalog.packages[0].path, package);
+        assert!(
+            catalog
+                .resources
+                .iter()
+                .any(|resource| { resource.path == package.join("extensions/index.js") })
+        );
+        assert_eq!(
+            std::fs::read_to_string(path_log).unwrap(),
+            format!("{}|{}", bin.display(), root.display())
+        );
+        assert_eq!(std::env::var_os("PATH"), original_path);
     }
     #[test]
     fn discovery_keeps_disabled_external_skills_and_respects_personal_rules() {
@@ -681,7 +765,7 @@ mod tests {
                 .to_string(),
         )
         .unwrap();
-        let catalog = scan(root, Some(agents)).unwrap();
+        let catalog = scan(root, Some(agents), &[]).unwrap();
         let resource = catalog.resources.iter().find(|r| r.name == "ext").unwrap();
         assert!(!resource.enabled);
         assert!(!resource.editable);
@@ -715,13 +799,13 @@ mod tests {
             "git:user/repo",
         ] {
             assert_eq!(
-                package_path(root, source, &json!({})),
+                package_path(root, source, &json!({}), &[]),
                 Some(root.join("git/github.com/user/repo")),
                 "{source}"
             );
         }
         assert_eq!(
-            package_path(root, "./local", &json!({})),
+            package_path(root, "./local", &json!({}), &[]),
             Some(root.join("./local"))
         );
     }
@@ -739,11 +823,11 @@ mod tests {
             r#"{"unknown":42,"packages":[{"source":"pkg","skills":[],"extra":true}]}"#,
         )
         .unwrap();
-        let catalog = scan(root.into(), None).unwrap();
+        let catalog = scan(root.into(), None, &[]).unwrap();
         assert_eq!(catalog.resources.len(), 2);
         assert!(catalog.resources.iter().all(|r| !r.enabled));
         set_enabled(root, &catalog.resources[0], true).unwrap();
-        let updated = scan(root.into(), None).unwrap();
+        let updated = scan(root.into(), None, &[]).unwrap();
         assert_eq!(updated.resources.iter().filter(|r| r.enabled).count(), 1);
         let value = read_json(&root.join("settings.json")).unwrap();
         assert_eq!(value["unknown"], 42);

@@ -38,7 +38,10 @@ fn elapsed_ms(
     let end = if active {
         now
     } else {
-        messages.last()?.completed_at?
+        messages
+            .iter()
+            .rfind(|m| m.role() != "custom")?
+            .completed_at?
     };
     end.checked_sub(start).filter(|elapsed| *elapsed >= 0)
 }
@@ -134,6 +137,14 @@ mod tests {
         assert_eq!(elapsed_ms(&messages, Some(500), true, 5000), Some(4500));
         assert_eq!(elapsed_ms(&messages, Some(500), true, 6000), Some(5500));
         assert_eq!(elapsed_ms(&messages, Some(500), false, 9000), Some(6000));
+        let mut with_plugin = messages.clone();
+        let mut plugin = message(8000, Some(9000));
+        plugin.value["role"] = serde_json::json!("custom");
+        with_plugin.push(plugin);
+        assert_eq!(
+            elapsed_ms(&with_plugin, Some(500), false, 10000),
+            Some(6000)
+        );
         assert_eq!(duration_label(62000), "1m 2s");
     }
 }

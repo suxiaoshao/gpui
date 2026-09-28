@@ -118,7 +118,7 @@ struct CopyAction {
     label: Option<String>,
 }
 
-pub(super) fn copy_button(
+pub(in crate::features::home) fn copy_button(
     id: String,
     text: String,
     label: String,

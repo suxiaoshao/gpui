@@ -65,6 +65,8 @@ impl Render for ActionsPanel {
             &[
                 Kind::FocusInput,
                 Kind::Model,
+                Kind::SessionInfo,
+                Kind::Find,
                 Kind::RevealWorkspace,
                 Kind::TrashTemporary,
             ][..],
@@ -93,6 +95,8 @@ impl Render for ActionsPanel {
                     Kind::CopyTemporaryAnswer => IconName::Copy,
                     Kind::FocusInput => IconName::SquarePen,
                     Kind::Model => IconName::Brain,
+                    Kind::SessionInfo => IconName::Info,
+                    Kind::Find => IconName::Search,
                     Kind::RevealWorkspace => IconName::FolderOpen,
                     Kind::TrashTemporary => IconName::Trash,
                     Kind::New => IconName::Plus,

@@ -1,12 +1,12 @@
 # 输入资源、Markdown 展示与扩展问答
 
-归属 [#243](https://github.com/suxiaoshao/gpui/issues/243)，父 Issue #217。立项范围已确定；状态：Blocked（输入 Token / Questionnaire 等待正式发布），下文只保留影响实施的真实待决细节。
+归属 [#243](https://github.com/suxiaoshao/gpui/issues/243)，父 Issue #217。立项范围已确定；状态：Draft（组件已发布，应用接入另行实施，下文仍有交互待决项），下文只保留影响实施的真实待决细节。
 
-阶段：共用输入外壳与粘贴接线纳入依赖升级；资源标签及相关交互继续等待上游正式版本，尚未实施。2026-09-23 复核。承接 #221/#222 的剩余输入与问答能力，与 #226 命令入口联动；统一入口见[总待处理文档](../../../../../docs/dev/issue-217/follow-ups.md)。
+阶段：共用输入外壳与粘贴接线已实现；资源标签与 Questionnaire 尚未接入。2026-09-28 已核对 0.7.0 正式包，发布阻塞解除；用户明确将本 Issue 留到本轮搜索与升级之后，不顺带执行。承接 #221/#222 的剩余输入与问答能力，与 #226 命令入口联动；统一入口见[总待处理文档](../../../../../docs/dev/issue-217/follow-ups.md)。
 
-## 当前决定：先复用已发布控件，资源交互继续等待
+## 当前决定：组件已发布，资源交互单独实施
 
-按用户 2026-09-20 要求，依赖升级已使用正式版 0.6.4 的 InputGroup 替换共用输入外壳，并已采用 on_paste 简化附件粘贴接线，详见[依赖更新接入计划](../../../../../docs/dev/dependency-refresh-2026-09/README.md#changelog-对照接入上游能力并删除重复实现)。Skill 填入正文、Skill/模板标签、模板附带文件引用及可选 `@` 文件入口仍沿用此前统一等待正式组件的决定；不自行改用 Git main。现有草稿、模型和附件业务归属保留。
+按用户 2026-09-20 要求，依赖升级已使用正式版 0.6.4 的 InputGroup 替换共用输入外壳，并已采用 on_paste 简化附件粘贴接线，详见[依赖更新接入计划](../../../../../docs/dev/dependency-refresh-2026-09/README.md#changelog-对照接入上游能力并删除重复实现)。Skill 填入正文、Skill/模板标签、模板附带文件引用及可选 `@` 文件入口归本 Issue 单独实施；0.7.0 已正式包含依赖能力，不自行改用 Git main。现有草稿、模型和附件业务归属保留。
 
 | 上游能力 | Gupi 接入职责 |
 | --- | --- |
@@ -15,12 +15,12 @@
 | [原子内联标签 #3113](https://github.com/longbridge/gpui-kit/pull/3113)（对应 [#3110](https://github.com/longbridge/gpui-kit/issues/3110)） | 在正文编辑层提供 Skill/模板标签、点击回调和可定制展示，以及原子编辑、历史和布局能力；资源身份与 Pi 命令语义仍由 Gupi 决定。 |
 
 - 暂停应用侧自定义 token 编辑器路线，不移植 Jaco 的正文编辑内核，也不以拦截退格等局部处理代替完整能力。仅保留整体编辑与真实文本分离的已确认原则。
-- InputGroup 接入保留现有 TextareaState，替换 Composer 手写外壳；后续原子标签发布接入后，上游再承担对应文本范围、内联布局、整体编辑、IME、剪贴板和撤销重做；Gupi 仍负责资源查询、补全候选、Pi 命令语法及发送。
+- InputGroup 接入保留现有 TextareaState，替换 Composer 手写外壳；后续原子标签接入后，上游再承担对应文本范围、内联布局、整体编辑、IME、剪贴板和撤销重做；Gupi 仍负责资源查询、补全候选、Pi 命令语法及发送。
 - 恢复时核对实际发布且可接入的 API：标签图标/文本与换行布局、光标边界、整体删除/替换/剪切、撤销恢复标签身份、Unicode/IME、禁用/只读以及复制/发送表示。仅有高亮、只读 TextView 内联内容或 tracked decorations 不等于满足这些要求。
-- 原子标签与 Questionnaire 合并后仍需等待正式发布，不提前改用 Git/main 或本地补丁依赖；它们发布并与 InputGroup 兼容后再恢复其余输入资源交互。已发布的外壳替换不受这一等待限制。
+- 正式 0.7.0 已提供 Input/Textarea 的 InlineToken / InputContent 及 Questionnaire；先由[升级批次](../../../../../docs/dev/dependency-refresh-0.7.0/README.md)完成共用依赖迁移，再在本 Issue 实施应用接入。不将组件发布写成产品功能完成。
 - “Skill 选择后填入正文、不直接发送”的产品决定保留，当前仍未实现；按用户决定与其他输入交互一起暂缓，不单独提前实施。下文待确定项在恢复这项工作时再讨论。
 
-2026-09-23 核对：三项均已合并，但最新正式版 v0.6.6 仍只包含其中的 InputGroup，尚不包含 Questionnaire 与原子内联标签；除已纳入升级的 InputGroup 外壳与粘贴接线外，其余交互继续等待兼容正式版本。版本证据与完整 RPC/TUI 待处理盘点统一见[总待处理文档](../../../../../docs/dev/issue-217/follow-ups.md)。
+2026-09-28 核对：v0.7.0 已包含上表三项能力。Questionnaire 的自由输入当前使用 InputState / 单行 Input，不能直接替代 Pi editor 的多行 Textarea；接入时保留真实协议与多行编辑能力。版本与跨阶段边界统一见[总待处理文档](../../../../../docs/dev/issue-217/follow-ups.md)。
 
 ## 已确认方向
 
@@ -44,7 +44,7 @@ Jaco 的自有 token 编辑器与 Zed 的 Editor 内联折叠提供了“真实�
 
 ### Markdown 资源展示
 
-已直接检查 gpui-base 0.6.6 正式包：`MarkdownPlugin`、`MarkdownExtensions::plugin`、`render_inline`、`InlineElement` 已提供自定义原子行内组件，`MarkdownNode.text` / `markdown` 给出文本表示。该能力已经发布，与输入框 Token 尚未发布分开判断。
+已直接检查 gpui-base 0.6.6 正式包：`MarkdownPlugin`、`MarkdownExtensions::plugin`、`render_inline`、`InlineElement` 已提供自定义原子行内组件，`MarkdownNode.text` / `markdown` 给出文本表示。该能力已经发布，与输入框 Token 的编辑契约分开判断；后者也已在 0.7.0 发布。
 
 已确认把消息中明确识别的资源独立显示并统一名称/图标/点击含义；输入阶段负责编辑和删除，消息阶段负责查看、选择、复制与打开资源。实施时核对 Pi 实际持久化内容能否保留资源身份、识别范围及复制格式；不扫描任意普通单词猜 Skill，不把只读行内组件误当作输入编辑器，也不另建重复会话数据。
 

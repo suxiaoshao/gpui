@@ -86,7 +86,7 @@ pub(crate) fn close_temporary_window(cx: &mut App) {
 }
 
 pub(crate) fn request_hide_for_window_activation(window: &mut Window, cx: &mut App) {
-    let is_visible = window.is_visible().unwrap_or(false);
+    let is_visible = window.is_visible();
     if !should_hide_for_window_activation(window.is_window_active(), is_visible) {
         return;
     }
@@ -179,7 +179,7 @@ impl TemporaryWindowLifecycleState {
             Some(window) => {
                 let mut reveal = None;
                 if let Err(err) = window.update(cx, |root, window, cx| {
-                    if window.is_visible().unwrap_or(false) {
+                    if window.is_visible() {
                         self.delay_or_hide_temporary_window(window, cx);
                     } else {
                         reveal = self.prepare_temporary_window(root, window, cx);

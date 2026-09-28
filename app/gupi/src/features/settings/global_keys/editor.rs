@@ -289,9 +289,20 @@ impl Editor {
             }
         });
         let pi = pi::global(cx);
+        let environment = crate::state::environment::current(cx);
+        let resources = gpui_tokio::Tokio::spawn(cx, async move {
+            let snapshot = environment.load(false).await;
+            let root = pi_resources::agent_dir()
+                .map_err(|error| pi_resources::Error(snapshot.explain(error)))?;
+            let variables = snapshot.variables();
+            smol::unblock(move || pi_resources::scan(root, None, &variables))
+                .await
+                .map_err(|error| pi_resources::Error(snapshot.explain(error)))
+        });
         self.task = Some(cx.spawn_in(window, async move |owner, cx| {
-            let catalog =
-                smol::unblock(|| pi_resources::scan(pi_resources::agent_dir()?, None)).await;
+            let catalog = resources
+                .await
+                .unwrap_or_else(|error| Err(pi_resources::Error(error.to_string())));
             let _ = owner.update_in(cx, |this, window, cx| {
                 match catalog {
                     Ok(catalog) => {

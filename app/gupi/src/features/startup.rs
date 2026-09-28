@@ -16,9 +16,7 @@ use crate::{
     },
 };
 use gpui_form::Form;
-use gpui_kit::component::{
-    ActiveTheme, Disableable, Root, WindowExt, button::Button, h_flex, v_flex,
-};
+use gpui_kit::component::{ActiveTheme, Disableable, WindowExt, button::Button, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -488,7 +486,5 @@ impl Render for StartupView {
                     this.open_palette(window, cx)
                 }),
             )
-            .children(Root::render_dialog_layer(window, cx))
-            .children(Root::render_notification_layer(window, cx))
     }
 }

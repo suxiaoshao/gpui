@@ -97,6 +97,7 @@ fn local_icon(kind: Kind) -> IconName {
         Kind::History | Kind::OpenHistory => IconName::GitBranch,
         Kind::Export => IconName::Download,
         Kind::Clone | Kind::CopyLastAnswer => IconName::Copy,
+        Kind::SessionInfo => IconName::Info,
         Kind::Compact => IconName::FileText,
         Kind::Sidebar => IconName::PanelRight,
         Kind::QuickOpen => IconName::Search,

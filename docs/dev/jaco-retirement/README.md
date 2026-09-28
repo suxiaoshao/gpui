@@ -4,9 +4,10 @@
 
 ## 范围与结论
 
-- 核对日期：2026-09-20；依据当前工作区源码、manifest、CI、脚本与文档引用。
+- 核对日期：整体清单为 2026-09-20；Quick Look、OCR 调用与删除范围于 2026-09-26 按当前源码复核。
 - 状态：清理清单已整理，尚未执行。按用户已有决定，在 Gupi 合入后处理；本轮只交付文档，不删除代码、子模块或本机数据。
 - 目标：删除 Jaco 及失去用途的专用内容，修正其余项目的构建、打包、导航和说明。保留仍维护的应用与独立共享能力，不为退役应用继续升级或迁移。
+- Quick Look、OCR 已确定随 Jaco 退役删除，不再作为独立通用能力暂留，也不迁移到 Gupi。
 - 入口：[Gupi 统一待处理文档](../issue-217/follow-ups.md)、[依赖更新记录](../dependency-refresh-2026-09/README.md)。本文件是清理范围的统一来源，其他入口只引用。
 
 ## 一并删除的内容
@@ -19,10 +20,14 @@
 | `crates/jaco-db/` | Diesel/SQLite 数据层，包括仓库内 migration、schema、数据库开发配置与测试；不删除用户数据库 |
 | `crates/jaco-conversation/` | Jaco 会话编排、测试与文档 |
 | `crates/app-assets/`、`crates/app-assets-macros/` | 当前唯一应用使用方是 Jaco。Gupi、Feiwen 已迁到 `gpui-lucide`；旧路径注册宏、元数据、组合资源及其专用测试/文档一起删除 |
+| `window-ext` 的 Quick Look | 当前唯一应用调用在 Jaco 普通文件附件预览；Gupi 无调用。删除 `src/quick_look.rs`、模块声明、`preview_file_with_quick_look` 导出、Quick Look 专用错误类型、`QuickLookUI` framework 链接及专用 Objective-C 数据源和缓存；清掉只供该功能使用的 imports、依赖 features 与说明。保留整个 `window-ext` crate 及现役窗口控制 API |
+| `platform-ext::ocr` | 当前仅 Jaco 截屏功能调用，Gupi 无调用。删除 `src/ocr.rs`、`src/ocr/`、模块及 `OcrError` 导出/定义、OCR 专用测试与说明；删除 `winmd/`、生成 `windows_ai_bindings.rs` 的 `build.rs`、manifest 中的 build 声明与 `windows-bindgen` 构建依赖、Windows AI/OCR 专用 features 和 macOS `Vision` framework 链接。按剩余引用清理 `windows-core`、`windows-future` 等直接依赖，保留 `platform-ext::app`、`appearance` 和对应原生依赖 |
 | `tools/mcp-auth-test-server/` | README 明确服务于 Jaco bearer/OAuth 测试；连同独立 `Cargo.lock`、空 `[workspace]` 和工具文档删除，不先搬进主 workspace。当前 `tools/` 没有其他工具，删后无需保留空目录 |
 | `third_party/lucide` | 旧 `define_lucide_icons!` 读取此目录；新 `gpui-lucide/build.rs` 读取 `gpui-kit-assets` 的 `DEP_GPUI_KIT_DEFAULT_ICONS_ICONS_DIR`。Jaco 与旧宏删除后，子模块不再参与任何保留应用的图标构建 |
 
 对应证据：[根 manifest](../../../Cargo.toml)、[旧宏路径](../../../crates/app-assets-macros/src/lib.rs)、[新图标生成器](../../../crates/gpui-lucide/build.rs)、[MCP 工具说明](../../../tools/mcp-auth-test-server/README.md)。这些链接在清理完成时需同步移除或改写，避免留下失效导航。
+
+Quick Look 的现有调用链为 Jaco `open_attachment` → `open_file_preview` → `window_ext::preview_file_with_quick_look`，失败后退回系统打开；见 [Jaco 附件流程](../../../app/jaco/src/components/chat/input/attachment_flow.rs)和 [Quick Look 实现](../../../crates/window-ext/src/quick_look.rs)。删除依据是唯一消费者随 Jaco 退役，而非“从未接入”。
 
 ## Cargo 与依赖图调整
 
@@ -30,8 +35,9 @@
 2. 删除 `workspace.dependencies` 中 `jaco-agent`、`jaco-conversation`、`jaco-core`、`jaco-db`、`app-assets` 的路径声明，以及无使用方的 `rig`、`rmcp` 声明。删除 `[profile.release.package]` 下 Jaco 专项；如果表已空，一并移除空表。
 3. 更新主 `Cargo.lock`，让 Cargo 按剩余成员重新求解并移除不可达包。保留现有允许范围，避免借清理重新全量升级依赖；不按名字手工批量删锁文件条目。
 4. 工具自己的锁文件随目录删除。后续新增且仍维护的 Rust 工具放入 `crates/` 并加入主 workspace，共用主锁文件，不延续当前独立工具的组织方式。
+5. 收敛 `platform-ext` 的 OCR 专用构建链和依赖：移除 `build.rs`、`winmd/`、`build = "build.rs"` 及 `windows-bindgen`，核对 Windows AI/OCR features 和直接依赖在其余模块中的使用后删除无用声明。当前 `windows-future` 只用于 OCR；`windows-core` 仍由 `appearance.rs` 使用，继续保留。保留 `app` / `appearance` 使用的系统交互与外观 API；不整包删除 `platform-ext`。
 
-当前仅由上述删除对象**直接声明**的外部依赖共 20 个：
+以下为整包退役对象独占的直接依赖清单；OCR 模块删除带来的额外依赖收敛按上一步处理：
 
 `anyhow`、`async-trait`、`axum`、`diesel`、`dirs`、`grep-matcher`、`grep-regex`、`grep-searcher`、`hex`、`libsqlite3-sys`、`notify-debouncer-full`、`rig`、`rmcp`、`rust-embed`、`schemars`、`sha2`、`similar`、`unicode-segmentation`、`winresource`、`xcap`。
 
@@ -52,7 +58,7 @@
 | [`.gitmodules`](../../../.gitmodules) | 当前只有 Lucide 一项；正确移除 Git 索引中的 `160000` gitlink 和对应节，之后删除空 `.gitmodules`。不能只删磁盘目录，否则克隆仍会拉取或报失效路径 |
 | [`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml) | 删除 checkout 的 `submodules: recursive`。保留正常 checkout、Rust 缓存、三平台矩阵和 workspace build/test/clippy；当前没有独立 Jaco CI job，无需凭空拆改矩阵 |
 | 本地 Git 子模块登记 | 操作前检查子模块自身工作区，保留未提交内容；通过 Git 的子模块移除流程处理本地登记。`.git/modules/third_party/lucide` 属于本地缓存，不是需要提交的源码删除；不为仓库清理顺便清空其他 worktree 或 Git 历史 |
-| [script/bootstrap](../../../script/bootstrap)、[script/install-linux.sh](../../../script/install-linux.sh) | 当前没有 Jaco/Lucide/submodule 专用命令，也没有安装 Diesel/SQLite 专用开发包，不需要增加反向卸载操作。不要直接删除现有 GTK、WebKit、音频、字体、X11/Wayland、Vulkan、SSL 等系统依赖；若要精简，先依据保留应用的 native 依赖和 Linux 构建证据逐项判断 |
+| [flake.nix](../../../flake.nix)、[flake.lock](../../../flake.lock) | macOS/Linux 开发环境及原生依赖统一由 Nix 维护，旧安装脚本已移除。退役后依据保留应用的 native 依赖和 Linux 构建证据逐项判断无用项，不增加本机反向卸载操作 |
 | `script/gupi-runtime-gallery`、`script/gupi-ui-gallery` | 服务于 Gupi，保留；当前没有旧子模块初始化或 Jaco 启动命令 |
 | [`.github/dependabot.yml`](../../../.github/dependabot.yml) | 当前只管理 GitHub Actions，没有 MCP 工具目录或子模块的更新任务，无需调整 |
 | [`.zed/tasks.json`](../../../.zed/tasks.json)、[`.gitignore`](../../../.gitignore) | 当前无 Jaco 专用任务；图标派生产物忽略规则为 `app/*` 通用规则，保留。没有发现需要删除的子模块初始化脚本 |
@@ -89,15 +95,13 @@
 - Form/Store/Operation 指南中的 Jaco 示例，能说明通用契约的改为当前消费者或中性例子；不删除这些共享能力的设计说明与回归要求。
 - [依赖更新记录](../dependency-refresh-2026-09/README.md) 的版本盘点保留其基线语义；“暂留给 Jaco”“未来删除”等当前状态改为实际结果。更新[统一待处理文档](../issue-217/follow-ups.md)与[根开发索引](../README.md)，不复制第二份清单。
 
-## 需要单独判断的共享能力
+## 共享能力的保留边界
 
-以下均没有对 Jaco 的 Rust 反向依赖。本次建议保留，不能仅因其唯一应用消费者退役就自动删除公共 API；若后续决定连这些能力一起精简，再按表中联动范围处理。
+Quick Look、OCR 已列入上方一并删除范围。其他共享能力继续按其实际消费者和已确认用途保留。
 
 | 能力 | 当前证据与保留/删除边界 |
 | --- | --- |
 | `gpui-heatmap` | 唯一应用消费者是 Jaco，但有独立通用组件契约、中英文 README 和自己的测试。按已有依赖更新结论保留；不能删除 `time` 或 GPUI 依赖来间接破坏它 |
-| `platform-ext::ocr` | `ImageFrame` / `recognize_text` 当前只由 Jaco 截屏功能使用；Gupi 本轮明确不接 OCR。若另行决定删 OCR，应一并处理 `src/ocr.rs`、`src/ocr/`、`OcrError` 与专用测试/文档、`winmd/`、OCR 专用 `build.rs` 和 `windows-bindgen`、Windows AI/OCR features、macOS Vision 链接；逐项复核 `windows-core`/`windows-future` 等剩余调用，不整包删除 `platform-ext` |
-| `window-ext` 的 Quick Look | 当前应用调用位于 Jaco 附件流程，Gupi 用系统打开/自身预览；如另行删此通用 API，联动 `src/quick_look.rs`、导出函数及专用错误类型。不能删除仍服务 Gupi 的窗口显示、隐藏、层级、居中与平台句柄功能 |
 
 **明确有现役消费者的共享内容：**`platform-ext::app` 被 Gupi 临时窗口用于前台应用/回填/鼠标显示器；`platform-ext::appearance` 被 `app-theme` 使用；`window-ext` 被 Gupi 主/临时窗口使用；`app-theme` 被 Gupi、Feiwen 使用；Form、Store、Operation、Tokio bridge、Pi RPC、HTTP 测试服务和 xtask 各自保留。应用自己的图标、provider SVG 和官方 `gpui-kit-assets` 资源也继续保留。
 
@@ -105,7 +109,7 @@
 
 1. 开始清理时重扫当前引用和子模块状态，确认没有新增消费者或用户未提交的子模块改动；只处理已确认范围。
 2. 删除专用 owner、workspace 声明、Jaco 打包枚举及 profile；移除子模块 gitlink / `.gitmodules` 与 CI 递归拉取配置，更新主锁图。
-3. 改写通用测试 fixture、模板、项目说明、skills 和文档导航。按上面的边界保留共享 crate 与 API。
+3. 删除 Quick Look 与 OCR 的实现、导出和专用支持内容，连同 OCR 的 Windows 元数据/绑定生成链及平台专用依赖一起清理，核对已无应用调用。保留现役窗口控制、前台应用交互、系统外观能力。改写通用测试 fixture、模板、项目说明、skills 和文档导航，按上面的边界保留其他共享能力。
 4. 核对 `cargo metadata --no-deps --format-version 1`：无已删除成员/路径；检查新依赖图，不将仍有传递使用方的包误报为遗漏。
 5. 对剩余 workspace 执行格式、构建、现有测试和 Clippy；这时无需再携带 `--exclude jaco*`。额外关注 xtask CLI、Form 宏、图标 bytes、设置和消息显示的现有回归，不重写已经覆盖的测试。
 6. 用不初始化子模块的干净 checkout 验证构建；确认根 manifest、CI、scripts 没有旧目录引用，macOS/Windows/Linux 的实际结果分别记录。Windows 安装参数解析由测试覆盖，不自动在用户机器安装或卸载软件。
@@ -115,4 +119,4 @@
 
 ## 本轮检查结果
 
-已检查根与各 owner manifest、源码引用、`.gitmodules` / gitlink、全部 `.github/` 和 `script/` 文件、`.zed/tasks.json`、项目/skill 导航及外部文档引用。仅新增本清单及其索引引用；没有执行清理或 Rust 构建测试。本轮验证为文档链接、事实对照和 diff 检查。
+整体清单已核对根与各 owner manifest、源码引用、`.gitmodules` / gitlink、`.github/`、`script/`、`.zed/tasks.json` 及文档导航。Quick Look、OCR 的删除范围已复核应用调用与库实现，OCR 同时核对了 Windows 绑定生成链。尚未执行代码清理；文档变更验证为链接、事实对照和 diff 检查，不代表删除后的构建已通过。

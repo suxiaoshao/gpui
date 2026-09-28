@@ -14,12 +14,14 @@ mod actions;
 mod activity;
 mod details;
 mod images;
-mod markdown;
+pub(super) mod markdown;
 pub(super) mod metadata;
+mod plugin;
 mod presentation;
 mod tool_details;
 mod viewport;
-use activity::{Activity, ActivityBlock, RunContent, ToolStatus};
+pub(super) use actions::copy_button;
+use activity::{Activity, ActivityBlock, RunContent, RunSection, ToolStatus};
 use presentation::Disclosure;
 
 #[derive(Clone, PartialEq)]
@@ -29,6 +31,64 @@ pub(super) struct ChatRow {
     kind: RowKind,
 }
 impl ChatRow {
+    /// Search the same user text and eligible assistant units that the row renders.
+    pub(super) fn find_sources(&self) -> Vec<super::find::Source> {
+        if let RowKind::User(message) = &self.kind {
+            let text = message.text();
+            return if text.trim().is_empty() {
+                vec![]
+            } else {
+                vec![super::find::Source {
+                    id: format!("text-{}", message.id),
+                    row: self.id.clone(),
+                    text,
+                    process: None,
+                }]
+            };
+        }
+        let RowKind::Run {
+            messages, active, ..
+        } = &self.kind
+        else {
+            return vec![];
+        };
+        let content = RunContent::project(messages, &[], *active);
+        let mut sources = vec![];
+        for section in &content.sections {
+            match section {
+                RunSection::Process(range) if !content.final_started => {
+                    for activity in &content.activities[range.clone()] {
+                        if let Activity::Text {
+                            id,
+                            text,
+                            thinking: false,
+                            ..
+                        } = activity
+                        {
+                            sources.push(super::find::Source {
+                                id: id.clone(),
+                                row: self.id.clone(),
+                                text: text.clone(),
+                                process: Some(content.process_id(&self.id, range)),
+                            });
+                        }
+                    }
+                }
+                RunSection::Answer => {
+                    let message = &messages[content.answer.expect("answer section")];
+                    sources.push(super::find::Source {
+                        id: format!("text-{}", message.id),
+                        row: self.id.clone(),
+                        text: content.answer_text.clone(),
+                        process: None,
+                    });
+                }
+                _ => {}
+            }
+        }
+        sources
+    }
+
     pub(super) fn active(&self) -> bool {
         matches!(self.kind, RowKind::Run { active: true, .. })
     }
@@ -50,15 +110,25 @@ impl ChatRow {
         }
         match &self.kind {
             RowKind::Run { messages, .. } => {
-                open.insert(self.id.clone(), true);
+                if messages
+                    .iter()
+                    .any(|m| m.entry.as_deref() == Some(entry) && m.role() == "custom")
+                {
+                    return;
+                }
                 let content = RunContent::project(messages, &[], false);
-                for block in content.blocks() {
-                    if let ActivityBlock::Group { id, items } = block {
-                        for item in items {
-                            if let Activity::Tool(tool) = item
-                                && tool.entries.iter().any(|id| id == entry)
-                            {
-                                open.insert(id.clone(), true);
+                for section in &content.sections {
+                    if let RunSection::Process(range) = section {
+                        open.insert(content.process_id(&self.id, range), true);
+                        for block in content.blocks_in(range.clone()) {
+                            if let ActivityBlock::Group { id, items } = block {
+                                for item in items {
+                                    if let Activity::Tool(tool) = item
+                                        && tool.entries.iter().any(|id| id == entry)
+                                    {
+                                        open.insert(id.clone(), true);
+                                    }
+                                }
                             }
                         }
                     }
@@ -194,6 +264,7 @@ impl HomeView {
             format!("{key}-{id}"),
             text,
             self.views[key].scroller.downgrade(),
+            self.views[key].markdown.clone(),
         )
         .row(row.to_owned(), self.views[key].row_positions.clone())
     }
@@ -359,7 +430,7 @@ impl HomeView {
                     .flatten()
                     .enumerate()
                     .filter(|(_, block)| block["type"].as_str() == Some("image"))
-                    .map(|(index, block)| images::UserImage {
+                    .map(|(index, block)| images::MessageImage {
                         preview_host: self.image_preview.clone(),
                         id: format!("user-image-{key}-{}-{index}", m.id),
                         mime: block["mimeType"].as_str().unwrap_or_default().into(),
@@ -460,35 +531,8 @@ impl HomeView {
                     .unwrap_or_default();
                 let content = RunContent::project(messages, live, *active);
                 let mut result = MessageGroup::new().w_full();
-                if content.has_process() {
-                    let title = metadata::process_title(messages, *active, *started_at, cx);
-                    let blocks = content.blocks();
-                    let last = blocks.len().saturating_sub(1);
-                    let process = MessageGroup::new()
-                        .w_full()
-                        .children(blocks.into_iter().enumerate().map(|(i, block)| {
-                            self.render_block(
-                                key,
-                                &row.id,
-                                block,
-                                *active && !content.final_started && i == last,
-                                cx,
-                            )
-                        }))
-                        .into_any_element();
-                    result = result.child(
-                        self.fold(
-                            (key, &row.id),
-                            &row.id,
-                            Disclosure::run(title)
-                                .clock(active.then(|| self.views[key].clock.clone()))
-                                .locked((*active && !content.final_started) || content.interrupted),
-                            *active || content.interrupted || content.answer.is_none(),
-                            process,
-                            cx,
-                        ),
-                    );
-                } else if *active
+                if !content.has_process()
+                    && *active
                     && !content.interrupted
                     && !content.final_started
                     && content.answer_text.is_empty()
@@ -502,26 +546,87 @@ impl HomeView {
                             ),
                     );
                 }
-                if let Some(index) = content.answer {
-                    let m = &messages[index];
-                    let text = content.answer_text.clone();
-                    result = result.child(
-                        Message::new()
-                            .content(
-                                MessageContent::new().child(
-                                    self.text_view(key, &row.id, format!("text-{}", m.id), text)
-                                        .stream_fade(),
+                for section in &content.sections {
+                    match section {
+                        RunSection::Custom(index) => {
+                            result = result.child(self.render_plugin(
+                                key,
+                                &row.id,
+                                &messages[*index],
+                                cx,
+                            ));
+                        }
+                        RunSection::Process(range) if content.has_process() => {
+                            let first = range.start == 0;
+                            let title = if first {
+                                metadata::process_title(messages, *active, *started_at, cx)
+                            } else {
+                                t(cx, "conversation-process")
+                            };
+                            let blocks = content.blocks_in(range.clone());
+                            let last = blocks.len().saturating_sub(1);
+                            let process = MessageGroup::new()
+                                .w_full()
+                                .children(blocks.into_iter().enumerate().map(|(i, block)| {
+                                    self.render_block(
+                                        key,
+                                        &row.id,
+                                        block,
+                                        *active
+                                            && !content.final_started
+                                            && range.end == content.activities.len()
+                                            && i == last,
+                                        cx,
+                                    )
+                                }))
+                                .into_any_element();
+                            result = result.child(
+                                self.fold(
+                                    (key, &row.id),
+                                    &content.process_id(&row.id, range),
+                                    Disclosure::run(title)
+                                        .clock(
+                                            (*active && first)
+                                                .then(|| self.views[key].clock.clone()),
+                                        )
+                                        .locked(
+                                            (*active && !content.final_started)
+                                                || content.interrupted,
+                                        ),
+                                    *active || content.interrupted || content.answer.is_none(),
+                                    process,
+                                    cx,
                                 ),
-                            )
-                            .footer(MessageFooter::new().content_inset(false).child(
-                                actions::MessageActions {
-                                    id: format!("{key}-{}", m.id),
-                                    message: m.clone(),
-                                    text: content.answer_text.clone(),
-                                    before_copy: None,
-                                },
-                            )),
-                    );
+                            );
+                        }
+                        RunSection::Process(_) => {}
+                        RunSection::Answer => {
+                            let m =
+                                &messages[content.answer.expect("answer section has a message")];
+                            result = result.child(
+                                Message::new()
+                                    .content(
+                                        MessageContent::new().child(
+                                            self.text_view(
+                                                key,
+                                                &row.id,
+                                                format!("text-{}", m.id),
+                                                content.answer_text.clone(),
+                                            )
+                                            .stream_fade(),
+                                        ),
+                                    )
+                                    .footer(MessageFooter::new().content_inset(false).child(
+                                        actions::MessageActions {
+                                            id: format!("{key}-{}", m.id),
+                                            message: m.clone(),
+                                            text: content.answer_text.clone(),
+                                            before_copy: None,
+                                        },
+                                    )),
+                            );
+                        }
+                    }
                 }
                 if messages.iter().any(|m| m.value["stopReason"] == "aborted") {
                     result = result.child(
@@ -550,7 +655,7 @@ impl HomeView {
 
 #[cfg(test)]
 mod tests {
-    use super::{RowKind, RunContent, project_rows};
+    use super::{ChatRow, RowKind, RunContent, project_rows};
     use crate::state::history::DisplayMessage;
     use std::collections::{HashMap, HashSet};
     #[test]
@@ -697,7 +802,7 @@ mod tests {
         let content = project_run(&wire);
         assert!(content.answer.is_none());
         assert!(
-            matches!(content.blocks()[1], ActivityBlock::Message(Activity::Text { text, .. }) if text == "我来读取技能")
+            matches!(content.blocks_in(0..content.activities.len())[1], ActivityBlock::Message(Activity::Text { text, .. }) if text == "我来读取技能")
         );
         assert!(
             matches!(content.activities.last(), Some(Activity::Tool(tool)) if tool.summary() == Some("final"))
@@ -712,6 +817,129 @@ mod tests {
             final_answer_part: None,
             completed_at: None,
         }
+    }
+    #[test]
+    fn find_includes_users_and_selects_eligible_assistant_prose_in_the_current_projection() {
+        let mut process = message("process", "assistant");
+        process.value["content"] = serde_json::json!([
+            {"type":"thinking","thinking":"private thought"},
+            {"type":"text","text":"first explanation"},
+            {"type":"toolCall","id":"call","name":"read","arguments":{}}
+        ]);
+        process.value["stopReason"] = "toolUse".into();
+        let mut answer = message("answer", "assistant");
+        answer.value["content"] = serde_json::json!([{"type":"text","text":"pending answer"}]);
+        answer.value["stopReason"] = "pending".into();
+        let rows_for = |answer: DisplayMessage| {
+            project_rows(
+                vec![
+                    message("user", "user"),
+                    process.clone(),
+                    message("plugin", "custom"),
+                    answer,
+                ],
+                None,
+            )
+        };
+        let rows = rows_for(answer.clone());
+        assert_eq!(rows[0].find_sources()[0].text, "user");
+        let sources = rows[1].find_sources();
+        assert_eq!(
+            sources.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(),
+            ["first explanation", "pending answer"]
+        );
+        assert!(sources[0].process.is_some());
+        assert!(sources[1].process.is_none());
+        answer.value["stopReason"] = "stop".into();
+        let rows = rows_for(answer.clone());
+        assert_eq!(
+            rows.iter()
+                .flat_map(ChatRow::find_sources)
+                .map(|source| source.text)
+                .collect::<Vec<_>>(),
+            ["user", "pending answer"]
+        );
+        assert_eq!(rows[1].find_sources().len(), 1);
+        assert_eq!(rows[1].find_sources()[0].text, "pending answer");
+        answer.value["stopReason"] = "aborted".into();
+        assert_eq!(rows_for(answer)[1].find_sources().len(), 2);
+        let other_branch = project_rows(
+            vec![
+                message("other-user", "user"),
+                message("branch-answer", "assistant"),
+            ],
+            None,
+        );
+        assert_eq!(other_branch[1].find_sources()[0].text, "branch-answer");
+    }
+    #[test]
+    fn find_user_messages_share_the_rendered_text_identity_and_exclude_images() {
+        let mut user = message("mixed", "user");
+        user.value["content"] = serde_json::json!([
+            {"type":"text", "text":"用户 **问题**"},
+            {"type":"image", "mimeType":"image/png", "data":"image-only-needle"},
+            {"type":"text", "text":"后续文字"}
+        ]);
+        let rows = project_rows(vec![user.clone()], None);
+        let sources = rows[0].find_sources();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id, "text-mixed");
+        assert_eq!(sources[0].row, rows[0].id);
+        assert_eq!(sources[0].text, user.text());
+        assert!(!sources[0].text.contains("image-only-needle"));
+        assert!(sources[0].process.is_none());
+
+        user.value["content"] = serde_json::json!([
+            {"type":"image", "mimeType":"image/png", "data":"image-only-needle"},
+            {"type":"text", "text":" \n "}
+        ]);
+        assert!(project_rows(vec![user], None)[0].find_sources().is_empty());
+    }
+    #[test]
+    fn locating_custom_keeps_process_closed_and_other_entries_open_all_segments() {
+        let rows = project_rows(
+            vec![
+                message("u", "user"),
+                message("a", "assistant"),
+                message("plugin", "custom"),
+                message("b", "assistant"),
+                message("answer", "assistant"),
+            ],
+            None,
+        );
+        assert_eq!(rows.len(), 2, "plugin messages do not split a logical run");
+        let mut open = HashMap::new();
+        rows[1].reveal("plugin", &mut open);
+        assert!(open.is_empty());
+        rows[1].reveal("b", &mut open);
+        assert_eq!(open.get("run-after-u"), Some(&true));
+        assert_eq!(open.get("run-after-u-process-b"), Some(&true));
+    }
+    #[test]
+    fn locating_tool_opens_the_group_after_a_plugin_message() {
+        let tool = |id: &str| {
+            let mut m = message(id, "assistant");
+            m.value["content"] = serde_json::json!([
+                {"type":"toolCall","id":id,"name":"read","arguments":{"path":id}}
+            ]);
+            m
+        };
+        let rows = project_rows(
+            vec![
+                message("u", "user"),
+                tool("a"),
+                message("plugin", "custom"),
+                tool("b"),
+                tool("c"),
+                message("answer", "assistant"),
+            ],
+            None,
+        );
+        let mut open = HashMap::new();
+        rows[1].reveal("c", &mut open);
+        assert_eq!(open.get("run-after-u-process-tool-b"), Some(&true));
+        assert_eq!(open.get("group-tool-b"), Some(&true));
+        assert!(!open.contains_key("group-tool-a"));
     }
     #[test]
     fn steering_does_not_collapse_an_earlier_part_of_the_active_run() {

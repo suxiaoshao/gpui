@@ -5,4 +5,6 @@ pub(crate) mod paths;
 pub(crate) mod persistence;
 pub(crate) mod pi_resources;
 pub(crate) mod session_catalog;
+#[cfg(target_os = "macos")]
+pub(crate) mod shell_path;
 pub(crate) mod tool_presentation;

@@ -517,10 +517,8 @@ impl ConversationState {
             self.new_draft(None, cx);
             return;
         }
-        // The foreground starts blank; persisted drafts are restored in the
-        // background and must never replace this selection or start background sessions.
-        self.insert_draft(None);
-        self.connect_selected(cx);
+        // Restore workspace state and the catalog without creating an implicit
+        // foreground session. Opening a project or conversation is explicit.
         let task = cx.spawn(async move |owner, cx| {
             let saved = smol::unblock(|| -> Result<WorkspaceFile, String> {
                 let path = paths::config_dir()
@@ -781,6 +779,9 @@ impl ConversationState {
         let cwd = cwd
             .or_else(|| self.current().map(|s| s.info.cwd.clone()))
             .unwrap_or_else(|| self.discovery.current.clone());
+        if !self.temporary {
+            self.discover_project(cwd.clone(), cx);
+        }
         let reusable = |s: &Session| {
             (self.temporary || s.info.cwd == cwd)
                 && !matches!(s.transcript, Transcript::Unloaded)
@@ -868,59 +869,6 @@ impl ConversationState {
             ),
         );
         self.selected = Some(key);
-    }
-    pub fn set_cwd(&mut self, key: &str, cwd: PathBuf, cx: &mut Context<Self>) {
-        if self.temporary {
-            return;
-        }
-        if self.draining {
-            return;
-        }
-        let Some(source) = self.sessions.get(key) else {
-            return;
-        };
-        if source.info.cwd == cwd {
-            return;
-        }
-        let project = cwd.clone();
-        let had_draft = !source.draft.is_empty();
-        let can_retarget = source.instance.is_none() && source.history().entries.is_empty();
-        // Keep carrying unsent input when changing an unconnected draft's project.
-        // Otherwise select the retained empty session, including its model-only connection.
-        let reusable = (!can_retarget || source.draft.is_empty())
-            .then(|| {
-                self.sessions
-                    .iter()
-                    .filter(|(_, s)| {
-                        s.info.cwd == cwd
-                            && s.info.path.as_os_str().is_empty()
-                            && s.draft.is_empty()
-                            && s.empty_conversation()
-                            && s.live.is_empty()
-                            && !s.busy()
-                            && !s.command.running()
-                            && !s.core_read.running()
-                            && s.pending_ui.is_empty()
-                    })
-                    .max_by_key(|(_, s)| s.instance.is_some())
-                    .map(|(key, _)| key.clone())
-            })
-            .flatten();
-        if let Some(key) = reusable {
-            self.selected = Some(key);
-        } else if can_retarget {
-            self.sessions.get_mut(key).unwrap().info.cwd = cwd;
-        } else {
-            self.insert_draft(Some(cwd));
-        }
-        self.connect_selected(cx);
-        notify_session(key, cx);
-        notify_session(self.selected.as_ref().unwrap(), cx);
-        notify_selection(cx);
-        if had_draft && can_retarget {
-            self.save_changes(cx);
-        }
-        self.discover_project(project, cx);
     }
     pub fn open(&mut self, key: &str, cx: &mut Context<Self>) {
         if self.draining {
@@ -1202,6 +1150,7 @@ impl ConversationState {
         let binding = s.binding;
         let event_revision = s.event_revision;
         let model_revision = s.model_revision;
+        let history_revision = s.history().revision;
         let task_key = key.to_owned();
         let task = cx.spawn(async move |owner, cx| {
             let key = task_key;
@@ -1227,16 +1176,24 @@ impl ConversationState {
                 let again = s
                     .core_read
                     .finish(result.as_ref().err().map(ToString::to_string));
-                if stale && result.is_ok() {
-                    // A later settled event supplies another read while streaming;
-                    // otherwise fetch once more now. Never erase newer live data.
-                    if !s.running() && !s.compacting && !s.retrying {
-                        this.read_session(&key, scope.max(again.unwrap_or(scope)), cx);
-                    }
-                    notify_session(&key, cx);
-                    return;
-                }
                 match result {
+                    Ok(mut snapshot) if stale => {
+                        // Deltas invalidate get_state, not the persisted entries returned
+                        // by get_entries. Never replace a newer transcript or clear live
+                        // output while applying this independent portion of the read.
+                        let accept_entries = s.history().revision == history_revision;
+                        let idle = !s.running() && !s.compacting && !s.retrying;
+                        if accept_entries && let Some(entries) = snapshot.entries.take() {
+                            this.apply_history(&key, entries, cx);
+                        }
+                        // A queued append still needs its read while streaming. Without
+                        // another request, the settled event will reconcile runtime state.
+                        if let Some(next) = again {
+                            this.read_session(&key, if idle { scope.max(next) } else { next }, cx);
+                        } else if idle {
+                            this.read_session(&key, scope, cx);
+                        }
+                    }
                     Ok(snapshot) => {
                         this.apply_snapshot(&key, snapshot, scope, cx);
                         if let Some(next) = again {
@@ -1258,6 +1215,18 @@ impl ConversationState {
             pending: None,
         };
         notify_session(key, cx);
+    }
+    /// Accept persisted entries without applying an older runtime snapshot.
+    fn apply_history(&mut self, key: &str, entries: protocol::Entries, cx: &mut Context<Self>) {
+        let s = self.sessions.get_mut(key).unwrap();
+        let previous_revision = s.history().revision;
+        s.transcript.replace(entries);
+        s.history_dirty = false;
+        if s.history().revision != previous_revision {
+            s.content_revision += 1;
+            self.refresh_stats(key, cx);
+            self.refresh_fork_messages(key, cx);
+        }
     }
     fn apply_snapshot(
         &mut self,
@@ -1925,12 +1894,22 @@ impl ConversationState {
                     }
                     "summarization_retry_finished" => s.summary_retry = None,
                     "message_start" | "message_update" | "message_end" => {
-                        s.retry = None;
-                        s.receive_message(kind, raw);
-                        if kind == "message_end" {
-                            s.usage_revision += 1;
+                        if raw["message"]["role"] == "custom" {
+                            if kind == "message_end" {
+                                s.history_dirty = true;
+                                history_event = true;
+                                refresh = Some(ReadScope::History);
+                            } else {
+                                return;
+                            }
+                        } else {
+                            s.retry = None;
+                            s.receive_message(kind, raw);
+                            if kind == "message_end" {
+                                s.usage_revision += 1;
+                            }
+                            content_changed = true;
                         }
-                        content_changed = true;
                     }
                     "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
                         content_changed = true;
@@ -2308,17 +2287,29 @@ mod tests {
     }
 
     #[gpui::test]
-    fn startup_ignores_legacy_selection_and_restores_only_nonempty_drafts(cx: &mut TestAppContext) {
+    fn startup_does_not_create_an_implicit_session_or_pi_instance(cx: &mut TestAppContext) {
         cx.update(pi::init);
+        let dir = tempfile::tempdir().unwrap();
         let state = cx.new(|cx| ConversationState::new(PathBuf::from("unused-pi"), cx));
         state.update(cx, |state, cx| {
-            state.insert_draft(None);
-            let foreground = state.selected.clone().unwrap();
-            assert_eq!(state.infos().len(), 1);
-            assert!(state.file().drafts.is_empty());
-            // Typing while the old file is still being read must not overwrite it.
-            state.set_draft(&foreground, "new input during loading".into(), cx);
-            assert!(state.save_task.is_none());
+            state.discovery = super::Discovery {
+                home: dir.path().into(),
+                agent: dir.path().join("agent"),
+                current: dir.path().into(),
+                session_override: None,
+            };
+            state.load(cx);
+            assert!(state.sessions.is_empty());
+            assert!(state.selected.is_none());
+            assert!(state.current().is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn restoring_workspace_ignores_legacy_selection_and_empty_drafts(cx: &mut TestAppContext) {
+        cx.update(pi::init);
+        let state = cx.new(|cx| ConversationState::new(PathBuf::from("unused-pi"), cx));
+        state.update(cx, |state, _| {
             let old: WorkspaceFile = toml::from_str(
                 r#"
 selected = "old-session"
@@ -2336,8 +2327,8 @@ draft = ""
             )
             .unwrap();
             state.restore_drafts(old);
-            assert_eq!(state.selected.as_deref(), Some(foreground.as_str()));
-            assert_eq!(state.current().unwrap().draft, "new input during loading");
+            assert!(state.selected.is_none());
+            assert!(state.current().is_none());
             assert_eq!(state.sessions["old-session"].draft, "keep this draft");
             assert!(!state.sessions.contains_key("old-empty-page"));
             assert!(
@@ -2348,7 +2339,7 @@ draft = ""
             );
             let saved = toml::to_string(&state.file()).unwrap();
             assert!(!saved.contains("selected ="));
-            assert_eq!(state.file().drafts.len(), 2);
+            assert_eq!(state.file().drafts.len(), 1);
         });
     }
 

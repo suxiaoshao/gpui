@@ -225,7 +225,7 @@ basic/full 语法集合、HTTP Client 全语言、平台 font-kit/x11/wayland/ru
 WP-07 最终阶段对齐现有 CI：`cargo fmt --all -- --check`、`cargo build --workspace --locked`、
 `cargo test --workspace --locked`；macOS 的
 `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`。
-Linux 原生依赖只在 script/bootstrap / script/install-linux.sh 维护；不散落到 workflow。
+macOS/Linux 原生依赖统一在 `flake.nix` / `flake.lock` 维护，Rust 工具链由 `rust-toolchain.toml` 声明；不散落到 workflow。
 三平台 build/test、平台相关包/生成、单应用 release、人工 UI 与 MCP E2E 分别记录，不互相替代。
 打包/人工验证使用隔离数据，不安装覆盖用户现有应用，不使用真实凭据或抓取入口。
 
