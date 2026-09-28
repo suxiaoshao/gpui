@@ -17,6 +17,7 @@ category = "DeveloperTool"
 localizations = ["en-US", "zh-CN", "zh-TW", "ja", "ko", "de", "fr", "es", "pt-BR"]
 
 [dependencies]
+regex = "1.13.1"
 # UI and workspace services.
 gpui-lucide.workspace = true
 app-theme = { workspace = true, features = ["system-accent"] }
@@ -61,7 +62,7 @@ uuid = { version = "1.26.1", features = ["v4"] }
 # Localization and diagnostics.
 fluent-bundle = "0.16.0"
 sys-locale = "0.3.2"
-thiserror = "2.0.20"
+thiserror = "2.0.21"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 

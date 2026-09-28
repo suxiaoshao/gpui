@@ -1,7 +1,6 @@
 use errors::{AppError, AppResult};
 use features::WorkspaceView;
 use foundation::I18n;
-use gpui_kit::component::Root;
 use gpui_kit::*;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
@@ -79,7 +78,7 @@ fn main() -> AppResult<()> {
     app.run(move |cx| {
         init(cx);
         let title = cx.global::<I18n>().t("app-title");
-        if let Err(err) = cx.open_window(
+        if let Err(err) = gpui_kit::open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
                     title: Some(title.into()),
@@ -87,10 +86,8 @@ fn main() -> AppResult<()> {
                 }),
                 ..Default::default()
             },
-            |window, cx| {
-                let view = cx.new(|cx| WorkspaceView::new(window, cx));
-                cx.new(|cx| Root::new(view, window, cx))
-            },
+            cx,
+            |window, cx| cx.new(|cx| WorkspaceView::new(window, cx)),
         ) {
             event!(Level::ERROR, "{}", err)
         };

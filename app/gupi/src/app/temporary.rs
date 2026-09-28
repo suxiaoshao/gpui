@@ -213,7 +213,7 @@ pub fn show(cx: &mut App) {
     let handle = match existing {
         Some(handle) => handle,
         None => {
-            let result = cx.open_window(window_options(display, cx), |window, cx| {
+            let result = gpui_kit::open_window(window_options(display, cx), cx, |window, cx| {
                 if let Err(error) = window.set_window_level(WindowLevel::ModalPanel) {
                     tracing::warn!(%error, "set temporary window level failed");
                 }
@@ -221,11 +221,10 @@ pub fn show(cx: &mut App) {
                     hide(window, cx);
                     false
                 });
-                let view = cx.new(|cx| TemporaryStartup::new(window, cx));
-                cx.new(|cx| Root::new(view, window, cx))
+                cx.new(|cx| TemporaryStartup::new(window, cx))
             });
             match result {
-                Ok(handle) => handle,
+                Ok((handle, _)) => handle.downcast::<Root>().expect("root window"),
                 Err(error) => {
                     tracing::error!(%error, "open temporary window failed");
                     cx.global_mut::<Temporary>().front = None;

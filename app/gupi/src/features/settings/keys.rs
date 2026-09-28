@@ -528,7 +528,7 @@ mod tests {
         dispatched: Rc<Cell<bool>>,
     }
     impl Render for Fixture {
-        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let keys = self.keys.clone();
             div()
                 .id("keys-fixture-root")
@@ -556,7 +556,6 @@ mod tests {
                                 ),
                         ),
                 )
-                .children(Root::render_dialog_layer(window, cx))
         }
     }
     fn setup(

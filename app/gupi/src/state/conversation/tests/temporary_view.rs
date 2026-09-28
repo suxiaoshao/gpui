@@ -838,3 +838,40 @@ fn session_info_dialog_from_temporary_actions_copies_updates_and_closes(cx: &mut
         assert!(state.read(cx).current().unwrap().instance.is_none());
     });
 }
+
+#[gpui_kit::test]
+fn temporary_find_shortcut_does_not_filter_sessions_or_edit_the_draft(cx: &mut TestAppContext) {
+    init_interactions(cx);
+    let state = cx.new(|cx| ConversationState::temporary("unused-pi".into(), cx));
+    state.update(cx, |state, _| {
+        let mut session = fixture_session("Alpha");
+        answer(&mut session, "# Searchable **needle**");
+        session.draft = "draft".into();
+        state.sessions.insert("alpha".into(), session);
+        state.selected = Some("alpha".into());
+    });
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| TemporaryView::new(state.clone(), window, cx));
+        view.update(cx, |view, cx| view.focus_search(window, cx));
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(960.), px(620.)));
+    visual.run_until_parked();
+    visual.simulate_keystrokes("secondary-f");
+    visual.simulate_input("needle");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("conversation-find-scope").is_some());
+    state.read_with(visual, |state, _| {
+        assert_eq!(state.current().unwrap().draft, "draft")
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("conversation-find-scope").is_none());
+    // Esc restores the sidebar search; its existing Tab path still focuses the composer.
+    visual.simulate_keystrokes("tab");
+    visual.dispatch_action(gpui_kit::component::input::MoveToEnd);
+    visual.simulate_input(" preserved");
+    state.read_with(visual, |state, _| {
+        assert_eq!(state.current().unwrap().draft, "draft preserved")
+    });
+}

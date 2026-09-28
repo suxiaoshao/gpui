@@ -1,8 +1,8 @@
 # 会话阅读、正文查找与信息查看
 
-归属 [#242](https://github.com/suxiaoshao/gpui/issues/242)，父 Issue #217。插件持久消息与会话信息弹窗已实现并通过受影响回归；正文查找尚未实现，留待接入包含范围高亮、定位接口的兼容正式包。当前依赖保持不变，不提前实施正文搜索或修改其快捷键。
+归属 [#242](https://github.com/suxiaoshao/gpui/issues/242)，父 Issue #217。状态：**应用侧实现完成**。插件持久消息、会话信息弹窗与正文查找均已实现并通过受影响回归。无障碍长文定位与中文混排裁切由后续正式依赖升级承接，不作为本轮应用侧未完成工作；具体限制与验证见 [GPUI Kit 0.7.0 及依赖升级](../../../../../docs/dev/dependency-refresh-0.7.0/README.md)。Token / Questionnaire 不在本轮范围。
 
-2026-09-26 对照 Gupi 主 Issue 基线 `ab5a19ae`、Pi v0.87.1 契约，以及上游合并提交 `aa2c3f77`（范围高亮）/ `80230b65`（范围定位）复核。当前 workspace 仍锁定 GPUI Kit 0.6.4；正式包的发布、API 与依赖兼容性须在执行依赖升级时核实，不因本计划采用已发布的假设就视为已经完成升级或集成验收。
+2026-09-28 已核对正式 v0.7.0（`0c830f4d`）的发布包和源码，范围高亮与定位接口均已包含；workspace 已锁定 0.7.0。搜索使用正式范围 API；验证结果与限制记录在升级文档。Pi 相关调查维持下文 v0.87.1 的核对时点，本次没有重新审计协议或升级本机 Pi。
 
 ## 目标与范围
 
@@ -10,11 +10,11 @@
 
 1. 插件 `custom_message display:true` 在聊天正文中正确展示，支持文字、图片、复制和已有图片预览；`display:false` 保持正文隐藏。
 2. 会话信息弹窗集中展示已有身份、目录、文件、模型/思考等级、Token 与费用。
-3. 当前查看分支正文查找，提供匹配导航、定位与高亮。用户已确认：按每轮对话，有最终输出只查最终输出；没有最终输出时只查 assistant 文字正文。用户消息、思考、工具内容、压缩/分支摘要及插件消息不纳入搜索。此决定取代立项时“包含可展示插件消息”的初始范围。
+3. 当前查看分支正文查找，提供匹配导航、定位与高亮。用户消息文字参与搜索；助手消息按每轮筛选，有最终输出只查最终输出，没有最终输出时查 assistant 文字正文。思考、工具内容、压缩/分支摘要及插件消息不纳入搜索。
 
 主窗口与临时窗口共用业务；不扩展跨会话全文索引、不新增数据库、不重新实现插件 TUI renderer。通知由 #241 承接；输入原子 Token、Markdown 资源标签和 Questionnaire 由 #243 承接；Pi/项目设置另归 #244。信息弹窗只读，不变成第二个设置页。
 
-## 当前实现与剩余接入
+## 当前实现
 
 ### 插件消息：统一使用持久条目
 
@@ -35,12 +35,12 @@ Pi 自定义消息保存时间由 appendCustomMessageEntry 新建，事件 times
 - **统计口径**：Pi `getSessionStats()` 遍历当前会话文件的全部 entries，包含各分支累计用量及结构条目的 usage；不是当前预览分支的可见消息计数。custom_message 不计入该实现的普通 message 数量。contextUsage 则来自当前执行上下文。弹窗不能把两者误标成“当前预览分支”。
 - Pi TUI `/session` 还有模型费用分布、缓存预热/浪费等扩展统计。本 Issue 不为了照搬 TUI 再造统计计算；先显示当前已可取得的数据。
 
-### 正文查找：组件契约已明确，应用接入尚未实现
+### 正文查找：复用已提交的 Markdown 解析状态
 
 - `Session.messages(preview)` 已统一当前执行分支/其他分支预览和 live 内容；`HomeView::sync_messages` 按 content_revision 投影 ChatRow，持有稳定行 ID 与位置映射。
 - `ChatRow::reveal`、`MessageScrollerState::scroll_to_item` 已能展开必要过程/工具分组并定位到消息行。历史 `preview_node` 会改变预览分支，不能直接把它当搜索跳转来用。
 - 工具与压缩摘要的全文在 #238 的 DetailsView 中；它们已明确排除在本次搜索之外，不增加详情弹窗内搜索或搜索触发弹窗。
-- 临时窗口的 `InputEvent::Change` 已直接触发会话过滤；`ToggleInputFocus` 已实现搜索框与正文输入框之间的 Tab 切换，已有页面回归覆盖。当前 `secondary-f → FocusSearch` 只是额外聚焦入口，不负责开启搜索。用户确认无需保留这项重复入口；#242 移除旧绑定和搜索框上的对应键帽，Cmd/Ctrl+F 统一用于正文查找。
+- 临时窗口的 `InputEvent::Change` 已直接触发会话过滤；`ToggleInputFocus` 已实现搜索框与正文输入框之间的 Tab 切换，已有页面回归覆盖。已移除原有 `secondary-f → FocusSearch` 重复聚焦入口及搜索框上的对应键帽，Cmd/Ctrl+F 统一用于正文查找。
 
 ## 实现方案
 
@@ -81,7 +81,7 @@ Dialog 拦截已有上下文切换动作；不为打不开的操作设计额外�
 搜索内容范围、原位置高亮目标与快捷键分工已经确认。原位高亮按现有组件可用能力分步接入，不改成结果摘要高亮。
 
 - 在当前会话区域提供查找栏，含查询输入、匹配计数、上一处/下一处和关闭。首轮使用普通文本匹配，不增加替换、正则和全局索引；大小写不敏感，跨 Unicode 字符匹配保留正确的原始范围。
-- 仅在当前查看分支内按每轮选取搜索文本：已有最终输出时只取最终输出，尚无最终输出时取 assistant 的文字正文；按消息/内容块顺序导航。沿用现有最终回答判定，不按“最后一条消息”或文本内容另造推断。用户消息、thinking、工具参数/输出、压缩/分支摘要、custom_message、图片、details 及内部元数据均不纳入。
+- 仅在当前查看分支内搜索用户消息文字，并按每轮选取助手文本：已有最终输出时只取最终输出，尚无最终输出时取 assistant 的文字正文；按消息/内容块顺序导航。沿用现有最终回答判定，不按“最后一条消息”或文本内容另造推断。thinking、工具参数/输出、压缩/分支摘要、custom_message、图片、details 及内部元数据均不纳入。
 - 搜索直接使用 `TextViewState::rendered_text()` 的实际阅读文字，例如 `hello **world**` 可以按 `hello world` 匹配。结果保存该文本中的 UTF-8 字节区间；大小写不敏感匹配必须返回原文本的区间，不把小写转换后的位置直接用于原字符串。复用同一组件的解析与映射，不另写 Markdown 去标记或源码到显示位置转换器。
 - 命中最终输出直接定位；没有最终输出时，若命中的 assistant 正文位于过程区，只展开必要过程容器。复用行定位，不改变执行 leaf、不切换分支、不打开工具或摘要详情。
 - 查询、当前匹配和结果属于视图的短期状态，不存入 Pi 或 state.toml，不复制一份会话正文。关闭或切换会话/预览分支时清理本次查找，原有滚动和折叠状态继续按既有规则；不追加自动恢复旧滚动/折叠的备份系统。
@@ -90,7 +90,7 @@ Dialog 拦截已有上下文切换动作；不为打不开的操作设计额外�
 
 ## 已确认的上游契约与接入前提
 
-[#3215](https://github.com/longbridge/gpui-kit/pull/3215) 与 [#3216](https://github.com/longbridge/gpui-kit/pull/3216) 已提供本轮需要的公共接口；范围坐标与方法签名不再是待确定项。执行前核实所选正式包确实包含这些 API，并对 workspace 共用的 kit/component/assets 依赖一起检查兼容性；不直接切 Git main、vendor 或修改 Cargo registry。
+[#3215](https://github.com/longbridge/gpui-kit/pull/3215) 与 [#3216](https://github.com/longbridge/gpui-kit/pull/3216) 的公共接口已随正式 **0.7.0** 发布并完成源码核对。按[本轮升级计划](../../../../../docs/dev/dependency-refresh-0.7.0/README.md)对齐 kit/component/assets 0.7.0 与 gpui-pre 0.3.7；不切 Git main、vendor 或修改 Cargo registry。下表契约以 v0.7.0 为准。
 
 | API | 契约与 Gupi 用法 |
 | --- | --- |
@@ -104,10 +104,10 @@ Dialog 拦截已有上下文切换动作；不为打不开的操作设计额外�
 
 ### 状态归属与离屏消息
 
-当前 `MarkdownState` 只在 `Markdown::render` 的 `window.use_keyed_state` 中按需创建。只向已渲染组件询问文本会漏掉离屏消息和折叠过程中的 assistant 正文；需要把可搜索文本的组件状态变为应用可取得的既有消息呈现状态。
+`Markdown::Registry` 由会话视图持有，按内容单元 ID 弱引用组件状态；已挂载的 Markdown 和打开的 FindBar 共同持有同一实体。打开查找会补齐离屏及折叠正文的状态；关闭后，仅为搜索创建且未呈现的实体释放。
 
 - `ConversationState` / Session 继续持有 Pi 消息、历史和实时内容；查询与高亮不写入这一层，不新建正文数据库或第二份会话记录。
-- 对可搜索 assistant 文本，由现有会话视图按稳定消息/内容单元 ID 保留 `TextViewState`，Markdown 包装器与查找共用同一实体。用内容单元身份区分最终回答与过程文本，不用行号作为身份；其他非搜索内容不必一起改造。
+- 对用户消息文字与可搜索 assistant 文本，由现有会话视图按稳定消息/内容单元 ID 保留 `TextViewState`，Markdown 包装器与查找共用同一实体。用内容单元身份区分最终回答与过程文本，不用行号作为身份；其他非搜索内容不必一起改造。
 - 平时继续按显示需要创建；打开查找时，为当前查看分支全部符合规则的文本补齐组件状态并解析，离屏内容不需要创建或挂载整行 UI。仅保存组件实体、必要的快照和命中区间，不再运行第二套 Markdown 解析器。
 - 文本同步仍沿用追加 `push_str`、替换 `set_text`。搜索打开期间只处理正文或搜索范围发生变化的文本；最终输出出现后按已确认规则收敛范围。组件提交解析后的通知逐步更新结果与计数，不等待所有离屏文本解析结束才提供已知命中，也不宣称 `set_text` 返回时已经取得完整新快照。只按已提交快照匹配，不用固定延时猜解析进度。
 - 查找关闭时清理查询、结果、待定位目标与高亮，停止搜索订阅；为搜索额外创建而未被消息呈现使用的状态可释放。正常呈现状态随所属会话视图管理，消息删除、预览切换或视图释放时清除失效项，不做跨会话长期搜索缓存。
@@ -130,15 +130,18 @@ Dialog 拦截已有上下文切换动作；不为打不开的操作设计额外�
 
 ### 已知组件边界
 
+- **本轮原生复现，用户确认等待上游**：GPUI 0.3.7 的 `Window::transact` 未回滚无障碍树，长回答定位触发列表第二次 prepaint 时会重复登记节点，调试版崩溃、发行版丢弃节点。保持正式依赖，不绕过断言或关闭无障碍；[复现和源码依据](../../../../../docs/dev/dependency-refresh-0.7.0/README.md#原生验收发现长消息定位与无障碍树)归升级记录。
+- Markdown 中文混排在 macOS 上还存在上游逐字估宽与整行排版不一致导致的行末裁切；Gupi 容器宽度约束已修复。两项依赖缺陷统一留在[总待处理文档](../../../../../docs/dev/issue-217/follow-ups.md#依赖接入与上游边界)，等待包含修复的正式版本后升级复测。
+
 - `reveal_range` 的成功返回表示范围合法且请求被接受，没有滚动完成回调；请求约一秒内未完成会被丢弃，只保留最新请求。普通查找按这一契约调用，不为缺少确认回调另造持久任务或将其列为新的上游前置条件。
 - 定位保证的是起点所在行可见，不保证整个跨行匹配同时可见。横向滚动表格的自动横向定位暂未覆盖。
 - 普通 Markdown 段落、标题、代码块和表格单元格有文字范围高亮；分隔符、HTML/自定义块及自定义内联对象不提供相同的逐字绘制。保留现有呈现，不替换内容来模拟高亮。若接入时常见内容因这些边界不能满足原位查找，按下文记录具体复现和影响，再决定该内容的处理，不提前扩大为自定义渲染器。
 
-这些是已知契约和集成验证点，不代表需要用户重新确认搜索产品规则。通用 API 的源码适配已核对；Gupi 的实际排版、长消息定位和交互结果仍须在实现后验证。
+这些是已知契约和集成边界，不代表需要用户重新确认搜索产品规则。实际验证结果见升级记录；上游缺陷对应场景不计为验收通过。
 
 ## 已确认的搜索范围
 
-D1 已确认：有最终输出只查最终输出，没有最终输出只查 assistant 文字正文。插件消息展示仍属于本 Issue 的独立功能，但不进入搜索范围。
+D1 已确认：用户消息文字参与搜索；助手消息有最终输出只查最终输出，没有最终输出则查 assistant 文字正文。用户消息与助手消息共用 Markdown 状态、高亮和定位，不搜索图片数据。插件消息展示仍属于本 Issue 的独立功能，但不进入搜索范围。
 
 D2 已确认：必须原位置高亮，不采用结果摘要高亮作为替代。使用 #3215 / #3216 的范围 API；搜索逻辑由应用实现。
 
@@ -146,23 +149,23 @@ D2 已确认：必须原位置高亮，不采用结果摘要高亮作为替代�
 
 D3 已确认：临时会话搜索框获得焦点后直接输入即过滤，不需要 Cmd/Ctrl+F 激活。Tab 继续在原有搜索框与正文输入框间切换；不按焦点让同一个 Cmd/Ctrl+F 承担两种搜索。
 
-主窗口、临时窗口的 Cmd/Ctrl+F 统一打开/聚焦当前会话正文查找，操作面板提供同一动作入口。实施时移除 `gupi_temporary::FocusSearch` 的旧绑定、专属 action handler 和搜索框右侧键帽；保留 `focus_search` 方法供窗口显示、Tab 等既有流程调用。普通搜索的 Change 订阅和过滤实现无需重做。
+主窗口、临时窗口的 Cmd/Ctrl+F 统一打开/聚焦当前会话正文查找，操作面板提供同一动作入口。已移除 `gupi_temporary::FocusSearch` 的旧绑定、专属 action handler 和搜索框右侧键帽；保留 `focus_search` 方法供窗口显示、Tab 等既有流程调用。普通搜索的 Change 订阅和过滤实现无需重做。
 
 `toggle_focus` 当前只在搜索框或普通 composer 真正有焦点时切换，其余输入和扩展表单继续走正常 Tab 导航；新正文查找输入也应保持自身正常焦点顺序。沿用 Dialog、图片预览和操作面板的已有作用域，不另加全局键盘钩子或上下文切换兼容层。
 
-依据：`features/temporary.rs::init/new/toggle_focus` 及现有 `temporary_page_tab_search_and_recreation_preserve_the_draft` 回归。该测试已包含搜索输入 → Tab 正文输入 → Tab 返回搜索；本轮只读取源码和测试，没有重跑或原生交互验收。
+依据：`features/temporary.rs::init/new/toggle_focus` 及现有 `temporary_page_tab_search_and_recreation_preserve_the_draft` 回归。该测试包含搜索输入 → Tab 正文输入 → Tab 返回搜索；本轮另补正文查找不改变会话过滤和草稿、关闭后恢复焦点的回归，运行结果见升级记录。
 
 ## 待确定问题与开发中记录
 
 当前没有需要用户先决定才能开发的产品问题。搜索范围、键位、信息弹窗内容和插件消息呈现方向均已确认；上游范围坐标、快照语义和方法签名已经明确，不再列作待定。
 
-正式包是否含所需接口、离屏状态接入、解析通知与高亮重测分离、custom 消息权威条目同步，属于执行前核实或实现/回归工作，不因尚未编写代码就反复询问用户。
+离屏状态接入、解析通知与高亮重测分离、custom 消息权威条目同步均已实现并覆盖回归。
 
-开发中若发现会改变已确认搜索范围、交互行为、数据权威来源或引入新依赖策略的问题，在本节记录具体场景、源码/复现证据、受影响步骤、建议处理及需要用户决定的点；未受影响的步骤继续。普通实现选择直接解决并更新相应方案，不预填假设性待办。目前没有新增条目。
+原生验收发现的无障碍滚动和中文混排缺陷由后续正式依赖升级承接，不添加应用侧滚动或文字测量补丁。应用侧没有剩余待实现项，也不把这两项上游场景标记为已验收通过。
 
 ## 实施顺序与归属
 
-1. 依赖核实：在所选兼容正式包中确认 `rendered_text`、范围高亮、`reveal_range` 及组件 re-export，更新匹配的 workspace 依赖和 lockfile，并完成受影响构建。这是本计划的执行前提，不在文档修订阶段升级。
+1. 依赖迁移：按独立升级计划接入已核实的正式 0.7.0 与配套 GPUI，更新 workspace 依赖和 lockfile，移除旧 Root 手动浮层等不兼容调用，完成受影响构建。
 2. 插件消息：已接入历史/实时统一投影与 display 判断，在完整 Run 内接入独立 Message，覆盖事件转历史的身份、顺序与时序；更新必要历史定位/最后回答回归。
 3. 信息弹窗：已补充 pi-rpc 的既有 stats 响应字段映射，复用 Session 数据、菜单/面板动作、字段与复制入口。
 4. 正文查找：接通共用的 Markdown 状态与当前分支匹配，区分解析/高亮通知，再完成查找栏、原位高亮、离屏行及长段落定位和流式更新。主窗口与临时窗口复用同一路径，按 D3 修改快捷键。
@@ -174,11 +177,11 @@ D3 已确认：临时会话搜索框获得焦点后直接输入即过滤，不�
 
 - 插件：实时消息与 entry_appended 两种路径、空闲不触发模型、运行中追加、恢复与其他分支预览、display true/false、交错文字/图片顺序、相同内容但不同 entry id 的消息各显示一次；覆盖插件消息插在工具调用、工具结果和最终回答之间，关联和搜索轮次不被切断，不把 custom 当最后 assistant 回答。
 - 信息：Pi stats fixture 的真实字段、全部分支累计口径、未知值、未落盘/临时会话、数据更新、复制/打开位置；不增加多实例轮询或目录扫描。
-- 查找：先验证原位高亮前后排版、换行、语法样式、链接与选择复制一致；覆盖有最终输出/无最终输出的范围选择、最终输出出现后的匹配收敛、非 assistant 内容排除、Unicode/大小写、Markdown 样式边界、回答中的代码/表格、重复匹配、过程正文定位、预览分支切换及流式追加；确认只更新所属会话。
+- 查找：先验证原位高亮前后排版、换行、语法样式、链接与选择复制一致；覆盖有最终输出/无最终输出的范围选择、最终输出出现后的匹配收敛、用户消息文字纳入、图片及其他不合格内容排除、Unicode/大小写、Markdown 样式边界、回答中的代码/表格、重复匹配、过程正文定位、预览分支切换及流式追加；确认只更新所属会话。
 - 增量与性能回归：离屏及折叠的合格正文均可命中；纯高亮/当前命中变化不重新解析或测量行，不引起循环通知；正文变化只更新所属文本，查找关闭后不再维护结果。等待解析和待定位过程中切换会话，旧目标不能滚动新会话。
 - 原生界面：在现有最小主窗口和固定临时窗口检查焦点、Tab 双向切换、Cmd/Ctrl+F 统一正文查找且不再聚焦会话搜索、Dialog 关闭/复制、长路径与长消息定位。只有相关实现完成后进行受影响回归与必要构建，不把 #223 的完整发行验收搬到本 Issue。
 
-## 本轮验证记录
+## 已实现的插件消息与信息弹窗验证
 
 - `cargo test -p gupi --locked`：259 项通过；覆盖 custom 两种事件触发、流式回读不覆盖运行/队列/模型、较新分支保护、重复条目身份、工具关联和分段定位、原始块顺序、复制/图片预览，以及临时操作面板打开信息、来源更新、复制和 Esc 关闭。思考等级改为复用已有翻译后，信息弹窗定向回归再次通过。
 - `cargo test -p pi-rpc --locked`：12 项单元、13 项进程集成和 1 项文档示例通过；既有两项外部真实进程测试维持忽略，未将它们计为通过。
@@ -186,12 +189,12 @@ D3 已确认：临时会话搜索框获得焦点后直接输入即过滤，不�
 - 真实 Pi 隔离 RPC：`/gupi-ui custom-message` 生成三个不同 ID 的条目，display 为 true/false/true；两条可见消息保留 text/image/text 顺序，未启动模型 turn，新会话文件未提前创建。可通过 `script/gupi-ui-gallery` 重现此场景。
 - macOS 原生检查已确认两条可见插件消息、图片预览及 Escape 关闭、会话菜单与命令面板入口、信息弹窗长路径换行、未保存状态、底部统计滚动、复制反馈及 Esc 关闭。临时窗口入口及动态复制由 GPUI 窗口交互回归覆盖；其他平台尚未原生目视检查。
 
-本轮没有新增需要用户决定的问题。正文搜索、其快捷键调整和依赖升级仍未执行，以上验证不代表整个 #242 已完成。
+以上记录针对已实现的插件消息和信息弹窗；本轮正文搜索、快捷键与 0.7.0 升级的验证另见[升级记录](../../../../../docs/dev/dependency-refresh-0.7.0/README.md)，不复用前述计数。
 
 ## 源码入口
 
 - Gupi：[历史投影](../../../src/state/history.rs)、[实时消息](../../../src/state/conversation/messages.rs)、[事件与回读](../../../src/state/conversation.rs)、[消息行](../../../src/features/home/messages.rs)、[过程投影](../../../src/features/home/messages/activity.rs)、[Markdown 增量呈现](../../../src/features/home/messages/markdown.rs)、[详情 Dialog](../../../src/features/home/messages/details.rs)、[消息列表与分支定位](../../../src/features/home.rs)、[现有统计呈现](../../../src/features/home/composer/metrics.rs)、[临时窗口键位](../../../src/features/temporary.rs)、[RPC 响应类型](../../../../../crates/pi-rpc/src/protocol.rs)。
 - Pi v0.87.1：[AgentSession / sendCustomMessage / getSessionStats](https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/src/core/agent-session.ts)、[SessionManager](https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/src/core/session-manager.ts)、[TUI 通用插件消息](https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/src/modes/interactive/components/custom-message.ts)。
-- 组件正式源码：[0.6.4 TextView](https://docs.rs/crate/gpui-base/0.6.4/source/src/text/text_view.rs)、[TextViewState](https://docs.rs/crate/gpui-base/0.6.4/source/src/text/state.rs)、[0.6.6 TextView](https://docs.rs/crate/gpui-base/0.6.6/source/src/text/text_view.rs)、[Markdown 扩展](https://docs.rs/crate/gpui-base/0.6.6/source/src/text/markdown_ext.rs)。
+- 组件正式源码：[0.7.0 TextView](https://docs.rs/crate/gpui-base/0.7.0/source/src/text/text_view.rs)、[TextViewState](https://docs.rs/crate/gpui-base/0.7.0/source/src/text/state.rs)、[Markdown 扩展](https://docs.rs/crate/gpui-base/0.7.0/source/src/text/markdown_ext.rs)。
 
-- 已确认的组件 API：[TextViewState 契约](https://github.com/longbridge/gpui-kit/blob/80230b652dbc573b5811f46258c36cd184887177/crates/base/src/text/state.rs#L572)、[RenderedText / RangeHighlight](https://github.com/longbridge/gpui-kit/blob/80230b652dbc573b5811f46258c36cd184887177/crates/base/src/text/range_highlight.rs)、[官方 Markdown 查找示例](https://github.com/longbridge/gpui-kit/blob/80230b652dbc573b5811f46258c36cd184887177/examples/markdown/src/main.rs#L1263)。
+- 已确认的组件 API：[TextViewState 契约](https://github.com/longbridge/gpui-kit/blob/v0.7.0/crates/base/src/text/state.rs)、[RenderedText / RangeHighlight](https://github.com/longbridge/gpui-kit/blob/v0.7.0/crates/base/src/text/range_highlight.rs)、[官方 Markdown 查找示例](https://github.com/longbridge/gpui-kit/blob/v0.7.0/examples/markdown/src/main.rs)。

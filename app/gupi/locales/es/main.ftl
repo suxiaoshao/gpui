@@ -635,3 +635,10 @@ conversation-session-info-assistant-messages = Mensajes del asistente
 conversation-session-info-tool-calls = Llamadas a herramientas
 conversation-session-info-tool-results = Resultados de herramientas
 conversation-session-info-total-messages = Mensajes totales
+
+conversation-find = Buscar en la conversación
+conversation-find-placeholder = Buscar en la conversación
+conversation-find-count = { $current } de { $total }
+conversation-find-previous = Coincidencia anterior (Mayús+Intro)
+conversation-find-next = Siguiente coincidencia (Intro)
+conversation-find-close = Cerrar búsqueda (Esc)

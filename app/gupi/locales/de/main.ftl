@@ -636,3 +636,10 @@ conversation-session-info-assistant-messages = Assistant-Nachrichten
 conversation-session-info-tool-calls = Tool-Aufrufe
 conversation-session-info-tool-results = Tool-Ergebnisse
 conversation-session-info-total-messages = Nachrichten insgesamt
+
+conversation-find = In Unterhaltung suchen
+conversation-find-placeholder = In Unterhaltung suchen
+conversation-find-count = { $current } von { $total }
+conversation-find-previous = Vorheriger Treffer (Umschalt+Enter)
+conversation-find-next = Nächster Treffer (Enter)
+conversation-find-close = Suche schließen (Esc)

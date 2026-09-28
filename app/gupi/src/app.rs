@@ -100,7 +100,7 @@ pub(crate) fn run() {
             }),
             ..TitleBar::window_options()
         };
-        match cx.open_window(options, |window, cx| {
+        match gpui_kit::open_window(options, cx, |window, cx| {
             window.on_window_should_close(cx, |window, cx| {
                 if cfg!(any(target_os = "macos", target_os = "windows")) {
                     match window.native_window_handle() {
@@ -118,18 +118,15 @@ pub(crate) fn run() {
                 }
                 false
             });
-            let view = cx.new(|cx| StartupView::new(instance, log_warning, window, cx));
-            let root = cx.new(|cx| Root::new(view.clone(), window, cx));
-            cx.set_global(MainWindow {
-                window: window
-                    .window_handle()
-                    .downcast::<Root>()
-                    .expect("root window"),
-                view,
-            });
-            root
+            cx.new(|cx| StartupView::new(instance, log_warning, window, cx))
         }) {
-            Ok(_) => cx.activate(true),
+            Ok((window, view)) => {
+                cx.set_global(MainWindow {
+                    window: window.downcast::<Root>().expect("root window"),
+                    view,
+                });
+                cx.activate(true);
+            }
             Err(error) => {
                 tracing::error!(%error, "open window failed");
                 cx.quit();

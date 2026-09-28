@@ -5,7 +5,7 @@ use crate::{
     foundation, state,
 };
 use gpui_kit::component::{
-    ActiveTheme, Root, StyledExt, TitleBar, h_flex,
+    ActiveTheme, StyledExt, TitleBar, h_flex,
     label::Label,
     resizable::{h_resizable, resizable_panel},
     v_flex,
@@ -169,9 +169,7 @@ impl Render for HomeView {
         let sidebar_width = self.layout_state.read(cx).sidebar_width();
         let layout_state = self.layout_state.clone();
         let route = self.workspace.read(cx).route().clone();
-        let sheet_layer = Root::render_sheet_layer(window, cx);
-        let dialog_layer = Root::render_dialog_layer(window, cx);
-        let notification_layer = Root::render_notification_layer(window, cx);
+
         window.set_window_title(&title);
 
         v_flex()
@@ -229,9 +227,6 @@ impl Render for HomeView {
                         ),
                 ),
             )
-            .children(sheet_layer)
-            .children(dialog_layer)
-            .children(notification_layer)
     }
 }
 

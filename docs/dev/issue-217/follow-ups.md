@@ -2,7 +2,7 @@
 
 GUI 附加限制的移除与预览同步见[职责边界收敛](gui-boundary.md)，该记录不增加输入框上游依赖之外的待办。
 
-归属：[#217](https://github.com/suxiaoshao/gpui/issues/217)。更新日期：2026-09-26。
+归属：[#217](https://github.com/suxiaoshao/gpui/issues/217)。更新日期：2026-09-28（组件依赖与本轮范围；Pi 协议仍按各节标明的核对日期）。
 
 本页集中查看各阶段留下的依赖阻塞、后续工作和未验证边界。详细设计、源码依据及验证仍归原文档；已有独立文件只链接，不在这里重写方案。表中的“待确定范围”不代表已经授权实现，“未验证”也不等于已发现缺陷。
 
@@ -10,34 +10,19 @@ GUI 附加限制的移除与预览同步见[职责边界收敛](gui-boundary.md)
 
 用户已确认 Jaco 停止维护，Gupi 合入后按 [#240](https://github.com/suxiaoshao/gpui/issues/240) 清理。专用源码、旧图标库/Lucide 子模块、MCP 测试工具、Quick Look 文件预览、OCR、CI、打包、依赖与文档的删除和调整范围统一见 [Jaco 退役与关联清理](../jaco-retirement/README.md)。Quick Look、OCR 随唯一应用消费者 Jaco 一起删除，不再暂留为通用能力；OCR 专用绑定生成链与无用依赖一并清理。当前不执行删除，不删除本机用户数据；其他共享能力的保留边界也由该文档记录。
 
-## 等待上游或依赖更新
+## 依赖接入与上游边界
 
-全项目版本盘点和官方 skill 替换方案见 [2026-09 依赖更新计划](../dependency-refresh-2026-09/README.md)。依赖基础升级与下方输入组件功能接入分别判断；升级版本本身不代表这些等待项已经完成。
+[GPUI Kit 0.7.0 升级与正文查找计划](../dependency-refresh-0.7.0/README.md)统筹当前批次。已核对 v0.7.0 正式发布包与 tag `0c830f4d`；高亮、定位、原子 Token 和 Questionnaire 均已发布。workspace 已升级到 0.7.0，正文查找已接入；原生验收发现长文定位的无障碍滚动问题，用户确认保持正式依赖并等待上游。原子 Token 和 Questionnaire 的应用接入仍归 #243。
 
 | 项目 | 当前边界与恢复条件 | 归属与详细记录 |
 | --- | --- | --- |
-| TextView 通用范围高亮与精确滚动 | [#3215](https://github.com/longbridge/gpui-kit/pull/3215) / [#3216](https://github.com/longbridge/gpui-kit/pull/3216) 的已合并 API 已核对：用 `rendered_text()` 的 UTF-8 范围做高亮和定位，应用负责搜索与导航。剩余前置是兼容正式包实际包含这些接口并完成依赖对齐；正文搜索据此继续接入，无须再等待接口设计。插件消息与会话信息弹窗已使用现有依赖实现；搜索依赖尚未升级或集成 | [#242 接入前提与方案](../../../app/gupi/docs/dev/issue-242/README.md#已确认的上游契约与接入前提) |
-| 设置搜索无结果反馈 | 已升级 v0.6.4，原过滤索引错位不再复现；macOS 实测跨页定位、无结果、清空恢复均对应正确分类。但无结果时正文仍为空白，缺少提示，后续检查上游空状态能力 | [#231 设置计划](../../../app/gupi/docs/dev/issue-231/README.md)、[本轮验证](../dependency-refresh-2026-09/README.md#最终验证与限制) |
-| 输入框组件与资源交互（部分等待） | 用户 2026-09-20 要求升级时复用上游能力：已发布的 InputGroup 外壳、on_paste 接线和 Markdown 流式呈现已完成接入，见[依赖更新计划](../dependency-refresh-2026-09/README.md#changelog-对照接入上游能力并删除重复实现)。Skill 选择后填入正文、Skill/模板标签、模板附带文件引用及可选 `@` 入口仍等待下表三项能力进入兼容正式版本；不提前使用 Git 依赖或自建编辑器 | [输入框接入计划](../../../app/gupi/docs/dev/issue-243/README.md) |
-| Questionnaire 与扩展 UI 完整体验 | Questionnaire 尚未正式发布，继续等待兼容正式版本。恢复后映射现有标准 select/confirm/input/editor，验证取消/超时、连续请求和来源会话；控件发布不代表 Pi 新增了多选/多题组合协议 | [#222 扩展 UI 与体验环境](../../../app/gupi/docs/dev/issue-222/README.md) |
+| TextView 范围高亮与滚动、正文查找 | 已实现匹配、导航、原位高亮和离屏定位；GPUI 0.3.7 列表二次 prepaint 没有回滚无障碍节点，长回答深处定位在无障碍激活时触发重复节点断言（发行版丢弃重复节点）。用户确认保持正式依赖，等待上游事务回滚修复；不关闭无障碍、不改应用侧 ID 掩盖问题。上游通用复现见 [gpui-kit #3295](https://github.com/longbridge/gpui-kit/issues/3295) | [#242 搜索方案](../../../app/gupi/docs/dev/issue-242/README.md)、[原生验收与上游边界](../dependency-refresh-0.7.0/README.md#原生验收发现长消息定位与无障碍树) |
+| Markdown 中文混排换行 | Gupi 已补 TextView 根宽度约束，解决长列表把正文撑出窗口；使用真实会话复测仍有带行内代码的中文行末裁切。0.7.0 以逐字宽度决定换行，macOS 整行排版实际可能更宽（808px 预算得到约 842px）。上游修复实现见 [gpui-kit #3293](https://github.com/longbridge/gpui-kit/pull/3293)，当前正式版本尚不包含，升级到包含该修复的正式版后复测 | [消息正文宽度与原生实测](../dependency-refresh-0.7.0/README.md#消息正文宽度) |
+| 输入框组件与资源交互 | InputGroup、on_paste 和 Markdown 流式呈现已接入；原子 Token 已在 0.7.0 发布。Skill/模板标签、选择后填入、文件引用与 Markdown 资源展示由独立 #243 实施，用户明确不并入本轮搜索与升级 | [#243 接入计划](../../../app/gupi/docs/dev/issue-243/README.md) |
+| Questionnaire 与扩展 UI 体验 | 组件已在 0.7.0 发布，应用接入单独留在 #243。发布不增加 Pi 多选/多题组合协议；标准 editor 的多行编辑也不能直接用 Questionnaire 的单行 Input 替代 | [#243](../../../app/gupi/docs/dev/issue-243/README.md)、[既有扩展 UI 测试环境](../../../app/gupi/docs/dev/issue-222/README.md) |
+| 设置搜索无结果反馈 | 当前过滤/恢复和分类定位已可用，空结果正文仍缺提示；0.7.0 的 Settings 仍返回空 div，没有新增空态入口。保留为设置体验待处理项，不因正文搜索接入声称一起解决，也不把它等同于过滤错误 | [#231 设置计划](../../../app/gupi/docs/dev/issue-231/README.md) |
 | 逐条队列编辑、删除与返回草稿 | Pi 标准 RPC 缺少队列条目 ID、单条修改/删除及完整附件快照；当前只支持整队清除/文字取回。等待正式协议，不维护第二套客户端队列；新 Harness 的内部能力不代表 RPC 已提供 | [#222 队列边界](../../../app/gupi/docs/dev/issue-222/queue-composer.md#逐条操作的可行性与实现边界) |
-| Pi RPC 其他能力缺口 | 插件参数/子命令补全、自定义快捷键、任意 TUI UI/渲染、组合问卷、输入回读、显示控制等受协议限制；同文件树节点续聊和进程内 reload 也缺直接 RPC。逐项依据、现有降级、社区方案及调查时点统一见原文；后续恢复时重新核对上游，不自动采用私有桥接或社区 fork。这些是协议边界，不等于全部已立项或均需补齐 | [RPC 能力缺口与社区调研](../../../app/gupi/docs/dev/pi-rpc-gaps.md)；[树导航边界](../../../app/gupi/docs/dev/issue-220/history.md)、[刷新重连](../../../app/gupi/docs/dev/issue-226/reconnect.md) |
-
-### 三项组件的统一恢复条件
-
-输入组件下表保留对 v0.6.6 正式包的核对结论。2026-09-26 已确认 #3215 / #3216 的高亮、定位契约；#242 不再等待 API 设计，转为正式包可用性与应用接入核实。这里没有将上游合并或“正式包已含接口”的执行前提写成依赖升级已完成；InputGroup 已接入，不再算独立等待项。
-
-2026-09-23 通过官方 PR 元数据、最新正式 release v0.6.6 和提交祖先关系重新核对（日期为 UTC）：
-
-| 能力 | 合并日期 | 最新正式版 v0.6.6 是否包含 |
-| --- | --- | --- |
-| [Questionnaire #2878](https://github.com/longbridge/gpui-kit/pull/2878) | 2026-09-19 | 否 |
-| [InputGroup #3042](https://github.com/longbridge/gpui-kit/pull/3042) | 2026-09-17 | 是 |
-| [Input / Textarea 原子内联标签 #3113](https://github.com/longbridge/gpui-kit/pull/3113) | 2026-09-18 | 否 |
-
-[正式版 v0.6.6](https://github.com/longbridge/gpui-kit/releases/tag/v0.6.6) 于 2026-09-21 发布。GitHub compare 核对：#3113 的 `7f6d9232`、#2878 的 `f698b4bc` 与该 tag 均为 diverged；#3042 的 `142e4016` 是其祖先。0.6.6 主要是 Label 遮罩下高亮和 gpui-pre 精确版本修复，没有解除标签/问卷等待条件。Gupi 当前仍锁定 0.6.4，InputGroup 外壳与粘贴接线已接入；本次没有升级 Cargo 依赖。正式版本条件满足后，还需确认 API/依赖兼容并完成 Gupi 接入与验证，不意味着下面的 Pi 协议缺口会随组件升级自动消失。
-
-同日直接复核源码：本地 `gpui-component` checkout 为 `f698b4bc`，确有 `InputToken` / `InlineToken` / `InputContent` 与 Questionnaire，但组件 manifest 仍标为 0.6.4，不能据工作目录内容推定正式包能力。另下载 crates.io 的 `gpui-component 0.6.6`、`gpui-base 0.6.6` 解包检查，两包 `.cargo_vcs_info.json` 均指向发布提交 `9765ae2c9a5eccfa13891248a445991e6f6a09d8`：组件有 InputGroup，没有 token 模块和 Questionnaire 导出；base 也没有 InlineToken / InputContent 及 Questionnaire 实现。因此“尚未发布”的结论有正式包源码支持，不仅依据提交祖先关系。
+| Pi RPC 其他能力缺口 | 插件参数/子命令补全、自定义快捷键、任意 TUI UI/渲染、组合问卷、输入回读、显示控制等受协议限制；同文件树节点续聊和进程内 reload 也缺直接 RPC。沿用原文核对时点，组件升级不改变这些结论；不是全部已立项 | [RPC 能力缺口](../../../app/gupi/docs/dev/pi-rpc-gaps.md)、[树导航](../../../app/gupi/docs/dev/issue-220/history.md)、[刷新重连](../../../app/gupi/docs/dev/issue-226/reconnect.md) |
 
 ## Pi RPC 全量接入盘点
 
@@ -55,7 +40,7 @@ GUI 附加限制的移除与预览同步见[职责边界收敛](gui-boundary.md)
 
 | RPC 命令 | Gupi 当前接入 | 未覆盖内容／处理判断 |
 | --- | --- | --- |
-| `prompt` | 直接调用；文字、图片及 `streamingBehavior` | Skill/模板的可视编辑与选择后填入正文等待组件版本；不是 RPC 不支持 |
+| `prompt` | 直接调用；文字、图片及 `streamingBehavior` | Skill/模板的可视编辑与选择后填入正文留在 #243；所需组件已发布，尚未接入，不是 RPC 不支持 |
 | `abort` | 直接调用；停止当前会话 | Pi 的 `abort()` 同时取消重试、压缩和分支摘要；不能把缺专用停止按钮算作完全不能停止 |
 | `get_state` | 直接调用；握手、模型与会话状态、排队数量 | `steeringMode`、`followUpMode`、`messageCount` 留在 extra 中，未提供配置/统计展示；自动压缩状态已有上下文 tooltip |
 | `get_commands` | 直接调用；插件命令、模板、Skill 候选 | 参数补全和插件键位不在返回值内，见 RPC 缺口；不返回 TUI 内置命令 |
@@ -135,7 +120,7 @@ GUI 附加限制的移除与预览同步见[职责边界收敛](gui-boundary.md)
 | 按模型图片处理 | AgentSession 已根据当前模型 inputLimits.images.resize 和 images.autoResize 归一化 RPC prompt 图片，之后才构建持久用户消息；CLI/read/工具图片也复用 Pi 的策略。Gupi 继续发送原始字节、保留原图预览，不复制这些限制。恢复历史中的图像可能已由 Pi 处理，不能承诺一定等于导入原图。 |
 | TUI `/bug` | 内置命令从 23 增至 24，没有对应 RPC。诊断上传/本地 ZIP 导出属于独立产品与数据范围，不自动给 Gupi 增加上报功能。 |
 
-当前继续推进 #242 会话阅读；高亮/定位 API 已明确，兼容正式包包含接口后即可按开发计划接入。输入资源标签/Questionnaire 仍按对应正式组件条件推进，逐条队列等待 Pi 正式 RPC。通知功能已实现；[#223 原生体验与发行验收](https://github.com/suxiaoshao/gpui/issues/223) 保留其自身范围，不因历史未验证记录自动扩大。
+当前按 [0.7.0 升级计划](../dependency-refresh-0.7.0/README.md)推进 #242 剩余正文查找；高亮/定位已正式发布。输入资源标签/Questionnaire 也已发布，应用接入仍归独立 #243，不并入本轮；逐条队列继续等待 Pi 正式 RPC。通知功能已实现；[#223 原生体验与发行验收](https://github.com/suxiaoshao/gpui/issues/223) 保留其自身范围，不因历史未验证记录自动扩大。
 
 ## Pi TUI 有、原生 RPC 没有直接提供的能力
 
@@ -180,7 +165,7 @@ GUI 附加限制的移除与预览同步见[职责边界收敛](gui-boundary.md)
 | [#223](https://github.com/suxiaoshao/gpui/issues/223) | 原生体验、打包验收、正式图标和 Welcome / 首次启动引导 | 当前主 Issue；复用现有设置并预填，必填/可跳过项在实施时确定 |
 | [#241](https://github.com/suxiaoshao/gpui/issues/241) | 错误、插件提示、完成及待用户操作的应用内/系统提醒 | 统一投递与计数已接入，原生验收边界见[通知设计](../../../app/gupi/docs/dev/issue-241/README.md) |
 | [#242](https://github.com/suxiaoshao/gpui/issues/242) | display:true 插件持久消息正文、会话信息弹窗、当前分支正文查找 | 主 Issue；[开发计划](../../../app/gupi/docs/dev/issue-242/README.md) 中插件消息与信息弹窗已实现并通过受影响回归；剩余正文查找按 #3215 / #3216 契约接入兼容正式包，无新增产品待确定项，不扩为跨会话索引 |
-| [#243](https://github.com/suxiaoshao/gpui/issues/243) | 原子资源标签、Skill/模板输入、Markdown 资源展示、Questionnaire | 主 Issue；[资源接入计划](../../../app/gupi/docs/dev/issue-243/README.md)，输入原子标签/问卷等待正式组件；Markdown 内联插件已在正式包提供 |
+| [#243](https://github.com/suxiaoshao/gpui/issues/243) | 原子资源标签、Skill/模板输入、Markdown 资源展示、Questionnaire | 主 Issue；[资源接入计划](../../../app/gupi/docs/dev/issue-243/README.md)，组件正式发布条件已满足，应用接入另行实施 |
 | [#240](https://github.com/suxiaoshao/gpui/issues/240) | Jaco 与关联源码、资源、CI、打包、依赖和文档清理 | 独立后续任务，Gupi 合入后执行；[统一清单](../jaco-retirement/README.md)，不删除用户数据 |
 | [#244](https://github.com/suxiaoshao/gpui/issues/244) | Pi 配置图形化与项目级覆盖 | 独立后续任务，不属于 #217 子 Issue；不另存 Gupi 同义配置 |
 | [#245](https://github.com/suxiaoshao/gpui/issues/245) | 包市场、搜索/详情与资源发现 | 独立后续任务，不属于 #217 子 Issue；各类资源共用市场和已有安装器 |

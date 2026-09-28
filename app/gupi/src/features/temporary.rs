@@ -13,7 +13,7 @@ use crate::{
 };
 use gpui_kit::{
     component::{
-        ActiveTheme, Disableable, Icon, IndexPath, Root, Selectable, Sizable, WindowExt as _,
+        ActiveTheme, Disableable, Icon, IndexPath, Selectable, Sizable, WindowExt as _,
         button::{Button, ButtonVariants},
         h_flex,
         input::{self, Input, InputEvent, InputState, MoveDown, MoveUp},
@@ -29,10 +29,9 @@ use gpui_kit::{
 
 use gpui_kit::prelude::FluentBuilder as _;
 
-actions!(gupi_temporary, [FocusSearch, ToggleInputFocus]);
+actions!(gupi_temporary, [ToggleInputFocus]);
 pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("secondary-f", FocusSearch, Some("GupiTemporary")),
         KeyBinding::new("tab", ToggleInputFocus, Some("GupiTemporary")),
         KeyBinding::new("tab", ToggleInputFocus, Some("GupiTemporary > Input")),
     ]);
@@ -289,6 +288,7 @@ impl TemporaryView {
                     | Kind::FocusInput
                     | Kind::Model
                     | Kind::SessionInfo
+                    | Kind::Find
             ) {
                 self.close_actions(window, cx);
             } else {
@@ -497,13 +497,6 @@ impl Render for TemporaryView {
                     });
                 }),
             )
-            .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
-                if window.has_active_dialog(cx) || this.home.read(cx).has_image_preview(cx) {
-                    cx.propagate();
-                } else {
-                    this.focus_search(window, cx);
-                }
-            }))
             .on_action(cx.listener(Self::toggle_focus))
             .on_action(
                 cx.listener(|this, _: &MoveUp, window, cx| this.move_selection(-1, window, cx)),
@@ -523,15 +516,6 @@ impl Render for TemporaryView {
                             .bordered(false)
                             .focus_bordered(false)
                             .prefix(Icon::new(IconName::Search))
-                            .suffix(
-                                Kbd::binding_for_action(
-                                    &FocusSearch,
-                                    Some("GupiTemporary"),
-                                    window,
-                                )
-                                .map(IntoElement::into_any_element)
-                                .unwrap_or_else(|| div().into_any_element()),
-                            )
                             .cleanable(true)
                             .p_0(),
                     ),
@@ -576,8 +560,6 @@ impl Render for TemporaryView {
                     .child(self.render_primary(window, cx))
                     .child(self.render_actions(window, cx)),
             )
-            .children(Root::render_dialog_layer(window, cx))
-            .children(Root::render_notification_layer(window, cx))
     }
 }
 #[derive(Clone, PartialEq, Eq)]

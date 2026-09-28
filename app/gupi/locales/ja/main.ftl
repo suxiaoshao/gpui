@@ -629,3 +629,10 @@ conversation-session-info-total-messages = メッセージ合計
 setup-appearance-options = テーマとアイコンを選択
 setup-pi-install-guide = Pi をインストール
 setup-pi-model-guide = モデルに接続
+
+conversation-find = 会話内を検索
+conversation-find-placeholder = 会話内を検索
+conversation-find-count = { $current } / { $total }
+conversation-find-previous = 前の一致（Shift+Enter）
+conversation-find-next = 次の一致（Enter）
+conversation-find-close = 検索を閉じる（Esc）

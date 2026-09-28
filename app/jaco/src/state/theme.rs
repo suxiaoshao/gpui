@@ -114,7 +114,6 @@ impl ThemeRuntime {
         };
         app_theme::apply_theme_config(&config, cx);
         self.resolved = Some(key);
-        cx.refresh_windows();
     }
 }
 

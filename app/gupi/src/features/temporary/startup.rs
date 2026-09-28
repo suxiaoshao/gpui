@@ -11,7 +11,7 @@ use crate::{
     state::config::ConfigContents,
 };
 use gpui_kit::{
-    component::{ActiveTheme, Root, button::Button, h_flex, spinner::Spinner, v_flex},
+    component::{ActiveTheme, button::Button, h_flex, spinner::Spinner, v_flex},
     *,
 };
 
@@ -144,7 +144,6 @@ impl Render for TemporaryStartup {
             .text_color(cx.theme().foreground)
             .child(body)
             .child(actions)
-            .children(Root::render_notification_layer(window, cx))
             .into_any_element()
     }
 }

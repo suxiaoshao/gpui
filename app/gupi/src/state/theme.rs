@@ -90,7 +90,6 @@ fn apply_with(config: &AppConfig, window: &mut Window, force: bool, cx: &mut App
         &[],
     );
     app_theme::apply_theme_config(&theme, cx);
-    cx.refresh_windows();
 }
 
 #[cfg(test)]

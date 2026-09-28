@@ -173,11 +173,11 @@ mod tests {
         rc::Rc,
     };
 
+    use gpui_kit::VisualTestContext;
     use gpui_kit::component::{Root, WindowExt};
     use gpui_kit::{
         AppContext as _, ClickEvent, IntoElement, Render, TestAppContext, Window, WindowHandle, div,
     };
-    use gpui_kit::{ParentElement as _, VisualTestContext};
     use tokio::sync::oneshot;
 
     use super::open_async_destructive_confirm_dialog;
@@ -200,10 +200,10 @@ mod tests {
     impl Render for DialogTestView {
         fn render(
             &mut self,
-            window: &mut Window,
-            cx: &mut gpui_kit::Context<Self>,
+            _window: &mut Window,
+            _cx: &mut gpui_kit::Context<Self>,
         ) -> impl IntoElement {
-            div().children(Root::render_dialog_layer(window, cx))
+            div()
         }
     }
 

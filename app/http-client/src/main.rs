@@ -1,7 +1,6 @@
 use errors::HttpClientResult;
 use features::RequestView;
 use foundation::I18n;
-use gpui_kit::component::Root;
 use gpui_kit::*;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
@@ -80,7 +79,7 @@ fn main() -> HttpClientResult<()> {
     app.run(|cx: &mut App| {
         init(cx);
         let title = cx.global::<I18n>().t("app-title");
-        if let Err(err) = cx.open_window(
+        if let Err(err) = gpui_kit::open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
                     title: Some(title.into()),
@@ -89,10 +88,8 @@ fn main() -> HttpClientResult<()> {
                 window_background: WindowBackgroundAppearance::Blurred,
                 ..Default::default()
             },
-            |window, cx| {
-                let view = cx.new(|cx| RequestView::new(window, cx));
-                cx.new(|cx| Root::new(view, window, cx))
-            },
+            cx,
+            |window, cx| cx.new(|cx| RequestView::new(window, cx)),
         ) {
             event!(Level::ERROR, "{}", err)
         };

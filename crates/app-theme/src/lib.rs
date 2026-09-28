@@ -209,10 +209,9 @@ pub fn resolve_theme_config(
 }
 
 /// Applies a theme and synchronizes Base renderers, including resize handles,
-/// scrollbars and rich-text defaults. Callers decide when to refresh windows.
+/// scrollbars and rich-text defaults, and refreshes affected windows.
 pub fn apply_theme_config(config: &Rc<ThemeConfig>, cx: &mut App) {
-    Theme::global_mut(cx).apply_config(config);
-    Theme::sync_base(cx);
+    Theme::update(cx, |theme| theme.apply_config(config));
 }
 
 pub fn preview_theme(config: &Rc<ThemeConfig>) -> Theme {

@@ -14,7 +14,7 @@ mod actions;
 mod activity;
 mod details;
 mod images;
-mod markdown;
+pub(super) mod markdown;
 pub(super) mod metadata;
 mod plugin;
 mod presentation;
@@ -31,6 +31,64 @@ pub(super) struct ChatRow {
     kind: RowKind,
 }
 impl ChatRow {
+    /// Search the same user text and eligible assistant units that the row renders.
+    pub(super) fn find_sources(&self) -> Vec<super::find::Source> {
+        if let RowKind::User(message) = &self.kind {
+            let text = message.text();
+            return if text.trim().is_empty() {
+                vec![]
+            } else {
+                vec![super::find::Source {
+                    id: format!("text-{}", message.id),
+                    row: self.id.clone(),
+                    text,
+                    process: None,
+                }]
+            };
+        }
+        let RowKind::Run {
+            messages, active, ..
+        } = &self.kind
+        else {
+            return vec![];
+        };
+        let content = RunContent::project(messages, &[], *active);
+        let mut sources = vec![];
+        for section in &content.sections {
+            match section {
+                RunSection::Process(range) if !content.final_started => {
+                    for activity in &content.activities[range.clone()] {
+                        if let Activity::Text {
+                            id,
+                            text,
+                            thinking: false,
+                            ..
+                        } = activity
+                        {
+                            sources.push(super::find::Source {
+                                id: id.clone(),
+                                row: self.id.clone(),
+                                text: text.clone(),
+                                process: Some(content.process_id(&self.id, range)),
+                            });
+                        }
+                    }
+                }
+                RunSection::Answer => {
+                    let message = &messages[content.answer.expect("answer section")];
+                    sources.push(super::find::Source {
+                        id: format!("text-{}", message.id),
+                        row: self.id.clone(),
+                        text: content.answer_text.clone(),
+                        process: None,
+                    });
+                }
+                _ => {}
+            }
+        }
+        sources
+    }
+
     pub(super) fn active(&self) -> bool {
         matches!(self.kind, RowKind::Run { active: true, .. })
     }
@@ -206,6 +264,7 @@ impl HomeView {
             format!("{key}-{id}"),
             text,
             self.views[key].scroller.downgrade(),
+            self.views[key].markdown.clone(),
         )
         .row(row.to_owned(), self.views[key].row_positions.clone())
     }
@@ -596,7 +655,7 @@ impl HomeView {
 
 #[cfg(test)]
 mod tests {
-    use super::{RowKind, RunContent, project_rows};
+    use super::{ChatRow, RowKind, RunContent, project_rows};
     use crate::state::history::DisplayMessage;
     use std::collections::{HashMap, HashSet};
     #[test]
@@ -758,6 +817,83 @@ mod tests {
             final_answer_part: None,
             completed_at: None,
         }
+    }
+    #[test]
+    fn find_includes_users_and_selects_eligible_assistant_prose_in_the_current_projection() {
+        let mut process = message("process", "assistant");
+        process.value["content"] = serde_json::json!([
+            {"type":"thinking","thinking":"private thought"},
+            {"type":"text","text":"first explanation"},
+            {"type":"toolCall","id":"call","name":"read","arguments":{}}
+        ]);
+        process.value["stopReason"] = "toolUse".into();
+        let mut answer = message("answer", "assistant");
+        answer.value["content"] = serde_json::json!([{"type":"text","text":"pending answer"}]);
+        answer.value["stopReason"] = "pending".into();
+        let rows_for = |answer: DisplayMessage| {
+            project_rows(
+                vec![
+                    message("user", "user"),
+                    process.clone(),
+                    message("plugin", "custom"),
+                    answer,
+                ],
+                None,
+            )
+        };
+        let rows = rows_for(answer.clone());
+        assert_eq!(rows[0].find_sources()[0].text, "user");
+        let sources = rows[1].find_sources();
+        assert_eq!(
+            sources.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(),
+            ["first explanation", "pending answer"]
+        );
+        assert!(sources[0].process.is_some());
+        assert!(sources[1].process.is_none());
+        answer.value["stopReason"] = "stop".into();
+        let rows = rows_for(answer.clone());
+        assert_eq!(
+            rows.iter()
+                .flat_map(ChatRow::find_sources)
+                .map(|source| source.text)
+                .collect::<Vec<_>>(),
+            ["user", "pending answer"]
+        );
+        assert_eq!(rows[1].find_sources().len(), 1);
+        assert_eq!(rows[1].find_sources()[0].text, "pending answer");
+        answer.value["stopReason"] = "aborted".into();
+        assert_eq!(rows_for(answer)[1].find_sources().len(), 2);
+        let other_branch = project_rows(
+            vec![
+                message("other-user", "user"),
+                message("branch-answer", "assistant"),
+            ],
+            None,
+        );
+        assert_eq!(other_branch[1].find_sources()[0].text, "branch-answer");
+    }
+    #[test]
+    fn find_user_messages_share_the_rendered_text_identity_and_exclude_images() {
+        let mut user = message("mixed", "user");
+        user.value["content"] = serde_json::json!([
+            {"type":"text", "text":"用户 **问题**"},
+            {"type":"image", "mimeType":"image/png", "data":"image-only-needle"},
+            {"type":"text", "text":"后续文字"}
+        ]);
+        let rows = project_rows(vec![user.clone()], None);
+        let sources = rows[0].find_sources();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id, "text-mixed");
+        assert_eq!(sources[0].row, rows[0].id);
+        assert_eq!(sources[0].text, user.text());
+        assert!(!sources[0].text.contains("image-only-needle"));
+        assert!(sources[0].process.is_none());
+
+        user.value["content"] = serde_json::json!([
+            {"type":"image", "mimeType":"image/png", "data":"image-only-needle"},
+            {"type":"text", "text":" \n "}
+        ]);
+        assert!(project_rows(vec![user], None)[0].find_sources().is_empty());
     }
     #[test]
     fn locating_custom_keeps_process_closed_and_other_entries_open_all_segments() {

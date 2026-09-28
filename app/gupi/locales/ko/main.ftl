@@ -629,3 +629,10 @@ conversation-session-info-total-messages = 총 메시지
 setup-appearance-options = 테마와 아이콘 선택
 setup-pi-install-guide = Pi 설치
 setup-pi-model-guide = 모델 연결
+
+conversation-find = 대화 내용 찾기
+conversation-find-placeholder = 대화 내용 찾기
+conversation-find-count = { $current } / { $total }
+conversation-find-previous = 이전 일치 항목 (Shift+Enter)
+conversation-find-next = 다음 일치 항목 (Enter)
+conversation-find-close = 찾기 닫기 (Esc)

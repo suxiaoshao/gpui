@@ -636,3 +636,10 @@ conversation-session-info-assistant-messages = 助手消息
 conversation-session-info-tool-calls = 工具调用
 conversation-session-info-tool-results = 工具结果
 conversation-session-info-total-messages = 消息总数
+
+conversation-find = 查找会话正文
+conversation-find-placeholder = 查找会话正文
+conversation-find-count = { $current } / { $total }
+conversation-find-previous = 上一处（Shift+Enter）
+conversation-find-next = 下一处（Enter）
+conversation-find-close = 关闭查找（Esc）

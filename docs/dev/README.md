@@ -6,6 +6,8 @@
 
 ## Dependency upgrade plans
 
+- [GPUI Kit 0.7.0、依赖更新与正文查找](dependency-refresh-0.7.0/README.md)：本批次版本目标、兼容迁移、上游替代、完整直接依赖盘点及 #242 搜索接入；Token/Questionnaire 留给 #243。
+
 - [2026-09：Workspace 依赖更新与官方 skill 接入](dependency-refresh-2026-09/README.md)：全项目依赖版本盘点、GPUI 配套升级、官方 skill 安装及旧资料镜像替换。
 - [Issue #215：GPUI Kit 与依赖升级](issue-215/README.md)：发布包替代 Git 来源、应用与共享 crate 迁移、skill/文档同步的实施计划。
 

@@ -463,7 +463,8 @@ impl Render for HistoryCanvas {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let draw = cx.entity();
         let paint = draw.clone();
-        let toolbar = h_flex()
+        let toolbar = gpui_kit::component::toolbar::Toolbar::new("history-canvas-toolbar")
+            .xsmall()
             .px_1()
             .py_1()
             .gap_1()
@@ -473,16 +474,14 @@ impl Render for HistoryCanvas {
             .bg(cx.theme().background)
             .child(
                 Button::new("canvas-zoom-out")
-                    .ghost()
-                    .xsmall()
                     .icon(IconName::ZoomOut)
                     .tooltip(t(cx, "history-canvas-zoom-out"))
                     .accessibility_label(t(cx, "history-canvas-zoom-out"))
                     .on_click(cx.listener(|this, _, _, cx| this.zoom(1. / 1.2, this.center(), cx))),
             )
-            .child(
+            .content(
                 div()
-                    .min_w(px(36.))
+                    .min_w_8()
                     .text_xs()
                     .text_center()
                     .text_color(cx.theme().muted_foreground)
@@ -490,18 +489,18 @@ impl Render for HistoryCanvas {
             )
             .child(
                 Button::new("canvas-zoom-in")
-                    .ghost()
-                    .xsmall()
                     .icon(IconName::ZoomIn)
                     .tooltip(t(cx, "history-canvas-zoom-in"))
                     .accessibility_label(t(cx, "history-canvas-zoom-in"))
                     .on_click(cx.listener(|this, _, _, cx| this.zoom(1.2, this.center(), cx))),
             )
-            .child(div().w(px(1.)).h_4().mx_1().bg(cx.theme().border))
+            .content(
+                gpui_kit::component::separator::Separator::vertical()
+                    .h_4()
+                    .mx_1(),
+            )
             .child(
                 Button::new("canvas-fit")
-                    .ghost()
-                    .xsmall()
                     .icon(IconName::Scan)
                     .tooltip(t(cx, "history-canvas-fit"))
                     .accessibility_label(t(cx, "history-canvas-fit"))
@@ -509,8 +508,6 @@ impl Render for HistoryCanvas {
             )
             .child(
                 Button::new("canvas-current")
-                    .ghost()
-                    .xsmall()
                     .icon(IconName::LocateFixed)
                     .tooltip(t(cx, "history-canvas-current"))
                     .accessibility_label(t(cx, "history-canvas-current"))

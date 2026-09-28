@@ -20,7 +20,7 @@ use crate::{
     state,
 };
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IndexPath, Root, Sizable, WindowExt as _,
+    ActiveTheme, Disableable, Icon, IndexPath, Sizable, WindowExt as _,
     button::Button,
     h_flex,
     input::{Enter, Input, InputEvent, InputState, MoveDown, MoveUp},
@@ -875,9 +875,7 @@ impl Focusable for TemporaryWindow {
 impl Render for TemporaryWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = cx.global::<I18n>().t("temporary-window-title");
-        let sheet_layer = Root::render_sheet_layer(window, cx);
-        let dialog_layer = Root::render_dialog_layer(window, cx);
-        let notification_layer = Root::render_notification_layer(window, cx);
+
         window.set_window_title(&title);
 
         let content = v_flex()
@@ -925,10 +923,7 @@ impl Render for TemporaryWindow {
                             ),
                         ),
                 ),
-            )
-            .children(sheet_layer)
-            .children(dialog_layer)
-            .children(notification_layer);
+            );
         if crate::database::is_ready(cx) {
             content.into_any_element()
         } else {

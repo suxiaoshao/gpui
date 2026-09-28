@@ -35,6 +35,7 @@ pub(crate) enum Kind {
     CopyPath,
     Delete,
     SessionInfo,
+    Find,
 }
 impl Kind {
     pub(crate) fn temporary_only(self) -> bool {
@@ -80,6 +81,7 @@ impl Kind {
             Self::Reveal => "reveal locate file",
             Self::CopyPath => "copy path",
             Self::Delete => "delete trash",
+            Self::Find => "find search text 查找 正文",
             Self::SessionInfo => "session information info details 会话信息",
         }
     }
@@ -142,7 +144,7 @@ impl HomeView {
                 .as_ref()
                 .is_some_and(|key| state.can_clone(key, cx)),
             Kind::CopyLastAnswer => s.and_then(|s| s.last_assistant_text()).is_some(),
-            Kind::SessionInfo => s.is_some(),
+            Kind::SessionInfo | Kind::Find => s.is_some(),
             Kind::Compact => state
                 .selected
                 .as_ref()
@@ -178,6 +180,14 @@ impl HomeView {
             cx.propagate();
             return;
         }
+        if action.0 == Kind::Stop
+            && self.find.is_some()
+            && !window.has_active_dialog(cx)
+            && !self.has_image_preview(cx)
+        {
+            self.close_find(true, window, cx);
+            return;
+        }
         if self.has_image_preview(cx) {
             return;
         }
@@ -199,6 +209,7 @@ impl HomeView {
         }
         let key = self.state.read(cx).selected.clone();
         match action.0 {
+            Kind::Find => self.open_find(window, cx),
             Kind::New => self.new_conversation(window, cx),
             Kind::Settings => window.dispatch_action(Box::new(menus::ShowSettings), cx),
             Kind::ShowMain => window.dispatch_action(Box::new(menus::ShowMainWindow), cx),

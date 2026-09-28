@@ -2,7 +2,7 @@
 
 ## 状态与目标
 
-2026-09-23 复核：GPUI Kit 最新正式版为 0.6.6，项目仍锁定已接入的 0.6.4；本次未升级依赖。0.6.6 仍未包含原子内联 Token 和 Questionnaire，发布祖先关系与当前恢复条件见[统一待处理文档](../issue-217/follow-ups.md#三项组件的统一恢复条件)。下文版本盘点和 changelog 调研保留各自标注日期的基线。
+本页记录升级到 GPUI Kit 0.6.4 的已实施批次，下文版本盘点和 changelog 保留各自标注日期的基线。2026-09-28 起的新批次见 [0.7.0 升级与正文查找](../dependency-refresh-0.7.0/README.md)；Token / Questionnaire 已正式发布，其应用接入仍归 #243。当前范围与依赖边界以[统一待处理文档](../issue-217/follow-ups.md#依赖接入与上游边界)为准，不沿用本页历史等待条件。
 
 - 状态：Implemented；图标、普通依赖更新、官方 skills 迁移及 InputGroup / on_paste / Markdown stream_fade 已实施，macOS 构建、回归与重点界面检查完成。GPUI 配套版本为 0.6.4 / 0.3.5。验证边界见末尾。
 - 版本盘点日期：2026-09-19；changelog 与接入范围复核：2026-09-20。基线：主 Issue 分支合并提交 `d7c16081`，当前工作分支 `codex/222-gupi-queue-interaction`。
