@@ -26,6 +26,7 @@ use catalog::{CatalogState, Message as CatalogMessage, ScanWork, Update as Catal
 use command::SessionCommand;
 use content::Transcript;
 use execution::{RunState, ToolExecution};
+use gpui_kit::component::input::InputContent;
 use gpui_kit::*;
 use gpui_operation::Transition;
 use loading::{CoreRead, ModelChange, ReadScope, ReadState};
@@ -45,9 +46,31 @@ use std::{
 
 pub(crate) struct PendingUi {
     pub request: protocol::ExtensionRequest,
+    pub selection: Option<Entity<gpui_kit::component::questionnaire::QuestionnaireState>>,
     pub text: String,
     pub deadline: Option<Instant>,
 }
+
+fn pending_selection(
+    method: &UiMethod,
+    cx: &mut App,
+) -> Option<Entity<gpui_kit::component::questionnaire::QuestionnaireState>> {
+    use gpui_kit::component::questionnaire::{
+        QuestionnaireChoiceDefinition, QuestionnaireItemDefinition, QuestionnaireState,
+    };
+    let UiMethod::Select { title, options, .. } = method else {
+        return None;
+    };
+    let item = QuestionnaireItemDefinition::new("answer", title.clone())
+        .with_required(true)
+        .with_choices(options.iter().enumerate().map(|(ix, option)| {
+            QuestionnaireChoiceDefinition::new(ix.to_string(), option.clone())
+        }));
+    Some(cx.new(|cx| {
+        QuestionnaireState::new(vec![item], cx).expect("unique request option identities")
+    }))
+}
+
 #[derive(Clone, PartialEq)]
 pub(crate) struct Widget {
     pub lines: Vec<String>,
@@ -84,7 +107,7 @@ enum Submission {
 }
 pub(crate) struct Session {
     pub info: SessionInfo,
-    pub draft: String,
+    pub draft: InputContent,
     pub preparing: bool,
     pub attachments: Vec<crate::foundation::attachments::Attachment>,
     pub attachments_read: Option<Task<()>>,
@@ -142,7 +165,7 @@ impl Session {
         };
         Self {
             info,
-            draft,
+            draft: draft.into(),
             preparing: false,
             attachments: Vec::new(),
             attachments_read: None,
@@ -259,7 +282,7 @@ impl Session {
         }
     }
     pub fn composer_empty(&self) -> bool {
-        self.draft.trim().is_empty()
+        self.draft.text().trim().is_empty()
             && self.attachments.is_empty()
             && self.attachments_read.is_none()
     }
@@ -1319,7 +1342,7 @@ impl ConversationState {
         {
             s.content_revision += 1;
         }
-        if !s.draft.is_empty() && old_identity != (s.info.id.clone(), s.info.path.clone()) {
+        if !s.draft.text().is_empty() && old_identity != (s.info.id.clone(), s.info.path.clone()) {
             self.save_changes(cx);
         }
         if scope == ReadScope::Full {
@@ -1335,6 +1358,9 @@ impl ConversationState {
         }
     }
     pub fn set_draft(&mut self, key: &str, text: String, cx: &mut Context<Self>) {
+        self.set_draft_content(key, text.into(), cx);
+    }
+    pub fn set_draft_content(&mut self, key: &str, text: InputContent, cx: &mut Context<Self>) {
         if let Some(s) = self.sessions.get_mut(key)
             && !s.submitting()
             && s.draft != text
@@ -1365,7 +1391,7 @@ impl ConversationState {
         let Some(s) = self.sessions.get(key) else {
             return;
         };
-        let text = s.draft.clone();
+        let text = s.draft.text().to_string();
         let revision = s.draft_revision;
         self.submit_text(key, text, Some(revision), mode, cx);
     }
@@ -1377,7 +1403,7 @@ impl ConversationState {
         let s = self.sessions.get(key)?;
         self.submit_text(
             key,
-            s.draft.clone(),
+            s.draft.text().to_string(),
             Some(s.draft_revision),
             StreamingBehavior::Steer,
             cx,
@@ -1416,20 +1442,33 @@ impl ConversationState {
         let binding = s.binding;
         s.interrupted = false;
         let key = key.to_owned();
-        let mut prompt = Prompt::new(text);
-        for attachment in &attachments {
-            match &attachment.content {
-                crate::foundation::attachments::Content::File { path, .. } => {
-                    if !prompt.message.is_empty() {
-                        prompt.message.push('\n');
-                    }
-                    prompt.message.push('@');
-                    prompt.message.push_str(&path.to_string_lossy());
-                }
-                crate::foundation::attachments::Content::Image { .. } => {}
-            }
-        }
         let used_template = revision.is_some() && s.pending_template.is_some();
+        let command = s
+            .commands
+            .data()
+            .filter(|_| !used_template)
+            .and_then(|commands| crate::foundation::composer_resources::command(&text, commands))
+            .cloned();
+        let template_files = command
+            .as_ref()
+            .filter(|command| {
+                command.source == "prompt"
+                    && revision.is_some()
+                    && s.draft.tokens().iter().any(|span| {
+                        crate::foundation::composer_resources::file_path(span.token()).is_some()
+                    })
+            })
+            .map(|command| {
+                (
+                    command
+                        .source_info
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .map(PathBuf::from),
+                    crate::foundation::composer_resources::file_positions(&s.draft),
+                )
+            });
+        let mut prompt = Prompt::new(text);
         if used_template {
             let template = s.pending_template.as_ref().unwrap();
             prompt.message =
@@ -1438,7 +1477,41 @@ impl ConversationState {
         notify_session(&key, cx);
         let attachment_ids: Vec<_> = attachments.iter().map(|a| a.id.clone()).collect();
         prompt.streaming_behavior = Some(mode);
+        let template_unreadable = crate::foundation::i18n::t(cx, "resource-template-unreadable");
+        let template_unused = crate::foundation::i18n::t(cx, "resource-template-unused-files");
+        let template_quotes = crate::foundation::i18n::t(cx, "resource-template-unclosed-quote");
         let task = cx.spawn(async move |owner, cx| {
+            if let Some((path, positions)) = template_files {
+                let validation = smol::unblock(move || {
+                    let positions = positions.ok_or(template_quotes)?;
+                    let body = path
+                        .and_then(|path| std::fs::read_to_string(path).ok())
+                        .ok_or(template_unreadable)?;
+                    if crate::foundation::composer_resources::accepts_files(&body, positions) {
+                        Ok(())
+                    } else {
+                        Err(template_unused)
+                    }
+                })
+                .await;
+                if let Err(message) = validation {
+                    let _ = owner.update(cx, |this, cx| {
+                        if let Some(s) = this
+                            .sessions
+                            .get_mut(&key)
+                            .filter(|s| s.binding == binding && s.submitting())
+                        {
+                            s.finish_submission(false);
+                            notify_controls(&key, cx);
+                            cx.emit(ConversationEvent::Notify {
+                                message,
+                                error: true,
+                            });
+                        }
+                    });
+                    return;
+                }
+            }
             let prepared = smol::unblock(move || {
                 for attachment in &attachments {
                     if let crate::foundation::attachments::Content::Image { image } =
@@ -1489,8 +1562,8 @@ impl ConversationState {
                         s.attachments.retain(|a| !attachment_ids.contains(&a.id));
                         // Extension editor updates belong to the next submission.
                         if revision == Some(s.draft_revision) {
-                            draft_changed = !s.draft.is_empty();
-                            s.draft.clear();
+                            draft_changed = !s.draft.text().is_empty();
+                            s.draft = "".into();
                             s.draft_revision += 1;
                         }
                     }
@@ -1673,7 +1746,7 @@ impl ConversationState {
                         let new_key = this.selected.clone().unwrap();
                         let session = this.sessions.get_mut(&new_key).unwrap();
                         session.info.parent_session = Some(origin);
-                        session.draft = fork.text;
+                        session.draft = fork.text.into();
                         session.transcript = Transcript::Unloaded;
                         session.pending_ui = pending_ui;
                         session.statuses = statuses;
@@ -1681,7 +1754,7 @@ impl ConversationState {
                         session.extension_title = extension_title;
                         session.instance = instance;
                         session.binding = binding + 1;
-                        if !session.draft.is_empty() {
+                        if !session.draft.text().is_empty() {
                             this.save_changes(cx);
                         }
                         this.refresh(&new_key, cx);
@@ -1973,6 +2046,7 @@ impl ConversationState {
                     let timeout = *timeout;
                     s.pending_ui.push_back(PendingUi {
                         request: request.clone(),
+                        selection: pending_selection(&request.method, cx),
                         text: String::new(),
                         deadline: timeout.map(|ms| Instant::now() + Duration::from_millis(ms)),
                     });
@@ -2008,15 +2082,16 @@ impl ConversationState {
                     notice = Some(super::notifications::Kind::Waiting(request.id.clone()));
                     s.pending_ui.push_back(PendingUi {
                         request: request.clone(),
+                        selection: pending_selection(&request.method, cx),
                         text: prefill.clone().unwrap_or_default(),
                         deadline: None,
                     });
                 }
                 UiMethod::SetEditorText { text } => {
-                    if s.draft == *text {
+                    if s.draft == InputContent::new(text) {
                         return;
                     }
-                    s.draft = text.clone();
+                    s.draft = text.clone().into();
                     s.draft_revision += 1;
                 }
                 UiMethod::SetTitle { title } => {
@@ -2133,13 +2208,13 @@ impl ConversationState {
             drafts: self
                 .sessions
                 .iter()
-                .filter(|(_, s)| !s.draft.is_empty())
+                .filter(|(_, s)| !s.draft.text().is_empty())
                 .map(|(key, s)| DraftFile {
                     key: key.clone(),
                     session_id: Some(s.info.id.clone()),
                     cwd: s.info.cwd.clone(),
                     path: s.info.path.clone(),
-                    draft: s.draft.clone(),
+                    draft: s.draft.text().to_string(),
                 })
                 .collect(),
         }
@@ -2239,6 +2314,7 @@ fn save_file(file: &WorkspaceFile) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     mod loading;
+    mod resources;
     mod temporary_view;
     use super::{ConversationState, WorkspaceFile, catalog::CatalogState};
     use crate::{foundation::session_catalog::Catalog, state::pi};
@@ -2329,7 +2405,10 @@ draft = ""
             state.restore_drafts(old);
             assert!(state.selected.is_none());
             assert!(state.current().is_none());
-            assert_eq!(state.sessions["old-session"].draft, "keep this draft");
+            assert_eq!(
+                state.sessions["old-session"].draft.text().as_ref(),
+                "keep this draft"
+            );
             assert!(!state.sessions.contains_key("old-empty-page"));
             assert!(
                 state
@@ -2376,7 +2455,10 @@ draft = "saved input"
             });
             state.apply_catalog(cx);
             assert_eq!(state.sessions["history"].info.title(), "Restored title");
-            assert_eq!(state.sessions["history"].draft, "saved input");
+            assert_eq!(
+                state.sessions["history"].draft.text().as_ref(),
+                "saved input"
+            );
             assert_eq!(state.infos().len(), 2);
             assert_eq!(state.selected.as_deref(), Some("history"));
             assert!(state.sessions["history"].instance.is_none());

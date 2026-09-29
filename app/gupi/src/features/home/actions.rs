@@ -285,15 +285,19 @@ impl HomeView {
     pub(crate) fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(s) = self.state.read(cx).current() {
             if let Some(pending) = s.pending_ui.front() {
-                if matches!(
-                    pending.request.method,
-                    pi_rpc::protocol::UiMethod::Input { .. }
-                        | pi_rpc::protocol::UiMethod::Editor { .. }
-                ) {
-                    self.extension_input
-                        .update(cx, |input, cx| input.focus(window, cx));
-                } else {
-                    self.extension_focus.focus(window, cx);
+                match &pending.request.method {
+                    pi_rpc::protocol::UiMethod::Input { .. } => self
+                        .extension_line
+                        .update(cx, |input, cx| input.focus(window, cx)),
+                    pi_rpc::protocol::UiMethod::Editor { .. } => self
+                        .extension_input
+                        .update(cx, |input, cx| input.focus(window, cx)),
+                    pi_rpc::protocol::UiMethod::Select { .. } => {
+                        if let Some(selection) = pending.selection.clone() {
+                            selection.update(cx, |state, cx| state.focus_current_item(window, cx));
+                        }
+                    }
+                    _ => self.extension_focus.focus(window, cx),
                 }
                 return;
             }

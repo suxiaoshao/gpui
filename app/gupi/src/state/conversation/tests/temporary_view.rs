@@ -54,7 +54,13 @@ fn temporary_page_tab_search_and_recreation_preserve_the_draft(cx: &mut TestAppC
         visual.run_until_parked();
         visual.update(|_, cx| {
             assert!(
-                state.read(cx).current().unwrap().draft.ends_with(suffix),
+                state
+                    .read(cx)
+                    .current()
+                    .unwrap()
+                    .draft
+                    .text()
+                    .ends_with(suffix),
                 "actual draft: {:?}",
                 state.read(cx).current().unwrap().draft
             )
@@ -68,6 +74,7 @@ fn temporary_page_tab_search_and_recreation_preserve_the_draft(cx: &mut TestAppC
                     .current()
                     .unwrap()
                     .draft
+                    .text()
                     .contains("searching")
             );
             window.remove_window();
@@ -75,7 +82,10 @@ fn temporary_page_tab_search_and_recreation_preserve_the_draft(cx: &mut TestAppC
         visual.run_until_parked();
     }
     state.read_with(cx, |state, _| {
-        assert_eq!(state.current().unwrap().draft, "draft one two");
+        assert_eq!(
+            state.current().unwrap().draft.text().as_ref(),
+            "draft one two"
+        );
         assert!(state.current().unwrap().instance.is_none());
     });
 }
@@ -165,7 +175,10 @@ fn temporary_new_reuses_unsent_draft_and_navigation_handles_more_than_nine(
     visual.update(|_, cx| {
         let state = state.read(cx);
         assert_eq!(state.selected.as_deref(), Some("session-00"));
-        assert_eq!(state.current().unwrap().draft, "preserve this draft");
+        assert_eq!(
+            state.current().unwrap().draft.text().as_ref(),
+            "preserve this draft"
+        );
         assert_eq!(state.sessions.len(), 12);
     });
     visual.simulate_keystrokes("cmd-n");
@@ -203,7 +216,10 @@ fn temporary_new_skips_failed_and_exited_drafts(cx: &mut TestAppContext) {
             state.new_or_reuse(None, cx);
             assert_eq!(state.selected.as_deref(), Some("healthy"));
             assert_eq!(state.sessions.len(), 4);
-            assert_eq!(state.current().unwrap().draft, "keep healthy draft");
+            assert_eq!(
+                state.current().unwrap().draft.text().as_ref(),
+                "keep healthy draft"
+            );
         }
 
         state.sessions.remove("healthy");
@@ -212,7 +228,10 @@ fn temporary_new_skips_failed_and_exited_drafts(cx: &mut TestAppContext) {
         let replacement = state.selected.clone().unwrap();
         assert!(replacement.starts_with("draft-"));
         assert_eq!(state.sessions.len(), 4);
-        assert_eq!(state.sessions["failed"].draft, "keep failed draft");
+        assert_eq!(
+            state.sessions["failed"].draft.text().as_ref(),
+            "keep failed draft"
+        );
         assert!(state.sessions[&replacement].core_read.running());
         // Cancel preparation before it touches disk or starts a process.
         state.sessions.get_mut(&replacement).unwrap().reset_reads();
@@ -601,7 +620,10 @@ fn composer_attachments_stay_inside_group_and_remove_without_preview(cx: &mut Te
             "remove must not open image preview"
         );
         assert_eq!(state.read(cx).current().unwrap().attachments.len(), 1);
-        assert_eq!(state.read(cx).current().unwrap().draft, "keep draft");
+        assert_eq!(
+            state.read(cx).current().unwrap().draft.text().as_ref(),
+            "keep draft"
+        );
         window.click(SharedString::from("remove-file"), cx);
         assert!(state.read(cx).current().unwrap().attachments.is_empty());
         assert!(
@@ -834,7 +856,10 @@ fn session_info_dialog_from_temporary_actions_copies_updates_and_closes(cx: &mut
         window.press("escape", cx);
         assert!(!window.has_active_dialog(cx));
         assert!(window.is_window_active());
-        assert_eq!(state.read(cx).current().unwrap().draft, "keep this draft");
+        assert_eq!(
+            state.read(cx).current().unwrap().draft.text().as_ref(),
+            "keep this draft"
+        );
         assert!(state.read(cx).current().unwrap().instance.is_none());
     });
 }
@@ -862,7 +887,7 @@ fn temporary_find_shortcut_does_not_filter_sessions_or_edit_the_draft(cx: &mut T
     visual.run_until_parked();
     assert!(visual.debug_bounds("conversation-find-scope").is_some());
     state.read_with(visual, |state, _| {
-        assert_eq!(state.current().unwrap().draft, "draft")
+        assert_eq!(state.current().unwrap().draft.text().as_ref(), "draft")
     });
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
@@ -872,6 +897,54 @@ fn temporary_find_shortcut_does_not_filter_sessions_or_edit_the_draft(cx: &mut T
     visual.dispatch_action(gpui_kit::component::input::MoveToEnd);
     visual.simulate_input(" preserved");
     state.read_with(visual, |state, _| {
-        assert_eq!(state.current().unwrap().draft, "draft preserved")
+        assert_eq!(
+            state.current().unwrap().draft.text().as_ref(),
+            "draft preserved"
+        )
+    });
+}
+
+#[gpui_kit::test]
+fn find_expands_recorded_skill_instructions_and_copy_keeps_original(cx: &mut TestAppContext) {
+    use gpui_kit::{SharedString, test::TestWindowExt};
+    init_interactions(cx);
+    let original = "<skill name=\"review\" location=\"/tmp/SKILL.md\">\nRecorded **hidden-needle** instructions\n</skill>\n\nUser request";
+    let state = cx.new(|cx| ConversationState::temporary("unused-pi".into(), cx));
+    state.update(cx, |state, _| {
+        let mut session = fixture_session("skill");
+        session.live.push(crate::state::history::DisplayMessage {
+            id: "user".into(),
+            entry: None,
+            completed_at: None,
+            final_answer_part: None,
+            value: serde_json::json!({"role":"user","content":original}),
+        });
+        session.content_revision += 1;
+        session.transcript.receive_message();
+        state.sessions.insert("skill".into(), session);
+        state.selected = Some("skill".into());
+    });
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| TemporaryView::new(state.clone(), window, cx));
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(960.), px(620.)));
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("skill-user").expanded(), Some(false));
+    });
+    visual.simulate_keystrokes("secondary-f");
+    visual.simulate_input("hidden-needle");
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("skill-user").expanded(), Some(true));
+        window.click(SharedString::from("copy-skill-user"), cx);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+            Some(original)
+        );
+        window.remove_window();
     });
 }

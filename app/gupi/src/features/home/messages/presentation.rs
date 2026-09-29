@@ -38,6 +38,12 @@ impl Disclosure {
             locked: false,
         }
     }
+    pub fn resource(title: String) -> Self {
+        Self {
+            level: Level::Group,
+            ..Self::run(title)
+        }
+    }
     pub fn clock(mut self, clock: Option<Entity<super::super::progress::ProcessClock>>) -> Self {
         self.clock = clock;
         self
@@ -125,6 +131,7 @@ impl HomeView {
             .when(!heading.locked, |m| m.child(arrow));
         let trigger = div()
             .id(id.clone())
+            .test_support()
             .group(group)
             .w_full()
             .min_w_0()

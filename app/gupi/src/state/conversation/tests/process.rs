@@ -44,6 +44,10 @@ fn main() {
         *counts.entry(command.clone()).or_default() += 1;
         let mut log = std::fs::OpenOptions::new().create(true).append(true).open("commands.log").unwrap();
         writeln!(log, "{command}").unwrap();
+        if command == "extension_ui_response" {
+            let mut responses = std::fs::OpenOptions::new().create(true).append(true).open("ui-responses.jsonl").unwrap();
+            writeln!(responses, "{line}").unwrap();
+        }
         if command == "prompt" {
             let mut inputs = std::fs::OpenOptions::new().create(true).append(true).open("inputs.jsonl").unwrap();
             writeln!(inputs, "{line}").unwrap();

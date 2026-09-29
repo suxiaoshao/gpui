@@ -27,7 +27,7 @@ use gpui_kit::component::{
     ActiveTheme, Disableable, Sizable, WindowExt as _,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Enter, InputEvent, TextareaState},
+    input::{Enter, InputEvent, InputState, TextareaState},
     list::{ListEvent, ListState},
     message_scroller::MessageScrollerState,
     v_flex,
@@ -61,6 +61,9 @@ pub(crate) struct HomeView {
     pub state: Entity<ConversationState>,
     pub(crate) input: Entity<TextareaState>,
     extension_input: Entity<TextareaState>,
+    extension_line: Entity<InputState>,
+    input_questionnaire: Option<Entity<gpui_kit::component::questionnaire::QuestionnaireState>>,
+    questionnaire_subscriptions: Vec<Subscription>,
     shown_key: Option<String>,
     notification_visible: bool,
     shown_request: Option<(String, String)>,
@@ -227,6 +230,7 @@ impl HomeView {
                 .auto_grow(2, 10)
                 .submit_on_enter(true)
         });
+        let extension_line = cx.new(|cx| InputState::new(window, cx));
         let owner = cx.entity().downgrade();
         let history_list = cx.new(|cx| {
             ListState::new(history::HistoryDelegate::new(owner), window, cx).searchable(false)
@@ -293,9 +297,10 @@ impl HomeView {
                             this.sync(false, window, cx);
                             return;
                         }
-                        let value = input.read(cx).value().to_string();
+                        let content = input.read(cx).content();
+                        let value = content.text().to_string();
                         this.state
-                            .update(cx, |s, cx| s.set_draft(&key, value.clone(), cx));
+                            .update(cx, |s, cx| s.set_draft_content(&key, content, cx));
                         this.open_slash_if_needed(&value, window, cx);
                     }
                     InputEvent::PressEnter {
@@ -308,6 +313,27 @@ impl HomeView {
                 }
             }),
             cx.subscribe_in(&extension_input, window, |this, input, event, _, cx| {
+                let Some((key, id)) = this.shown_request.clone() else {
+                    return;
+                };
+                if matches!(event, InputEvent::Change) {
+                    let text = input.read(cx).value().to_string();
+                    this.state.update(cx, |state, _| {
+                        if let Some(p) = state
+                            .sessions
+                            .get_mut(&key)
+                            .and_then(|s| s.pending_ui.front_mut())
+                            .filter(|p| p.request.id == id)
+                        {
+                            p.text = text;
+                        }
+                    });
+                }
+                if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
+                    this.submit_extension(cx);
+                }
+            }),
+            cx.subscribe_in(&extension_line, window, |this, input, event, _, cx| {
                 let Some((key, id)) = this.shown_request.clone() else {
                     return;
                 };
@@ -343,6 +369,9 @@ impl HomeView {
             state,
             input,
             extension_input,
+            extension_line,
+            input_questionnaire: None,
+            questionnaire_subscriptions: vec![],
             shown_key: None,
             notification_visible: true,
             shown_request: None,
@@ -404,6 +433,8 @@ impl HomeView {
         let Some(key) = key else {
             if changed {
                 self.shown_request = None;
+                self.questionnaire_subscriptions.clear();
+                self.input_questionnaire = None;
                 self.input
                     .update(cx, |input, cx| input.set_value("", window, cx));
                 self.extension_input
@@ -549,7 +580,8 @@ impl HomeView {
             (
                 p.request.id.clone(),
                 p.text.clone(),
-                matches!(p.request.method, pi_rpc::protocol::UiMethod::Editor { .. }),
+                p.request.method.clone(),
+                p.selection.clone(),
             )
         });
         self.sync_messages(&key, changed || force, cx);
@@ -675,25 +707,107 @@ impl HomeView {
             self.state
                 .update(cx, |state, cx| state.read_visible_history(&key, cx));
         }
-        if self.input.read(cx).value().as_ref() != draft {
+        if changed || self.input.read(cx).content() != draft {
             self.input
                 .update(cx, |input, cx| input.set_value(draft, window, cx));
         }
-        if let Some((id, text, editor)) = request {
+        if let Some((id, text, method, selection)) = request {
             let request_key = (key, id);
             if self.shown_request.as_ref() != Some(&request_key) {
-                self.shown_request = Some(request_key);
-                self.extension_input.update(cx, |input, cx| {
-                    input.set_value(text, window, cx);
-                    input.set_submit_on_enter(!editor, cx);
-                    input.focus(window, cx);
-                });
+                self.shown_request = Some(request_key.clone());
+                self.questionnaire_subscriptions.clear();
+                match method {
+                    pi_rpc::protocol::UiMethod::Select { options, .. } => {
+                        if let Some(selection) = selection {
+                            let (key, id) = request_key;
+                            self.questionnaire_subscriptions
+                                .push(cx.observe(&selection, |_, _, cx| cx.notify()));
+                            use gpui_kit::component::questionnaire::QuestionnaireEvent;
+                            self.questionnaire_subscriptions.push(cx.subscribe(
+                                &selection,
+                                move |this, _, event: &QuestionnaireEvent, cx| {
+                                    if let QuestionnaireEvent::Submit(submission) = event
+                                        && let Some(value) = submission
+                                            .answer("answer")
+                                            .and_then(|a| a.choices().first())
+                                        && let Ok(ix) = value.parse::<usize>()
+                                        && let Some(value) = options.get(ix)
+                                    {
+                                        this.state.update(cx, |state, cx| {
+                                            state.reply(
+                                                &key,
+                                                &id,
+                                                pi_rpc::protocol::UiReply::Value {
+                                                    value: value.clone(),
+                                                },
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                },
+                            ));
+                            selection.update(cx, |selection, cx| {
+                                selection.focus_current_item(window, cx)
+                            });
+                        }
+                    }
+                    pi_rpc::protocol::UiMethod::Input {
+                        title, placeholder, ..
+                    } => {
+                        self.extension_line.update(cx, |input, cx| {
+                            input.set_value(text, window, cx);
+                            input.set_placeholder(placeholder.unwrap_or_default(), window, cx);
+                            input.focus(window, cx);
+                        });
+                        use gpui_kit::component::questionnaire::{
+                            QuestionnaireEvent, QuestionnaireInputDefinition,
+                            QuestionnaireItemDefinition, QuestionnaireState,
+                        };
+                        let item = QuestionnaireItemDefinition::new("answer", title.clone())
+                            .with_input(QuestionnaireInputDefinition::new(
+                                self.extension_line.clone(),
+                                title,
+                            ));
+                        let questionnaire = cx.new(|cx| {
+                            QuestionnaireState::new(vec![item], cx).expect("one input question")
+                        });
+                        self.questionnaire_subscriptions
+                            .push(cx.observe(&questionnaire, |_, _, cx| cx.notify()));
+                        let (key, id) = request_key;
+                        let input = self.extension_line.clone();
+                        self.questionnaire_subscriptions.push(cx.subscribe(
+                            &questionnaire,
+                            move |this, _, event: &QuestionnaireEvent, cx| {
+                                if matches!(event, QuestionnaireEvent::Submit(_)) {
+                                    // Pi accepts the original input, including surrounding whitespace.
+                                    let value = input.read(cx).value().to_string();
+                                    this.state.update(cx, |state, cx| {
+                                        state.reply(
+                                            &key,
+                                            &id,
+                                            pi_rpc::protocol::UiReply::Value { value },
+                                            cx,
+                                        )
+                                    });
+                                }
+                            },
+                        ));
+                        self.input_questionnaire = Some(questionnaire);
+                    }
+                    pi_rpc::protocol::UiMethod::Editor { .. } => {
+                        self.extension_input.update(cx, |input, cx| {
+                            input.set_value(text, window, cx);
+                            input.set_submit_on_enter(true, cx);
+                            input.focus(window, cx);
+                        });
+                    }
+                    _ => self.extension_focus.focus(window, cx),
+                }
             }
-        } else {
-            let restore = self.shown_request.take().is_some();
-            if restore {
-                self.input.update(cx, |input, cx| input.focus(window, cx));
-            }
+        } else if self.shown_request.take().is_some() {
+            self.questionnaire_subscriptions.clear();
+            self.input_questionnaire = None;
+            self.input.update(cx, |input, cx| input.focus(window, cx));
         }
         cx.notify();
     }

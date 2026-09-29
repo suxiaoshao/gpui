@@ -10,7 +10,7 @@
 
 运行中有草稿时同时提供发送与停止按钮，发送箭头执行本轮补充，相邻菜单可选择本轮补充/后续任务；原 Enter/Alt+Enter 语义保持。项目选择在新建会话前完成，与输入框解耦，累计 Token 统计保留。
 
-文件和图片使用 `AttachmentGroup`／`Attachment`，放入共用 InputGroup 的 `BlockStart` 插槽，多附件横向滚动；没有附件时不渲染插槽。文件名下通过 `AttachmentDescription` 显示格式与大小（如 `PDF · 128 KB`）；文件大小在添加时读取，图片按原始字节计算，单位采用十进制 B/KB/MB。保留文件打开、图片预览及独立删除，点击删除不触发预览。附件入口与空闲发送使用 `InputGroupButton`，运行中的发送和模式菜单使用 `DropdownButton`，停止按钮独立保留。
+图片使用 `AttachmentGroup`／`Attachment`，放入共用 InputGroup 的 `BlockStart` 插槽，多附件横向滚动；没有附件时不渲染插槽。图片名下通过 `AttachmentDescription` 显示格式与大小（如 `PNG · 128 KB`），按原始字节计算，单位采用十进制 B/KB/MB。普通文件改为正文内联路径标签，见[输入资源](../issue-243/README.md)；保留图片预览及独立删除，点击删除不触发预览。附件入口与空闲发送使用 `InputGroupButton`，运行中的发送和模式菜单使用 `DropdownButton`，停止按钮独立保留。
 
 输入区保留原有 Attachment 横向卡片及 AttachmentMedia.src() 图片展示；点击图片打开窗口级预览，沿用组件弹层的窗口边距，按可用空间等比适配；提供缩放比例、放大/缩小（最高 800%）、Ctrl/Cmd＋滚轮及触控板捏合，放大后可滚动查看。关闭按钮、Esc 和图片外空白均可关闭；图片与工具栏操作不关闭预览。Gupi 自有预览模块沿用 Jaco 的缩放几何，不依赖 Jaco 包。预览与 RPC 使用同一份原始图片字节，不缩小或重编码。文件名使用浮动胶囊，关闭按钮独立放在右上角，底部使用 2.5rem 缩放按钮和比例读数，与 Jaco 的预览布局一致。GUI 与 Pi 的职责整理见[边界收敛记录](../../../../../docs/dev/issue-217/gui-boundary.md)。
 
@@ -157,7 +157,7 @@ Harness 仍未提供本次所需的全部语义：cancelQueued 只返回结果�
 
 ### 原始输入与执行消息不能混为一份
 
-Pi 在入队前执行 input handler，再展开 Skill 和模板；输入插件还可改变图片。Gupi 文件附件在提交时转成 `@路径`，图片进入 RPC images；提交成功后会清理已发送的编辑器内容。因此现有队列文字无法无损还原命令标签、文件附件卡片和原始草稿。
+Pi 在入队前执行 input handler，再展开 Skill 和模板；输入插件还可改变图片。Gupi 文件引用保留正文中的 `@路径`，图片进入 RPC images；提交成功后会清理已发送的编辑器内容。因此现有队列文字无法无损还原命令标签、图片附件和原始草稿。
 
 应区分：
 

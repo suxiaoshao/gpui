@@ -1,24 +1,11 @@
 //! Shared input surface. Callers own draft state and business actions.
 use gpui_kit::{
     component::{
-        ActiveTheme, h_flex,
+        h_flex,
         input::{InputGroup, InputGroupAddon, InputGroupAddonAlignment, Textarea},
-        v_flex,
     },
     *,
 };
-
-pub(crate) fn surface(cx: &App) -> Div {
-    v_flex()
-        .w_full()
-        .min_w_0()
-        .pb_2()
-        .rounded_2xl()
-        .shadow_sm()
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().background)
-}
 
 pub(crate) struct Composer {
     id: ElementId,

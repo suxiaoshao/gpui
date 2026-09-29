@@ -1,5 +1,6 @@
 pub(crate) mod assets;
 pub(crate) mod attachments;
+pub(crate) mod composer_resources;
 pub(crate) mod i18n;
 pub(crate) mod paths;
 pub(crate) mod persistence;

@@ -18,6 +18,7 @@ pub(super) mod markdown;
 pub(super) mod metadata;
 mod plugin;
 mod presentation;
+mod resources;
 mod tool_details;
 mod viewport;
 pub(super) use actions::copy_button;
@@ -35,13 +36,30 @@ impl ChatRow {
     pub(super) fn find_sources(&self) -> Vec<super::find::Source> {
         if let RowKind::User(message) = &self.kind {
             let text = message.text();
+            if let Some(skill) = resources::skill(&text) {
+                let mut sources = vec![super::find::Source {
+                    id: format!("skill-text-{}", message.id),
+                    row: self.id.clone(),
+                    text: skill.body.to_owned(),
+                    process: Some(format!("skill-{}", message.id)),
+                }];
+                if !skill.arguments.trim().is_empty() {
+                    sources.push(super::find::Source {
+                        id: format!("text-{}", message.id),
+                        row: self.id.clone(),
+                        text: resources::file_references(skill.arguments),
+                        process: None,
+                    });
+                }
+                return sources;
+            }
             return if text.trim().is_empty() {
                 vec![]
             } else {
                 vec![super::find::Source {
                     id: format!("text-{}", message.id),
                     row: self.id.clone(),
-                    text,
+                    text: resources::file_references(&text),
                     process: None,
                 }]
             };
@@ -437,6 +455,12 @@ impl HomeView {
                         data: block["data"].as_str().unwrap_or_default().into(),
                     })
                     .collect();
+                let skill = resources::skill(&text);
+                let body = resources::file_references(
+                    skill
+                        .as_ref()
+                        .map_or(text.as_str(), |skill| skill.arguments),
+                );
                 let content = MessageContent::new()
                     .when(!images.is_empty(), |content| {
                         content.child(
@@ -450,7 +474,44 @@ impl HomeView {
                                 .children(images),
                         )
                     })
-                    .when(!text.trim().is_empty(), |content| {
+                    .when_some(skill, |content, skill| {
+                        let path = PathBuf::from(skill.path);
+                        content.child(
+                            v_flex()
+                                .max_w_full()
+                                .min_w_0()
+                                .items_end()
+                                .gap_1()
+                                .child(
+                                    h_flex().gap_1().child(
+                                        Button::new(format!("skill-open-{}", m.id))
+                                            .ghost()
+                                            .small()
+                                            .icon(IconName::BookOpen)
+                                            .label(skill.name.to_owned())
+                                            .tooltip(skill.path.to_owned())
+                                            .on_click(move |_, _, cx| cx.open_with_system(&path)),
+                                    ),
+                                )
+                                .child(
+                                    self.fold(
+                                        (key, &row.id),
+                                        &format!("skill-{}", m.id),
+                                        Disclosure::resource(t(cx, "resource-skill-content")),
+                                        false,
+                                        self.text_view(
+                                            key,
+                                            &row.id,
+                                            format!("skill-text-{}", m.id),
+                                            skill.body.to_owned(),
+                                        )
+                                        .into_any_element(),
+                                        cx,
+                                    ),
+                                ),
+                        )
+                    })
+                    .when(!body.trim().is_empty(), |content| {
                         content.bubble(
                             Bubble::new().with_variant(BubbleVariant::Muted).content(
                                 BubbleContent::new().child(
@@ -461,7 +522,7 @@ impl HomeView {
                                             key,
                                             &row.id,
                                             format!("text-{}", m.id),
-                                            text,
+                                            body,
                                         )),
                                 ),
                             ),

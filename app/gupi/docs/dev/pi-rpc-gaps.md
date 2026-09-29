@@ -62,7 +62,7 @@
 - 删除会话：没有专用 RPC，Gupi 已通过本地文件管理实现。
 - 模型／思考选择、会话统计：已有 RPC 与应用接入。队列已有 `queue_update` 文本事件、`clear_queue` 和模式设置，但没有主动读取完整队列、按 ID 逐项修改/删除或附件无损恢复接口；不能笼统称为完整队列管理已被 RPC 覆盖。
 - select/confirm/input/editor、通知、状态、文字 widget、标题、设置输入文本：九类标准 UI 已支持。
-- InputGroup 已接入；2026-09-28 已核对 Questionnaire 和原子内联标签随正式 0.7.0 发布。应用接入归 #243，本轮搜索/升级不包含它们。Markdown 内联插件不提供输入编辑能力，组件发布也不改变 Pi 问卷协议。
+- InputGroup、原子内联标签、资源选择与 Questionnaire 单选已通过正式 0.7.0 接入，见 [#243 实现与验证](issue-243/README.md)。Markdown plugin 用于只读资源呈现，输入标签使用 InputContent；这些宿主控件不增加 Pi 的多选或组合问卷协议。
 - `custom_message display:true`：已通过原生历史/事件接入正文投影，支持 Markdown、图片、复制和预览；与 #241 的短期插件通知分别处理。
 
 已有设计参见 [命令能力对照](issue-226/builtin-commands.md)、[命令面板](issue-226/command-palette.md)、[扩展 UI](issue-222/README.md)。

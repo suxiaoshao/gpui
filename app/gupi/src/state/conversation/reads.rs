@@ -109,6 +109,12 @@ impl ConversationState {
                     .filter(|s| s.binding == binding)
                 {
                     s.commands.transition(ReadMessage::Finish { id, result });
+                    if s.draft_revision == 0
+                        && let Some(commands) = s.commands.data()
+                    {
+                        s.draft =
+                            crate::foundation::composer_resources::restore(&s.draft, commands);
+                    }
                     notify_controls(&target, cx);
                 }
             });

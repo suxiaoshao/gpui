@@ -32,7 +32,7 @@ impl ConversationState {
                 let mut draft_changed = false;
                 match result {
                     Ok(queue) if restore_text => {
-                        if let Some(draft) = restored_text(queue, &session.draft) {
+                        if let Some(draft) = restored_content(queue, &session.draft) {
                             draft_changed = session.draft != draft;
                             session.draft = draft;
                             session.draft_revision += 1;
@@ -61,7 +61,7 @@ impl ConversationState {
     }
 }
 
-fn restored_text(queue: protocol::ClearedQueue, current: &str) -> Option<String> {
+fn restored_content(queue: protocol::ClearedQueue, current: &InputContent) -> Option<InputContent> {
     let queued = queue
         .steering
         .into_iter()
@@ -71,16 +71,27 @@ fn restored_text(queue: protocol::ClearedQueue, current: &str) -> Option<String>
     if queued.trim().is_empty() {
         return None;
     }
-    Some(if current.trim().is_empty() {
-        queued
+    Some(if current.text().trim().is_empty() {
+        queued.into()
     } else {
-        format!("{queued}\n\n{current}")
+        let offset = queued.len() + 2;
+        let mut content = InputContent::new(format!("{queued}\n\n{}", current.text()));
+        for span in current.tokens() {
+            let range = span.range();
+            content = content
+                .with_token(
+                    range.start + offset..range.end + offset,
+                    span.token().clone(),
+                )
+                .expect("prefixing text preserves existing token boundaries");
+        }
+        content
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::restored_text;
+    use super::restored_content;
 
     #[test]
     fn restore_follows_tui_order_without_trimming_message_content() {
@@ -89,11 +100,31 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(
-            restored_text(queue, "draft"),
+            restored_content(queue, &"draft".into()),
             Some(" first \n\nsame\n\nsame\n\nlast\n\ndraft".into())
         );
         let empty =
             serde_json::from_value(serde_json::json!({"steering": [], "followUp": []})).unwrap();
-        assert_eq!(restored_text(empty, "draft"), None);
+        assert_eq!(restored_content(empty, &"draft".into()), None);
+    }
+
+    #[test]
+    fn restoring_queue_keeps_existing_inline_file_references() {
+        let token = crate::foundation::composer_resources::file_token(
+            std::path::Path::new("/tmp/report.md"),
+            false,
+        );
+        let current = super::InputContent::new(format!("review {}next", token.text()))
+            .with_token(7..7 + token.text().len(), token)
+            .unwrap();
+        let queue = serde_json::from_value(serde_json::json!({"steering":["first"],"followUp":[]}))
+            .unwrap();
+        let result = restored_content(queue, &current).unwrap();
+        assert_eq!(
+            result.text().as_ref(),
+            "first\n\nreview @/tmp/report.md next"
+        );
+        assert_eq!(result.tokens()[0].range().start, 14);
+        assert_eq!(result.tokens()[0].token(), current.tokens()[0].token());
     }
 }

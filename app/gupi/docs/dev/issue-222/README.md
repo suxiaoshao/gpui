@@ -1,9 +1,9 @@
 # Pi 扩展 UI：交互测试环境与验收
 
-后续输入资源、Markdown 资源展示与 Questionnaire 接入统一归 [#243](../issue-243/README.md)；本页保留现有实现及可复用的验证环境，不再单独确定这些功能是否实施。
+输入资源、Markdown 资源展示与 Questionnaire 的实现与验证统一归 [#243](../issue-243/README.md)；本页保留现有实现及可复用的验证环境，不再单独确定这些功能是否实施。
 同属 #222 的[队列交互与输入框布局草稿](queue-composer.md)单独记录逐条队列操作、项目选择器、用量信息及待确定的协议边界；本文继续负责扩展 UI。
 
-状态：既有扩展 UI 与隔离测试环境保留，完整组件接入和验收尚未完成。2026-09-28 核对：Questionnaire 与原子 Token 已在 0.7.0 正式发布；用户将其应用接入留在 #243，本轮只做搜索与依赖升级。
+状态：既有扩展 UI 与隔离测试环境保留。Questionnaire 与原子 Token 已在 0.7.0 正式发布；组件映射、实施与受影响验证统一由 [#243 计划](../issue-243/README.md)承接，本页不再作为等待组件发布的阻塞记录。
 
 归属：[#222](https://github.com/suxiaoshao/gpui/issues/222) 的扩展 UI 部分。目标是让开发者和用户随时在真实 Gupi 界面触发不同插件 UI，观察布局并完成提交、取消和连续交互。本部分可基于已有主窗口独立推进，无须等待临时窗口。队列等其他工作不在本文展开。
 
@@ -21,7 +21,7 @@
 - 命令入口已由 #226 接入，使用 / 或 Cmd/Ctrl+Shift+P；Cmd/Ctrl+P 用于会话快速打开。详见 [统一命令面板](../issue-226/command-palette.md)。
 - 临时插件只用于用户自行体验。保留已有检查结果，不继续自动操作体验窗口、扩展验收或按猜测修改生产 UI。
 
-恢复工作时，先核对上游 question 组件的实际 API，以及当前 gpui-kit 依赖是否已包含它，再决定如何映射 RPC 的 select/confirm/input 等消息。组件提供的视觉能力不改变 Pi 协议，不能由此推断 RPC 新增了组合问卷或 custom 支持。0.7.0 已包含 Questionnaire，应用接入由 #243 统一维护；其自由输入为单行 Input，不能直接替代标准 editor 的多行编辑。
+标准请求映射已经确定：select 使用单选 Questionnaire 和标准提交按钮，input 使用 QuestionnaireInput（协议允许的空白值单独直接提交），confirm 保留三种明确回复，editor 使用多行 Textarea。四类问答统一使用 GroupBox outline 提供边框与四周留白，内部复用标准问答与表单组件。组件提供的视觉能力不改变 Pi 协议，不能由此推断 RPC 新增了组合问卷或 custom 支持。0.7.0 已包含 Questionnaire，应用接入由 #243 统一维护；其自由输入为单行 Input，不能直接替代标准 editor 的多行编辑。
 
 ## 体验入口
 
@@ -72,7 +72,7 @@ Pi RPC 的 `custom()` 直接返回 undefined；`setHeader`、`setFooter`、`setE
 
 - [现有协议 fixture](../../../../../crates/pi-rpc/tests/fixtures/extension.mjs) 注册 `/gupi-rpc-test`，依次调用 select、confirm、input、editor，再设置 status、下方 widget，并通知结果。
 - [真实 Pi 协议测试](../../../../../crates/pi-rpc/tests/installed_pi.rs) 在临时目录中加载该扩展，自动发送回执并核对结果；这证明的是协议链路，不是用户操作或视觉效果。
-- [Gupi 输入区](../../../src/features/home/composer.rs) 已渲染四类交互：select 为选项按钮，confirm 为确认/否按钮，input/editor 使用扩展专用文本输入；共同提供取消入口。
+- [Gupi 输入区](../../../src/features/home/composer.rs) 已渲染四类交互：select/input 组合 Questionnaire 的对应部件，confirm 使用确认/否按钮，editor 使用 Textarea；共同提供取消入口，取消在左、提交或确认在右。
 - [会话状态](../../../src/state/conversation.rs) 已接收九类消息、排队待答请求、按来源会话回传，以及清理断线后的扩展状态。
 
 新增 gallery 提供随时启动、单独选场景、重复体验的原生环境。原有四题串行测试保持不变；自动回执无法代替焦点、中文输入法、滚动和鼠标操作体验。
