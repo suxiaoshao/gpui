@@ -1,6 +1,6 @@
 # Pi TUI 内置命令能力对照
 
-状态：调研完成；HTML 导出、复制会话与手动压缩已接入，其余新增能力范围待确定。2026-09-23 按正式 Pi v0.87.1（`f07218c4`）复核全部 **24 项**公开 TUI 内置命令，较旧盘点增加 `/bug`。本表用于比较能力与选择接入范围，不预设某个命令的实施顺序，不展开单项功能开发方案。
+命令表按 2026-09-23 正式 Pi v0.87.1（`f07218c4`）复核全部 **24 项**公开 TUI 内置命令，应用接入描述于 2026-09-29 整理。本表用于比较能力与选择接入范围，不预设某个命令的实施顺序，不展开单项功能开发方案。
 
 ## 统计与判断口径
 
@@ -24,7 +24,7 @@
 | `/bug` | 无对应 RPC；TUI 有诊断上传及本地 ZIP 导出 | 无诊断上报入口 | 不自动接入上传；若需要，独立确定用户审阅、脱敏和发送范围 |
 | `/copy` | get_last_assistant_text；也可读取当前分支文本 | 已有逐条消息复制及面板“复制最后回答” | copy 搜索映射最后回答动作，来源为实际执行分支原始历史；0.87 的 RPC 返回值来自经过 context_edit 的上下文投影，二者不保证相同 |
 | `/name` | set_session_name | 已有在线/离线改名 | 复用统一 RPC 改名；离线会话先建立连接，再由 Pi 写入 |
-| `/session` | get_state、get_session_stats 等 | 已有 token/context 统计提示，缺统一信息页 | 已确认归 #242，会话信息弹窗集中展示身份、路径、模型与统计 |
+| `/session` | get_state、get_session_stats 等 | 已有会话信息弹窗，集中展示身份、路径、模型、消息/工具数及用量 | 见 [会话信息实现](../issue-242/README.md)，不再列为缺失功能 |
 | `/changelog` | 无专用接口 | 无 Pi 更新日志入口 | 无需照搬；Gupi 自身更新说明属于应用帮助 |
 | `/hotkeys` | 无 TUI 键位表查询接口 | #231 已有 Gupi 快捷键查看、修改、清除及恢复默认；面板已有键位提示 | `hotkeys` 搜索别名尚未映射；不再将快捷键总览列为缺失能力，不展示未接入的 Pi TUI 键位冒充可用 |
 | `/fork` | get_fork_messages、fork | 已有用户消息按钮和历史消息 fork | fork 搜索打开历史面板，由用户选择明确源消息 |
@@ -38,14 +38,14 @@
 | `/reload` | 无直接 reload RPC | Cmd+R 重启当前 Pi 并恢复会话 | 复用已确认方案；资源重载目标一致，插件内存和生命周期事件与 TUI 进程内 reload 不完全相同 |
 | `/quit` | 无 quit slash RPC；由宿主管理进程退出 | 已有应用退出及受控收尾 | 复用应用菜单与平台退出入口 |
 
-## 综合建议（尚未确定交付批次）
+## 入口归类
 
 | 判断 | 命令 | 理由 |
 | --- | --- | --- |
-| 复用已有能力 | model、thinking、name、fork、new、resume、reload、quit | 已有业务入口，主要确定是否在命令模式展示及如何路由 |
+| 已有入口 | model、thinking、name、fork、new、resume、reload、quit、session | 已有业务入口和命令面板动作映射；通过选择本地候选执行 |
 | 已新增能力 | export（HTML）、clone | 分别位于标题栏右上角和会话上下文菜单；连接就绪且空闲时可用，复制还要求存在当前历史节点 |
 | 已新增能力 | compact | 当前会话组发起默认手动压缩，停止沿用 abort |
-| 值得完善入口 | session；hotkeys 搜索别名 | 会话信息弹窗已归 #242；快捷键设置已由 #231 接入，仅命令搜索别名尚未映射 |
+| 未选择的入口完善 | hotkeys 搜索别名 | 快捷键设置已由 #231 接入，仅该命令搜索别名尚未映射 |
 | 独立管理范围或暂不映射 | settings、tree、scoped-models、import、share、bug、changelog、trust、login、logout | TUI 专属行为、RPC 缺口或涉及独立配置/认证/数据管理；具体理由见逐项表 |
 
 统一面板已确定原始命令名搜索与现有 UI 映射，具体清单见 [command-palette.md](command-palette.md)。其他新增/完善项仍需确定交付范围。统一待确定项见 [decisions.md](decisions.md)。
@@ -58,7 +58,7 @@
 
 ## 源码依据
 
-命令清单已按更新后的本地源码和 v0.87.0 固定标签复核；新命令不改变已确认的应用范围。HTML 导出与复制接入后，已通过应用层取消/失败/成功及连接归属回归，并使用隔离临时会话验证真实 Pi RPC 的 HTML 输出、复制后历史保留和原文件不变；未进行原生界面点击验收。
+命令清单按正式 v0.87.1 固定标签复核；新命令不改变已确认的应用范围。HTML 导出与复制接入后，已通过应用层取消/失败/成功及连接归属回归，并使用隔离临时会话验证真实 Pi RPC 的 HTML 输出、复制后历史保留和原文件不变；未进行原生界面点击验收。
 
 - Pi `packages/coding-agent/src/core/slash-commands.ts`：24 项公开内置注册表。
 - Pi `packages/coding-agent/src/modes/interactive/interactive-mode.ts`：内置命令的参数解析与 TUI 分发。

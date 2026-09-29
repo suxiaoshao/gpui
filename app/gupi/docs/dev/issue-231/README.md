@@ -4,7 +4,7 @@
 
 状态：应用侧八页、字段搜索接线、独立保存、快捷键及个人资源管理已实现。Gupi 当前已使用包含共享 Settings 搜索修复的 GPUI Kit 0.6.4；资源按需加载和配置失效范围见 [#236 实现说明](../issue-236/README.md)。依赖接入与具体原生交互验证分别记录，不以版本升级代替验收。
 
-设置搜索直接复用正式组件，不复制 Settings 或增加临时绕过实现。其他依赖阻塞和后续工作统一见[主 Issue 未完成项索引](../../../../../docs/dev/issue-217/follow-ups.md)。
+设置搜索直接复用正式组件，不复制 Settings 或增加临时绕过实现。其他依赖阻塞和后续工作统一见[主 Issue 未完成项索引](../follow-ups.md)。
 
 ## 已确认方向
 
@@ -277,7 +277,7 @@ StartupView 已分别持有 applied_pi 与 draft_pi。关于页展示已配置�
 
 原有四项技术核对已落实为上文设计：共享组件修复、独立提交边界、键位存储/替换、个人资源读取与 CLI 操作。剩余是实现与验证工作，不需要用户选择私有 API。
 
-依赖更新已接入正式版 0.6.4 的 Settings 修复和 InputGroup；2026-09-20 macOS 实测跨页字段搜索、无结果与清空恢复，原索引错位不再复现。无结果时仍缺少提示，保留在统一待处理文档。Token / Questionnaire 继续等待正式发布，与已完成的设置依赖修复分开。Pi CLI 已使用隔离的个人目录和临时本地包完成安装、定向更新、移除验证，没有修改用户资源。
+依赖更新已接入正式版 0.6.4 的 Settings 修复和 InputGroup；2026-09-20 macOS 实测跨页字段搜索、无结果与清空恢复，原索引错位不再复现。无结果时仍缺少提示，保留在统一待处理文档。Token / Questionnaire 后续已通过正式 0.7.0 接入，见 [#243](../issue-243/README.md)，不作为设置等待项。Pi CLI 已使用隔离的个人目录和临时本地包完成安装、定向更新、移除验证，没有修改用户资源。
 
 Pi 路径生效已核对：ConversationState::set_command 只更新后续连接使用的命令，不主动重启已有进程；沿用手动刷新行为。
 
@@ -317,7 +317,7 @@ Pi 路径生效已核对：ConversationState::set_command 只更新后续连接�
 - 分类搜索按包、资源列表和系统提示词登记固定关键词，不检索管理内容正文；选择索引问题已通过正式依赖修复；无结果反馈边界见上文。
 - 设置回归覆盖四类资源编辑弹窗的首次原文回填、取消不写文件、放弃确认与返回继续编辑、Pi 路径首次回填，以及模板按名称/说明/来源筛选、预览原地展开/收起、只读操作限制与个人模板编辑，以及主题首帧布局/末行等宽、带资源的八页窄窗渲染、配置文件控件的同行布局，以及快捷键原位编辑的清除、确认、取消、恢复默认、冲突、录制拦截和单项搜索。
 
-当前使用正式 0.6.4，已包含 Settings 索引修复；旧 0.6.0 调试补丁与临时应用方法已删除，不再提供过时绕过路线。无结果正文提示的剩余边界见统一待处理文档。
+当前使用正式 0.7.0；Settings 索引修复自此前 0.6.4 接入后保持有效；旧 0.6.0 调试补丁与临时应用方法已删除，不再提供过时绕过路线。无结果正文提示的剩余边界见统一待处理文档。
 
 最小必要覆盖：
 
@@ -347,7 +347,7 @@ Pi 路径生效已核对：ConversationState::set_command 只更新后续连接�
 - Gupi：[设置入口](../../../src/features/settings.rs)、[现有字段](../../../src/features/settings/preferences.rs)。
 - Jaco：[设置页面](../../../../jaco/src/features/settings.rs)、[布局与页面搜索](../../../../jaco/src/features/settings/layout.rs)。
 - Zed：[字段搜索与页面选择](/Users/sushao/Documents/code/zed/crates/settings_ui/src/settings_ui.rs:2275)。
-- 当前组件：[Settings](/Users/sushao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-component-0.6.0/src/setting/settings.rs)、[SettingItem](/Users/sushao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-component-0.6.0/src/setting/item.rs)。
+- 初次调研组件：`gpui-component 0.6.0` 的 `src/setting/settings.rs` 与 `src/setting/item.rs`；当前使用正式 GPUI Kit 0.7.0。
 
 本轮补充源码：
 
@@ -357,4 +357,4 @@ Pi 路径生效已核对：ConversationState::set_command 只更新后续连接�
 - [Pi 系统提示词发现](/Users/sushao/Documents/code/pi/packages/coding-agent/src/core/resource-loader.ts:1023)、[get_commands](/Users/sushao/Documents/code/pi/packages/coding-agent/src/modes/rpc/rpc-mode.ts:682)。
 - [Pi CLI 参数与个人作用域隔离](/Users/sushao/Documents/code/pi/packages/coding-agent/src/package-manager-cli.ts:743)、[未受信任项目不加载配置](/Users/sushao/Documents/code/pi/packages/coding-agent/src/core/settings-manager.ts:405)。
 - [Pi 包来源与安装路径](/Users/sushao/Documents/code/pi/packages/coding-agent/src/core/package-manager.ts:2066)、[过滤规则](/Users/sushao/Documents/code/pi/packages/coding-agent/src/core/package-manager.ts:739)、[个人资源发现](/Users/sushao/Documents/code/pi/packages/coding-agent/src/core/package-manager.ts:2397)、[TUI 启停写入](/Users/sushao/Documents/code/pi/packages/coding-agent/src/modes/interactive/components/config-selector.ts:531)。
-- [GPUI 完整绑定枚举与清理](/Users/sushao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-pre-0.3.3/src/keymap.rs:81)、[KeyBinding 公开访问接口](/Users/sushao/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-pre-0.3.3/src/keymap/binding.rs:103)、[本地组件过滤实现](/Users/sushao/Documents/code/gpui-component/crates/component/src/setting/settings.rs:112)。
+- 初次调研键位 API：`gpui-pre 0.3.3` 的 `src/keymap.rs`（完整绑定枚举与清理）与 `src/keymap/binding.rs`（KeyBinding 公开访问接口）；[本地组件过滤实现](/Users/sushao/Documents/code/gpui-component/crates/component/src/setting/settings.rs:112)。

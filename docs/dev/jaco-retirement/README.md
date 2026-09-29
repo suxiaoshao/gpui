@@ -8,7 +8,7 @@
 - 状态：清理清单已整理，尚未执行。按用户已有决定，在 Gupi 合入后处理；本轮只交付文档，不删除代码、子模块或本机数据。
 - 目标：删除 Jaco 及失去用途的专用内容，修正其余项目的构建、打包、导航和说明。保留仍维护的应用与独立共享能力，不为退役应用继续升级或迁移。
 - Quick Look、OCR 已确定随 Jaco 退役删除，不再作为独立通用能力暂留，也不迁移到 Gupi。
-- 入口：[Gupi 统一待处理文档](../issue-217/follow-ups.md)、[依赖更新记录](../dependency-refresh-2026-09/README.md)。本文件是清理范围的统一来源，其他入口只引用。
+- 入口：[Gupi 统一待处理文档](../../../app/gupi/docs/dev/follow-ups.md)、[依赖更新记录](../dependency-refresh-2026-09/README.md)。本文件是清理范围的统一来源，其他入口只引用。
 
 ## 一并删除的内容
 
@@ -93,7 +93,7 @@ Quick Look 的现有调用链为 Jaco `open_attachment` → `open_file_preview` 
 - `docs/dev/issue-175/`、`issue-182/`、`issue-199/`、`issue-215/`、`docs/dev/migrations/` 和共享 crate 内的计划包含跨应用/API 结论，不能因出现 Jaco 就整目录删除。去掉 Jaco 专用工作包、失效当前任务和已删除源码链接；必要历史证据保留固定提交来源，不继续导航到不存在的工作区文件。
 - Gupi 的输入框、临时窗口、设置等文档曾以 Jaco 为参考。保留已经确认的 Gupi 行为；对仍有比较价值的来源引用固定历史提交，对无用的逐文件比较删去。不要为了维持参考链接保留整套 Jaco 源码。
 - Form/Store/Operation 指南中的 Jaco 示例，能说明通用契约的改为当前消费者或中性例子；不删除这些共享能力的设计说明与回归要求。
-- [依赖更新记录](../dependency-refresh-2026-09/README.md) 的版本盘点保留其基线语义；“暂留给 Jaco”“未来删除”等当前状态改为实际结果。更新[统一待处理文档](../issue-217/follow-ups.md)与[根开发索引](../README.md)，不复制第二份清单。
+- [依赖更新记录](../dependency-refresh-2026-09/README.md) 的版本盘点保留其基线语义；“暂留给 Jaco”“未来删除”等当前状态改为实际结果。更新[统一待处理文档](../../../app/gupi/docs/dev/follow-ups.md)与[根开发索引](../README.md)，不复制第二份清单。
 
 ## 共享能力的保留边界
 

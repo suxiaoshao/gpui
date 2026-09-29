@@ -2,7 +2,7 @@
 
 基于 GPUI Kit 的 Pi 桌面宿主。包含初始设置、配置恢复、主题/语言、窗口布局，以及基于 Pi 原生 RPC 的会话工作区。
 
-开发导航：[总待处理文档：未完成项与能力边界](../../docs/dev/issue-217/follow-ups.md) · [开发计划索引](docs/dev/README.md)。
+开发导航：[总待处理文档：未完成项与能力边界](docs/dev/follow-ups.md) · [开发计划索引](docs/dev/README.md)。
 
 ## 运行
 

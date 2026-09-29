@@ -175,7 +175,7 @@ QuestionnaireState 随请求身份保留，不在 render 中重建；select 的�
 
 ## 关联入口
 
-- [统一待处理文档](../../../../../docs/dev/issue-217/follow-ups.md)、[RPC 边界](../pi-rpc-gaps.md)。
+- [统一待处理文档](../follow-ups.md)、[RPC 边界](../pi-rpc-gaps.md)。
 - [命令面板](../issue-226/command-palette.md)、[现有扩展 UI 与体验入口](../issue-222/README.md)、[正文查找](../issue-242/README.md)。
 - Pi 正式源码：[Skill/模板调度与 Skill 结构](https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/src/core/agent-session.ts)、[模板参数替换](https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/src/core/prompt-templates.ts)、[RPC 实现](https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/src/modes/rpc/rpc-mode.ts)。
 - Zed 固定版本源码：[候选选择](https://github.com/zed-industries/zed/blob/244023605536a412ab6b8d5b658466b89fb15401/crates/agent_ui/src/completion_provider.rs)、[输入、粘贴与资源恢复](https://github.com/zed-industries/zed/blob/244023605536a412ab6b8d5b658466b89fb15401/crates/agent_ui/src/message_editor.rs)、[用户消息复用编辑器](https://github.com/zed-industries/zed/blob/244023605536a412ab6b8d5b658466b89fb15401/crates/agent_ui/src/entry_view_state.rs)、[资源标签与点击](https://github.com/zed-industries/zed/blob/244023605536a412ab6b8d5b658466b89fb15401/crates/agent_ui/src/ui/mention_crease.rs)。

@@ -55,7 +55,7 @@
 2. 以专用临时页面复用现有业务层、消息和 Composer，接入 Jaco 式双栏与搜索导航。
 3. 针对运行中失焦、隐藏超时、超时前重显、回收后重建验证：无重复实例、无丢失草稿/附件、旧计时任务不误删新窗口；再检查实际布局与焦点。
 
-窗口所有者负责带版本校验的显隐和回收任务；专用 `features/temporary.rs` 负责搜索与双栏，HomeView 临时模式仅输出共享消息和 Composer。后续输入框改造按[接入计划](../issue-243/README.md)等待输入原子标签和 Questionnaire 正式发布；InputGroup 已接入。
+窗口所有者负责带版本校验的显隐和回收任务；专用 `features/temporary.rs` 负责搜索与双栏，HomeView 临时模式仅输出共享消息和 Composer。共用 InputGroup、输入原子标签与标准 Questionnaire 已接入，见[输入资源实现](../issue-243/README.md)。
 
 ## 源码入口与验证边界
 

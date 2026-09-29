@@ -6,7 +6,7 @@
 
 ## Dependency upgrade plans
 
-- [GPUI Kit 0.7.0、依赖更新与正文查找](dependency-refresh-0.7.0/README.md)：本批次版本目标、兼容迁移、上游替代、完整直接依赖盘点及 #242 搜索接入；Token/Questionnaire 留给 #243。
+- [GPUI Kit 0.7.0、依赖更新与正文查找](dependency-refresh-0.7.0/README.md)：版本迁移、上游替代、直接依赖盘点与正文查找验证；输入资源和问卷由应用的 #243 文档记录。
 
 - [2026-09：Workspace 依赖更新与官方 skill 接入](dependency-refresh-2026-09/README.md)：全项目依赖版本盘点、GPUI 配套升级、官方 skill 安装及旧资料镜像替换。
 - [Issue #215：GPUI Kit 与依赖升级](issue-215/README.md)：发布包替代 Git 来源、应用与共享 crate 迁移、skill/文档同步的实施计划。
@@ -14,7 +14,7 @@
 ## Gupi overview
 
 - [Gupi 总览与阶段关系](issue-217/README.md) — 父 issue 导航。
-- [Gupi 未完成项与能力边界](issue-217/follow-ups.md) — 集中引用各阶段的阻塞、后续工作和验证记录。
+- [Gupi 未完成项与能力边界](../../app/gupi/docs/dev/follow-ups.md) — 集中引用各阶段的阻塞、后续工作和验证记录。
 - [Gupi 第一阶段：应用骨架、启动引导与恢复入口](issue-218/README.md) — 应用骨架的已确认决定、实现与验证边界。
 
 ## Feature plans
