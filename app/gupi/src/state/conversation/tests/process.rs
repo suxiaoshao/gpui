@@ -152,7 +152,7 @@ fn main() {
                     "get_session_stats" => "{\"tokens\":{\"input\":5,\"output\":3,\"cacheRead\":0,\"cacheWrite\":0,\"total\":8},\"cost\":0}".into(),
                     "get_fork_messages" => "{\"messages\":[{\"entryId\":\"old\",\"text\":\"hello\"}]}".into(),
                     "set_session_name" => { session_name = field(&line, "name"); "null".into() }
-                    "set_model" => { selected = field(&line, "modelId"); "null".into() }
+                    "set_model" => { selected = field(&line, "modelId"); model(&selected) }
                     "set_thinking_level" => { thinking = field(&line, "level"); "null".into() }
                     "clone" => format!("{{\"cancelled\":{}}}", Path::new("cancel-clone").exists()),
                     "export_html" => {
