@@ -55,6 +55,8 @@
               openssl
               zstd
               libxcb
+              # Jaco's get-selected-text -> enigo xdo backend links libxdo.
+              xdotool
               alsa-lib
               pipewire
               libgbm

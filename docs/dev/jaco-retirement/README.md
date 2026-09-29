@@ -4,7 +4,7 @@
 
 ## 范围与结论
 
-- 核对日期：整体清单为 2026-09-20；Quick Look、OCR 调用与删除范围于 2026-09-26 按当前源码复核。
+- 核对日期：整体清单为 2026-09-20；Quick Look、OCR 调用与删除范围于 2026-09-26 按当前源码复核；Linux `libxdo` 依赖于 2026-09-29 复核。
 - 状态：清理清单已整理，尚未执行。按用户已有决定，在 Gupi 合入后处理；本轮只交付文档，不删除代码、子模块或本机数据。
 - 目标：删除 Jaco 及失去用途的专用内容，修正其余项目的构建、打包、导航和说明。保留仍维护的应用与独立共享能力，不为退役应用继续升级或迁移。
 - Quick Look、OCR 已确定随 Jaco 退役删除，不再作为独立通用能力暂留，也不迁移到 Gupi。
@@ -59,6 +59,7 @@ Quick Look 的现有调用链为 Jaco `open_attachment` → `open_file_preview` 
 | [`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml) | 删除 checkout 的 `submodules: recursive`。保留正常 checkout、Rust 缓存、三平台矩阵和 workspace build/test/clippy；当前没有独立 Jaco CI job，无需凭空拆改矩阵 |
 | 本地 Git 子模块登记 | 操作前检查子模块自身工作区，保留未提交内容；通过 Git 的子模块移除流程处理本地登记。`.git/modules/third_party/lucide` 属于本地缓存，不是需要提交的源码删除；不为仓库清理顺便清空其他 worktree 或 Git 历史 |
 | [flake.nix](../../../flake.nix)、[flake.lock](../../../flake.lock) | macOS/Linux 开发环境及原生依赖统一由 Nix 维护，旧安装脚本已移除。退役后依据保留应用的 native 依赖和 Linux 构建证据逐项判断无用项，不增加本机反向卸载操作 |
+| `flake.nix` 的 `linuxLibraries.xdotool` | 当前为 Jaco → `get-selected-text` → `enigo` 的 `xdo` 后端提供 `libxdo`，供 Linux 链接及运行时加载。Jaco 删除后核对 Linux 依赖图；没有剩余消费者时删除这一项，并验证剩余 workspace 的 Linux 构建/测试。Gupi 只在 macOS/Windows 使用 `get-selected-text`，继续保留它的平台依赖；不要仅因同名依赖仍在锁文件就保留 Linux `xdotool`，也不要将 GPUI 仍使用的 X11 库一起删除 |
 | `script/gupi-runtime-gallery`、`script/gupi-ui-gallery` | 服务于 Gupi，保留；当前没有旧子模块初始化或 Jaco 启动命令 |
 | [`.github/dependabot.yml`](../../../.github/dependabot.yml) | 当前只管理 GitHub Actions，没有 MCP 工具目录或子模块的更新任务，无需调整 |
 | [`.zed/tasks.json`](../../../.zed/tasks.json)、[`.gitignore`](../../../.gitignore) | 当前无 Jaco 专用任务；图标派生产物忽略规则为 `app/*` 通用规则，保留。没有发现需要删除的子模块初始化脚本 |
