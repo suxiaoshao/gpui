@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WixLocalization Culture="de-DE" xmlns="http://schemas.microsoft.com/wix/2006/localization">
+    <String Id="TauriLanguage">1031</String>
+    <String Id="TauriCodepage">1252</String>
+    <String Id="LaunchApp">Gupi starten</String>
+    <String Id="DowngradeErrorMessage">Eine neuere Version von Gupi ist bereits installiert.</String>
+    <String Id="PathEnvVarFeature">Fügt den Installationsort der Gupi-Datei zur Systemumgebungsvariable PATH hinzu. Dadurch kann Gupi von jedem Speicherort aus gestartet werden.</String>
+    <String Id="InstallAppFeature">Installiert Gupi.</String>
+</WixLocalization>

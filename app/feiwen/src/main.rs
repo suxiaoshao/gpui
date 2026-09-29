@@ -2,7 +2,7 @@ use crate::errors::FeiwenError;
 use app::{WorkspaceView, titlebar};
 use errors::FeiwenResult;
 use foundation::I18n;
-use gpui_kit::component::{Root, TitleBar};
+use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
@@ -92,16 +92,15 @@ fn main() -> FeiwenResult<()> {
 
     let span = tracing::info_span!("init");
     let _enter = span.enter();
-    let app = gpui_kit::application().with_assets(foundation::Assets::default());
+    let app = gpui_kit::application().with_assets(foundation::Assets);
     event!(Level::INFO, "app created");
 
     app.run(|cx: &mut App| {
         init(cx);
         let title = cx.global::<I18n>().t("app-title");
         event!(Level::INFO, title = %title, "opening main window");
-        match cx.open_window(main_window_options(title), |window, cx| {
-            let view = cx.new(|cx| WorkspaceView::new(window, cx));
-            cx.new(|cx| Root::new(view, window, cx))
+        match gpui_kit::open_window(main_window_options(title), cx, |window, cx| {
+            cx.new(|cx| WorkspaceView::new(window, cx))
         }) {
             Ok(_) => event!(Level::INFO, "main window opened"),
             Err(err) => event!(Level::ERROR, error = %err, "failed to open main window"),

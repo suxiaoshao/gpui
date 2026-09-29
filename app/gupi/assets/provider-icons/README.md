@@ -1,0 +1,1 @@
+Provider logos reuse the SVG assets and source metadata from Jaco. Typed declarations in `src/foundation/assets.rs` retain each logo’s source and slug. Unknown Pi providers use the generic Sparkles icon.

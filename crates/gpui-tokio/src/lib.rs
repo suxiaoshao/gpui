@@ -49,44 +49,13 @@ impl Tokio {
         R: Send + 'static,
     {
         cx.read_global(|tokio: &GlobalTokio, cx| {
-            let join_handle = tokio.handle.spawn(future);
-            let abort_handle = join_handle.abort_handle();
-            let abort_on_drop = AbortOnDrop::new(abort_handle);
-            cx.background_spawn(async move {
-                let result = join_handle.await;
-                drop(abort_on_drop.disarm());
-                result
-            })
+            let task = tokio_util::task::AbortOnDropHandle::new(tokio.handle.spawn(future));
+            cx.background_spawn(task)
         })
     }
 
     pub fn handle(cx: &App) -> tokio::runtime::Handle {
         cx.read_global(|tokio: &GlobalTokio, _| tokio.handle.clone())
-    }
-}
-
-struct AbortOnDrop {
-    abort_handle: Option<tokio::task::AbortHandle>,
-}
-
-impl AbortOnDrop {
-    fn new(abort_handle: tokio::task::AbortHandle) -> Self {
-        Self {
-            abort_handle: Some(abort_handle),
-        }
-    }
-
-    fn disarm(mut self) -> Self {
-        self.abort_handle = None;
-        self
-    }
-}
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        if let Some(abort_handle) = self.abort_handle.take() {
-            abort_handle.abort();
-        }
     }
 }
 

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WixLocalization Culture="zh-TW" xmlns="http://schemas.microsoft.com/wix/2006/localization">
+    <String Id="TauriLanguage">1028</String>
+    <String Id="TauriCodepage">950</String>
+    <String Id="LaunchApp">安裝完成後啟動 Gupi</String>
+    <String Id="DowngradeErrorMessage">已安裝較新版本的 Gupi。</String>
+    <String Id="PathEnvVarFeature">將 Gupi 的安裝位置新增至系統 PATH 環境變數，以便從任何位置呼叫 Gupi。</String>
+    <String Id="InstallAppFeature">安裝 Gupi。</String>
+</WixLocalization>

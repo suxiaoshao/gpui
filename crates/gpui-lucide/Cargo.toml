@@ -1,0 +1,12 @@
+[package]
+name = "gpui-lucide"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Linker-selected Lucide SVG icons for GPUI Kit."
+
+[dependencies]
+gpui.workspace = true
+gpui-component.workspace = true
+# A regular dependency is needed for the upstream icons-dir build metadata.
+gpui-component-assets.workspace = true

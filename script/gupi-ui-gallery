@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Launch the current Gupi build with a disposable, explicitly loaded Pi UI extension."""
+import argparse
+import json
+import os
+from pathlib import Path
+import plistlib
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pi", default="pi", help="Existing Pi executable")
+    parser.add_argument("--no-build", action="store_true", help="Use the existing target/debug/gupi")
+    parser.add_argument("--prepare-only", action="store_true", help="Create fixtures without opening Gupi")
+    parser.add_argument("--keep", action="store_true", help="Keep the temporary environment after Gupi exits")
+    args = parser.parse_args()
+    repo = Path(__file__).resolve().parent.parent
+    pi = shutil.which(args.pi)
+    if not pi:
+        parser.error("Pi executable not found; pass --pi /absolute/path/to/pi")
+    if not args.no_build and not args.prepare_only:
+        subprocess.run(["cargo", "build", "-p", "gupi", "--locked"], cwd=repo, check=True)
+    binary = repo / "target/debug/gupi"
+    if not args.prepare_only and not binary.is_file():
+        parser.error(f"Gupi build not found: {binary}")
+    root = Path(tempfile.mkdtemp(prefix="gupi-ui-gallery-"))
+    for name in ["config", "logs", "agent", "sessions", "project-a", "project-b"]:
+        (root / name).mkdir()
+    # Shared by the UI and its Pi children so catalog discovery stays isolated.
+    env = {key: os.environ[key] for key in [
+        "PATH", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "USER", "LOGNAME",
+        "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "SystemRoot",
+    ] if key in os.environ}
+    env.update({
+        "GUPI_CONFIG_DIR": str(root / "config"),
+        "GUPI_LOG_DIR": str(root / "logs"),
+        "PI_CODING_AGENT_DIR": str(root / "agent"),
+        "PI_CODING_AGENT_SESSION_DIR": str(root / "sessions"),
+    })
+    wrapper = root / "pi-gallery"
+    flags = ["--offline", "--no-extensions", "--no-skills", "--no-prompt-templates",
+             "--no-themes", "--no-context-files", "--no-approve", "--extension",
+             str(repo / "app/gupi/tests/fixtures/ui-gallery.mjs")]
+    wrapper.write_text("#!/bin/sh\n"
+                       f'if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then exec {shlex.quote(pi)} "$@"; fi\n'
+                       f'exec {shlex.quote(pi)} "$@" {shlex.join(flags)}\n')
+    wrapper.chmod(0o700)
+    # JSON strings are valid TOML basic strings for these local path values.
+    (root / "config/config.toml").write_text(
+        f"pi_command = {json.dumps(str(wrapper))}\nlanguage = \"chinese\"\ntheme = \"light\"\n")
+    (root / "environment.json").write_text(json.dumps(env, indent=2))
+    print(f"Gallery directory: {root}", flush=True)
+    print("Type /gupi-ui in the new Gupi window. Use project-a / project-b for isolation checks.", flush=True)
+    if args.prepare_only:
+        return
+    if sys.platform == "darwin":
+        # A disposable identity lets desktop inspection distinguish this window
+        # from an installed Gupi. This is not a distribution bundle.
+        bundle = root / "Gupi UI Gallery.app/Contents"
+        (bundle / "MacOS").mkdir(parents=True)
+        shutil.copy2(binary, bundle / "MacOS/gupi")
+        (bundle / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleExecutable": "gupi",
+            "CFBundleIdentifier": "top.sushao.gupi.ui-gallery",
+            "CFBundleName": "Gupi UI Gallery",
+            "CFBundlePackageType": "APPL",
+            "CFBundleVersion": "1",
+            "NSHighResolutionCapable": True,
+        }))
+        binary = bundle / "MacOS/gupi"
+    try:
+        with (root / "logs/process.log").open("w") as log:
+            process = subprocess.Popen([str(binary)], cwd=root / "project-a", env=env,
+                                       stdout=log, stderr=subprocess.STDOUT)
+            (root / "gupi.pid").write_text(str(process.pid))
+            print(f"Gupi PID: {process.pid}; exit with Cmd+Q when finished.", flush=True)
+            process.wait()
+    finally:
+        if args.keep:
+            print(f"Kept gallery files: {root}", flush=True)
+        elif 'process' not in locals() or process.poll() is not None:
+            shutil.rmtree(root)
+        else:
+            print(f"Gupi is still running; kept gallery files: {root}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

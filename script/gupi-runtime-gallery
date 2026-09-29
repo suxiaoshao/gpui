@@ -1,0 +1,51 @@
+#!/usr/bin/env node
+// Use the existing Gupi executable and a disposable Pi environment. No .app bundle.
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawn, spawnSync } from "node:child_process";
+
+const args = new Set(process.argv.slice(2));
+if ([...args].some((arg) => !["--no-build", "--prepare-only"].includes(arg))) {
+  console.error("Usage: script/gupi-runtime-gallery [--no-build] [--prepare-only]");
+  process.exit(1);
+}
+const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const binary = join(repo, "target", "debug", "gupi");
+const probe = spawnSync("which", ["pi"], { encoding: "utf8" });
+if (probe.status !== 0) throw new Error("Pi executable not found in PATH.");
+const pi = probe.stdout.trim();
+if (!args.has("--no-build") && !args.has("--prepare-only")) {
+  const build = spawnSync("cargo", ["build", "-p", "gupi", "--locked"], { cwd: repo, stdio: "inherit" });
+  if (build.status !== 0) process.exit(build.status ?? 1);
+}
+if (!args.has("--prepare-only") && !existsSync(binary)) throw new Error("Build Gupi first.");
+const root = mkdtempSync(join(tmpdir(), "gupi-runtime-gallery-"));
+for (const name of ["config", "logs", "agent", "sessions", "project"]) mkdirSync(join(root, name));
+const env = {
+  ...process.env,
+  GUPI_CONFIG_DIR: join(root, "config"),
+  GUPI_LOG_DIR: join(root, "logs"),
+  PI_CODING_AGENT_DIR: join(root, "agent"),
+  PI_CODING_AGENT_SESSION_DIR: join(root, "sessions"),
+  GUPI_RUNTIME_PROJECT: join(root, "project"),
+};
+const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+const wrapper = join(root, "pi-runtime");
+const flags = ["--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
+  "--no-context-files", "--no-approve", "--extension", join(repo, "app/gupi/tests/fixtures/runtime-gallery.mjs"),
+  "--provider", "gupi-runtime", "--model", "gallery",
+  "--tools", "read,write,edit,bash,find,grep,ls,runtime_check"];
+writeFileSync(wrapper, `#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then exec ${quote(pi)} "$@"; fi\nexec ${quote(pi)} "$@" ${flags.map(quote).join(" ")}\n`, { mode: 0o700 });
+writeFileSync(join(root, "config", "config.toml"), `pi_command = ${JSON.stringify(wrapper)}\nlanguage = "chinese"\n`);
+// Only the overrides are saved; inherited environment variables may contain secrets.
+writeFileSync(join(root, "environment.json"), JSON.stringify(Object.fromEntries(
+  ["GUPI_CONFIG_DIR", "GUPI_LOG_DIR", "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR", "GUPI_RUNTIME_PROJECT"].map((key) => [key, env[key]])
+), null, 2));
+console.log(`测试目录：${root}\n模型：Runtime Gallery · 慢速运行\n发送任意文字开始，两轮思考和工具调用约需几分钟。退出后保留测试目录，便于查看 session。`);
+if (!args.has("--prepare-only")) {
+  const child = spawn(binary, [], { cwd: env.GUPI_RUNTIME_PROJECT, env, stdio: "inherit" });
+  child.on("error", (error) => { console.error(error.message); process.exitCode = 1; });
+  child.on("exit", (code) => { process.exitCode = code ?? 1; });
+}

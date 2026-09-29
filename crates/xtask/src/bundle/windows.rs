@@ -1,4 +1,3 @@
-use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,19 +7,6 @@ use walkdir::WalkDir;
 
 use crate::cmd::{run_cmd_os, run_cmd_program_os};
 use crate::error::{Result, XtaskError};
-
-pub(crate) fn resolve_target_root(workspace_dir: &Path) -> PathBuf {
-    env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .map(|path| {
-            if path.is_absolute() {
-                path
-            } else {
-                workspace_dir.join(path)
-            }
-        })
-        .unwrap_or_else(|| workspace_dir.join("target"))
-}
 
 pub(crate) fn prepare_windows_bundle_staging(
     target_root: &Path,
@@ -91,17 +77,8 @@ pub(crate) fn install_windows_artifact(artifacts: &[PathBuf]) -> Result<()> {
         return Ok(());
     }
 
-    let installer = artifacts
-        .iter()
-        .min_by_key(|path| {
-            if path.extension().and_then(OsStr::to_str) == Some("msi") {
-                0
-            } else {
-                1
-            }
-        })
+    let installer = crate::bundle::preferred_windows_artifact(artifacts)
         .ok_or_else(|| XtaskError::msg("no installer artifact found"))?;
-
     info!(installer = %installer.display(), "installing artifact");
     if installer.extension().and_then(OsStr::to_str) == Some("msi") {
         let args: Vec<&OsStr> = vec![OsStr::new("/i"), installer.as_os_str()];

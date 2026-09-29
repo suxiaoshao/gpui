@@ -1,13 +1,29 @@
 # Workspace development plans
 
+## Workspace cleanup
+
+- [Jaco 退役与关联清理](jaco-retirement/README.md)：专用代码、旧图标子模块、CI、打包、依赖与文档的统一清理范围。
+
 ## Dependency upgrade plans
 
+- [GPUI Kit 0.7.0、依赖更新与正文查找](dependency-refresh-0.7.0/README.md)：版本迁移、上游替代、直接依赖盘点与正文查找验证；输入资源和问卷由应用的 #243 文档记录。
+
+- [2026-09：Workspace 依赖更新与官方 skill 接入](dependency-refresh-2026-09/README.md)：全项目依赖版本盘点、GPUI 配套升级、官方 skill 安装及旧资料镜像替换。
 - [Issue #215：GPUI Kit 与依赖升级](issue-215/README.md)：发布包替代 Git 来源、应用与共享 crate 迁移、skill/文档同步的实施计划。
+
+## Gupi overview
+
+- [Gupi 总览与阶段关系](issue-217/README.md) — 父 issue 导航。
+- [Gupi 未完成项与能力边界](../../app/gupi/docs/dev/follow-ups.md) — 集中引用各阶段的阻塞、后续工作和验证记录。
+- [Gupi 第一阶段：应用骨架、启动引导与恢复入口](issue-218/README.md) — 应用骨架的已确认决定、实现与验证边界。
 
 ## Feature plans
 
 | Issue | 入口 |
 | --- | --- |
+| [#236](https://github.com/suxiaoshao/gpui/issues/236) Gupi 事件同步、重试进度与会话局部刷新 | [实现与验证说明](../../app/gupi/docs/dev/issue-236/README.md) |
+| [#220](https://github.com/suxiaoshao/gpui/issues/220) Gupi 会话导航与主窗口对话 | [开发计划](issue-220/README.md)；页面交互由关联应用文档承接 |
+| [#219](https://github.com/suxiaoshao/gpui/issues/219) Gupi Pi RPC 与进程生命周期 | [issue-219/README.md](issue-219/README.md) |
 | [#200](https://github.com/suxiaoshao/gpui/issues/200) HTTP Client Response 音频迁移与 GStreamer 删除 | [issue-200/README.md](issue-200/README.md) |
 | [#199](https://github.com/suxiaoshao/gpui/issues/199) form owner、app store/form/operation 与 Transition 重构 | [issue-199/README.md](issue-199/README.md) |
 | [#196](https://github.com/suxiaoshao/gpui/issues/196) Jaco provider 生成图片持久化与展示 | [issue-196/README.md](issue-196/README.md) |

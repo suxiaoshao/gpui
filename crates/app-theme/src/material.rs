@@ -153,7 +153,6 @@ struct MaterialSurfaceTokens {
     table_row_border: SharedString,
     title_bar: SharedString,
     title_bar_border: SharedString,
-    tiles: SharedString,
 }
 
 struct MaterialControlTokens {
@@ -305,7 +304,6 @@ fn material_surface_tokens(
         table_row_border: palette.divider.clone(),
         title_bar: hex(scheme.surface_container_highest),
         title_bar_border: palette.divider.clone(),
-        tiles: hex(scheme.surface_container_low),
     }
 }
 
@@ -524,7 +522,6 @@ impl From<MaterialThemeColors> for ThemeConfigColors {
         colors.table_foot_foreground = Some(surface.table_foot_foreground);
         colors.table_hover = Some(interaction.table_hover);
         colors.table_row_border = Some(surface.table_row_border);
-        colors.tiles = Some(surface.tiles);
         colors.title_bar = Some(surface.title_bar);
         colors.title_bar_border = Some(surface.title_bar_border);
         colors.warning = Some(status.warning.background);

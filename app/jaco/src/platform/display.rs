@@ -17,13 +17,15 @@ pub(crate) fn target_display(cx: &App) -> Option<Rc<dyn PlatformDisplay>> {
     if let Some(display_id) = platform_ext::app::current_mouse_display_id()
         && let Some(display) = displays
             .iter()
-            .find(|display| u64::from(display.id()) == u64::from(display_id))
+            .find(|display| u64::from(display.id()) == display_id)
     {
         return Some(display.clone());
     }
 
     let snapshots = display_snapshots(cx);
-    if let Some((x, y)) = platform_ext::app::current_mouse_location()
+    // Windows cursor coordinates are physical; GPUI display bounds are logical.
+    if !cfg!(target_os = "windows")
+        && let Some((x, y)) = platform_ext::app::current_mouse_location()
         && let Some(display_id) = display_id_for_mouse_location(&snapshots, point(px(x), px(y)))
         && let Some(display) = displays
             .iter()

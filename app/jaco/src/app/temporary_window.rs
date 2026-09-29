@@ -86,7 +86,7 @@ pub(crate) fn close_temporary_window(cx: &mut App) {
 }
 
 pub(crate) fn request_hide_for_window_activation(window: &mut Window, cx: &mut App) {
-    let is_visible = window.is_visible().unwrap_or(false);
+    let is_visible = window.is_visible();
     if !should_hide_for_window_activation(window.is_window_active(), is_visible) {
         return;
     }
@@ -179,7 +179,7 @@ impl TemporaryWindowLifecycleState {
             Some(window) => {
                 let mut reveal = None;
                 if let Err(err) = window.update(cx, |root, window, cx| {
-                    if window.is_visible().unwrap_or(false) {
+                    if window.is_visible() {
                         self.delay_or_hide_temporary_window(window, cx);
                     } else {
                         reveal = self.prepare_temporary_window(root, window, cx);
@@ -391,13 +391,15 @@ fn target_display(cx: &App) -> Option<Rc<dyn PlatformDisplay>> {
     if let Some(display_id) = platform_ext::app::current_mouse_display_id()
         && let Some(display) = displays
             .iter()
-            .find(|display| u64::from(display.id()) == u64::from(display_id))
+            .find(|display| u64::from(display.id()) == display_id)
     {
         return Some(display.clone());
     }
 
     let snapshots = display_snapshots(cx);
-    if let Some((x, y)) = platform_ext::app::current_mouse_location()
+    // Windows cursor coordinates are physical; GPUI display bounds are logical.
+    if !cfg!(target_os = "windows")
+        && let Some((x, y)) = platform_ext::app::current_mouse_location()
         && let Some(display_id) = display_id_for_mouse_location(&snapshots, point(px(x), px(y)))
         && let Some(display) = displays
             .iter()

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WixLocalization Culture="ko-KR" xmlns="http://schemas.microsoft.com/wix/2006/localization">
+    <String Id="TauriLanguage">1042</String>
+    <String Id="TauriCodepage">949</String>
+    <String Id="LaunchApp">설치 후 Gupi 실행</String>
+    <String Id="DowngradeErrorMessage">더 최신 버전의 Gupi가 이미 설치되어 있습니다.</String>
+    <String Id="PathEnvVarFeature">Gupi 실행 파일의 설치 위치를 시스템 PATH 환경 변수에 추가합니다. 그러면 어디서든 Gupi를 실행할 수 있습니다.</String>
+    <String Id="InstallAppFeature">Gupi를 설치합니다.</String>
+</WixLocalization>
