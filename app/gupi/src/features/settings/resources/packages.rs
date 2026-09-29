@@ -444,7 +444,8 @@ mod tests {
             gpui_kit::init(cx);
             crate::foundation::i18n::apply(AppLanguage::Chinese, cx);
         });
-        let root = std::path::Path::new("/fixtures/pi");
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
         let source = "npm:demo@1.0.0";
         let mut rows: Vec<_> = [Kind::Extension, Kind::Skill, Kind::Theme, Kind::Prompt]
             .into_iter()
@@ -470,13 +471,12 @@ mod tests {
             enabled: false,
             editable: false,
         });
-        let selectors = [
-            "package-resource-/fixtures/pi/0",
-            "package-resource-/fixtures/pi/1",
-            "package-resource-/fixtures/pi/2",
-            "package-resource-/fixtures/pi/3",
-            "package-resource-/fixtures/pi/standalone.ts",
-        ];
+        // GPUI's debug_bounds accepts only static selectors. These five
+        // fixture strings are retained for the lifetime of the test process.
+        let selectors: Vec<&'static str> = rows
+            .iter()
+            .map(|resource| &*format!("package-resource-{}", resource.path.display()).leak())
+            .collect();
         let (_, cx) = cx.add_window_view(|window, cx| {
             let form = cx.new(|_| Form::new(AppConfig::default()));
             let config = cx.new(|cx| ConfigController::new(&form, cx));

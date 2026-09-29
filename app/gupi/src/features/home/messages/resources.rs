@@ -236,21 +236,42 @@ mod tests {
 
     #[test]
     fn file_projection_keeps_prose_and_code_and_only_tags_complete_reference_lines() {
-        let source = "Please inspect\n@/tmp/report [one].txt\n\n`@/tmp/not-a-file`\n\n```\n@/tmp/code\n```\n\nemail @someone";
-        let display = file_references(source);
-        assert!(
-            display.starts_with(
-                "Please inspect\n[@/tmp/report \\[one\\].txt](<file:///tmp/report%20[one].txt>)"
-            ),
-            "{display}"
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("report [one].txt");
+        let reference = format!("@{}", path.display());
+        let inline = format!("`@{}`", root.path().join("not-a-file").display());
+        let fenced = format!("```\n@{}\n```", root.path().join("code").display());
+        let source =
+            format!("Please inspect\n{reference}\n\n{inline}\n\n{fenced}\n\nemail @someone");
+        let display = file_references(&source);
+        let ast = markdown::to_mdast(&display, &markdown::ParseOptions::gfm()).unwrap();
+        let children = ast.children().unwrap()[0].children().unwrap();
+        let [
+            markdown_ast::Node::Text(prose),
+            markdown_ast::Node::Link(link),
+        ] = children.as_slice()
+        else {
+            panic!("expected prose followed by a file link: {display}");
+        };
+        assert_eq!(prose.value, "Please inspect\n");
+        assert_eq!(link.url, url::Url::from_file_path(&path).unwrap().as_str());
+        assert_eq!(
+            link.children
+                .iter()
+                .map(ToString::to_string)
+                .collect::<String>(),
+            reference
         );
-        assert!(display.contains("```\n@/tmp/code\n```"));
-        assert!(display.contains("`@/tmp/not-a-file`"));
+        assert!(display.contains(&fenced));
+        assert!(display.contains(&inline));
         assert!(display.ends_with("email @someone"));
-        let inline = "`inline code\n@/tmp/inside-code\nend`";
-        assert_eq!(file_references(inline), inline);
+        let inline = format!(
+            "`inline code\n@{}\nend`",
+            root.path().join("inside-code").display()
+        );
+        assert_eq!(file_references(&inline), inline);
         let token = crate::foundation::composer_resources::file_token(
-            std::path::Path::new("/tmp/report notes.txt"),
+            &root.path().join("report notes.txt"),
             false,
         );
         for source in [
@@ -258,7 +279,7 @@ mod tests {
             format!("```\n{}\n```", token.text()),
             format!("inspect {}", token.text()),
             format!("{}is a reference", token.text()),
-            "\"@/tmp/unclosed.txt".into(),
+            format!("\"@{}", root.path().join("unclosed.txt").display()),
         ] {
             assert_eq!(file_references(&source), source);
         }

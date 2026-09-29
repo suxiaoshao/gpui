@@ -214,11 +214,11 @@ fn temporary_new_reuses_unsent_draft_and_navigation_handles_more_than_nine(
     });
     visual.simulate_resize(size(px(960.), px(620.)));
     visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-9");
+    visual.simulate_keystrokes("secondary-9");
     visual.update(|_, cx| assert_eq!(state.read(cx).selected.as_deref(), Some("session-11")));
-    visual.simulate_keystrokes("cmd-2");
+    visual.simulate_keystrokes("secondary-2");
     visual.update(|_, cx| assert_eq!(state.read(cx).selected.as_deref(), Some("session-01")));
-    visual.simulate_keystrokes("cmd-n");
+    visual.simulate_keystrokes("secondary-n");
     visual.run_until_parked();
     visual.update(|_, cx| {
         let state = state.read(cx);
@@ -229,7 +229,7 @@ fn temporary_new_reuses_unsent_draft_and_navigation_handles_more_than_nine(
         );
         assert_eq!(state.sessions.len(), 12);
     });
-    visual.simulate_keystrokes("cmd-n");
+    visual.simulate_keystrokes("secondary-n");
     visual.update(|_, cx| assert_eq!(state.read(cx).sessions.len(), 12));
 }
 
@@ -306,7 +306,7 @@ fn temporary_actions_filter_copy_and_restore_focus_without_sending(cx: &mut Test
     });
     visual.simulate_resize(size(px(960.), px(620.)));
     visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-k");
+    visual.simulate_keystrokes("secondary-k");
     visual.run_until_parked();
     visual.simulate_input("copy");
     visual.run_until_parked();
@@ -321,8 +321,8 @@ fn temporary_actions_filter_copy_and_restore_focus_without_sending(cx: &mut Test
         )
     });
     visual.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
-    visual.simulate_keystrokes("cmd-k");
-    visual.simulate_keystrokes("cmd-enter");
+    visual.simulate_keystrokes("secondary-k");
+    visual.simulate_keystrokes("secondary-enter");
     visual.run_until_parked();
     visual.update(|_, cx| {
         assert_eq!(
@@ -333,7 +333,7 @@ fn temporary_actions_filter_copy_and_restore_focus_without_sending(cx: &mut Test
         )
     });
     // Escape must dismiss the action panel, not stop/hide the window.
-    visual.simulate_keystrokes("cmd-k");
+    visual.simulate_keystrokes("secondary-k");
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     visual.simulate_keystrokes("tab");
@@ -455,7 +455,7 @@ fn temporary_panel_switches_stop_hide_and_honors_rebound_shortcuts(cx: &mut Test
         Root::new(view, window, cx)
     });
     visual.simulate_resize(size(px(960.), px(620.)));
-    visual.simulate_keystrokes("cmd-k");
+    visual.simulate_keystrokes("secondary-k");
     visual.run_until_parked();
     assert!(visual.debug_bounds("temporary-action-hide").is_some());
     assert!(visual.debug_bounds("temporary-action-stop").is_none());
@@ -491,7 +491,7 @@ fn temporary_panel_switches_stop_hide_and_honors_rebound_shortcuts(cx: &mut Test
         cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
     });
     visual.simulate_keystrokes("enter");
-    visual.simulate_keystrokes("cmd-enter");
+    visual.simulate_keystrokes("secondary-enter");
     visual.run_until_parked();
     visual.update(|_, cx| {
         assert_eq!(
@@ -517,7 +517,7 @@ fn temporary_panel_switches_stop_hide_and_honors_rebound_shortcuts(cx: &mut Test
         );
         cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
     });
-    visual.simulate_keystrokes("cmd-k");
+    visual.simulate_keystrokes("secondary-k");
     visual.simulate_keystrokes("ctrl-alt-c");
     visual.run_until_parked();
     visual.update(|_, cx| {
@@ -875,7 +875,7 @@ fn session_info_dialog_from_temporary_actions_copies_updates_and_closes(cx: &mut
     visual.simulate_resize(size(px(1100.), px(860.)));
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-k");
+    visual.simulate_keystrokes("secondary-k");
     visual.simulate_input("会话信息");
     visual.run_until_parked();
     visual.simulate_keystrokes("enter");
