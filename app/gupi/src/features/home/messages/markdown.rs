@@ -189,6 +189,7 @@ impl RenderOnce for Markdown {
         // MessageContent aligns children instead of stretching them. Give the
         // Markdown root the available width before its list items are measured.
         TextView::new(&view)
+            .plugin(super::resources::ResourceLinks)
             .w_full()
             .min_w_0()
             .selectable(true)
@@ -238,6 +239,62 @@ mod tests {
             };
             div().w(px(self.width)).child(message)
         }
+    }
+
+    #[gpui_kit::test]
+    fn file_link_plugin_preserves_offscreen_find_coordinates(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let text = "前文 [report.txt](file:///tmp/report.txt) 后文";
+        let registry = Registry::default();
+        let scroller = cx.new(|cx| MessageScrollerState::new(1, cx));
+        let state =
+            cx.update(|cx| registry.get("width-fixture", text.into(), scroller.downgrade(), cx));
+        cx.run_until_parked();
+        let before = cx.read(|cx| {
+            state
+                .read(cx)
+                .view
+                .read(cx)
+                .rendered_text()
+                .as_str()
+                .to_owned()
+        });
+        let start = before.find("report.txt").unwrap();
+        state.update(cx, |state, cx| {
+            state.view.update(cx, |view, cx| {
+                view.set_range_highlights(
+                    [RangeHighlight::new(
+                        start..start + "report.txt".len(),
+                        gpui_kit::rgb(0xffff00),
+                    )],
+                    cx,
+                )
+                .unwrap()
+            });
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| WidthFixture {
+                registry,
+                markdown: state.clone(),
+                scroller,
+                width: 600.,
+                user: true,
+            });
+            Root::new(view, window, cx)
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                state.read(cx).view.read(cx).rendered_text().as_str(),
+                before
+            );
+            state.read(cx).view.clone().update(cx, |view, cx| {
+                view.reveal_range(start..start + "report.txt".len(), cx)
+                    .unwrap();
+            });
+            window.remove_window();
+        });
     }
 
     #[gpui_kit::test]

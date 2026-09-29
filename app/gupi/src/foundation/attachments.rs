@@ -126,15 +126,7 @@ pub(crate) fn from_paths(paths: Vec<PathBuf>) -> Result<Vec<Attachment>, String>
                 return Err(format!("Not a file: {}", path.display()));
             }
             let attachment = Attachment::file(path.clone(), metadata.len());
-            let extension = path
-                .extension()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_ascii_lowercase();
-            if matches!(
-                extension.as_str(),
-                "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp"
-            ) {
+            if is_image_path(&path) {
                 let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
                 Attachment::from_image_reader(attachment.name, file)
             } else {
@@ -142,6 +134,17 @@ pub(crate) fn from_paths(paths: Vec<PathBuf>) -> Result<Vec<Attachment>, String>
             }
         })
         .collect()
+}
+
+pub(crate) fn is_image_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp"
+    )
 }
 
 #[cfg(test)]

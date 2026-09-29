@@ -21,12 +21,16 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use pi_rpc::protocol::StreamingBehavior;
-use std::collections::HashSet;
+use std::{collections::HashSet, path::PathBuf};
+mod files;
+use files::Files;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Id {
     Local(Kind),
     Pi(String),
+    Resource(String),
+    File(PathBuf),
 }
 #[derive(Clone)]
 struct Row {
@@ -43,7 +47,7 @@ impl Row {
     fn matches(&self, query: &str) -> bool {
         let keywords = match self.id {
             Id::Local(kind) => kind.search_terms(),
-            Id::Pi(_) => "",
+            Id::Pi(_) | Id::Resource(_) | Id::File(_) => "",
         };
         let haystack = format!("{} {} {keywords}", self.title, self.description).to_lowercase();
         query.split_whitespace().all(|word| haystack.contains(word))
@@ -58,6 +62,7 @@ pub(crate) struct CommandPalette {
     list: Entity<CommandState>,
     rows: Vec<Row>,
     completed: Option<(String, usize)>,
+    files: Option<Files>,
     submission: Option<Task<()>>,
     original_focus: Option<FocusHandle>,
     pub(crate) is_open: bool,
@@ -86,6 +91,7 @@ fn group_label(group: usize) -> &'static str {
         1 => "command-scope-current",
         2 => "command-group-extensions",
         3 => "command-group-skills",
+        5 => "command-group-files",
         _ => "command-group-prompts",
     }
 }
@@ -159,6 +165,7 @@ impl CommandPalette {
                 cx.subscribe_in(&input, window, |this: &mut Self, _, event, _, cx| {
                     if matches!(event, InputEvent::Change) {
                         this.completed = None;
+                        this.sync_files(cx);
                         cx.notify();
                     }
                 }),
@@ -190,12 +197,14 @@ impl CommandPalette {
                 list: cx.new(|cx| CommandState::new(window, cx)),
                 rows: vec![],
                 completed: None,
+                files: None,
                 submission: None,
                 original_focus,
                 is_open: true,
                 _subscriptions: subscriptions,
             }
         });
+        panel.update(cx, |panel, cx| panel.sync_files(cx));
         let shown = panel.clone();
         let weak = panel.downgrade();
         window.open_dialog(cx, move |dialog, _, _| {
@@ -282,6 +291,9 @@ impl CommandPalette {
     fn candidates(&self, cx: &App) -> Vec<Row> {
         let input = self.input.read(cx);
         let text = input.value();
+        if let Some(query) = text.strip_prefix('@') {
+            return self.file_candidates(query, cx);
+        }
         if self
             .completed
             .as_ref()
@@ -367,7 +379,11 @@ impl CommandPalette {
                     _ => String::new(),
                 };
                 rows.push(Row {
-                    id: Id::Pi(c.name.clone()),
+                    id: if matches!(c.source.as_str(), "skill" | "prompt") {
+                        Id::Resource(c.name.clone())
+                    } else {
+                        Id::Pi(c.name.clone())
+                    },
                     group,
                     title: format!("/{}", c.name),
                     description: c.description.clone().unwrap_or_default(),
@@ -416,6 +432,17 @@ impl CommandPalette {
                 return;
             };
             match &row.id {
+                Id::File(path) => {
+                    if let Some((home, _)) = &self.home {
+                        let home = home.clone();
+                        let path = path.clone();
+                        self.close(window, cx);
+                        window.defer(cx, move |window, cx| {
+                            let _ = home.update(cx, |home, cx| home.select_file(path, window, cx));
+                        });
+                    }
+                    return;
+                }
                 Id::Local(kind) => {
                     if !execute {
                         return;
@@ -438,7 +465,23 @@ impl CommandPalette {
                     });
                     return;
                 }
-                Id::Pi(name) => {
+                Id::Resource(name) if execute => {
+                    let resource = self.home.as_ref().and_then(|(_, state)| {
+                        state
+                            .read(cx)
+                            .current()?
+                            .commands
+                            .data()?
+                            .iter()
+                            .find(|command| &command.name == name)
+                            .cloned()
+                    });
+                    if let Some(resource) = resource {
+                        self.select_resource(resource, window, cx);
+                    }
+                    return;
+                }
+                Id::Pi(name) | Id::Resource(name) => {
                     let text = self.input.read(cx).value().to_string();
                     let value = complete(&text, name);
                     let end = text.find(char::is_whitespace).unwrap_or(text.len());
@@ -456,6 +499,17 @@ impl CommandPalette {
                 }
             }
         } else if !rows.is_empty() {
+            return;
+        }
+        // Resource mode never executes a prompt, including after Tab followed
+        // by more query edits. Its query is not a second conversation draft.
+        if execute && let Some(resource) = self.typed_resource(cx) {
+            if self.can_send(cx) {
+                self.select_resource(resource, window, cx);
+            }
+            return;
+        }
+        if self.input.read(cx).value().starts_with('@') {
             return;
         }
         if execute && self.can_send(cx) {
@@ -480,6 +534,29 @@ impl CommandPalette {
             }
         }
         cx.notify();
+    }
+    fn typed_resource(&self, cx: &App) -> Option<pi_rpc::protocol::SlashCommand> {
+        let text = self.input.read(cx).value();
+        let commands = self.home.as_ref()?.1.read(cx).current()?.commands.data()?;
+        crate::foundation::composer_resources::command(&text, commands)
+            .filter(|command| matches!(command.source.as_str(), "skill" | "prompt"))
+            .cloned()
+    }
+    fn select_resource(
+        &mut self,
+        resource: pi_rpc::protocol::SlashCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((home, _)) = &self.home else { return };
+        let home = home.clone();
+        let from_composer = self.from_composer;
+        self.close(window, cx);
+        window.defer(cx, move |window, cx| {
+            let _ = home.update(cx, |home, cx| {
+                home.select_resource(resource, from_composer, window, cx)
+            });
+        });
     }
     fn key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.input.update(cx, |input, cx| {
@@ -631,6 +708,21 @@ impl Render for CommandPalette {
                 );
             }
         }
+        if self.input.read(cx).value().starts_with('@') {
+            has_status = false;
+            status = v_flex().gap_2().px_3().py_2();
+            match &self.files {
+                Some(Files::Loading { .. }) => {
+                    has_status = true;
+                    status = status.child(t(cx, "resource-files-loading"));
+                }
+                Some(Files::Ready(Err(error))) => {
+                    has_status = true;
+                    status = status.child(error.clone());
+                }
+                _ => {}
+            }
+        }
         let input = self.input.clone();
         let mut command = Command::new(&self.list)
             .searchable(false)
@@ -645,7 +737,7 @@ impl Render for CommandPalette {
                 )
             });
         let mut paths = Vec::new();
-        for group in 0..5 {
+        for group in 0..6 {
             let mut section = CommandGroup::new().label(t(cx, group_label(group)));
             for (index, row) in self.rows.iter().filter(|r| r.group == group).enumerate() {
                 let path = IndexPath::new(index).section(group);
@@ -685,7 +777,7 @@ impl Render for CommandPalette {
                                         el = el.child(kbd);
                                     }
                                 }
-                                Id::Pi(_) => {
+                                Id::Pi(_) | Id::Resource(_) | Id::File(_) => {
                                     el = el.child(
                                         div()
                                             .flex_shrink_0()
@@ -719,7 +811,7 @@ impl Render for CommandPalette {
             .on_confirm(move |path, w, cx| {
                 if let Some((_, id)) = paths.iter().find(|(p, _)| *p == path) {
                     let id = id.clone();
-                    let execute = matches!(id, Id::Local(_));
+                    let execute = matches!(id, Id::Local(_) | Id::Resource(_) | Id::File(_));
                     let _ = owner.update(cx, |this, cx| {
                         this.choose(Some(id), execute, StreamingBehavior::Steer, w, cx)
                     });
@@ -735,7 +827,21 @@ impl Render for CommandPalette {
             .child(command)
             .when(has_status, |content| content.child(status));
         let selected = self.selected(cx);
-        let execute_label = if selected.is_none() && self.can_send(cx) {
+        let resource_mode =
+            matches!(selected, Some(Id::Resource(_))) || self.typed_resource(cx).is_some();
+        if resource_mode {
+            content = content.child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t(cx, "resource-edit-in-composer")),
+            );
+        }
+        let execute_label = if resource_mode || matches!(selected, Some(Id::File(_))) {
+            "command-select-resource"
+        } else if selected.is_none() && self.can_send(cx) {
             "command-send-text"
         } else {
             "command-execute"
@@ -747,6 +853,7 @@ impl Render for CommandPalette {
             .map(|r| r.enabled)
             .unwrap_or_else(|| {
                 self.rows.is_empty()
+                    && !self.input.read(cx).value().starts_with('@')
                     && self.can_send(cx)
                     && !self.input.read(cx).value().trim().is_empty()
             });
@@ -772,26 +879,29 @@ impl Render for CommandPalette {
                             this.key("escape", w, cx);
                         })),
                 )
-                .when(matches!(selected, Some(Id::Pi(_))), |footer| {
-                    footer.child(
-                        Button::new("command-complete")
-                            .small()
-                            .ghost()
-                            .label(t(cx, "command-complete"))
-                            .when_some(
-                                Kbd::binding_for_action_in(
-                                    &input::IndentInline,
-                                    &input_focus,
-                                    window,
-                                ),
-                                |button, key| button.child(key),
-                            )
-                            .disabled(busy || !enabled)
-                            .on_click(cx.listener(|this, _, w, cx| {
-                                this.key("tab", w, cx);
-                            })),
-                    )
-                })
+                .when(
+                    matches!(selected, Some(Id::Pi(_) | Id::Resource(_))),
+                    |footer| {
+                        footer.child(
+                            Button::new("command-complete")
+                                .small()
+                                .ghost()
+                                .label(t(cx, "command-complete"))
+                                .when_some(
+                                    Kbd::binding_for_action_in(
+                                        &input::IndentInline,
+                                        &input_focus,
+                                        window,
+                                    ),
+                                    |button, key| button.child(key),
+                                )
+                                .disabled(busy || !enabled)
+                                .on_click(cx.listener(|this, _, w, cx| {
+                                    this.key("tab", w, cx);
+                                })),
+                        )
+                    },
+                )
                 .child(
                     Button::new("command-send")
                         .small()

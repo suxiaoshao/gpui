@@ -643,3 +643,19 @@ conversation-find-count = { $current } / { $total }
 conversation-find-previous = 上一处（Shift+Enter）
 conversation-find-next = 下一处（Enter）
 conversation-find-close = 关闭查找（Esc）
+
+# Composer resources
+command-select-resource = 填入消息
+command-group-files = 文件
+resource-files-loading = 正在搜索项目文件…
+resource-open-file = 打开文件
+resource-skill-content = Skill 指令
+resource-template-unreadable = 无法读取提示词模板。请重新加载资源后重试。
+resource-template-unused-files = 此模板未使用全部文件引用参数。请补充相应参数（例如 $ARGUMENTS），或移除这些引用后再发送。
+resource-search-files = 搜索项目文件…
+resource-choose-files = 选择文件…
+
+resource-edit-in-composer = 在这里选择资源，参数回消息输入框编辑。
+resource-template-unclosed-quote = 模板参数中有未闭合的引号，请补全后再发送文件引用。
+
+resource-answer-required = 请选择一个答案后提交。

@@ -636,3 +636,19 @@ conversation-find-count = { $current } / { $total }
 conversation-find-previous = 前の一致（Shift+Enter）
 conversation-find-next = 次の一致（Enter）
 conversation-find-close = 検索を閉じる（Esc）
+
+# Composer resources
+command-select-resource = メッセージに挿入
+command-group-files = ファイル
+resource-files-loading = プロジェクトファイルを検索中…
+resource-open-file = ファイルを開く
+resource-skill-content = Skill の指示
+resource-template-unreadable = プロンプトテンプレートを読み込めません。リソースを再読み込みして、もう一度お試しください。
+resource-template-unused-files = このテンプレートでは、参照ファイルの引数がすべて使われていません。不足しているパラメーター（例：$ARGUMENTS）を追加するか、参照を削除してから送信してください。
+resource-search-files = プロジェクトファイルを検索…
+resource-choose-files = ファイルを選択…
+
+resource-edit-in-composer = ここでリソースを選び、引数はメッセージ入力欄で編集します。
+resource-template-unclosed-quote = ファイル参照を送信する前に、テンプレート引数の引用符を閉じてください。
+
+resource-answer-required = 回答を選択してから送信してください。

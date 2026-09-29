@@ -713,7 +713,7 @@ mod tests {
             let state = home.read(cx).state.read(cx);
             assert_eq!(state.selected.as_ref(), Some(&key));
             assert_eq!(state.sessions.len(), 1);
-            assert_eq!(state.current().unwrap().draft, "keep draft");
+            assert_eq!(state.current().unwrap().draft.text().as_ref(), "keep draft");
         });
     }
 

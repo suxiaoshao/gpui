@@ -643,3 +643,19 @@ conversation-find-count = { $current } sur { $total }
 conversation-find-previous = Résultat précédent (Maj+Entrée)
 conversation-find-next = Résultat suivant (Entrée)
 conversation-find-close = Fermer la recherche (Échap)
+
+# Composer resources
+command-select-resource = Insérer dans le message
+command-group-files = Fichiers
+resource-files-loading = Recherche des fichiers du projet…
+resource-open-file = Ouvrir le fichier
+resource-skill-content = Instructions du Skill
+resource-template-unreadable = Impossible de lire le modèle de prompt. Rechargez les ressources et réessayez.
+resource-template-unused-files = Ce modèle ne reprend pas tous les arguments des fichiers référencés. Ajoutez les paramètres manquants (par exemple, $ARGUMENTS) ou retirez ces références avant l’envoi.
+resource-search-files = Rechercher les fichiers du projet…
+resource-choose-files = Choisir des fichiers…
+
+resource-edit-in-composer = Choisissez une ressource ici, puis modifiez ses arguments dans le champ du message.
+resource-template-unclosed-quote = Fermez les guillemets dans les arguments du modèle avant d’envoyer les références aux fichiers.
+
+resource-answer-required = Choisissez une réponse avant d’envoyer.

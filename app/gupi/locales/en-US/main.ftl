@@ -643,3 +643,19 @@ conversation-find-count = { $current } of { $total }
 conversation-find-previous = Previous match (Shift+Enter)
 conversation-find-next = Next match (Enter)
 conversation-find-close = Close find (Esc)
+
+# Composer resources
+command-select-resource = Insert into message
+command-group-files = Files
+resource-files-loading = Searching project files…
+resource-open-file = Open file
+resource-skill-content = Skill instructions
+resource-template-unreadable = Cannot read the prompt template. Reload resources and try again.
+resource-template-unused-files = This template does not include all referenced file arguments. Add the missing parameters (for example, $ARGUMENTS), or remove those references before sending.
+resource-search-files = Search project files…
+resource-choose-files = Choose files…
+
+resource-edit-in-composer = Choose a resource here; edit its arguments in the message input.
+resource-template-unclosed-quote = Close the quote in the template arguments before sending file references.
+
+resource-answer-required = Choose an answer before submitting.

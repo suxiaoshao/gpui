@@ -643,3 +643,19 @@ conversation-find-count = { $current } / { $total }
 conversation-find-previous = 上一處（Shift+Enter）
 conversation-find-next = 下一處（Enter）
 conversation-find-close = 關閉尋找（Esc）
+
+# Composer resources
+command-select-resource = 填入訊息
+command-group-files = 檔案
+resource-files-loading = 正在搜尋專案檔案…
+resource-open-file = 開啟檔案
+resource-skill-content = Skill 指令
+resource-template-unreadable = 無法讀取提示詞範本。請重新載入資源後再試。
+resource-template-unused-files = 此範本未使用全部檔案引用參數。請補上對應參數（例如 $ARGUMENTS），或移除這些引用後再傳送。
+resource-search-files = 搜尋專案檔案…
+resource-choose-files = 選擇檔案…
+
+resource-edit-in-composer = 在這裡選擇資源，參數回訊息輸入框編輯。
+resource-template-unclosed-quote = 範本參數中有未閉合的引號，請補全後再傳送檔案引用。
+
+resource-answer-required = 請選擇一個答案後提交。

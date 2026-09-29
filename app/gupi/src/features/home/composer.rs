@@ -1,10 +1,11 @@
 use super::actions::{Kind, Run};
 use super::*;
-use crate::features::composer::{self, Composer};
+use crate::features::composer::Composer;
 use crate::state::conversation::content::BodyState;
 use gpui_kit::component::button::DropdownButton;
-use gpui_kit::component::input::{InputGroupButton, Textarea};
-use gpui_kit::component::menu::PopupMenuItem;
+use gpui_kit::component::group_box::{GroupBox, GroupBoxVariants as _};
+use gpui_kit::component::input::{InputGroupButton, InputToken, Textarea};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use pi_rpc::protocol::{UiMethod, UiReply};
 mod metrics;
 mod queue;
@@ -34,12 +35,38 @@ impl HomeView {
         if valid {
             self.reply_extension(
                 UiReply::Value {
-                    value: self.extension_input.read(cx).value().to_string(),
+                    value: if matches!(
+                        self.state
+                            .read(cx)
+                            .current()
+                            .and_then(|s| s.pending_ui.front())
+                            .map(|p| &p.request.method),
+                        Some(UiMethod::Input { .. })
+                    ) {
+                        self.extension_line.read(cx).value().to_string()
+                    } else {
+                        self.extension_input.read(cx).value().to_string()
+                    },
                 },
                 cx,
             );
         }
     }
+    fn extension_cancel(&self, cx: &Context<Self>) -> Button {
+        Button::new("extension-cancel")
+            .ghost()
+            .label(t(cx, "action-cancel"))
+            .on_click(cx.listener(|this, _, _, cx| this.reply_extension(UiReply::cancelled(), cx)))
+    }
+
+    fn extension_submit(&self, cx: &Context<Self>) -> Button {
+        Button::new("extension-submit")
+            .primary()
+            .ml_auto()
+            .label(t(cx, "conversation-submit"))
+            .on_click(cx.listener(|this, _, _, cx| this.submit_extension(cx)))
+    }
+
     pub(super) fn render_composer(
         &self,
         _window: &mut Window,
@@ -184,11 +211,10 @@ impl HomeView {
         for widget in session.widgets.values().filter(|w| !w.below) {
             shell = shell.child(div().text_sm().child(widget.lines.join("\n")));
         }
-        let mut editor = composer::surface(cx);
+        let mut editor = v_flex().w_full().min_w_0();
         if let Some(pending) = session.pending_ui.front() {
             editor = editor
-                .p_3()
-                .gap_2()
+                .gap_4()
                 .key_context("GupiExtension")
                 .track_focus(&self.extension_focus)
                 .on_action(cx.listener(|this, _: &actions::CancelExtension, _, cx| {
@@ -199,26 +225,36 @@ impl HomeView {
                         this.reply_extension(UiReply::cancelled(), cx)
                     }),
                 )
-                .on_action(cx.listener(|this, _: &actions::ConfirmExtension, _, cx| {
-                    let reply = this
-                        .state
-                        .read(cx)
-                        .current()
-                        .and_then(|s| s.pending_ui.front())
-                        .and_then(|p| match &p.request.method {
-                            UiMethod::Select { options, .. } => options
-                                .first()
-                                .cloned()
-                                .map(|value| UiReply::Value { value }),
-                            UiMethod::Confirm { .. } => {
-                                Some(UiReply::Confirmed { confirmed: true })
-                            }
-                            _ => None,
-                        });
-                    if let Some(reply) = reply {
-                        this.reply_extension(reply, cx);
-                    }
-                }));
+                .on_action(
+                    cx.listener(|this, _: &actions::ConfirmExtension, window, cx| {
+                        if let Some(selection) = this
+                            .state
+                            .read(cx)
+                            .current()
+                            .and_then(|s| s.pending_ui.front())
+                            .and_then(|p| p.selection.clone())
+                        {
+                            selection.update(cx, |state, cx| {
+                                state.submit(window, cx);
+                            });
+                            return;
+                        }
+                        let reply = this
+                            .state
+                            .read(cx)
+                            .current()
+                            .and_then(|s| s.pending_ui.front())
+                            .and_then(|p| match &p.request.method {
+                                UiMethod::Confirm { .. } => {
+                                    Some(UiReply::Confirmed { confirmed: true })
+                                }
+                                _ => None,
+                            });
+                        if let Some(reply) = reply {
+                            this.reply_extension(reply, cx);
+                        }
+                    }),
+                );
             let title = match &pending.request.method {
                 UiMethod::Select { title, .. }
                 | UiMethod::Confirm { title, .. }
@@ -226,80 +262,199 @@ impl HomeView {
                 | UiMethod::Editor { title, .. } => title.clone(),
                 _ => String::new(),
             };
-            editor = editor.child(div().text_sm().font_weight(FontWeight::MEDIUM).child(title));
+
             match &pending.request.method {
                 UiMethod::Select { options, .. } => {
-                    for (i, option) in options.iter().enumerate() {
-                        let option = option.clone();
+                    use gpui_kit::component::questionnaire::{
+                        Questionnaire, QuestionnaireActions, QuestionnaireChoice,
+                        QuestionnaireChoices, QuestionnaireError, QuestionnaireItem,
+                        QuestionnaireSubmit, QuestionnaireTitle,
+                    };
+                    if let Some(selection) = &pending.selection {
                         editor = editor.child(
-                            Button::new(("extension-option", i))
-                                .small()
-                                .label(option.clone())
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.reply_extension(
-                                        UiReply::Value {
-                                            value: option.clone(),
-                                        },
-                                        cx,
+                            Questionnaire::new(selection).child(
+                                QuestionnaireItem::new(selection, "answer")
+                                    .child(QuestionnaireTitle::new(selection, "answer"))
+                                    .child(
+                                        div()
+                                            .id("extension-choices")
+                                            .test_support()
+                                            // Keep outward focus rings inside the scroll clip;
+                                            // matching margins preserve the title alignment.
+                                            .m(rems(-0.25))
+                                            .p_1()
+                                            .max_h(rems(16.))
+                                            .overflow_y_scroll()
+                                            .child(
+                                                QuestionnaireChoices::new(selection, "answer")
+                                                    .children(options.iter().enumerate().map(
+                                                        |(ix, _)| {
+                                                            QuestionnaireChoice::new(
+                                                                selection,
+                                                                "answer",
+                                                                ix.to_string(),
+                                                            )
+                                                            .min_w_0()
+                                                            .content_style(
+                                                                StyleRefinement::default()
+                                                                    .min_w_0()
+                                                                    .whitespace_normal(),
+                                                            )
+                                                        },
+                                                    )),
+                                            ),
                                     )
-                                })),
+                                    .child(
+                                        QuestionnaireError::new(selection, "answer")
+                                            .child(t(cx, "resource-answer-required")),
+                                    )
+                                    .child(
+                                        QuestionnaireActions::new(selection)
+                                            .child(self.extension_cancel(cx))
+                                            .child(QuestionnaireSubmit::new(selection).ml_auto()),
+                                    ),
+                            ),
+                        );
+                    }
+                }
+                UiMethod::Input { .. } => {
+                    use gpui_kit::component::questionnaire::{
+                        Questionnaire, QuestionnaireActions, QuestionnaireInput, QuestionnaireItem,
+                        QuestionnaireSubmit, QuestionnaireTitle,
+                    };
+                    if let Some(questionnaire) = &self.input_questionnaire {
+                        let mut actions = QuestionnaireActions::new(questionnaire)
+                            .child(self.extension_cancel(cx));
+                        if self.extension_line.read(cx).value().trim().is_empty() {
+                            // Questionnaire treats blank text as unanswered; Pi
+                            // explicitly permits it. Keep that one submit path raw.
+                            actions = actions.child(self.extension_submit(cx));
+                        } else {
+                            actions =
+                                actions.child(QuestionnaireSubmit::new(questionnaire).ml_auto());
+                        }
+                        editor = editor.child(
+                            Questionnaire::new(questionnaire).child(
+                                QuestionnaireItem::new(questionnaire, "answer")
+                                    .child(QuestionnaireTitle::new(questionnaire, "answer"))
+                                    .child(QuestionnaireInput::new(questionnaire, "answer"))
+                                    .child(actions),
+                            ),
                         );
                     }
                 }
                 UiMethod::Confirm { message, .. } => {
-                    editor = editor.child(div().text_sm().child(message.clone())).child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new("extension-yes")
-                                    .small()
-                                    .label(t(cx, "action-confirm"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.reply_extension(
-                                            UiReply::Confirmed { confirmed: true },
-                                            cx,
-                                        )
-                                    })),
-                            )
-                            .child(
-                                Button::new("extension-no")
-                                    .small()
-                                    .label(t(cx, "conversation-no"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.reply_extension(
-                                            UiReply::Confirmed { confirmed: false },
-                                            cx,
-                                        )
-                                    })),
-                            ),
-                    );
-                }
-                UiMethod::Input { .. } | UiMethod::Editor { .. } => {
+                    use gpui_kit::component::form::{field, v_form};
                     editor = editor
-                        .child(Textarea::new(&self.extension_input).appearance(false))
+                        .child(v_form().child(field().label(title).description(message.clone())))
                         .child(
-                            Button::new("extension-submit")
-                                .small()
-                                .label(t(cx, "conversation-submit"))
-                                .on_click(cx.listener(|this, _, _, cx| this.submit_extension(cx))),
+                            h_flex()
+                                .gap_2()
+                                .child(self.extension_cancel(cx))
+                                .child(
+                                    Button::new("extension-no")
+                                        .ml_auto()
+                                        .label(t(cx, "conversation-no"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.reply_extension(
+                                                UiReply::Confirmed { confirmed: false },
+                                                cx,
+                                            )
+                                        })),
+                                )
+                                .child(
+                                    Button::new("extension-yes")
+                                        .primary()
+                                        .label(t(cx, "action-confirm"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.reply_extension(
+                                                UiReply::Confirmed { confirmed: true },
+                                                cx,
+                                            )
+                                        })),
+                                ),
+                        );
+                }
+                UiMethod::Editor { .. } => {
+                    use gpui_kit::component::form::{field, v_form};
+                    editor = editor
+                        .child(
+                            v_form().child(
+                                field()
+                                    .label(title.clone())
+                                    .child(Textarea::new(&self.extension_input).aria_label(title)),
+                            ),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(self.extension_cancel(cx))
+                                .child(self.extension_submit(cx)),
                         );
                 }
                 _ => {}
             }
-            editor =
-                editor.child(
-                    Button::new("extension-cancel")
-                        .ghost()
-                        .small()
-                        .label(t(cx, "action-cancel"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.reply_extension(UiReply::cancelled(), cx)
-                        })),
-                );
         } else {
             let owner = cx.entity().downgrade();
             let input = Textarea::new(&self.input)
                 .aria_label(t(cx, "conversation-input"))
+                .token(|context, _, _| {
+                    InputToken::new(context).icon(if context.token().id().starts_with("skill:") {
+                        IconName::BookOpen
+                    } else {
+                        IconName::FileText
+                    })
+                })
+                .on_token_click(cx.listener(
+                    |this,
+                     event: &gpui_kit::component::input::InlineTokenClickEvent,
+                     window,
+                     cx| {
+                        if let Some(path) =
+                            crate::foundation::composer_resources::file_path(event.token())
+                        {
+                            cx.open_with_system(path);
+                            return;
+                        }
+                        let command = this
+                            .state
+                            .read(cx)
+                            .current()
+                            .and_then(|s| s.commands.data())
+                            .and_then(|commands| {
+                                crate::foundation::composer_resources::command(
+                                    event.token().text(),
+                                    commands,
+                                )
+                            })
+                            .cloned();
+                        if let Some(command) = command {
+                            window.open_dialog(cx, move |dialog, _, cx| {
+                                let path = command
+                                    .source_info
+                                    .get("path")
+                                    .and_then(|v| v.as_str())
+                                    .map(PathBuf::from);
+                                dialog
+                                    .title(format!("/{}", command.name))
+                                    .child(
+                                        div()
+                                            .child(command.description.clone().unwrap_or_default()),
+                                    )
+                                    .when_some(path, |dialog, path| {
+                                        dialog.child(
+                                            Button::new("open-resource-file")
+                                                .small()
+                                                .label(t(cx, "resource-open-file"))
+                                                .on_click(move |_, _, cx| {
+                                                    cx.open_with_system(&path)
+                                                }),
+                                        )
+                                    })
+                            });
+                        }
+                    },
+                ))
                 .on_paste(move |item, window, cx| {
                     owner
                         .update(cx, |this, cx| this.paste_attachments(item, window, cx))
@@ -308,6 +463,7 @@ impl HomeView {
             let Some(view) = self.views.get(&key) else {
                 return div().into_any_element();
             };
+            let file_owner = cx.weak_entity();
             let mut actions = h_flex().flex_none().items_center().gap_2().child(
                 InputGroupButton::new("attach-files")
                     .small()
@@ -315,7 +471,27 @@ impl HomeView {
                     .tooltip(t(cx, "attachment-add"))
                     .accessibility_label(t(cx, "attachment-add"))
                     .disabled(!session.can_edit_draft() || session.attachments_read.is_some())
-                    .on_click(cx.listener(|this, _, _, cx| this.choose_attachments(cx))),
+                    .dropdown_menu(move |menu, _, cx| {
+                        let search = file_owner.clone();
+                        let choose = file_owner.clone();
+                        menu.item(PopupMenuItem::new(t(cx, "resource-search-files")).on_click(
+                            move |_, window, cx| {
+                                let search = search.clone();
+                                window.defer(cx, move |window, cx| {
+                                    let _ = search
+                                        .update(cx, |home, cx| home.open_files(None, window, cx));
+                                });
+                            },
+                        ))
+                        .item(
+                            PopupMenuItem::new(t(cx, "resource-choose-files")).on_click(
+                                move |_, window, cx| {
+                                    let _ = choose
+                                        .update(cx, |home, cx| home.choose_attachments(window, cx));
+                                },
+                            ),
+                        )
+                    }),
             );
             if session.stats.data().is_some()
                 || session.stats.running()
@@ -430,8 +606,20 @@ impl HomeView {
             editor = div()
                 .relative()
                 .key_context("GupiComposer")
-                .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                    this.attach_paths(paths.paths().to_vec(), cx)
+                // Undo may restore the original @ query. Keep editing focus
+                // in the composer while the input performs its own history edit.
+                .capture_action(
+                    cx.listener(|this, _: &gpui_kit::component::input::Undo, _, _| {
+                        this.slash.dismiss_file_query();
+                    }),
+                )
+                .capture_action(
+                    cx.listener(|this, _: &gpui_kit::component::input::Redo, _, _| {
+                        this.slash.dismiss_file_query();
+                    }),
+                )
+                .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                    this.attach_paths(paths.paths().to_vec(), window, cx)
                 }))
                 .child(
                     composer
@@ -442,7 +630,17 @@ impl HomeView {
         if session.pending_count > 0 {
             shell = shell.child(self.render_queue(&key, preview, cx));
         }
-        shell = shell.child(editor);
+        shell = if session.pending_ui.is_empty() {
+            shell.child(editor)
+        } else {
+            shell.child(
+                GroupBox::new()
+                    .id("extension-questionnaire")
+                    .outline()
+                    .min_w_0()
+                    .child(editor),
+            )
+        };
         for widget in session.widgets.values().filter(|w| w.below) {
             shell = shell.child(div().text_sm().child(widget.lines.join("\n")));
         }

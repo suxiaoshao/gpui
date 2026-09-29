@@ -97,7 +97,7 @@ impl ConversationState {
                             .is_some_and(|key| removed.contains(key));
                         let saved_draft = removed
                             .iter()
-                            .any(|key| !this.sessions[key].draft.is_empty());
+                            .any(|key| !this.sessions[key].draft.text().is_empty());
                         for key in removed {
                             this.sessions.remove(&key);
                             notify_session(&key, cx);

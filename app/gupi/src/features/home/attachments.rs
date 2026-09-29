@@ -14,7 +14,7 @@ impl HomeView {
         let session = self.state.read(cx).sessions.get(key)?;
         (session.can_edit_draft() && session.attachments_read.is_none()).then(|| key.clone())
     }
-    pub(super) fn choose_attachments(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn choose_attachments(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(key) = self.attachment_target(cx) else {
             return;
         };
@@ -24,42 +24,65 @@ impl HomeView {
             multiple: true,
             prompt: None,
         });
-        self.load_attachments(
-            key,
-            async move {
-                let paths = paths
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .map_err(|e| e.to_string())?;
-                match paths {
-                    Some(paths) => smol::unblock(move || attachments::from_paths(paths)).await,
-                    None => Ok(Vec::new()),
+        cx.spawn_in(window, async move |owner, cx| {
+            let result = paths
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.map_err(|e| e.to_string()));
+            let _ = owner.update_in(cx, |this, window, cx| {
+                if this.attachment_target(cx).as_ref() != Some(&key) {
+                    return;
                 }
-            },
-            cx,
-        );
+                match result {
+                    Ok(Some(paths)) => this.attach_paths(paths, window, cx),
+                    Ok(None) => {}
+                    Err(error) => this.state.update(cx, |state, cx| {
+                        state.sessions.get_mut(&key).unwrap().error = Some(error);
+                        crate::state::conversation::notify_session(&key, cx);
+                    }),
+                }
+            });
+        })
+        .detach();
     }
-    pub(super) fn attach_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+    pub(super) fn attach_paths(
+        &mut self,
+        paths: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(key) = self.attachment_target(cx) else {
             return;
         };
+        let mut images = Vec::new();
+        for path in paths {
+            if attachments::is_image_path(&path) {
+                images.push(path);
+            } else {
+                let range = self.input.read(cx).selected_range();
+                self.insert_file_reference(&path, range, window, cx);
+            }
+        }
+        if images.is_empty() {
+            return;
+        }
         self.load_attachments(
             key,
-            async move { smol::unblock(move || attachments::from_paths(paths)).await },
+            async move { smol::unblock(move || attachments::from_paths(images)).await },
             cx,
         );
     }
     pub(super) fn paste_attachments(
         &mut self,
         item: &ClipboardItem,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
         if let Some(paths) = item.entries().iter().find_map(|entry| match entry {
             ClipboardEntry::ExternalPaths(paths) => Some(paths.paths().to_vec()),
             _ => None,
         }) {
-            self.attach_paths(paths, cx);
+            self.attach_paths(paths, window, cx);
             true
         } else if let Some(bytes) = item.entries().iter().find_map(|entry| match entry {
             ClipboardEntry::Image(image) => Some(image.bytes().to_vec()),

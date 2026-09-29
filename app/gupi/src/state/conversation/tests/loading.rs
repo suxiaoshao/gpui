@@ -79,7 +79,10 @@ async fn offline_catalog_rename_uses_pi_without_switching_the_foreground(cx: &mu
     .await;
     owner.read_with(cx, |state, _| {
         assert_eq!(state.selected.as_ref(), Some(&foreground));
-        assert_eq!(state.sessions[&foreground].draft, "keep input");
+        assert_eq!(
+            state.sessions[&foreground].draft.text().as_ref(),
+            "keep input"
+        );
         assert_eq!(
             state.sessions[&key].info.name.as_deref(),
             Some("renamed conversation")
@@ -300,7 +303,7 @@ async fn deletion_failure_keeps_selection_draft_and_file_and_can_retry(cx: &mut 
         .await;
     owner.read_with(cx, |state, _| {
         assert_eq!(state.selected.as_deref(), Some(key.as_str()));
-        assert_eq!(state.sessions[&key].draft, "keep draft");
+        assert_eq!(state.sessions[&key].draft.text().as_ref(), "keep draft");
         assert!(state.can_delete(&key));
         assert_eq!(state.scan_serial, 0);
     });
@@ -333,7 +336,10 @@ async fn deletion_of_catalog_only_session_does_not_launch_pi(cx: &mut TestAppCon
     })
     .await;
     owner.read_with(cx, |state, _| {
-        assert_eq!(state.sessions[&foreground].draft, "other draft");
+        assert_eq!(
+            state.sessions[&foreground].draft.text().as_ref(),
+            "other draft"
+        );
         assert_eq!(state.selected.as_deref(), Some(foreground.as_str()));
         assert!(state.current().unwrap().instance.is_none());
     });
@@ -389,7 +395,7 @@ async fn failed_startup_deletion_preserves_other_empty_path_draft(cx: &mut TestA
         let sibling = &state.sessions[&other];
         assert!(sibling.info.path.as_os_str().is_empty());
         assert_eq!(sibling.info.cwd, dir.path().join("other-project"));
-        assert_eq!(sibling.draft, "preserved draft");
+        assert_eq!(sibling.draft.text().as_ref(), "preserved draft");
         assert_eq!(sibling.attachments.len(), 1);
         assert_eq!(sibling.attachments[0].name, "keep.txt");
         assert_eq!(state.sessions.len(), 1);
@@ -476,7 +482,7 @@ async fn connected_unsaved_deletion_waits_for_exit_without_relaunching_pi(cx: &m
     });
     close(&owner, cx).await;
 }
-fn begin(
+pub(super) fn begin(
     cx: &mut TestAppContext,
     flags: &[&str],
 ) -> (tempfile::TempDir, Entity<ConversationState>, String) {
@@ -571,7 +577,10 @@ async fn new_conversation_reuses_unsent_session_in_the_requested_project(cx: &mu
         assert_eq!(state.selected.as_ref(), Some(&key));
         assert_eq!(state.sessions.len(), 2);
         assert_eq!(state.current().unwrap().instance, instance);
-        assert_eq!(state.current().unwrap().draft, "unsent input");
+        assert_eq!(
+            state.current().unwrap().draft.text().as_ref(),
+            "unsent input"
+        );
         assert_eq!(state.current().unwrap().attachments.len(), 1);
         // Once the original contains a message, New creates another session.
         state.sessions.get_mut(&key).unwrap().transcript.replace(
@@ -719,7 +728,10 @@ async fn new_conversation_discovers_project_session_dir_without_changing_selecti
     owner.read_with(cx, |state, _| {
         assert_eq!(state.selected.as_deref(), Some(selected.as_str()));
         assert_eq!(state.current().unwrap().info.cwd, project);
-        assert_eq!(state.sessions[&original].draft, "keep the current session");
+        assert_eq!(
+            state.sessions[&original].draft.text().as_ref(),
+            "keep the current session"
+        );
         assert!(state.sessions[&original].instance.is_some());
         assert!(state.infos().iter().any(|(key, _)| key == &history_key));
     });
@@ -742,7 +754,8 @@ async fn sending_waits_for_model_connection_without_queuing(cx: &mut TestAppCont
         state.send(&key, StreamingBehavior::Steer, cx)
     });
     cx.condition(&owner, |state, _| {
-        state.sessions[&key].draft.is_empty() && !state.sessions[&key].history().entries.is_empty()
+        state.sessions[&key].draft.text().is_empty()
+            && !state.sessions[&key].history().entries.is_empty()
     })
     .await;
     assert_eq!(count(dir.path(), "prompt"), 1);
@@ -881,7 +894,7 @@ async fn discarded_connection_clears_extension_ui_but_preserves_conversation(
         assert!(s.extension_title.is_none());
         assert!(s.statuses.is_empty());
         assert!(s.widgets.is_empty());
-        assert_eq!(s.draft, "keep my input");
+        assert_eq!(s.draft.text().as_ref(), "keep my input");
         assert!(s.history().entry("old").is_some());
     };
     owner.update(cx, |state, cx| {
@@ -987,7 +1000,7 @@ async fn manual_compaction_releases_command_and_preserves_draft(cx: &mut TestApp
         .await;
         owner.read_with(cx, |state, cx| {
             let session = &state.sessions[&key];
-            assert_eq!(session.draft, "keep input");
+            assert_eq!(session.draft.text().as_ref(), "keep input");
             assert_eq!(session.instance, instance);
             assert_eq!(state.selected.as_ref(), Some(&key));
             assert_eq!(
@@ -1084,8 +1097,10 @@ async fn uncertain_model_settings_block_send_until_readback_succeeds(cx: &mut Te
         );
         state.send(&key, StreamingBehavior::Steer, cx);
     });
-    cx.condition(&owner, |state, _| state.sessions[&key].draft.is_empty())
-        .await;
+    cx.condition(&owner, |state, _| {
+        state.sessions[&key].draft.text().is_empty()
+    })
+    .await;
     assert_eq!(count(dir.path(), "set_model"), 1);
     assert_eq!(count(dir.path(), "prompt"), 1);
     close(&owner, cx).await;
@@ -1114,12 +1129,12 @@ async fn clone_transfers_connection_only_after_success(cx: &mut TestAppContext) 
         cx.condition(&owner, |s, _| !s.sessions[&key].command.running())
             .await;
         owner.read_with(cx, |s, _| {
-            assert_eq!(s.sessions[&key].draft, "source draft");
+            assert_eq!(s.sessions[&key].draft.text().as_ref(), "source draft");
             assert!(s.sessions[&key].history().entry("old").is_some());
             if outcome == "success" {
                 assert_ne!(s.selected.as_ref(), Some(&key));
                 assert_eq!(s.current().unwrap().instance, instance);
-                assert!(s.current().unwrap().draft.is_empty());
+                assert!(s.current().unwrap().draft.text().is_empty());
                 assert!(s.sessions[&key].instance.is_none());
             } else {
                 assert_eq!(s.selected.as_ref(), Some(&key));
@@ -1176,7 +1191,7 @@ async fn export_picker_cancel_and_rpc_results_leave_session_unchanged(cx: &mut T
         owner.read_with(cx, |s, _| {
             assert_eq!(s.selected.as_ref(), Some(&key));
             assert_eq!(s.sessions[&key].instance, instance);
-            assert_eq!(s.sessions[&key].draft, "keep draft");
+            assert_eq!(s.sessions[&key].draft.text().as_ref(), "keep draft");
         });
         {
             let notices = notifications.borrow();
@@ -1235,7 +1250,7 @@ async fn fork_success_replaces_editor_like_tui_before_history_loads(cx: &mut Tes
     owner.update(cx, |state, cx| state.fork(&key, "old".into(), cx));
     control(&client, "wait_for", "fork", 1).await;
     cx.condition(&owner, |state, _| {
-        state.sessions[&key].draft == "extension fork draft"
+        state.sessions[&key].draft.text().as_ref() == "extension fork draft"
     })
     .await;
     owner.read_with(cx, |state, _| {
@@ -1250,7 +1265,10 @@ async fn fork_success_replaces_editor_like_tui_before_history_loads(cx: &mut Tes
     cx.condition(&owner, |state, _| state.selected.as_ref() != Some(&key))
         .await;
     owner.read_with(cx, |state, _| {
-        assert_eq!(state.current().unwrap().draft, "selected fork message");
+        assert_eq!(
+            state.current().unwrap().draft.text().as_ref(),
+            "selected fork message"
+        );
         assert_eq!(
             state.current().unwrap().body_state(),
             BodyState::Loading(LoadStage::History)
@@ -1273,7 +1291,7 @@ async fn fork_success_replaces_editor_like_tui_before_history_loads(cx: &mut Tes
     // A later extension edit still applies normally, even while history is loading.
     control(&client, "emit_editor", "", 0).await;
     cx.condition(&owner, |state, _| {
-        state.current().unwrap().draft == "next extension draft"
+        state.current().unwrap().draft.text().as_ref() == "next extension draft"
     })
     .await;
     control(&client, "release", "get_entries", 0).await;
@@ -1282,7 +1300,12 @@ async fn fork_success_replaces_editor_like_tui_before_history_loads(cx: &mut Tes
     })
     .await;
     assert_eq!(
-        owner.read_with(cx, |state, _| state.current().unwrap().draft.clone()),
+        owner.read_with(cx, |state, _| state
+            .current()
+            .unwrap()
+            .draft
+            .text()
+            .to_string()),
         "next extension draft"
     );
     close(&owner, cx).await;
@@ -1310,9 +1333,15 @@ async fn fork_history_failure_keeps_successful_fork_and_returned_text(cx: &mut T
         })
         .await;
         let forked = owner.read_with(cx, |state, _| {
-            assert_eq!(state.current().unwrap().draft, "selected fork message");
+            assert_eq!(
+                state.current().unwrap().draft.text().as_ref(),
+                "selected fork message"
+            );
             assert_eq!(state.current().unwrap().instance, instance);
-            assert_eq!(state.sessions[&key].draft, "original conversation draft");
+            assert_eq!(
+                state.sessions[&key].draft.text().as_ref(),
+                "original conversation draft"
+            );
             assert_eq!(state.scan_serial, scans);
             assert!(
                 state
@@ -1330,7 +1359,10 @@ async fn fork_history_failure_keeps_successful_fork_and_returned_text(cx: &mut T
         })
         .await;
         owner.read_with(cx, |state, _| {
-            assert_eq!(state.sessions[&forked].draft, "selected fork message");
+            assert_eq!(
+                state.sessions[&forked].draft.text().as_ref(),
+                "selected fork message"
+            );
             assert_eq!(state.sessions[&forked].instance, instance);
         });
         assert_eq!(count(dir.path(), "fork"), 1);
@@ -1360,14 +1392,15 @@ async fn cancelled_or_failed_fork_does_not_replace_current_editor(cx: &mut TestA
         });
         cx.condition(&owner, |state, _| {
             !state.sessions[&key].command.running()
-                && (skip_editor || state.sessions[&key].draft == "extension fork draft")
+                && (skip_editor
+                    || state.sessions[&key].draft.text().as_ref() == "extension fork draft")
         })
         .await;
         owner.read_with(cx, |state, _| {
             assert_eq!(state.selected.as_ref(), Some(&key));
             assert_eq!(state.sessions[&key].instance, instance);
             assert_eq!(
-                state.sessions[&key].draft,
+                state.sessions[&key].draft.text().as_ref(),
                 if skip_editor {
                     "original input"
                 } else {
@@ -1385,14 +1418,14 @@ async fn control(client: &Client, kind: &str, command: &str, count: usize) {
         .await
         .unwrap();
 }
-fn count(dir: &std::path::Path, command: &str) -> usize {
+pub(super) fn count(dir: &std::path::Path, command: &str) -> usize {
     std::fs::read_to_string(dir.join("commands.log"))
         .unwrap()
         .lines()
         .filter(|line| *line == command)
         .count()
 }
-async fn close(owner: &Entity<ConversationState>, cx: &mut TestAppContext) {
+pub(super) async fn close(owner: &Entity<ConversationState>, cx: &mut TestAppContext) {
     owner.update(cx, |state, _| {
         state.draining = true;
         state.catalog.transition(CatalogMessage::Cancel);
@@ -1430,7 +1463,7 @@ async fn auxiliary_reads_do_not_block_core_or_send_and_retry_stays_local(cx: &mu
         state.send(&key, StreamingBehavior::Steer, cx);
     });
     cx.condition(&owner, |state, _| {
-        state.sessions[&key].draft.is_empty() && !state.sessions[&key].core_read.running()
+        state.sessions[&key].draft.text().is_empty() && !state.sessions[&key].core_read.running()
     })
     .await;
     assert_eq!(count(dir.path(), "prompt"), 1);
@@ -1497,15 +1530,17 @@ async fn model_change_waits_for_readback_and_failed_command_reads_actual_value(
         assert!(!s.model_change.unconfirmed());
         assert_eq!(s.activity(), Activity::Idle);
         assert!(s.thinking_levels.running());
-        assert_eq!(s.draft, "wait for confirmation");
+        assert_eq!(s.draft.text().as_ref(), "wait for confirmation");
     });
     assert_eq!(count(dir.path(), "set_model"), 1);
     assert!(count(dir.path(), "get_entries") >= 2);
     owner.update(cx, |state, cx| {
         state.send(&key, StreamingBehavior::Steer, cx)
     });
-    cx.condition(&owner, |state, _| state.sessions[&key].draft.is_empty())
-        .await;
+    cx.condition(&owner, |state, _| {
+        state.sessions[&key].draft.text().is_empty()
+    })
+    .await;
     assert_eq!(count(dir.path(), "prompt"), 1);
     control(&client, "release", "get_available_thinking_levels", 0).await;
     cx.condition(&owner, |state, _| {
@@ -1587,13 +1622,15 @@ async fn editing_and_sending_require_ready_connection_and_snapshot_without_queui
         .await;
     assert_eq!(count(dir.path(), "prompt"), 0);
     owner.update(cx, |state, cx| {
-        assert_eq!(state.sessions[&key].draft, "first message");
+        assert_eq!(state.sessions[&key].draft.text().as_ref(), "first message");
         assert!(state.sessions[&key].can_edit_draft());
         assert!(state.sessions[&key].models.running());
         state.send(&key, StreamingBehavior::Steer, cx);
     });
-    cx.condition(&owner, |state, _| state.sessions[&key].draft.is_empty())
-        .await;
+    cx.condition(&owner, |state, _| {
+        state.sessions[&key].draft.text().is_empty()
+    })
+    .await;
     assert_eq!(count(dir.path(), "prompt"), 1);
     close(&owner, cx).await;
 }
@@ -1761,7 +1798,10 @@ async fn submission_keeps_draft_until_ack_blocks_duplicates_and_is_session_local
         assert!(state.sessions[&key].submitting());
         state.set_draft(&key, "must not replace pending draft".into(), cx);
         state.send(&key, StreamingBehavior::FollowUp, cx);
-        assert_eq!(state.sessions[&key].draft, "submitted draft");
+        assert_eq!(
+            state.sessions[&key].draft.text().as_ref(),
+            "submitted draft"
+        );
     });
     cx.condition(&owner, |state, cx| {
         state.client(&key, cx).is_some() && state.sessions[&key].state.is_some()
@@ -1775,7 +1815,10 @@ async fn submission_keeps_draft_until_ack_blocks_duplicates_and_is_session_local
     let other = owner.update(cx, |state, cx| {
         state.set_draft(&key, "still blocked".into(), cx);
         state.send(&key, StreamingBehavior::Steer, cx);
-        assert_eq!(state.sessions[&key].draft, "submitted draft");
+        assert_eq!(
+            state.sessions[&key].draft.text().as_ref(),
+            "submitted draft"
+        );
         assert!(
             state
                 .file()
@@ -1793,12 +1836,15 @@ async fn submission_keeps_draft_until_ack_blocks_duplicates_and_is_session_local
     cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
         .await;
     owner.update(cx, |state, cx| {
-        assert!(state.sessions[&key].draft.is_empty());
+        assert!(state.sessions[&key].draft.text().is_empty());
         assert!(
             state.sessions[&key].running(),
             "ack must not wait for the run to end"
         );
-        assert_eq!(state.sessions[&other].draft, "independent draft");
+        assert_eq!(
+            state.sessions[&other].draft.text().as_ref(),
+            "independent draft"
+        );
         state.set_draft(&key, "follow up while running".into(), cx);
         state.send(&key, StreamingBehavior::FollowUp, cx);
     });
@@ -1835,7 +1881,10 @@ async fn submission_failure_notifies_preserves_draft_and_allows_retry(cx: &mut T
     cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
         .await;
     owner.read_with(cx, |state, _| {
-        assert_eq!(state.sessions[&key].draft, "retry this text");
+        assert_eq!(
+            state.sessions[&key].draft.text().as_ref(),
+            "retry this text"
+        );
         assert!(state.sessions[&key].error.is_some());
         assert_eq!(state.file().drafts[0].draft, "retry this text");
     });
@@ -1847,7 +1896,7 @@ async fn submission_failure_notifies_preserves_draft_and_allows_retry(cx: &mut T
     });
     cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
         .await;
-    assert!(owner.read_with(cx, |state, _| state.sessions[&key].draft.is_empty()));
+    assert!(owner.read_with(cx, |state, _| state.sessions[&key].draft.text().is_empty()));
     assert_eq!(count(dir.path(), "prompt"), 2);
     close(&owner, cx).await;
 }
@@ -1865,7 +1914,7 @@ async fn failed_connection_rejects_send_until_explicit_reconnect(cx: &mut TestAp
     owner.update(cx, |state, cx| {
         state.send(&key, StreamingBehavior::Steer, cx);
         assert!(!state.sessions[&key].submitting());
-        assert_eq!(state.sessions[&key].draft, "first send");
+        assert_eq!(state.sessions[&key].draft.text().as_ref(), "first send");
         assert!(!state.sessions[&key].can_edit_draft());
         state.set_command(fixture());
         state.connect(&key, cx);
@@ -1876,8 +1925,10 @@ async fn failed_connection_rejects_send_until_explicit_reconnect(cx: &mut TestAp
     owner.update(cx, |state, cx| {
         state.send(&key, StreamingBehavior::Steer, cx)
     });
-    cx.condition(&owner, |state, _| state.sessions[&key].draft.is_empty())
-        .await;
+    cx.condition(&owner, |state, _| {
+        state.sessions[&key].draft.text().is_empty()
+    })
+    .await;
     assert_eq!(count(dir.path(), "prompt"), 1);
     close(&owner, cx).await;
 }
@@ -1903,8 +1954,10 @@ async fn failed_initial_snapshot_rejects_send_until_read_retry(cx: &mut TestAppC
     owner.update(cx, |state, cx| {
         state.send(&key, StreamingBehavior::Steer, cx)
     });
-    cx.condition(&owner, |state, _| state.sessions[&key].draft.is_empty())
-        .await;
+    cx.condition(&owner, |state, _| {
+        state.sessions[&key].draft.text().is_empty()
+    })
+    .await;
     close(&owner, cx).await;
 }
 
@@ -1945,14 +1998,14 @@ async fn submission_allows_extension_reply_and_preserves_replacement_editor(
     });
     control(&client, "emit_editor", "", 0).await;
     cx.condition(&owner, |state, _| {
-        state.sessions[&key].draft == "next extension draft"
+        state.sessions[&key].draft.text().as_ref() == "next extension draft"
     })
     .await;
     control(&client, "release", "prompt", 0).await;
     cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
         .await;
     assert_eq!(
-        owner.read_with(cx, |state, _| state.sessions[&key].draft.clone()),
+        owner.read_with(cx, |state, _| state.sessions[&key].draft.text().to_string()),
         "next extension draft"
     );
     close(&owner, cx).await;
@@ -1980,7 +2033,10 @@ async fn submission_disconnect_and_flush_release_pending_tasks_without_clearing_
         .await;
     owner.update(cx, |state, cx| {
         assert!(!state.sessions[&key].submitting());
-        assert_eq!(state.sessions[&key].draft, "preserve on disconnect");
+        assert_eq!(
+            state.sessions[&key].draft.text().as_ref(),
+            "preserve on disconnect"
+        );
         state.send(&key, StreamingBehavior::Steer, cx);
         assert!(!state.sessions[&key].submitting());
         state.connect(&key, cx);
@@ -2003,7 +2059,10 @@ async fn submission_disconnect_and_flush_release_pending_tasks_without_clearing_
     control(&client, "release", "prompt", 0).await;
     owner.read_with(cx, |state, _| {
         assert!(!state.sessions[&key].submitting());
-        assert_eq!(state.sessions[&key].draft, "preserve on disconnect");
+        assert_eq!(
+            state.sessions[&key].draft.text().as_ref(),
+            "preserve on disconnect"
+        );
     });
     close(&owner, cx).await;
 }
@@ -2058,7 +2117,7 @@ async fn manual_reload_preserves_empty_session_choices_and_other_connections(
         assert_ne!(s.sessions[&key].instance, old);
         assert_eq!(s.sessions[&other].instance, other_instance);
         assert_eq!(s.selected.as_ref(), Some(&other));
-        assert_eq!(s.sessions[&key].draft, "unsent 中文 draft");
+        assert_eq!(s.sessions[&key].draft.text().as_ref(), "unsent 中文 draft");
         assert!(s.sessions[&key].can_edit_draft());
         assert_eq!(
             s.sessions[&key].model_identity(),
@@ -2145,7 +2204,7 @@ async fn reload_restores_persisted_file_and_rejects_replaced_identity(cx: &mut T
                 .as_deref(),
             path.to_str()
         );
-        assert_eq!(s.sessions[&key].draft, "retain draft");
+        assert_eq!(s.sessions[&key].draft.text().as_ref(), "retain draft");
     });
     let log = std::fs::read_to_string(dir.path().join("process.log")).unwrap();
     assert!(log.lines().last().unwrap().contains("--session"));
@@ -2159,7 +2218,7 @@ async fn reload_restores_persisted_file_and_rejects_replaced_identity(cx: &mut T
     .await;
     owner.read_with(cx, |s, _| {
         assert!(s.sessions[&key].instance.is_none());
-        assert_eq!(s.sessions[&key].draft, "retain draft");
+        assert_eq!(s.sessions[&key].draft.text().as_ref(), "retain draft");
         assert!(!s.sessions[&key].history().entries.is_empty());
     });
     let log = std::fs::read_to_string(dir.path().join("process.log")).unwrap();
@@ -2257,8 +2316,8 @@ async fn command_submission_does_not_modify_conversation_drafts(cx: &mut TestApp
         .await;
     assert!(result.await.unwrap());
     owner.read_with(cx, |s, _| {
-        assert_eq!(s.sessions[&key].draft, "original message");
-        assert_eq!(s.sessions[&other].draft, "other message");
+        assert_eq!(s.sessions[&key].draft.text().as_ref(), "original message");
+        assert_eq!(s.sessions[&other].draft.text().as_ref(), "other message");
     });
     let inputs = std::fs::read_to_string(dir.path().join("inputs.jsonl")).unwrap();
     let inputs: Vec<serde_json::Value> = inputs
@@ -2294,7 +2353,7 @@ async fn command_submission_reports_failure_and_acceptance_without_saving_input(
         .await;
     assert!(!result.await.unwrap());
     owner.read_with(cx, |s, _| {
-        assert_eq!(s.sessions[&key].draft, "keep original");
+        assert_eq!(s.sessions[&key].draft.text().as_ref(), "keep original");
         assert!(s.sessions[&key].error.is_some());
         assert!(
             !toml::to_string(&s.file())
@@ -2308,7 +2367,7 @@ async fn command_submission_reports_failure_and_acceptance_without_saving_input(
         .await;
     assert!(result.await.unwrap());
     owner.read_with(cx, |s, _| {
-        assert_eq!(s.sessions[&key].draft, "keep original")
+        assert_eq!(s.sessions[&key].draft.text().as_ref(), "keep original")
     });
     let inputs = std::fs::read_to_string(dir.path().join("inputs.jsonl")).unwrap();
     let inputs: Vec<serde_json::Value> = inputs
@@ -2348,9 +2407,15 @@ async fn temporary_instances_are_independent_and_drafts_never_persist(cx: &mut T
             state.sessions[&second].instance
         );
         state.open(&first, cx);
-        assert_eq!(state.current().unwrap().draft, "first draft");
+        assert_eq!(
+            state.current().unwrap().draft.text().as_ref(),
+            "first draft"
+        );
         state.open(&second, cx);
-        assert_eq!(state.current().unwrap().draft, "second draft");
+        assert_eq!(
+            state.current().unwrap().draft.text().as_ref(),
+            "second draft"
+        );
         assert!(!state.can_reconnect(&first, cx));
         assert!(!state.can_export(&first, cx));
         state.send(&first, StreamingBehavior::Steer, cx);
@@ -2411,8 +2476,6 @@ async fn attachment_and_template_survive_rejection_until_pi_accepts(cx: &mut Tes
     };
     let image_path = original.path().to_owned();
     owner.update(cx, |state, cx| {
-        state.sessions.get_mut(&key).unwrap().attachments =
-            crate::foundation::attachments::from_paths(vec![file.clone()]).unwrap();
         state
             .sessions
             .get_mut(&key)
@@ -2423,15 +2486,18 @@ async fn attachment_and_template_survive_rejection_until_pi_accepts(cx: &mut Tes
             name: "review".into(),
             body: "Review $1".into(),
         });
-        state.set_draft(&key, "two words".into(), cx);
+        state.set_draft(&key, format!("two words\n@{}", file.display()), cx);
         state.send(&key, StreamingBehavior::Steer, cx);
     });
     cx.condition(&owner, |state, _| !state.sessions[&key].submitting())
         .await;
     owner.read_with(cx, |state, _| {
-        assert_eq!(state.sessions[&key].attachments.len(), 2);
+        assert_eq!(state.sessions[&key].attachments.len(), 1);
         assert!(state.sessions[&key].pending_template.is_some());
-        assert_eq!(state.sessions[&key].draft, "two words");
+        assert_eq!(
+            state.sessions[&key].draft.text().as_ref(),
+            format!("two words\n@{}", file.display())
+        );
     });
     assert_eq!(std::fs::read(&image_path).unwrap(), *png.get_ref());
     std::fs::remove_file(dir.path().join("fail-prompt")).unwrap();
@@ -2443,7 +2509,7 @@ async fn attachment_and_template_survive_rejection_until_pi_accepts(cx: &mut Tes
     owner.read_with(cx, |state, _| {
         assert!(state.sessions[&key].attachments.is_empty());
         assert!(state.sessions[&key].pending_template.is_none());
-        assert!(state.sessions[&key].draft.is_empty());
+        assert!(state.sessions[&key].draft.text().is_empty());
     });
     assert!(!image_path.exists());
     let inputs = std::fs::read_to_string(dir.path().join("inputs.jsonl")).unwrap();
@@ -2518,7 +2584,7 @@ async fn image_read_failure_retains_draft_for_retry(cx: &mut TestAppContext) {
         .await;
     owner.read_with(cx, |state, _| {
         let session = &state.sessions[&key];
-        assert_eq!(session.draft, "keep this");
+        assert_eq!(session.draft.text().as_ref(), "keep this");
         assert_eq!(session.attachments.len(), 1);
         assert!(session.error.is_some());
     });
@@ -2559,7 +2625,7 @@ async fn stopped_image_preparation_does_not_send_late(cx: &mut TestAppContext) {
         .await;
     assert_eq!(count(dir.path(), "prompt"), 0);
     owner.read_with(cx, |state, _| {
-        assert_eq!(state.sessions[&key].draft, "keep this");
+        assert_eq!(state.sessions[&key].draft.text().as_ref(), "keep this");
         assert_eq!(state.sessions[&key].attachments.len(), 1);
     });
     close(&owner, cx).await;
@@ -2603,12 +2669,15 @@ async fn queue_restore_keeps_current_draft_attachments_and_later_queue_events(
     .await;
     owner.read_with(cx, |state, _| {
         let session = &state.sessions[&key];
-        assert_eq!(session.draft, "steer text\n\nfollow text\n\nlatest draft");
+        assert_eq!(
+            session.draft.text().as_ref(),
+            "steer text\n\nfollow text\n\nlatest draft"
+        );
         assert_eq!(session.attachments.len(), 1);
         assert_eq!(session.attachments[0].name, "keep.txt");
         assert_eq!(session.pending_count, 2);
         assert_eq!(session.queued.as_ref().unwrap().follow_up, ["follow text"]);
-        assert_eq!(state.sessions[&other].draft, "other draft");
+        assert_eq!(state.sessions[&other].draft.text().as_ref(), "other draft");
         assert_eq!(state.selected.as_ref(), Some(&other));
     });
     assert_eq!(count(dir.path(), "clear_queue"), 1);
@@ -2636,7 +2705,7 @@ async fn queue_clear_and_failure_never_replace_draft(cx: &mut TestAppContext) {
         })
         .await;
         owner.read_with(cx, |state, _| {
-            assert_eq!(state.sessions[&key].draft, "keep");
+            assert_eq!(state.sessions[&key].draft.text().as_ref(), "keep");
             assert_eq!(state.sessions[&key].pending_count, if fail { 2 } else { 0 });
         });
         close(&owner, cx).await;
@@ -3175,7 +3244,7 @@ async fn notifications_failure_click_preserves_disconnected_session_until_explic
         assert!(!session.core_read.running());
         assert_eq!(session.binding, binding);
         assert_eq!(session.error, error);
-        assert_eq!(session.draft, "keep this draft");
+        assert_eq!(session.draft.text().as_ref(), "keep this draft");
     });
     let starts = || {
         std::fs::read_to_string(dir.path().join("process.log"))

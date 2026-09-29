@@ -536,6 +536,7 @@ mod tests {
                 .unwrap()
                 .pending_ui
                 .push_back(PendingUi {
+                    selection: None,
                     request: ExtensionRequest {
                         id: id.into(),
                         method: UiMethod::Editor {

@@ -636,3 +636,19 @@ conversation-find-count = { $current } / { $total }
 conversation-find-previous = 이전 일치 항목 (Shift+Enter)
 conversation-find-next = 다음 일치 항목 (Enter)
 conversation-find-close = 찾기 닫기 (Esc)
+
+# Composer resources
+command-select-resource = 메시지에 삽입
+command-group-files = 파일
+resource-files-loading = 프로젝트 파일 검색 중…
+resource-open-file = 파일 열기
+resource-skill-content = Skill 지침
+resource-template-unreadable = 프롬프트 템플릿을 읽을 수 없습니다. 리소스를 다시 불러온 후 재시도하세요.
+resource-template-unused-files = 이 템플릿은 참조된 파일 인수를 모두 사용하지 않습니다. 누락된 매개변수(예: $ARGUMENTS)를 추가하거나 해당 참조를 제거한 후 보내세요.
+resource-search-files = 프로젝트 파일 검색…
+resource-choose-files = 파일 선택…
+
+resource-edit-in-composer = 여기서 리소스를 선택하고 인수는 메시지 입력란에서 편집하세요.
+resource-template-unclosed-quote = 파일 참조를 보내기 전에 템플릿 인수의 따옴표를 닫으세요.
+
+resource-answer-required = 답변을 선택한 후 제출하세요.

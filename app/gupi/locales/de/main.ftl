@@ -643,3 +643,19 @@ conversation-find-count = { $current } von { $total }
 conversation-find-previous = Vorheriger Treffer (Umschalt+Enter)
 conversation-find-next = Nächster Treffer (Enter)
 conversation-find-close = Suche schließen (Esc)
+
+# Composer resources
+command-select-resource = In Nachricht einfügen
+command-group-files = Dateien
+resource-files-loading = Projektdateien werden gesucht…
+resource-open-file = Datei öffnen
+resource-skill-content = Skill-Anweisungen
+resource-template-unreadable = Die Prompt-Vorlage konnte nicht gelesen werden. Laden Sie die Ressourcen neu und versuchen Sie es erneut.
+resource-template-unused-files = Diese Vorlage verwendet nicht alle Argumente der referenzierten Dateien. Ergänze die fehlenden Parameter (z. B. $ARGUMENTS) oder entferne diese Verweise vor dem Senden.
+resource-search-files = Projektdateien suchen…
+resource-choose-files = Dateien auswählen…
+
+resource-edit-in-composer = Hier eine Ressource wählen; Argumente im Nachrichteneingabefeld bearbeiten.
+resource-template-unclosed-quote = Schließe die Anführungszeichen in den Vorlagenargumenten, bevor du Dateiverweise sendest.
+
+resource-answer-required = Wählen Sie vor dem Absenden eine Antwort.
