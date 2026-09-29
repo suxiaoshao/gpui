@@ -49,26 +49,26 @@ pub(super) fn file_references(text: &str) -> String {
             };
             let mut offset = position.start.offset;
             for line in text[position.start.offset..position.end.offset].split_inclusive('\n') {
-                let value = line.trim_end_matches(['\r', '\n']);
+                // Composer tokens include separators outside the quoted path.
+                // Keep those in the source but exclude them from the AST span and URL.
+                let value = line.trim_matches([' ', '\t', '\r', '\n']);
+                let start = offset + line.len() - line.trim_start_matches([' ', '\t']).len();
                 let plain = paragraph.children.iter().any(|child| {
                     matches!(child, markdown_ast::Node::Text(_))
                         && child.position().is_some_and(|position| {
-                            position.start.offset <= offset
-                                && position.end.offset >= offset + value.len()
+                            position.start.offset <= start
+                                && position.end.offset >= start + value.len()
                         })
                 });
                 if plain
-                    && let Some(path) = value
-                        .strip_prefix('@')
-                        .filter(|p| PathBuf::from(p).is_absolute())
+                    && let Some(path) = reference_path(value)
                     && let Ok(url) = url::Url::from_file_path(path)
                 {
                     let label = value
                         .replace('\\', "\\\\")
                         .replace('[', "\\[")
                         .replace(']', "\\]");
-                    replacements
-                        .push((offset..offset + value.len(), format!("[{label}](<{url}>)")));
+                    replacements.push((start..start + value.len(), format!("[{label}](<{url}>)")));
                 }
                 offset += line.len();
             }
@@ -79,6 +79,31 @@ pub(super) fn file_references(text: &str) -> String {
         result.replace_range(range, &replacement);
     }
     result
+}
+
+fn reference_path(value: &str) -> Option<PathBuf> {
+    let mut decoded = String::new();
+    let reference = if value.starts_with(['\'', '"']) {
+        // Inverse of shortcuts::argument: adjacent quoted segments, without
+        // shell-style backslash escapes. Reject prose after the quoted path.
+        let mut quote = None;
+        for ch in value.chars() {
+            match quote {
+                Some(active) if ch == active => quote = None,
+                Some(_) => decoded.push(ch),
+                None if matches!(ch, '\'' | '"') => quote = Some(ch),
+                None => return None,
+            }
+        }
+        if quote.is_some() {
+            return None;
+        }
+        decoded.as_str()
+    } else {
+        value
+    };
+    let path = PathBuf::from(reference.strip_prefix('@')?);
+    path.is_absolute().then_some(path)
 }
 
 pub(super) struct ResourceLinks;
@@ -150,7 +175,7 @@ impl MarkdownPlugin for ResourceLinks {
         })
         .max_w_full()
         .min_w_0()
-        .label(if node.as_text().strip_prefix('@') == path.to_str() {
+        .label(if reference_path(node.as_text()).as_ref() == Some(&path) {
             path.file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
@@ -167,6 +192,49 @@ impl MarkdownPlugin for ResourceLinks {
 mod tests {
     use super::*;
     #[test]
+    fn file_projection_round_trips_composer_paths_without_token_separators() {
+        let root = tempfile::tempdir().unwrap();
+        for name in [
+            "report.txt",
+            "report notes.txt",
+            "报告 'one' \"two\".txt",
+            "report.txt ",
+        ] {
+            let path = root.path().join(name);
+            for leading_space in [false, true] {
+                let token = crate::foundation::composer_resources::file_token(&path, leading_space);
+                for suffix in ["", "\n", "\nfollowing text", "  \nfollowing text"] {
+                    let source = format!("{}{suffix}", token.text());
+                    let display = file_references(&source);
+                    let ast = markdown::to_mdast(&display, &markdown::ParseOptions::gfm()).unwrap();
+                    let links: Vec<_> = ast
+                        .children()
+                        .unwrap()
+                        .iter()
+                        .flat_map(|node| node.children().into_iter().flatten())
+                        .filter_map(|node| match node {
+                            markdown_ast::Node::Link(link) => Some(link),
+                            _ => None,
+                        })
+                        .collect();
+                    assert_eq!(links.len(), 1, "source={source:?}, display={display:?}");
+                    assert_eq!(
+                        links[0].url,
+                        url::Url::from_file_path(&path).unwrap().as_str()
+                    );
+                    let label: String = links[0]
+                        .children
+                        .iter()
+                        .map(|node| node.to_string())
+                        .collect();
+                    assert_eq!(label, token.text().trim());
+                    assert!(display.ends_with(&format!(" {suffix}")), "{display:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn file_projection_keeps_prose_and_code_and_only_tags_complete_reference_lines() {
         let source = "Please inspect\n@/tmp/report [one].txt\n\n`@/tmp/not-a-file`\n\n```\n@/tmp/code\n```\n\nemail @someone";
         let display = file_references(source);
@@ -181,6 +249,19 @@ mod tests {
         assert!(display.ends_with("email @someone"));
         let inline = "`inline code\n@/tmp/inside-code\nend`";
         assert_eq!(file_references(inline), inline);
+        let token = crate::foundation::composer_resources::file_token(
+            std::path::Path::new("/tmp/report notes.txt"),
+            false,
+        );
+        for source in [
+            format!("`{}`", token.text()),
+            format!("```\n{}\n```", token.text()),
+            format!("inspect {}", token.text()),
+            format!("{}is a reference", token.text()),
+            "\"@/tmp/unclosed.txt".into(),
+        ] {
+            assert_eq!(file_references(&source), source);
+        }
     }
     #[test]
     fn skill_projection_requires_complete_pi_envelope_and_preserves_recorded_content() {

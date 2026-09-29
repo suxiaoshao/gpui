@@ -44,6 +44,13 @@ struct Row {
     enabled: bool,
 }
 impl Row {
+    fn element_id(&self) -> ElementId {
+        match &self.id {
+            Id::File(path) => ElementId::Path(path.clone().into()),
+            id => format!("command-row-{id:?}").into(),
+        }
+    }
+
     fn matches(&self, query: &str) -> bool {
         let keywords = match self.id {
             Id::Local(kind) => kind.search_terms(),
@@ -788,11 +795,7 @@ impl Render for CommandPalette {
                                 }
                             }
                             let tooltip = row.tooltip.clone();
-                            el.id(SharedString::from(format!(
-                                "command-row-{}-{}",
-                                row.group, row.title
-                            )))
-                            .when(!tooltip.is_empty(), |el| {
+                            el.id(row.element_id()).when(!tooltip.is_empty(), |el| {
                                 el.tooltip(move |window, cx| {
                                     Tooltip::new(tooltip.clone()).build(window, cx)
                                 })
@@ -943,6 +946,26 @@ mod tests {
             enabled: true,
         }
     }
+    #[test]
+    fn file_rows_distinguish_same_names_and_do_not_depend_on_labels() {
+        let first = Row {
+            id: Id::File("project/a/README.md".into()),
+            group: 5,
+            title: "README.md".into(),
+            ..local_row(Kind::New)
+        };
+        let second = Row {
+            id: Id::File("project/b/README.md".into()),
+            ..first.clone()
+        };
+        assert_ne!(first.element_id(), second.element_id());
+        let relabeled = Row {
+            title: "different display label".into(),
+            ..second.clone()
+        };
+        assert_eq!(second.element_id(), relabeled.element_id());
+    }
+
     #[test]
     fn builtin_search_names_resolve_to_existing_local_actions() {
         let rows = APP
