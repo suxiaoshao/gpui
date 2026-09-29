@@ -486,8 +486,10 @@ async fn image_reference_and_pasted_files_use_distinct_send_paths(cx: &mut TestA
     image::DynamicImage::new_rgb8(2, 3).save(&picture).unwrap();
     let first = dir.path().join("first 文件.txt");
     let second = dir.path().join("second.txt");
+    let folder = dir.path().join("folder.png");
     std::fs::write(&first, "one").unwrap();
     std::fs::write(&second, "two").unwrap();
+    std::fs::create_dir(&folder).unwrap();
     owner.update(cx, |state, cx| {
         state.set_draft(&key, "before  after".into(), cx)
     });
@@ -519,7 +521,13 @@ async fn image_reference_and_pasted_files_use_distinct_send_paths(cx: &mut TestA
         cx.write_to_clipboard(gpui_kit::ClipboardItem {
             entries: vec![gpui_kit::ClipboardEntry::ExternalPaths(
                 gpui_kit::ExternalPaths(
-                    vec![first.clone(), picture.clone(), second.clone()].into(),
+                    vec![
+                        first.clone(),
+                        picture.clone(),
+                        folder.clone(),
+                        second.clone(),
+                    ]
+                    .into(),
                 ),
             )],
         });
@@ -532,7 +540,13 @@ async fn image_reference_and_pasted_files_use_distinct_send_paths(cx: &mut TestA
         .await;
     let expected = owner.read_with(visual, |state, _| {
         let session = &state.sessions[&key];
-        assert_eq!(session.draft.tokens().len(), 3);
+        assert_eq!(session.draft.tokens().len(), 4);
+        assert!(
+            session.draft.tokens()[2]
+                .token()
+                .id()
+                .starts_with("directory:")
+        );
         let paths: Vec<_> = session
             .draft
             .tokens()
@@ -543,7 +557,15 @@ async fn image_reference_and_pasted_files_use_distinct_send_paths(cx: &mut TestA
                     .to_path_buf()
             })
             .collect();
-        assert_eq!(paths, vec![picture.clone(), first.clone(), second.clone()]);
+        assert_eq!(
+            paths,
+            vec![
+                picture.clone(),
+                first.clone(),
+                folder.clone(),
+                second.clone()
+            ]
+        );
         assert_eq!(session.attachments[0].name, "image.png");
         session.draft.text().to_string()
     });

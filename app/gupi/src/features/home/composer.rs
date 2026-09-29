@@ -401,6 +401,8 @@ impl HomeView {
                 .token(|context, _, _| {
                     InputToken::new(context).icon(if context.token().id().starts_with("skill:") {
                         IconName::BookOpen
+                    } else if context.token().id().starts_with("directory:") {
+                        IconName::Folder
                     } else {
                         IconName::FileText
                     })

@@ -83,6 +83,11 @@ pub(super) fn file_references(text: &str) -> String {
 
 pub(super) struct ResourceLinks;
 
+struct ResourcePath {
+    path: PathBuf,
+    directory: bool,
+}
+
 impl MarkdownPlugin for ResourceLinks {
     fn name(&self) -> &str {
         "gupi-file-link"
@@ -117,21 +122,32 @@ impl MarkdownPlugin for ResourceLinks {
             return None;
         }
         Some(
-            MarkdownNode::new(self.name(), path)
-                .text(label)
-                .markdown(context.node_source(node)?.to_owned()),
+            MarkdownNode::new(
+                self.name(),
+                ResourcePath {
+                    directory: path.is_dir(),
+                    path,
+                },
+            )
+            .text(label)
+            .markdown(context.node_source(node)?.to_owned()),
         )
     }
 
     fn render(&self, node: &MarkdownNode, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let path = node.data::<PathBuf>().expect("file link data").clone();
+        let resource = node.data::<ResourcePath>().expect("path link data");
+        let path = resource.path.clone();
         Button::new(format!(
             "file-link-{}",
             node.source_range().map_or(0, |r| r.start)
         ))
         .ghost()
         .xsmall()
-        .icon(IconName::FileText)
+        .icon(if resource.directory {
+            IconName::Folder
+        } else {
+            IconName::FileText
+        })
         .max_w_full()
         .min_w_0()
         .label(if node.as_text().strip_prefix('@') == path.to_str() {

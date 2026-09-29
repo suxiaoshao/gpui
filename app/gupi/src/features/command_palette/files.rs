@@ -2,7 +2,13 @@ use super::*;
 
 pub(super) enum Files {
     Loading { _task: Task<()> },
-    Ready(Result<Vec<PathBuf>, String>),
+    Ready(Result<Vec<ProjectPath>, String>),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ProjectPath {
+    path: PathBuf,
+    directory: bool,
 }
 
 impl CommandPalette {
@@ -41,7 +47,8 @@ impl CommandPalette {
         let query = query.to_lowercase();
         files
             .iter()
-            .filter_map(|path| {
+            .filter_map(|entry| {
+                let path = &entry.path;
                 let relative = path
                     .strip_prefix(&session.info.cwd)
                     .unwrap_or(path)
@@ -61,7 +68,11 @@ impl CommandPalette {
                     description: relative.into_owned(),
                     detail: String::new(),
                     tooltip: path.to_string_lossy().into_owned(),
-                    icon: IconName::FileText,
+                    icon: if entry.directory {
+                        IconName::Folder
+                    } else {
+                        IconName::FileText
+                    },
                     enabled: self.target_valid(cx)
                         && session.can_edit_draft()
                         && session.attachments_read.is_none(),
@@ -72,24 +83,32 @@ impl CommandPalette {
     }
 }
 
-fn scan(root: PathBuf) -> Result<Vec<PathBuf>, String> {
+fn scan(root: PathBuf) -> Result<Vec<ProjectPath>, String> {
     let mut paths = vec![];
     for entry in ignore::WalkBuilder::new(&root).build() {
         match entry {
-            Ok(entry) if entry.file_type().is_some_and(|kind| kind.is_file()) => {
-                paths.push(entry.into_path())
+            Ok(entry)
+                if entry.depth() > 0
+                    && entry
+                        .file_type()
+                        .is_some_and(|kind| kind.is_file() || kind.is_dir()) =>
+            {
+                paths.push(ProjectPath {
+                    directory: entry.file_type().is_some_and(|kind| kind.is_dir()),
+                    path: entry.into_path(),
+                });
             }
             Err(error) if paths.is_empty() => return Err(error.to_string()),
             _ => {}
         }
     }
-    paths.sort();
+    paths.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(paths)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::scan;
+    use super::{ProjectPath, scan};
     #[test]
     fn project_scan_respects_ignores_and_does_not_traverse_external_symlinks() {
         let project = tempfile::tempdir().unwrap();
@@ -99,12 +118,22 @@ mod tests {
         std::fs::create_dir(project.path().join("ignored")).unwrap();
         std::fs::write(project.path().join("ignored/secret"), "").unwrap();
         std::fs::write(project.path().join("report.txt"), "").unwrap();
+        std::fs::create_dir(project.path().join("folder.png")).unwrap();
         std::fs::write(outside.path().join("external.txt"), "").unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(outside.path(), project.path().join("outside")).unwrap();
         assert_eq!(
             scan(project.path().to_path_buf()).unwrap(),
-            vec![project.path().join("report.txt")]
+            vec![
+                ProjectPath {
+                    path: project.path().join("folder.png"),
+                    directory: true,
+                },
+                ProjectPath {
+                    path: project.path().join("report.txt"),
+                    directory: false,
+                },
+            ]
         );
     }
 }

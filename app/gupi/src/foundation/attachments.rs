@@ -122,11 +122,9 @@ pub(crate) fn from_paths(paths: Vec<PathBuf>) -> Result<Vec<Attachment>, String>
         .map(|path| {
             let path = std::path::absolute(path).map_err(|e| e.to_string())?;
             let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
-            if !metadata.is_file() {
-                return Err(format!("Not a file: {}", path.display()));
-            }
             let attachment = Attachment::file(path.clone(), metadata.len());
-            if is_image_path(&path) {
+            // Directories are path references even when named like an image.
+            if metadata.is_file() && is_image_path(&path) {
                 let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
                 Attachment::from_image_reader(attachment.name, file)
             } else {
@@ -150,6 +148,15 @@ pub(crate) fn is_image_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn directory_with_image_extension_remains_a_path_reference() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("pictures.png");
+        std::fs::create_dir(&directory).unwrap();
+        let items = from_paths(vec![directory.clone()]).unwrap();
+        assert!(matches!(&items[0].content, Content::File { path, .. } if path == &directory));
+    }
+
     #[test]
     fn file_and_image_attachments_preserve_original_bytes() {
         let dir = tempfile::tempdir().unwrap();

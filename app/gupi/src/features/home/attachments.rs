@@ -20,7 +20,7 @@ impl HomeView {
         };
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
-            directories: false,
+            directories: true,
             multiple: true,
             prompt: None,
         });
@@ -56,7 +56,7 @@ impl HomeView {
         };
         let mut images = Vec::new();
         for path in paths {
-            if attachments::is_image_path(&path) {
+            if attachments::is_image_path(&path) && path.is_file() {
                 images.push(path);
             } else {
                 let range = self.input.read(cx).selected_range();

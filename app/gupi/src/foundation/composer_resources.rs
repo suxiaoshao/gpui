@@ -4,6 +4,8 @@ use pi_rpc::protocol::SlashCommand;
 use std::{ops::Range, path::Path};
 
 pub(crate) fn file_token(path: &Path, leading_space: bool) -> InlineToken {
+    // Classify once when inserting, never while rendering the token.
+    let kind = if path.is_dir() { "directory" } else { "file" };
     let path = path.to_string_lossy();
     let reference = format!("@{path}");
     let reference = if reference.contains(|c: char| c.is_whitespace() || matches!(c, '\'' | '"')) {
@@ -12,7 +14,7 @@ pub(crate) fn file_token(path: &Path, leading_space: bool) -> InlineToken {
         reference
     };
     InlineToken::new(
-        format!("file:{path}"),
+        format!("{kind}:{path}"),
         format!("{}{reference} ", if leading_space { " " } else { "" }),
     )
     .with_label(format!(
@@ -25,7 +27,11 @@ pub(crate) fn file_token(path: &Path, leading_space: bool) -> InlineToken {
 }
 
 pub(crate) fn file_path(token: &InlineToken) -> Option<&Path> {
-    token.id().strip_prefix("file:").map(Path::new)
+    token
+        .id()
+        .strip_prefix("file:")
+        .or_else(|| token.id().strip_prefix("directory:"))
+        .map(Path::new)
 }
 
 pub(crate) fn token(command: &SlashCommand, separator: bool) -> Option<InlineToken> {
