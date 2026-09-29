@@ -591,7 +591,8 @@ mod tests {
             for session in s.sessions.values_mut() {
                 session.unread = true;
             }
-            s.sessions.get_mut("b").unwrap().error = Some("failed".into());
+            s.sessions.get_mut("b").unwrap().error =
+                Some(crate::state::conversation::SessionError::Response);
         });
         cx.update(refresh);
         assert_eq!(badge(cx), 2);

@@ -1,5 +1,5 @@
 //! Assemble RPC deltas into the same live messages consumed by the UI.
-use super::{DisplayMessage, Session};
+use super::{DisplayMessage, Session, SessionError};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
@@ -87,8 +87,16 @@ impl Session {
         let message = &self.live[index];
         self.transcript.receive_message();
         self.run.record_message(message.signature());
-        if message.value["stopReason"] == "error" {
-            self.error = message.value["errorMessage"].as_str().map(str::to_owned);
+        if message.role() == "assistant" {
+            if message.value["stopReason"] == "error" {
+                self.error = Some(SessionError::Response);
+            } else if matches!(
+                message.value["stopReason"].as_str(),
+                Some("stop" | "toolUse")
+            ) && matches!(self.error, Some(SessionError::Response))
+            {
+                self.error = None;
+            }
         }
         if message.value["stopReason"] == "aborted" {
             self.interrupted = true;

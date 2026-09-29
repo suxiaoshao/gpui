@@ -365,8 +365,8 @@ async fn run(
                     .sessions
                     .get(&key)
                     .ok_or("Temporary conversation was removed".to_owned())?;
-                if let Some(error) = &session.error {
-                    return Err(error.clone());
+                if let Some(error) = session.runtime_error() {
+                    return Err(error.to_owned());
                 }
                 Ok(session.state.as_ref().and_then(|_| s.client(&key, cx)))
             })?;
@@ -449,7 +449,9 @@ async fn run(
         if let Some(session) = s.sessions.get_mut(&key) {
             session.preparing = false;
             if let Err(error) = &result {
-                session.error = Some(error.clone());
+                session.error = Some(crate::state::conversation::SessionError::Runtime(
+                    error.clone(),
+                ));
             }
         }
         crate::state::conversation::notify_session(&key, cx);

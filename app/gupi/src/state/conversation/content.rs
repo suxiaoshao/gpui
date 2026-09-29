@@ -82,7 +82,7 @@ impl Session {
             };
         }
         match (&self.transcript, &self.core_read) {
-            (Transcript::New, CoreRead::Idle) => match self.error.as_deref() {
+            (Transcript::New, CoreRead::Idle) => match self.runtime_error() {
                 Some(error) => BodyState::Failed(error),
                 None => BodyState::New,
             },
@@ -93,7 +93,7 @@ impl Session {
             (Transcript::New | Transcript::Unloaded, CoreRead::Failed(error)) => {
                 BodyState::Failed(error)
             }
-            (Transcript::Unloaded, CoreRead::Idle) => match self.error.as_deref() {
+            (Transcript::Unloaded, CoreRead::Idle) => match self.runtime_error() {
                 Some(error) => BodyState::Failed(error),
                 None => BodyState::Loading(LoadStage::Connecting),
             },

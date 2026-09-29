@@ -135,6 +135,54 @@ fn answer(session: &mut Session, text: &str) {
 }
 
 #[gpui_kit::test]
+fn response_failure_keeps_transcript_without_reconnect_action(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestWindowExt;
+    init_interactions(cx);
+    let state = cx.new(|cx| ConversationState::temporary("unused-pi".into(), cx));
+    state.update(cx, |state, _| {
+        let mut session = fixture_session("failed-response");
+        session.receive_message(
+            "message_end",
+            &serde_json::json!({
+                "message": {"role":"assistant", "timestamp":1, "content":[],
+                    "stopReason":"error", "errorMessage":"Insufficient account funds"}
+            }),
+        );
+        state.sessions.insert("failed-response".into(), session);
+        state.selected = Some("failed-response".into());
+    });
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| TemporaryView::new(state.clone(), window, cx));
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(960.), px(620.)));
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("retry-session").is_none());
+        let session = state.read(cx).current().unwrap();
+        assert_eq!(session.activity(), super::super::Activity::Failed);
+        assert_eq!(
+            session.messages(None)[0].value["errorMessage"],
+            "Insufficient account funds"
+        );
+    });
+    visual.update(|_, cx| {
+        state.update(cx, |state, cx| {
+            state.sessions.get_mut("failed-response").unwrap().error = Some(
+                super::super::SessionError::Runtime("Pi connection closed".into()),
+            );
+            super::super::notify_session("failed-response", cx);
+        });
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("retry-session").is_some());
+    });
+}
+
+#[gpui_kit::test]
 fn temporary_new_reuses_unsent_draft_and_navigation_handles_more_than_nine(
     cx: &mut TestAppContext,
 ) {
@@ -192,7 +240,9 @@ fn temporary_new_skips_failed_and_exited_drafts(cx: &mut TestAppContext) {
     state.update(cx, |state, cx| {
         let mut failed = fixture_session("failed");
         failed.binding = 0;
-        failed.error = Some("Pi failed to start".into());
+        failed.error = Some(super::super::SessionError::Runtime(
+            "Pi failed to start".into(),
+        ));
         failed.draft = "keep failed draft".into();
         state.sessions.insert("failed".into(), failed);
         state

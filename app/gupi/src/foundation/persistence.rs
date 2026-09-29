@@ -1,5 +1,7 @@
+#[cfg(unix)]
+use std::fs::File;
 use std::{
-    fs::{self, File},
+    fs,
     io::{self, Write},
     path::{Path, PathBuf},
 };

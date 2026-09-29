@@ -52,9 +52,10 @@ pub(crate) fn app_menu_bar(window: &mut Window, cx: &mut App) -> Option<AnyEleme
         let state = window.use_keyed_state("gupi-app-menu", cx, |_, cx| {
             let menu = AppMenuBar::new(cx);
             let weak = menu.downgrade();
-            let subscription = cx.observe_global::<crate::app::menus::MenusChanged>(move |cx| {
-                let _ = weak.update(cx, |menu, cx| menu.reload(cx));
-            });
+            let subscription =
+                cx.observe_global::<crate::app::menus::MenusChanged>(move |_, cx| {
+                    let _ = weak.update(cx, |menu, cx| menu.reload(cx));
+                });
             (menu, subscription)
         });
         Some(

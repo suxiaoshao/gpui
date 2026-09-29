@@ -141,7 +141,7 @@ impl HomeView {
             BodyState::New
             | BodyState::Ready
             | BodyState::Refreshing(_)
-            | BodyState::RefreshFailed(_) => session.error.as_deref(),
+            | BodyState::RefreshFailed(_) => session.runtime_error(),
             BodyState::Loading(_) | BodyState::Failed(_) => None,
         };
         if let Some(error) = runtime_error {

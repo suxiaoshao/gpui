@@ -379,7 +379,7 @@ mod tests {
         assert!(!dir.path().join("unexpectedly-started").exists());
     }
 
-    async fn assert_installed_shell_loads_path(shell: &str, expected_prefix: &str) {
+    async fn assert_installed_shell_loads_path(shell: &str, expected_paths: &[&str]) {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("config");
         std::fs::create_dir_all(config.join("nushell")).unwrap();
@@ -391,6 +391,14 @@ mod tests {
             )
             .unwrap();
         }
+        // Interactive startup can prepend paths after the login profile, as
+        // Nix does from /etc/zshrc on CI. The login entries must remain present,
+        // but need not be the first entries in the final PATH.
+        std::fs::write(
+            dir.path().join(".zshrc"),
+            "export PATH=\"/interactive path:$PATH\"\n",
+        )
+        .unwrap();
         std::fs::write(
             dir.path().join(".login"),
             "setenv PATH \"/login path:$PATH\"\n",
@@ -433,9 +441,14 @@ mod tests {
             .unwrap();
         assert!(output.status.success(), "{shell}: {:?}", output.status);
         let path = parse_path_frame(&output.stdout).unwrap();
+        let paths = std::env::split_paths(&path).collect::<Vec<_>>();
+        let expected = expected_paths
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect::<Vec<_>>();
         assert!(
-            path.as_bytes().starts_with(expected_prefix.as_bytes()),
-            "{shell} did not load its login PATH"
+            paths.windows(expected.len()).any(|part| part == expected),
+            "{shell} did not load {expected:?} in PATH: {paths:?}"
         );
     }
 
@@ -450,20 +463,20 @@ mod tests {
             "/bin/csh",
             "/bin/tcsh",
         ] {
-            assert_installed_shell_loads_path(shell, "/login path:").await;
+            assert_installed_shell_loads_path(shell, &["/login path"]).await;
         }
     }
 
     #[tokio::test]
     #[ignore = "requires nu on PATH; run explicitly after installing Nushell"]
     async fn nushell_loads_config_and_login_path_with_quoted_helper() {
-        assert_installed_shell_loads_path("nu", "/login path:/config path:").await;
+        assert_installed_shell_loads_path("nu", &["/login path", "/config path"]).await;
     }
 
     #[tokio::test]
     #[ignore = "requires fish on PATH; run explicitly after installing Fish"]
     async fn fish_loads_login_path_and_prompt_hooks_with_quoted_helper() {
-        assert_installed_shell_loads_path("fish", "/prompt path:/login path:").await;
+        assert_installed_shell_loads_path("fish", &["/prompt path", "/login path"]).await;
     }
 
     #[tokio::test]

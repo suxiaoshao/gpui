@@ -105,6 +105,12 @@ enum Submission {
         result: tokio::sync::oneshot::Sender<bool>,
     },
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SessionError {
+    Runtime(String),
+    /// The message owns the error text; retain only its execution status here.
+    Response,
+}
 pub(crate) struct Session {
     pub info: SessionInfo,
     pub draft: InputContent,
@@ -135,7 +141,7 @@ pub(crate) struct Session {
     pub statuses: BTreeMap<String, String>,
     pub widgets: BTreeMap<String, Widget>,
     pub extension_title: Option<String>,
-    pub error: Option<String>,
+    pub error: Option<SessionError>,
     pub compacting: bool,
     pub retrying: bool,
     pub retry: Option<execution::RetryProgress>,
@@ -157,6 +163,13 @@ pub(crate) struct Session {
     submission: Submission,
 }
 impl Session {
+    pub fn runtime_error(&self) -> Option<&str> {
+        match &self.error {
+            Some(SessionError::Runtime(message)) => Some(message),
+            Some(SessionError::Response) | None => None,
+        }
+    }
+
     fn new(info: SessionInfo, draft: String) -> Self {
         let transcript = if info.path.as_os_str().is_empty() {
             Transcript::New
@@ -1033,7 +1046,7 @@ impl ConversationState {
                 s.pending_count = 0;
             }
             Err(error) => {
-                s.error = Some(error.to_string());
+                s.error = Some(SessionError::Runtime(error.to_string()));
                 s.fail_submission(error.to_string(), cx);
             }
         };
@@ -1059,13 +1072,15 @@ impl ConversationState {
                 Ok(Some(client)) => match client.state() {
                     ConnectionState::Closed(report) => {
                         let s = self.sessions.get_mut(&key).unwrap();
-                        s.error = Some(report.reason.map(|e| e.to_string()).unwrap_or_else(|| {
-                            if report.stderr.is_empty() {
-                                "Pi connection closed".into()
-                            } else {
-                                report.stderr.clone()
-                            }
-                        }));
+                        s.error = Some(SessionError::Runtime(
+                            report.reason.map(|e| e.to_string()).unwrap_or_else(|| {
+                                if report.stderr.is_empty() {
+                                    "Pi connection closed".into()
+                                } else {
+                                    report.stderr.clone()
+                                }
+                            }),
+                        ));
                         s.instance = None;
                         s.run = RunState::Idle;
                         s.compacting = false;
@@ -1112,7 +1127,7 @@ impl ConversationState {
                 },
                 Err(error) => {
                     let s = self.sessions.get_mut(&key).unwrap();
-                    s.error = Some(error.to_string());
+                    s.error = Some(SessionError::Runtime(error.to_string()));
                     s.finish_submission(false);
                     s.instance = None;
                     s.reset_reads();
@@ -1568,7 +1583,7 @@ impl ConversationState {
                         }
                     }
                     Err(error) => {
-                        s.error = Some(error.to_string());
+                        s.error = Some(SessionError::Runtime(error.to_string()));
                         s.fail_submission(error.to_string(), cx);
                     }
                 }
@@ -1611,7 +1626,7 @@ impl ConversationState {
             let _ = owner.update(cx, |this, cx| {
                 if let Some(s) = this.sessions.get_mut(&key).filter(|s| s.binding == binding) {
                     if let Err(error) = result {
-                        s.error = Some(error.to_string());
+                        s.error = Some(SessionError::Runtime(error.to_string()));
                         s.stopping = false;
                     }
                     this.read_session(&key, ReadScope::History, cx);
@@ -1765,7 +1780,7 @@ impl ConversationState {
                         this.refresh(&key, cx);
                     }
                     Err(error) => {
-                        source.error = Some(error.to_string());
+                        source.error = Some(SessionError::Runtime(error.to_string()));
                         this.refresh_auxiliary(&key, cx);
                     }
                 }
@@ -1793,7 +1808,7 @@ impl ConversationState {
             Ok(()) => {
                 s.pending_ui.pop_front();
             }
-            Err(error) => s.error = Some(error.to_string()),
+            Err(error) => s.error = Some(SessionError::Runtime(error.to_string())),
         };
         notify_session(key, cx);
     }
@@ -1925,7 +1940,11 @@ impl ConversationState {
                             s.error = raw
                                 .get("finalError")
                                 .and_then(Value::as_str)
-                                .map(str::to_owned);
+                                .map(|_| SessionError::Response);
+                        } else if raw.get("success") == Some(&Value::Bool(true))
+                            && matches!(s.error, Some(SessionError::Response))
+                        {
+                            s.error = None;
                         }
                     }
                     "session_info_changed" => {

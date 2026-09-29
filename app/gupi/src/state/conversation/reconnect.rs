@@ -65,7 +65,10 @@ impl ConversationState {
                             .get_mut(&target)
                             .filter(|s| s.binding == binding)
                         {
-                            s.error = Some(t(cx, "conversation-reconnect-unconfirmed"));
+                            s.error = Some(SessionError::Runtime(t(
+                                cx,
+                                "conversation-reconnect-unconfirmed",
+                            )));
                             s.command = SessionCommand::ReconnectUnconfirmed;
                         }
                         notify_session(&target, cx);
@@ -113,7 +116,7 @@ impl ConversationState {
                         s.connection_purpose = ConnectionPurpose::Conversation;
                     }
                     Err(error) => {
-                        s.error = Some(error);
+                        s.error = Some(SessionError::Runtime(error));
                         s.command.finish();
                     }
                 }

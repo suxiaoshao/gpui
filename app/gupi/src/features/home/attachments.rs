@@ -37,7 +37,8 @@ impl HomeView {
                     Ok(Some(paths)) => this.attach_paths(paths, window, cx),
                     Ok(None) => {}
                     Err(error) => this.state.update(cx, |state, cx| {
-                        state.sessions.get_mut(&key).unwrap().error = Some(error);
+                        state.sessions.get_mut(&key).unwrap().error =
+                            Some(crate::state::conversation::SessionError::Runtime(error));
                         crate::state::conversation::notify_session(&key, cx);
                     }),
                 }
@@ -121,7 +122,10 @@ impl HomeView {
                         session.attachments_read = None;
                         match result {
                             Ok(items) => session.attachments.extend(items),
-                            Err(error) => session.error = Some(error),
+                            Err(error) => {
+                                session.error =
+                                    Some(crate::state::conversation::SessionError::Runtime(error))
+                            }
                         }
                         crate::state::conversation::notify_session(&target, cx);
                     }

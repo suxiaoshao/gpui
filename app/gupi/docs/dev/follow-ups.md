@@ -8,7 +8,6 @@
 
 | 工作 | 当前事实与处理边界 | 依据 |
 | --- | --- | --- |
-| 同一错误在正文和输入区重复展示 | 消息正文显示 Pi `errorMessage`，输入区还显示 `Session.error`；已有重复展示反馈。按错误来源确定唯一展示位置，保留连接恢复入口及没有历史消息承载的提交/连接失败，不能直接删除全部输入区错误 | [正文入口](../../src/features/home/messages.rs)、[输入区入口](../../src/features/home/composer.rs)、[通知职责](issue-241/README.md) |
 | GUI 启动时的环境与代理来源 | Pi 继承 Gupi 已有环境，登录 Shell 捕获目前只补 `PATH`；macOS 系统代理不会自动转换为 Pi 子进程的代理变量。已实测系统设置了代理但 Gupi/Pi 启动环境未包含代理变量；后续明确 Shell 环境、系统代理与 Pi 自有配置的职责和优先级，再实施接入 | [环境快照](../../src/state/environment.rs)、[Shell 捕获](../../src/foundation/shell_path.rs)、[Pi 启动](../../src/state/pi.rs) |
 | 会话失败的诊断日志 | 会话错误可显示在界面，但关键失败路径未写入诊断日志；临时会话使用 `--no-session`，无法从持久历史回查。后续补充可关联到会话和失败阶段的诊断记录，避免记录凭据及完整会话正文；不因此持久化临时会话 | [会话错误处理](../../src/state/conversation.rs)、[日志入口](../../src/app/logging.rs) |
 | 设置搜索无结果提示 | 搜索、分类定位和清空恢复已正常；零结果时仍为空白。锁定的 Settings 未提供空态入口，沿用正式组件，不复制整套搜索实现；接入方式需先核对组件可用能力 | [设置计划](issue-231/README.md) |

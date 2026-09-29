@@ -172,14 +172,17 @@ impl PiState {
             // Dropping a Launching entry immediately cancels startup. A late Child
             // remains covered by the crate's launch ownership guard.
             if let Instance::Connected(connection) = instance {
-                connections.push(connection);
+                // close() signals the independent process owner synchronously.
+                // Start every shutdown before waiting for any per-client deadline.
+                let closing = connection.client.close();
+                connections.push((connection, closing));
             }
         }
         cx.notify();
         cx.spawn(async move |_, _| {
             let mut reports = Vec::new();
-            for connection in connections {
-                let report = connection.client.close().await;
+            for (connection, closing) in connections {
+                let report = closing.await;
                 if let Some(error) = &report.reason {
                     tracing::warn!(%error, "Pi connection closed with an error");
                 }
@@ -203,6 +206,51 @@ mod tests {
             "/../../crates/pi-rpc/tests/support/mod.rs"
         ));
     }
+    #[gpui::test]
+    async fn close_all_signals_lingering_clients_before_waiting(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        cx.update(|cx| {
+            gpui_tokio::init(cx);
+            init(cx);
+        });
+        let owner = cx.update(|cx| global(cx));
+        let directories = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+        let mut clients = Vec::new();
+        for directory in &directories {
+            let id = owner.update(cx, |state, cx| {
+                state
+                    .start(support::options(directory.path(), "linger"), cx)
+                    .unwrap()
+            });
+            cx.condition(&owner, |state, _| matches!(state.client(id), Ok(Some(_))))
+                .await;
+            let client = owner.read_with(cx, |state, _| state.client(id).unwrap().unwrap());
+            client.ready().await.unwrap();
+            clients.push(client);
+        }
+        let closing = owner.update(cx, |state, cx| state.close_all(cx));
+        // Every client must stop accepting requests immediately, including a
+        // later client whose predecessor is waiting for its shutdown deadline.
+        for client in &clients {
+            assert!(matches!(
+                client.get_state().await,
+                Err(pi_rpc::Error::Closed)
+            ));
+        }
+        let reports = closing.await;
+        assert_eq!(reports.len(), 2);
+        assert!(
+            reports
+                .iter()
+                .all(|report| matches!(report.reason, Some(pi_rpc::Error::ShutdownTimeout)))
+        );
+        assert!(
+            clients
+                .iter()
+                .all(|client| matches!(client.state(), ConnectionState::Closed(_)))
+        );
+    }
+
     #[gpui::test]
     async fn two_instances_close_independently_then_drain_before_quit(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -245,7 +293,7 @@ mod tests {
         assert!(report.status.is_some());
         assert!(owner.read_with(cx, |state, _| state.client(first)).is_err());
         assert!(second_client.get_state().await.is_ok());
-        // Add another connection so unified shutdown exercises sequential ownership.
+        // Add another connection so unified shutdown covers every retained owner.
         let third_dir = tempfile::tempdir().unwrap();
         let third = owner.update(cx, |state, cx| {
             state

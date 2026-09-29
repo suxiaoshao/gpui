@@ -1020,8 +1020,7 @@ async fn manual_compaction_releases_command_and_preserves_draft(cx: &mut TestApp
                 owner.read_with(cx, |s, _| {
                     assert!(
                         s.sessions[&key]
-                            .error
-                            .as_ref()
+                            .runtime_error()
                             .unwrap()
                             .contains("fixture read failed")
                     )
@@ -3092,6 +3091,7 @@ async fn notifications_settled_output_and_failure_are_distinct_from_progress(
         serde_json::json!({"type":"agent_start"}),
         serde_json::json!({"type":"message_end","message":{"role":"assistant","timestamp":1000,"content":[],"stopReason":"error","errorMessage":"failed"}}),
         serde_json::json!({"type":"auto_retry_start","delayMs":10}),
+        serde_json::json!({"type":"auto_retry_end","success":false,"finalError":"failed"}),
     ] {
         emit_session_event(&owner, &key, raw, cx);
     }
@@ -3103,7 +3103,42 @@ async fn notifications_settled_output_and_failure_are_distinct_from_progress(
         cx,
     );
     assert_eq!(&*notices.borrow(), &[Kind::Completed, Kind::Failed]);
-    owner.read_with(cx, |s, _| assert!(!s.sessions[&key].unread));
+    owner.read_with(cx, |s, _| {
+        assert!(!s.sessions[&key].unread);
+        assert_eq!(s.sessions[&key].activity(), Activity::Failed);
+        assert!(s.sessions[&key].runtime_error().is_none());
+    });
+    // A successful retry replaces the failed result without erasing an
+    // unrelated runtime error or emitting a second failure notification.
+    for raw in [
+        serde_json::json!({"type":"agent_start"}),
+        serde_json::json!({"type":"message_end","message":{"role":"assistant","timestamp":1001,"content":[],"stopReason":"error","errorMessage":"retryable"}}),
+        serde_json::json!({"type":"auto_retry_start","delayMs":10}),
+        serde_json::json!({"type":"message_end","message":{"role":"assistant","timestamp":1002,"content":[{"type":"text","text":"Recovered"}],"stopReason":"stop"}}),
+        serde_json::json!({"type":"auto_retry_end","success":true}),
+        serde_json::json!({"type":"agent_settled"}),
+    ] {
+        emit_session_event(&owner, &key, raw, cx);
+    }
+    assert_eq!(
+        &*notices.borrow(),
+        &[Kind::Completed, Kind::Failed, Kind::Completed]
+    );
+    owner.read_with(cx, |s, _| assert!(s.sessions[&key].error.is_none()));
+    owner.update(cx, |s, _| {
+        s.sessions.get_mut(&key).unwrap().error = Some(super::super::SessionError::Runtime(
+            "connection failed".into(),
+        ));
+    });
+    for raw in [
+        serde_json::json!({"type":"message_end","message":{"role":"assistant","timestamp":1003,"content":[{"type":"text","text":"Complete"}],"stopReason":"stop"}}),
+        serde_json::json!({"type":"auto_retry_end","success":true}),
+    ] {
+        emit_session_event(&owner, &key, raw, cx);
+    }
+    owner.read_with(cx, |s, _| {
+        assert_eq!(s.sessions[&key].runtime_error(), Some("connection failed"));
+    });
     close(&owner, cx).await;
 }
 

@@ -88,7 +88,7 @@ impl ConversationState {
                         if s.binding > initial_binding + 1 {
                             return Err((initial_binding, "Session connection changed".to_owned()));
                         }
-                        if let Some(error) = s.error.as_deref().or(s.core_read.error()) {
+                        if let Some(error) = s.runtime_error().or(s.core_read.error()) {
                             return Err((s.binding, error.to_owned()));
                         }
                         Ok((s.state.is_some() && !s.core_read.running())
@@ -142,7 +142,7 @@ impl ConversationState {
                         this.sessions.get_mut(&key).unwrap().history_dirty = true;
                     }
                     Err(error) => {
-                        s.error = Some(error.clone());
+                        s.error = Some(SessionError::Runtime(error.clone()));
                         cx.emit(ConversationEvent::Notify {
                             message: error,
                             error: true,

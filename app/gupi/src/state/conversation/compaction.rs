@@ -42,7 +42,7 @@ impl ConversationState {
                     && !session.interrupted
                     && !session.stopping
                 {
-                    session.error = Some(error.to_string());
+                    session.error = Some(SessionError::Runtime(error.to_string()));
                     cx.emit(ConversationEvent::Attention(
                         crate::state::notifications::Notice {
                             key: target.clone(),
