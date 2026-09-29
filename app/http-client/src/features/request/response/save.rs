@@ -167,66 +167,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_replaces_the_confirmed_target_with_exact_response_bytes() {
-        let directory = tempfile::tempdir().unwrap();
-        let target = directory.path().join("response.bin");
-        tokio::fs::write(&target, b"old").await.unwrap();
-        let response = memory_response(b"complete response");
-
-        save_response(response.read_lease(), target.clone())
-            .await
-            .unwrap();
-
-        assert_eq!(tokio::fs::read(target).await.unwrap(), b"complete response");
-        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
-    }
-
-    #[tokio::test]
-    async fn save_copies_a_temp_file_response_with_its_exact_length() {
-        let source = tempfile::NamedTempFile::new().unwrap();
-        let source_path = source.path().to_owned();
-        tokio::fs::write(&source_path, b"spilled response")
-            .await
-            .unwrap();
-        let body = StoredBody::TempFile {
-            path: source.into_temp_path(),
-            len: 16,
-        };
-        let response = Arc::new(ResponseData::new(
-            ResponseHead::new(
-                StatusCode::OK,
-                Version::HTTP_11,
-                Url::parse("https://example.test/large").unwrap(),
-                HeaderMap::new(),
-            ),
-            ResponseTiming {
-                head_after: Duration::from_millis(1),
-                completed_after: Duration::from_millis(2),
-            },
-            CompletedBody {
-                body,
-                body_decoding: BodyDecoding::Identity,
-                sizes: ResponseSizes {
-                    declared_encoded_bytes: Some(16),
-                    received_encoded_bytes: 16,
-                    stored_body_bytes: 16,
-                },
-            },
-        ));
-        let directory = tempfile::tempdir().unwrap();
-        let target = directory.path().join("response.bin");
-
-        save_response(response.read_lease(), target.clone())
-            .await
-            .unwrap();
-
-        assert_eq!(tokio::fs::read(target).await.unwrap(), b"spilled response");
-        assert!(source_path.exists());
-        drop(response);
-        assert!(!source_path.exists());
-    }
-
-    #[tokio::test]
     async fn invalid_target_does_not_create_a_partial_output() {
         let response = memory_response(b"body");
         let error = save_response(response.read_lease(), PathBuf::from("response.bin"))

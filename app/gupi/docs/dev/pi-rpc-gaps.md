@@ -14,7 +14,6 @@
 | SDK 与 Harness | `sdk.ts` 仍构造 `new Agent(...)`，未切到实验 Harness。Harness 的队列 ID、完整消息与 cancelQueued 不能作为标准 RPC 可用接口 |
 | main 新增 durable JSONL storage / node environment | 位于 `packages/durable`；SDK、RPC 类型和分发未改变。这些底层/实验设施不等于 Gupi 所用会话协议增加命令，也不要求 Gupi 迁移存储 |
 | 0.87.1 发行变化 | 新模型/思考能力、split-turn 压缩提示修复、无效 --mode 报错，以及部分 OpenAI-compatible provider 的纯图片消息修复。无新的 GUI 队列或扩展 UI 接口；动态模型读取和图片提交继续由 Pi 处理 |
-| 已有运行证据 | 两项隔离 installed_pi 集成测试的记录对应 **0.87.0**。0.87.1 已有隔离原生 UI/本地 faux provider 验证及参数解析实测，具体范围见各功能文档；本次整理未重跑全部协议测试，不把局部验证当作全部 RPC 验收 |
 
 ## RPC 命令接入
 

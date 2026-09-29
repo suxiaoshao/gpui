@@ -1,6 +1,6 @@
 # Jaco 退役与仓库边界
 
-归属 [#240](https://github.com/suxiaoshao/gpui/issues/240)。基线为 `8afc8e4d`；状态：Implemented。代码、构建配置与文档清理已完成；验证记录见下文。
+归属 [#240](https://github.com/suxiaoshao/gpui/issues/240)。实现基线为 `8afc8e4d`；当前代码与验证范围见下文。
 
 ## 实施结果
 
@@ -15,14 +15,14 @@ workspace 从 25 个成员收敛为 18 个：四个应用为 Gupi、Feiwen、HTT
 | OCR | 删除 `platform-ext::ocr`、`OcrError`、专用测试、Windows AI `build.rs` / `winmd` 生成链、Vision 链接及专用依赖/features |
 | Cargo | 删除对应成员、路径声明、Rig/RMCP 声明与 Jaco release profile；Cargo 自动收敛锁图，没有升级保留包 |
 | Nix | Linux 目标已无 `get-selected-text` / `enigo` / `libxdo` 路径，删除 `xdotool`；锁图已无 SQLite，移除 devShell 的 SQLite。保留 bindgen、DuckDB 及 GPUI 使用的 X11/Wayland 等依赖，Nix 输入版本保持 |
-| CI 与打包 | 删除递归子模块 checkout；xtask 删除 Jaco 目标及专用测试，安装参数改用 Gupi，通用包目录、locales、deep-link 与命令失败 fixture 使用中性名称 |
+| CI 与打包 | 删除递归子模块 checkout；xtask 删除 Jaco 目标及专用测试，安装参数改用 Gupi，通用 CLI 参数与 locales 保留，依赖实际文件和命令的 fixture 随测试清理 |
 | 入口与文档 | README、issue/PR 模板、AGENTS、图标 skill 与开发导航改为现役范围；删除 Jaco 专题，保留共享契约和必要的固定历史来源 |
 
 主锁文件从 1586 条 package 记录减少到 1364 条，删除 222 条；按 `(name, version, source)` 比较没有新增记录。剩余传递依赖按可达性保留，不要求曾被 Jaco 使用的包名全部消失。
 
 `cargo shear` 复查进一步移除了 Feiwen 的 `regex`、gpui-form 的两个未使用 dev-dependency、pi-rpc 的 `tracing`，以及根 workspace 中未使用的 `gpui_platform` / `gpui-heatmap` 依赖声明。热力图成员与实现继续保留。
 
-图标依赖通过构建元数据使用，因此在 workspace 的 cargo-shear 配置中保留 `gpui-component-assets`；trybuild 通配符加载的用例和 `include_str!` 嵌入的 Pi 进程 fixture 通过各自 package 的 `ignored-paths` 声明，注释指向真实测试入口。没有删除这些用例或增加无依据的忽略项。
+图标依赖通过构建元数据使用，因此在 workspace 的 cargo-shear 配置中保留 `gpui-component-assets`；trybuild 通配符加载的用例通过各自 package 的 `ignored-paths` 声明。Pi 进程 fixture 已随环境依赖测试删除，对应忽略项同步移除。
 
 ## 保留的能力与接口
 
@@ -41,21 +41,35 @@ Jaco 专用根专题 `issue-178`、`188`、`189`、`190`、`193`、`195`、`196`
 
 两轮依赖盘点保留原日期的版本和数量，不能当作当前成员列表。Gupi 的现行行为直接描述窗口、布局、资源和状态职责，不依赖 Jaco 源码作为使用说明。验收目标是无失效构建依赖与操作入口，不追求所有历史名称为零。
 
+## 环境依赖测试清理
+
+删除 262 个依赖真实文件、进程、TCP、数据库引擎、线程或实际计时的测试：
+
+| 范围 | 删除数量 | 依赖 |
+| --- | ---: | --- |
+| Gupi | 132 | 文件锁与单实例 TCP、Pi 编译/子进程 fixture、配置和资源落盘、Shell、目录扫描与附件文件 |
+| HTTP Client | 39 | HTTP 回环服务、文件请求/保存、响应落盘、媒体文件与 PDF 工作线程 |
+| Feiwen | 31 | DuckDB 查询、连接池、备份恢复与文件系统故障注入 |
+| Novel Download | 8 | 重定向 TCP 服务与输出文件生命周期 |
+| pi-rpc | 26 | 实际 Pi/fixture 子进程、Shell/PATH、管道与真实超时 |
+| http-client-test-server | 13 | 服务启动、TCP、CLI 子进程、延迟与连接调度 |
+| xtask | 10 | 临时目录、图标打包、文件 manifest 与本机命令发现 |
+| gpui-tokio | 3 | 两个实际执行器间的线程调度与退出 |
+
+对应的专用 fixture、测试辅助接口、无消费者的 dev-dependency 和 cargo-shear 忽略项已删除。Feiwen 的无操作故障注入接口和 Novel Download 的测试目录分支同步精简。业务的文件、网络、数据库和子进程能力保留。
+
+纯解析、序列化、状态机、内存队列、受控 GPUI context/headless 交互及 trybuild 编译契约测试保留。后两类有各自的测试层级，不统称为纯单元测试。手动 UI gallery、HTTP 调试服务和 Postman 示例继续保留。
+
 ## 验证范围与结果
 
-本次删除不新增 UI 验收、全量回归或独立应用构建矩阵。保留代码的编译由 workspace 构建检查；xtask 的 CLI 和 fixture 有实际改动，因此运行它的现有测试。删除的实现连同专用测试一起移除。
+Jaco 退役后的 macOS workspace 构建与依赖检查已通过。后续测试清理只检查受影响的 8 个包；默认 CI 继续运行三平台 workspace 构建和测试，不增加忽略或屏蔽条件。
 
-| 检查 | 结果 |
+| 本轮检查 | 结果 |
 | --- | --- |
-| `cargo metadata --locked --offline --no-deps --format-version 1` | 18 个成员，保留路径均有效 |
-| Linux 目标的 `cargo tree --locked --target x86_64-unknown-linux-gnu -e features` | 无取词/xdo 路径；这是依赖图检查，不代表 Linux 实机编译 |
-| Cargo.lock 的包身份比较 | 移除 222 条，未新增或升级保留包 |
-| `nix develop --command cargo build --workspace --locked` | macOS 通过，包含四个现役应用和保留共享库 |
-| `nix develop --command cargo fmt --all -- --check` | 通过 |
-| `cargo shear --locked --offline --deny-warnings` | 0 错误、0 警告 |
-| `cargo check -p feiwen -p gpui-form -p pi-rpc --all-targets --locked` | macOS 通过，包含受影响包的测试目标 |
-| `nix develop --command cargo test -p xtask --locked` | 16 项通过，0 失败 |
-| Git 索引、代码与配置残余引用 | 无 Lucide gitlink、`.gitmodules`、已删除 API 或专用构建入口 |
-| 文档链接与 `git diff --check HEAD` | 检查 343 个改动文档本地链接，无新增断链或退役路径链接；diff 检查通过 |
+| 受影响 8 个包 `cargo test --locked --offline` | macOS：398 项测试、1 项文档测试通过，无失败或忽略 |
+| 同一组包 `cargo clippy --all-targets --all-features --locked --offline -- -D warnings` | 通过 |
+| `cargo shear --locked --offline --deny-warnings` | 无问题 |
+| `cargo fmt --all -- --check`、`git diff --check` | 通过 |
+| 改动文档的本地链接 | 96 个有效，无断链 |
 
-Linux/Windows 实际构建未在本次执行，现有三平台 CI 保留。全量回归、Clippy 和界面验收不作为本次退役删除的交付检查。
+这组检查不证明真实网络、进程退出、数据库恢复或文件系统行为；Windows/Linux 的本轮结果仍需对应 CI。现有依赖 `block 0.1.6` 的 future-incompat 提示不影响当前检查结果。

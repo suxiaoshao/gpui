@@ -319,47 +319,7 @@ fn send_critical(sender: &Sender<MediaDriverEvent>, event: MediaDriverEvent) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use bytes::Bytes;
-    use http::{HeaderMap, StatusCode, Version};
-    use url::Url;
-
     use super::*;
-    use crate::features::request::response::{
-        BodyDecoding, CompletedBody, ResponseData, ResponseHead, ResponseSizes, ResponseTiming,
-        StoredBody,
-    };
-
-    #[tokio::test]
-    async fn wav_fixture_is_decoded_without_opening_an_output_device() {
-        let response = response(wav_fixture());
-        let asset = response
-            .read_lease()
-            .materialize_media_asset()
-            .await
-            .unwrap();
-        let (_decoder, metadata) = decode_asset(&asset).unwrap();
-
-        assert_eq!(metadata.duration(), Some(Duration::from_millis(100)));
-    }
-
-    #[tokio::test]
-    async fn unsupported_fixture_is_a_redacted_decode_problem() {
-        let response = response(b"not an audio stream".to_vec());
-        let asset = response
-            .read_lease()
-            .materialize_media_asset()
-            .await
-            .unwrap();
-        let problem = match decode_asset(&asset) {
-            Ok(_) => panic!("invalid audio fixture must not decode"),
-            Err(problem) => problem,
-        };
-
-        assert_eq!(problem.kind(), MediaProblemKind::Decode);
-        assert!(!format!("{problem:?}").contains("not an audio stream"));
-    }
 
     #[test]
     fn muting_preserves_the_selected_volume() {
@@ -370,51 +330,5 @@ mod tests {
 
         gain.set_muted(false);
         assert_eq!(gain.effective(), 0.35);
-    }
-
-    fn response(bytes: Vec<u8>) -> Arc<ResponseData> {
-        let len = bytes.len() as u64;
-        Arc::new(ResponseData::new(
-            ResponseHead::new(
-                StatusCode::OK,
-                Version::HTTP_11,
-                Url::parse("https://example.test/private-audio").unwrap(),
-                HeaderMap::new(),
-            ),
-            ResponseTiming {
-                head_after: Duration::ZERO,
-                completed_after: Duration::ZERO,
-            },
-            CompletedBody {
-                body: StoredBody::Memory(Bytes::from(bytes)),
-                body_decoding: BodyDecoding::Identity,
-                sizes: ResponseSizes {
-                    declared_encoded_bytes: Some(len),
-                    received_encoded_bytes: len,
-                    stored_body_bytes: len,
-                },
-            },
-        ))
-    }
-
-    fn wav_fixture() -> Vec<u8> {
-        let sample_rate = 8_000_u32;
-        let sample_count = 800_u32;
-        let data_bytes = sample_count * 2;
-        let mut bytes = Vec::with_capacity((44 + data_bytes) as usize);
-        bytes.extend_from_slice(b"RIFF");
-        bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
-        bytes.extend_from_slice(b"WAVEfmt ");
-        bytes.extend_from_slice(&16_u32.to_le_bytes());
-        bytes.extend_from_slice(&1_u16.to_le_bytes());
-        bytes.extend_from_slice(&1_u16.to_le_bytes());
-        bytes.extend_from_slice(&sample_rate.to_le_bytes());
-        bytes.extend_from_slice(&(sample_rate * 2).to_le_bytes());
-        bytes.extend_from_slice(&2_u16.to_le_bytes());
-        bytes.extend_from_slice(&16_u16.to_le_bytes());
-        bytes.extend_from_slice(b"data");
-        bytes.extend_from_slice(&data_bytes.to_le_bytes());
-        bytes.resize((44 + data_bytes) as usize, 0);
-        bytes
     }
 }

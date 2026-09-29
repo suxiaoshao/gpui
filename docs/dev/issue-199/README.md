@@ -34,7 +34,7 @@
 | `NOVEL-199-01` | Novel Download 最小 Form、私有下载 Transition、唯一 Task 与 `.part` 文件事务迁移 | `Done`；39 tests 与定向门禁通过；实现提交 `64b0c4a` 已推送；实际 UI 未执行 | [Novel Download 实施计划](../../../app/novel-download/docs/dev/issue-199/form-operation-download-migration-plan.md) | 消费 `C-900`–`C-904`；不引入 Store、队列、resume 或 repair |
 | `HTTP-199-02` | HTTP Client Request Form、五种 Body、Auth、redirect、prepared request 与 Store 适用性 | `Done`；56 tests 与 Check、Clippy、格式、残留扫描通过；实现提交 `933ee09` 已推送；实际 UI 操作未执行 | [Request Form 与 prepared request 实施计划](../../../app/http-client/docs/dev/issue-199/request-form-and-preparation-plan.md) | 消费 `C-900`–`C-904`；不依赖 ResponseData；不引入 Store/Operation/transport |
 | `HTTP-199-03` | HTTP Client 真实 Send、私有 Transition、Response 收集、viewer 与完成后 Save | `Done`；116 tests、Check、Clippy、格式与残留扫描通过；实现提交 `24e4a9f` 已推送；实际 UI 操作未执行 | [真实 Send 与 Response 实施计划](../../../app/http-client/docs/dev/issue-199/request-send-and-response-plan.md) | 消费 `HTTP-199-02` 的 `PreparedRequest`；不引入 Store；不包含 `Send and Download` |
-| `HTTP-199-05` | Hyper loopback 测试服务与 HTTP Client consumer 集成测试 | `Done`；实现提交 `1559cc8`、稳定性修正 `735bc41`；producer 15 tests、consumer transport 15 tests、app 全量 161 tests 与严格 Clippy 通过；实际 UI 未执行 | [测试服务 producer 计划](../../../crates/http-client-test-server/docs/dev/issue-199/http-test-server-plan.md)、[HTTP Client consumer 计划](../../../app/http-client/docs/dev/issue-199/http-test-server-integration-plan.md) | 消费 `HTTP-199-03` 现有 HTTP runtime；test server 只进入 dev graph |
+| `HTTP-199-05` | HTTP 自动测试边界 | 保留内存测试，已清理环境依赖集成测试；测试服务供手动调试 | [测试边界](../../../app/http-client/docs/dev/issue-199/http-test-server-integration-plan.md) | 无运行时依赖变化 |
 
 ## 已移交范围
 
@@ -92,7 +92,7 @@ Form breaking 与 consumer 再迁移轮次的实际实施顺序：
 | [HTTP Client 真实 Send 与 Response 实施计划](../../../app/http-client/docs/dev/issue-199/request-send-and-response-plan.md) | `Done` | 已交付单请求 Send/Cancel、私有 Transition、head-first Response、受限 body 收集、安全 viewer 与完成后 Save；实现提交 `24e4a9f` 已推送；116 tests、Check、Clippy、格式与残留扫描通过，实际 UI 未执行。 |
 | [HTTP Client Response 媒体/PDF 历史记录](../../../app/http-client/docs/dev/issue-199/response-media-and-pdf-preview-plan.md) | `Superseded` | 不作为实施依据；#200 规定 Rodio/CPAL/Symphonia 音频迁移、PDF 保留、视频排除与 GStreamer 全链路删除。 |
 | [HTTP 测试服务 producer 实施计划](../../../crates/http-client-test-server/docs/dev/issue-199/http-test-server-plan.md) | `Done` | Hyper HTTP/1 loopback producer、受控 response/abort/echo、CLI、Postman 重定向观察示例与 16 个自动化测试已交付。 |
-| [HTTP 测试服务 consumer 集成计划](../../../app/http-client/docs/dev/issue-199/http-test-server-integration-plan.md) | `Done` | HTTP Client 已用 dev-only producer 迁移 normal response/abort 测试，保留三项 request-wire raw fixture；transport 15 tests 与 app 161 tests 通过。 |
+| [HTTP 自动测试边界](../../../app/http-client/docs/dev/issue-199/http-test-server-integration-plan.md) | 当前 | 保留内存测试；回环 TCP、临时文件与工作线程集成测试已删除。 |
 | [workspace Store/Operation/Form 适用性调研](workspace-store-operation-form-assessment.md) | 已审阅 | 记录全局候选与“不改Store内部”的结论 |
 | [上一轮root delivery归档](explicit-form-owner-delivery.md) | 共享设计归档 | 保存此前共享规格、工作包、验证与完成审计，不作为vNext执行入口 |
 

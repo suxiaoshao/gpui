@@ -70,12 +70,10 @@ Pi RPC 的 `custom()` 直接返回 undefined；`setHeader`、`setFooter`、`setE
 
 ## 2. 现有基础与缺口
 
-- [现有协议 fixture](../../../../../crates/pi-rpc/tests/fixtures/extension.mjs) 注册 `/gupi-rpc-test`，依次调用 select、confirm、input、editor，再设置 status、下方 widget，并通知结果。
-- [真实 Pi 协议测试](../../../../../crates/pi-rpc/tests/installed_pi.rs) 在临时目录中加载该扩展，自动发送回执并核对结果；这证明的是协议链路，不是用户操作或视觉效果。
 - [Gupi 输入区](../../../src/features/home/composer.rs) 已渲染四类交互：select/input 组合 Questionnaire 的对应部件，confirm 使用确认/否按钮，editor 使用 Textarea；共同提供取消入口，取消在左、提交或确认在右。
 - [会话状态](../../../src/state/conversation.rs) 已接收九类消息、排队待答请求、按来源会话回传，以及清理断线后的扩展状态。
 
-新增 gallery 提供随时启动、单独选场景、重复体验的原生环境。原有四题串行测试保持不变；自动回执无法代替焦点、中文输入法、滚动和鼠标操作体验。
+新增 gallery 提供随时启动、单独选场景、重复体验的原生环境。自动回执无法代替焦点、中文输入法、滚动和鼠标操作体验。
 
 ## 3. 推荐测试环境：真实 Pi + 独立测试扩展
 
@@ -93,7 +91,7 @@ Pi RPC 的 `custom()` 直接返回 undefined；`setHeader`、`setFooter`、`setE
 
 ### 开发入口
 
-应用归属的 fixture 位于 `app/gupi/tests/fixtures/ui-gallery.mjs`，配合开发启动脚本。保留现有协议测试的固定序列，避免 UI 场景调整影响传输层测试。
+应用归属的 fixture 位于 `app/gupi/tests/fixtures/ui-gallery.mjs`，配合开发启动脚本。该入口供手动体验，不加入 Cargo 自动测试。
 
 预期操作流程：
 
@@ -109,11 +107,11 @@ Pi RPC 的 `custom()` 直接返回 undefined；`setHeader`、`setFooter`、`setE
 
 - Gupi 的 `GUPI_CONFIG_DIR`、`GUPI_LOG_DIR` 指向临时目录；生成最小 config.toml，将 pi_command 指向 wrapper 的绝对路径。
 - Pi 使用独立 `PI_CODING_AGENT_DIR` 和 `PI_CODING_AGENT_SESSION_DIR`；让 Gupi 同样继承这些路径，以保持历史发现与 Pi 写入一致。
-- 使用空测试 cwd，禁用自动扩展、skills、prompt templates、themes、context files，并只显式加载 fixture；参数参考已有 installed_pi 测试：`--offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --extension <fixture>`。
+- 使用空测试 cwd，禁用自动扩展、skills、prompt templates、themes、context files，并只显式加载 fixture；参数为：`--offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --extension <fixture>`。
 - wrapper 原样处理 `--version`，调用真实 Pi 的版本探测；RPC 启动保留 Gupi 传入的参数，只补测试参数。真实 Pi 路径在生成 wrapper 前解析，避免 wrapper 递归调用自身。
 - wrapper 使用 exec 交接进程，日志写 stderr 或独立文件，不向 RPC stdout 输出调试文本。
-- 原生测试保留临时目录内的 session 持久化，方便切换会话和重启检查；无需使用协议测试中的 `--no-session`。
-- 测试进程环境参考现有 installed_pi 测试采用必要环境变量白名单；本机 UI 启动所需的平台变量在脚本中按需保留。不复制用户认证或扩展配置。
+- 原生测试保留临时目录内的 session 持久化，方便切换会话和重启检查。
+- 测试进程环境采用必要环境变量白名单；本机 UI 启动所需的平台变量在脚本中按需保留。不复制用户认证或扩展配置。
 - `--offline` 本身不等于禁止模型调用。fixture 不发起模型请求，并通过 input hook 对未匹配的普通输入返回 handled、显示帮助，避免命令拼错后落入普通 prompt。测试脚本不需要模型凭据。
 
 当前脚本遵循以上契约。第一轮以本机 macOS 的可交互环境交付，不扩大为多平台启动器工程。

@@ -83,11 +83,6 @@ Abort bypasses the normal write queue. A blocked or partially written normal req
 
 ```sh
 cargo test -p pi-rpc --locked
-cargo test -p pi-rpc --test installed_pi --locked -- --ignored
 ```
 
-Default integration tests compile a small std-only Rust fixture with the installed Rust toolchain, then exercise real pipes and process termination. They do not need Pi, Node, a provider or network access. The Windows-only shim test runs under the normal Windows test target.
-
-The ignored test requires an existing Pi executable from `PI_RPC_TEST_COMMAND` or PATH. It uses isolated cwd/agent/session directories, offline mode, no provider credentials and a minimal explicit extension. It verifies command association, four standard UI methods, two independent processes and shutdown, without making model calls. Explicitly running it without Pi fails clearly.
-
-Pi 0.85.1 binds `session_start` extensions before registering its stdin reader. A startup extension awaiting UI can therefore prevent Ready even after the host replies. The client reports failed readiness; it does not patch Pi or pretend the user cancelled.
+Tests cover protocol serialization and response parsing with in-memory inputs. Process launch, installed Pi, shell/PATH discovery, real pipes and wall-clock timeout integration tests and their fixtures have been removed.

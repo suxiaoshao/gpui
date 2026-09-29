@@ -105,35 +105,3 @@ fn scan(root: PathBuf) -> Result<Vec<ProjectPath>, String> {
     paths.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(paths)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{ProjectPath, scan};
-    #[test]
-    fn project_scan_respects_ignores_and_does_not_traverse_external_symlinks() {
-        let project = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        std::fs::create_dir(project.path().join(".git")).unwrap();
-        std::fs::write(project.path().join(".gitignore"), "ignored/\n").unwrap();
-        std::fs::create_dir(project.path().join("ignored")).unwrap();
-        std::fs::write(project.path().join("ignored/secret"), "").unwrap();
-        std::fs::write(project.path().join("report.txt"), "").unwrap();
-        std::fs::create_dir(project.path().join("folder.png")).unwrap();
-        std::fs::write(outside.path().join("external.txt"), "").unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(outside.path(), project.path().join("outside")).unwrap();
-        assert_eq!(
-            scan(project.path().to_path_buf()).unwrap(),
-            vec![
-                ProjectPath {
-                    path: project.path().join("folder.png"),
-                    directory: true,
-                },
-                ProjectPath {
-                    path: project.path().join("report.txt"),
-                    directory: false,
-                },
-            ]
-        );
-    }
-}

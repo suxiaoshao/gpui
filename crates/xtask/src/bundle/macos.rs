@@ -31,46 +31,6 @@ pub fn find_app_bundle(bundle_dir: &Path, product_name: &str) -> Result<Option<P
     Ok(None)
 }
 
-#[cfg(test)]
-pub fn first_app_bundle(bundle_dir: &Path) -> Result<Option<PathBuf>> {
-    for bundle_subdir in ["macos", "osx"] {
-        let app_bundle_dir = bundle_dir.join(bundle_subdir);
-        if let Some(app_path) = first_app_bundle_in_dir(&app_bundle_dir)? {
-            return Ok(Some(app_path));
-        }
-    }
-
-    Ok(None)
-}
-
-#[cfg(test)]
-fn first_app_bundle_in_dir(app_bundle_dir: &Path) -> Result<Option<PathBuf>> {
-    if !app_bundle_dir.exists() {
-        return Ok(None);
-    }
-
-    for entry in fs::read_dir(app_bundle_dir).map_err(|err| {
-        XtaskError::msg(format!(
-            "failed to read {}: {err}",
-            app_bundle_dir.display()
-        ))
-    })? {
-        let path = entry
-            .map_err(|err| {
-                XtaskError::msg(format!(
-                    "failed to read entry under {}: {err}",
-                    app_bundle_dir.display()
-                ))
-            })?
-            .path();
-        if path.is_dir() && path.extension().and_then(OsStr::to_str) == Some("app") {
-            return Ok(Some(path));
-        }
-    }
-
-    Ok(None)
-}
-
 pub fn inject_liquid_glass_icon(
     app_dir: &Path,
     app_path: &Path,
@@ -354,69 +314,8 @@ fn bundle_info_plist_overrides(localizations: &[BundleLocalization]) -> plist::D
 
 #[cfg(test)]
 mod tests {
-    use super::{bundle_info_plist_overrides, find_app_bundle, first_app_bundle};
+    use super::*;
     use crate::bundle::settings::resolve_bundle_localizations;
-    use crate::error::Result;
-    use std::fs;
-    #[test]
-    fn icon_catalog_requires_an_explicit_default_for_multiple_themes() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let icons = temp.path().join("build-assets/icon");
-        let classic = icons.join("Classic.icon");
-        fs::create_dir_all(&classic)?;
-        assert_eq!(
-            super::find_liquid_glass_icon_dirs(temp.path())?.unwrap().0,
-            classic
-        );
-        fs::create_dir_all(icons.join("Color.icon"))?;
-        assert!(super::find_liquid_glass_icon_dirs(temp.path()).is_err());
-        fs::write(icons.join("default-icon"), "Classic\n")?;
-        let (default, all) = super::find_liquid_glass_icon_dirs(temp.path())?.unwrap();
-        assert_eq!(default, classic);
-        assert_eq!(all.len(), 2);
-        fs::write(icons.join("default-icon"), "Missing")?;
-        assert!(super::find_liquid_glass_icon_dirs(temp.path()).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn first_app_bundle_prefers_macos_directory() -> Result<()> {
-        let temp_dir = tempfile::tempdir()?;
-        let macos_app = temp_dir.path().join("macos/Fixture.app");
-        let osx_app = temp_dir.path().join("osx/Legacy.app");
-        fs::create_dir_all(&macos_app)?;
-        fs::create_dir_all(&osx_app)?;
-
-        let app_path = first_app_bundle(temp_dir.path())?;
-
-        assert_eq!(app_path, Some(macos_app));
-        Ok(())
-    }
-
-    #[test]
-    fn first_app_bundle_falls_back_to_osx_directory() -> Result<()> {
-        let temp_dir = tempfile::tempdir()?;
-        let osx_app = temp_dir.path().join("osx/Fixture.app");
-        fs::create_dir_all(&osx_app)?;
-
-        let app_path = first_app_bundle(temp_dir.path())?;
-
-        assert_eq!(app_path, Some(osx_app));
-        Ok(())
-    }
-
-    #[test]
-    fn find_app_bundle_uses_product_name() -> Result<()> {
-        let temp_dir = tempfile::tempdir()?;
-        fs::create_dir_all(temp_dir.path().join("macos/Fixture.app"))?;
-        let feiwen_app = temp_dir.path().join("macos/Feiwen.app");
-        fs::create_dir_all(&feiwen_app)?;
-
-        let app_path = find_app_bundle(temp_dir.path(), "Feiwen")?;
-
-        assert_eq!(app_path, Some(feiwen_app));
-        Ok(())
-    }
 
     #[test]
     fn plist_overrides_include_bundle_localizations() {

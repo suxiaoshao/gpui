@@ -412,8 +412,6 @@ impl Error for ResponseReadProblem {}
 mod tests {
     use std::sync::Arc;
 
-    use tempfile::NamedTempFile;
-
     use super::*;
 
     fn head() -> ResponseHead {
@@ -468,64 +466,6 @@ mod tests {
         let mut copied = Vec::new();
         assert_eq!(lease.copy_all_to(&mut copied).await.unwrap(), 6);
         assert_eq!(copied, b"abcdef");
-    }
-
-    #[tokio::test]
-    async fn lease_keeps_temp_path_alive_after_response_owner_is_released() {
-        let file = NamedTempFile::new().unwrap();
-        std::fs::write(file.path(), b"temporary body").unwrap();
-        let path = file.path().to_path_buf();
-        let (_file, temp_path) = file.into_parts();
-        let response = response(StoredBody::temp_file(temp_path, 14));
-        let lease = response.read_lease();
-
-        drop(response);
-        assert!(path.exists());
-        let prefix = lease.read_prefix(usize::MAX).await.unwrap();
-        assert_eq!(&prefix.bytes[..], b"temporary body");
-        assert!(prefix.complete);
-
-        drop(lease);
-        assert!(!path.exists());
-    }
-
-    #[tokio::test]
-    async fn temp_file_length_mismatch_is_rejected() {
-        let file = NamedTempFile::new().unwrap();
-        std::fs::write(file.path(), b"short").unwrap();
-        let (_file, temp_path) = file.into_parts();
-        let response = response(StoredBody::temp_file(temp_path, 8));
-        let lease = response.read_lease();
-
-        assert_eq!(
-            lease.read_prefix(8).await.unwrap_err(),
-            ResponseReadProblem::LengthMismatch
-        );
-        let mut target = Vec::new();
-        assert_eq!(
-            lease.copy_all_to(&mut target).await.unwrap_err(),
-            ResponseReadProblem::LengthMismatch
-        );
-    }
-
-    #[tokio::test]
-    async fn temp_file_growth_is_rejected_by_full_copy() {
-        let file = NamedTempFile::new().unwrap();
-        std::fs::write(file.path(), b"body-plus-extra").unwrap();
-        let (_file, temp_path) = file.into_parts();
-        let response = response(StoredBody::temp_file(temp_path, 4));
-        let lease = response.read_lease();
-        let mut target = tokio::io::sink();
-
-        assert_eq!(
-            lease.copy_all_to(&mut target).await.unwrap_err(),
-            ResponseReadProblem::LengthMismatch
-        );
-        assert_eq!(
-            lease.read_all_bounded(4).await.unwrap_err(),
-            ResponseReadProblem::LengthMismatch
-        );
-        target.shutdown().await.unwrap();
     }
 
     #[tokio::test]

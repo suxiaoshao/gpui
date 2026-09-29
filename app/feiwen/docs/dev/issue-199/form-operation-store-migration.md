@@ -465,13 +465,15 @@ Catalog phase、DB phase和network/database runtime failure均不写成field iss
 | `R-704` | 每本Novel触发refresh storm或漏掉partial commits | generation coalescing与partial failure integration test |
 | `R-705` | catalog刷新清除missing typed value | options->selection->validator顺序与nonblocking hint test |
 | `R-706` | dynamic u64 ID在renderer/action中残留 | PathKey/ItemPath residual scan |
-| `R-707` | raw copy遗漏DuckDB WAL | `DB-700` artifact fixture与官方WAL contract |
+| `R-707` | raw copy遗漏DuckDB WAL | `DB-700` artifact处理与官方WAL contract |
 | `R-708` | staging失败后live已被删除 | staging先验证；rename到rollback；任何失败反向恢复 |
 | `R-709` | 为未来对称性实现不可达Retiring | 本轮状态枚举/residual明确不含Retiring |
 | `R-710` | Ready仍出现repair按钮 | phase rendering/action route测试 |
 | `R-711` | Cookie泄露到UI/log/problem | snapshot formatter与tracing residual/test |
 
 ## 测试契约
+
+当前自动测试保留纯查询编译、Form 与受控状态测试。执行真实 DuckDB 查询、数据库落盘修复及其故障注入测试已删除；`RepairHooks` 和对应失败注入点同步移除，生产备份、校验、恢复步骤保持。
 
 | ID | 层级 | 场景 | 验收 |
 | --- | --- | --- | --- |
@@ -484,9 +486,6 @@ Catalog phase、DB phase和network/database runtime failure均不写成field iss
 | `T-706` | Store/Operation | Catalog Load/Refresh/Retry/phase UI | precise Ready gate；last-known options只读 |
 | `T-707` | generation | active refresh期间连续invalidation、success/failure/cancel | 最多一次follow-up；covered只在success推进 |
 | `T-708` | adapter GPUI | catalog options更新、missing value、recursive row reorder/delete | value不丢；hint非阻塞；错误/控件不串row |
-| `T-709` | DB integration | initial open success/failure、Reopen、Ready action gate | Store始终存在；Ready无repair；Unavailable两动作 |
-| `T-710` | DB filesystem | backup main+WAL、copy/sync failure、empty artifacts | backup失败前不建staging，不遗漏WAL |
-| `T-711` | DB filesystem | staging/build/validate、每个rename/sync/open/cleanup注入失败 | commit前失败回滚并保持Unavailable；commit后cleanup失败保持Ready且记录残留路径；backup保留 |
 | `T-712` | Fetch/DB/Catalog integration | partial page commit后失败/中断 | 已提交数据保留且generation推进，不等最终Success |
 | `T-713` | i18n/security | 两个locale key/变量集合、Cookie格式与logs | key parity；无secret明文 |
 | `T-714` | residual | active Feiwen source/tests | mixed state、裸Db Global、u64 form ID、运行期全表单disabled零残留 |

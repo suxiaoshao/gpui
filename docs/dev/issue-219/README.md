@@ -60,88 +60,9 @@ Windows 使用相同协议与 Child Drop 行为，无独立 SIGTERM 路径；npm
 
 PiState 停止接受新建连接，同时启动已有实例的关闭；每个消费任务保留到对应连接关闭。现有配置写入与窗口状态保存继续完成；在这些工作和 Pi 收尾流程结束后才调用 `cx.quit()`。退出协调任务由应用持有，不能因某个视图被隐藏或先丢弃消费任务而取消。保留重复退出防护，错误记录后按真实关闭结果结束流程。
 
-## 实施工作包
+## 自动测试边界
 
-工作包 1–5 均已完成。编号用于依赖和验证归属，不对应提交或 PR。
-
-| 工作包 | 依赖 | 实施内容 | 完成证据 |
-| --- | --- | --- | --- |
-| 1. crate 与探测迁移 | 无 | 注册 pi-rpc；迁移纯探测数据、错误、命令定位、执行与测试；应用保留 controller 和错误文案映射。清理重复实现与无用依赖 | 新 crate 无 GPUI 依赖；探测成功、失败、超时、取消与迟到 Child 覆盖保持通过；Gupi 构建通过 |
-| 2. 协议与单连接通信 | 1 | 实现 LF JSONL、命令/事件信封、请求 ID、启动 get_state、事件接收端、stderr 与容量限制；确保启动中可分发扩展消息 | 可控子进程证明乱序响应、事件交错、本地取消、启动失败、I/O/协议失败和容量边界；实际容量与错误行为写入 crate README |
-| 3. 生命周期与平台调用 | 2 | 唯一 Child owner、协议关闭、实际 stdin 释放、退出观察与 Child Drop；处理启动中关闭和自然退出竞态；核对 Windows shim 与终止调用 | 可控进程记录 abort 回应后 EOF；正常退出可观察状态，阻塞写入、提前退出和关闭失败不挂住请求；无多 owner 或旧 PID 信号路径 |
-| 4. Gupi 多实例接入 | 3 | 初始化 PiState；提供内部创建/查询/关闭入口，接入事件投影和应用退出；设置页继续使用迁移后的探测 controller | 两个实例互不影响；移除一个不取消另一个；统一退出先通知全部 client，再等待关闭后 cx.quit；两个不响应的实例均立即拒绝新请求并各自超时；现有探测与配置退出行为保持 |
-| 5. 真实 Pi 与交付验证 | 2、3、4 | 加入隔离安装版 Pi 测试和最小扩展 fixture，完成受影响构建、关键回归及必要启动检查，补稳定使用文档 | Pi 0.85.1 的就绪、命令关联、标准扩展 UI、双实例和关闭通过；Gupi 可启动；记录平台及未验证边界 |
-
-测试随对应工作包实现，不将全部验证推迟到最后。工作包 5 汇总真实 Pi 与应用接入结果，修复只复测受影响部分。
-
-依赖优先采用仓库已有 Tokio、Serde、serde_json、thiserror、tracing、which 和 tempfile 版本。pi-rpc 自身声明所需 Tokio features，不依赖 Gupi 的 feature 合并才能编译；纯 crate 测试可自行提供 runtime。普通私有模块划分、容量数值与库调用由实施时判断，不另建多 crate 或通用进程框架。
-
-## 必要验证与交付条件
-
-### 可控回归
-
-沿用现有探测覆盖，按新职责移动测试，不保留重复副本。新增测试聚焦以下不变量：
-
-- 分帧只按 LF，剥离末尾 CR；支持跨块 UTF-8 和 JSON 字符串中的 U+2028/U+2029。EOF 最后一段无 LF 时仍须是有效 JSON；损坏或超限帧明确失败。
-- 请求 ID 能处理响应乱序、事件交错和迟到响应；本地取消不发送 abort；连接失败只结算每个等待者一次。
-- 标准扩展 UI 请求可以在启动期间被消费，回复不进入普通请求等待表；Ready 前退出即使 code 为 0 也不能算成功。
-- 慢消费者、满队列或 stderr 大量输出不造成无限内存增长，也不堵住关闭。采用小容量 fixture 验证边界，不要求靠大规模压力测试证明。
-- 协议关闭步骤、自然退出与启动中关闭正确收尾；两个 client 独立，关闭一个后另一个仍能响应。关闭测试观察实际消息、管道和退出状态，不能仅睡眠后断言成功。
-- Gupi 统一退出持有收尾任务直到完成；探测取消不恢复为等待 15 秒探测结束的行为。
-
-### 实际安装 Pi 的集成测试
-
-新增独立 `installed_pi` 测试目标，测试标记 `#[ignore]`，显式运行：
-
-```sh
-cargo test -p pi-rpc --test installed_pi --locked -- --ignored
-```
-
-使用 `PI_RPC_TEST_COMMAND` 指定命令，未设置时从 PATH 查找 `pi`。显式运行却找不到 Pi 应明确失败；普通 cargo test 和 CI 不要求安装 Pi，不自动下载或更新它。
-
-测试建立临时 cwd、agent/session 目录，仅传基础运行环境和隔离目录，不传用户 provider 凭据。启用 offline、禁用非必要发现与持久会话；显式加载项目最小 fixture 扩展，不加载真实用户扩展，不修改用户配置。输出记录 Pi 版本与平台。
-
-覆盖启动就绪、get_state/get_commands、未知命令的失败关联、select/confirm/input/editor 往返，以及两个独立 Pi 的会话/响应隔离和关闭。扩展从注册命令触发对话，测试按 ID 自动回复；不在已知存在初始化限制的 session_start 中等待 UI。受控扩展可补执行中关闭，无需付费模型调用。
-
-每个测试有总时限，结束时清理持有的进程和临时目录；测试超时后的 fixture 强制清理属于测试隔离，不等同于产品关闭策略。
-
-### 构建与应用检查
-
-实施后执行受影响范围：
-
-```sh
-cargo fmt --all -- --check
-cargo build -p pi-rpc -p gupi --locked
-cargo test -p pi-rpc -p gupi --locked
-cargo clippy -p pi-rpc -p gupi --all-targets --all-features --locked -- -D warnings
-```
-
-必要应用检查使用隔离配置：启动 Gupi、确认探测与现有设置可用、通过集成测试建立连接后验证统一退出。无需提前制作对话 UI 来验收底层接入。
-
-现有 [CI](../../../.github/workflows/ci.yml) 在 macOS/Linux/Windows 执行 workspace build/test，macOS 执行 Clippy；新成员和默认可控测试随现有入口执行，不为安装 Pi 增加 CI 环境依赖。未运行平台如实记录，不把本机结果写成全平台验收通过。
-
-完成受影响构建、关键回归、真实 Pi 基础接入和必要启动检查后交付试用。实现稳定后在 `crates/pi-rpc/README.md` 说明接口与关闭语义，在 `app/gupi/README.md` 说明应用状态职责；本计划记录工作包及必要验证结果。真实模型对话、完整原生界面、打包和性能验收归后续相应阶段。
-
-## 实施与验证结果
-
-2026-09-08，macOS 本地开发构建：
-
-- 新增 pi-rpc，纯探测及 8 项原有底层回归迁入 crate；应用保留 Operation、本地化映射及 2 项 controller 回归。
-- 单进程 owner、类型化命令、原始命令入口、启动中事件流、未知载荷保留、有界通信和既定关闭流程已实现。应用 PiState 接入稳定实例标识、事件消费、独立关闭及统一逐个退出。
-- `cargo build -p pi-rpc -p gupi --locked`、`cargo fmt --all -- --check`、两包 all-targets/all-features Clippy 均通过。
-- `cargo test -p pi-rpc -p gupi --locked`：Gupi 13 项、pi-rpc 单元测试 11 项、受控进程集成测试 9 项，共 33 项回归通过；README 使用示例的 1 项编译测试通过。默认跳过安装版 Pi 测试。
-- 显式安装版测试通过：Pi 0.85.1，两个独立进程、get_state/get_commands、未知命令失败关联、select/confirm/input/editor 往返、关闭一个后另一个仍可查询及最终回收。临时目录、无 provider 凭据、无模型请求。
-- 原生启动检查使用当前 target/debug/gupi 与临时 app/config/log 目录：主页显示 Pi 0.85.1 就绪，设置入口正常，Cmd+Q 退出；日志包含 managed quit started/completed，进程已结束，配置内容未变，布局已保存。临时 app 与目录已清理。多连接退出由 Gupi 状态测试覆盖，原生检查未创建对话或 RPC 控件。
-- 关闭逻辑已于 2026-09-09 精简：取消固定等待和 SIGTERM/强杀/显式回收阶段，正常关闭等待 abort 回应后发送 EOF；异常路径使用 Child Drop，报告连接关闭与已观察到的退出状态。新增验证结果见下文。
-
-Windows 专用 shim 测试已加入默认测试目标，但本机未运行；Linux/Windows 实机、模型对话、完整 UI 与发行包不在本轮验证结果内。已有依赖 block 0.1.6 的 Rust future-incompatibility 提示仍存在，受影响构建与 Clippy 未因此失败。
-
-### 2026-09-09 收尾精简验证
-
-- pi-rpc 20 项默认回归及 README 编译示例通过；Gupi 12 项原有回归通过，删除固定耗时断言后的多实例关闭回归复测通过。
-- 隔离真实 Pi 0.85.1 集成通过：两个进程、扩展 UI 与正常关闭，无 provider 凭据或模型请求。
-- Gupi/pi-rpc 构建与 all-targets/all-features Clippy 通过；移除不再使用的 pi-rpc 直接 libc 依赖。
-- 超时只验证连接完成关闭且没有伪造退出状态；不增加一套测试来替代 Tokio 的进程回收契约。Linux/Windows 未在本轮实机验证。
+保留协议类型及命令/事件解析的内存测试。依赖真实子进程、安装版 Pi、Shell、文件系统和实际超时的集成测试及专用 fixture 已删除；当前测试不证明操作系统进程退出或真实 Pi 互操作行为。稳定使用契约见 [pi-rpc README](../../../crates/pi-rpc/README.md)。
 
 ## 实现依据与已知限制
 
@@ -187,4 +108,4 @@ Fixture 核心为在 `pi.on("session_start", ...)` 中 `await ctx.ui.confirm(...
 
 Pi 的 EOF/SIGTERM 清理可能执行扩展 shutdown；内置 shell 在 Unix 使用 detached 子进程，并在 abort 路径清理进程树。只终止直接 Child 或 Pi 所在进程组不能保证全部工具后代、任意扩展自建进程都已回收。
 
-受控测试覆盖 abort 回应与 EOF 顺序、阻塞写入、事件容量及优雅退出超时后的连接关闭。Windows shim 测试已加入但未在本机运行；Linux/Windows 实机、真实模型执行与任意扩展后代清理未验证。
+Linux/Windows 实机、真实模型执行与任意扩展后代清理未验证。

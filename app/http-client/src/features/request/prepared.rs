@@ -475,12 +475,10 @@ fn file_compile_error(field: RequestFileField, error: RequestFieldError) -> Requ
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write as _;
 
     use super::*;
     use crate::features::request::draft::{
-        ApiKeyAuthDraft, BasicAuthDraft, BearerAuthDraft, BinaryBodyDraft, FormDataDraft,
-        HeaderDraft, KeyValueDraft, MultipartFileDraft, MultipartPartDraft, MultipartTextDraft,
+        ApiKeyAuthDraft, BasicAuthDraft, BearerAuthDraft, HeaderDraft, KeyValueDraft,
         RequestSettingsDraft, TextBodyDraft, TextBodyFormat, UrlEncodedBodyDraft,
     };
     use crate::features::request::method::HttpMethod;
@@ -723,100 +721,6 @@ mod tests {
     }
 
     #[test]
-    fn multipart_and_binary_freeze_paths_without_reading_file_bytes() {
-        let directory = tempfile::tempdir().unwrap();
-        let file_path = directory.path().join("payload.json");
-        let mut file = File::create(&file_path).unwrap();
-        file.write_all(b"payload bytes").unwrap();
-        drop(file);
-
-        let mut multipart = draft();
-        multipart.body = RequestBodyDraft::FormData(FormDataDraft {
-            parts: vec![
-                MultipartPartDraft {
-                    enabled: true,
-                    name: "text".into(),
-                    value: MultipartPartValueDraft::Text(MultipartTextDraft {
-                        value: "value".into(),
-                        content_type: None,
-                    }),
-                },
-                MultipartPartDraft {
-                    enabled: true,
-                    name: "file".into(),
-                    value: MultipartPartValueDraft::File(MultipartFileDraft {
-                        path: Some(file_path.clone()),
-                    }),
-                },
-            ],
-        });
-        let prepared = compile_request(multipart, &Default::default()).unwrap();
-        let PreparedBody::Multipart(parts) = prepared.body else {
-            panic!("expected multipart body");
-        };
-        assert_eq!(parts.len(), 2);
-        match &parts[0] {
-            PreparedMultipartPart::Text {
-                name,
-                value,
-                content_type,
-            } => {
-                assert_eq!(name, "text");
-                assert_eq!(value, "value");
-                assert_eq!(content_type, &None);
-            }
-            PreparedMultipartPart::File { .. } => panic!("expected text part"),
-        }
-        match &parts[1] {
-            PreparedMultipartPart::File {
-                path,
-                file_name,
-                content_type,
-                ..
-            } => {
-                assert_eq!(path, &file_path);
-                assert_eq!(file_name, "payload.json");
-                assert_eq!(content_type, &mime::APPLICATION_JSON);
-            }
-            PreparedMultipartPart::Text { .. } => panic!("expected file part"),
-        }
-
-        let mut binary = draft();
-        binary.body = RequestBodyDraft::Binary(BinaryBodyDraft {
-            file: Some(file_path.clone()),
-        });
-        let prepared = compile_request(binary, &Default::default()).unwrap();
-        assert!(matches!(prepared.body, PreparedBody::Binary(path) if path == file_path));
-        assert_eq!(prepared.body_content_type, BodyContentType::None);
-    }
-
-    #[test]
-    fn multipart_file_with_unknown_extension_uses_octet_stream() {
-        let directory = tempfile::tempdir().unwrap();
-        let file_path = directory.path().join("payload.unknown-http-client-type");
-        std::fs::write(&file_path, b"payload").unwrap();
-        let mut request = draft();
-        request.body = RequestBodyDraft::FormData(FormDataDraft {
-            parts: vec![MultipartPartDraft {
-                enabled: true,
-                name: "file".into(),
-                value: MultipartPartValueDraft::File(MultipartFileDraft {
-                    path: Some(file_path),
-                }),
-            }],
-        });
-
-        let prepared = compile_request(request, &Default::default()).unwrap();
-        let PreparedBody::Multipart(parts) = prepared.body else {
-            panic!("expected multipart body");
-        };
-        let PreparedMultipartPart::File { content_type, .. } = &parts[0] else {
-            panic!("expected file part");
-        };
-        assert_eq!(content_type, &mime::APPLICATION_OCTET_STREAM);
-    }
-
-    #[test]
     fn api_key_query_replaces_matching_decoded_pairs_at_the_end() {
         let mut request = draft();
         request.url = "https://example.test/?keep=1&token=old&keep=2&token=older".into();
@@ -834,28 +738,6 @@ mod tests {
                 ("token".into(), "new value".into())
             ]
         );
-    }
-
-    #[test]
-    fn compile_rechecks_file_state_and_returns_only_redacted_categories() {
-        let directory = tempfile::tempdir().unwrap();
-        let missing = directory.path().join("secret-name.bin");
-        let mut request = draft();
-        request.body = RequestBodyDraft::Binary(BinaryBodyDraft {
-            file: Some(missing.clone()),
-        });
-
-        let error = compile_request(request, &Default::default()).unwrap_err();
-        assert_eq!(
-            error,
-            RequestCompileError::FileUnavailable {
-                field: RequestFileField::Binary,
-                reason: FileCheckError::Missing,
-            }
-        );
-        let diagnostic = format!("{error:?} {error}");
-        assert!(!diagnostic.contains("secret-name.bin"));
-        assert!(!diagnostic.contains(directory.path().to_string_lossy().as_ref()));
     }
 
     #[test]

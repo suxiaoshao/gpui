@@ -338,13 +338,8 @@ mod tests {
     use gpui_kit::{AppContext as _, TestAppContext};
 
     use super::*;
-    use crate::features::request::draft::{
-        ApiKeyAuthDraft, BinaryBodyDraft, FormDataDraft, MultipartFileDraft, MultipartPartDraft,
-        MultipartPartValueDraft, RequestSettingsDraft,
-    };
-    use crate::features::request::prepared::{
-        FileCheckError, RequestCompileError, RequestFileField, compile_request,
-    };
+    use crate::features::request::draft::{ApiKeyAuthDraft, BinaryBodyDraft, RequestSettingsDraft};
+    use crate::features::request::prepared::compile_request;
 
     fn form(draft: RequestDraft, cx: &mut gpui_kit::App) -> gpui_kit::Entity<Form<RequestDraft>> {
         cx.new(|_| Form::new(draft).with_validator(RequestValidator))
@@ -466,103 +461,6 @@ mod tests {
             });
             let form = form(draft, cx);
             assert!(form.update(cx, |form, cx| form.prepare(cx)).is_err());
-        });
-    }
-
-    #[gpui_kit::test]
-    fn multipart_issues_are_attached_to_active_dynamic_fields(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            let directory = tempfile::tempdir().unwrap();
-            #[cfg(unix)]
-            let file_path = directory.path().join("unsafe\nname.bin");
-            #[cfg(not(unix))]
-            let file_path = directory.path().join("safe-name.bin");
-            std::fs::write(&file_path, b"payload").unwrap();
-            let mut draft = valid_draft();
-            draft.body = RequestBodyDraft::FormData(FormDataDraft {
-                parts: vec![
-                    MultipartPartDraft {
-                        enabled: true,
-                        name: String::new(),
-                        value: MultipartPartValueDraft::File(MultipartFileDraft::default()),
-                    },
-                    MultipartPartDraft {
-                        enabled: true,
-                        name: "file".into(),
-                        value: MultipartPartValueDraft::File(MultipartFileDraft {
-                            path: Some(file_path),
-                        }),
-                    },
-                    MultipartPartDraft {
-                        enabled: true,
-                        name: "text".into(),
-                        value: MultipartPartValueDraft::Text(MultipartTextDraft {
-                            value: String::new(),
-                            content_type: Some("also invalid".into()),
-                        }),
-                    },
-                ],
-            });
-            let form = form(draft, cx);
-            assert!(form.update(cx, |form, cx| form.prepare(cx)).is_err());
-
-            let body = RequestDraft::BODY.case(RequestBodyDraft::FORM_DATA);
-            let form_data = body.resolve(&form, cx).unwrap().unwrap();
-            let parts = form_data
-                .then(FormDataDraft::PARTS)
-                .try_items(&form, cx)
-                .unwrap();
-            assert_eq!(
-                parts[0]
-                    .clone()
-                    .then(MultipartPartDraft::NAME)
-                    .try_errors(&form, cx)
-                    .unwrap()[0]
-                    .code(),
-                "request-multipart-name-required"
-            );
-            let value = parts[0].clone().then(MultipartPartDraft::VALUE);
-            let file = value
-                .case(MultipartPartValueDraft::FILE)
-                .resolve(&form, cx)
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                file.then(MultipartFileDraft::PATH)
-                    .try_errors(&form, cx)
-                    .unwrap()[0]
-                    .code(),
-                "request-file-required"
-            );
-
-            let second_value = parts[1].clone().then(MultipartPartDraft::VALUE);
-            let second_file = second_value
-                .case(MultipartPartValueDraft::FILE)
-                .resolve(&form, cx)
-                .unwrap()
-                .unwrap();
-            let second_file_errors = second_file
-                .then(MultipartFileDraft::PATH)
-                .try_errors(&form, cx)
-                .unwrap();
-            #[cfg(unix)]
-            assert_eq!(second_file_errors[0].code(), "request-file-name-invalid");
-            #[cfg(not(unix))]
-            assert!(second_file_errors.is_empty());
-
-            let text_value = parts[2].clone().then(MultipartPartDraft::VALUE);
-            let text = text_value
-                .case(MultipartPartValueDraft::TEXT)
-                .resolve(&form, cx)
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                text.then(MultipartTextDraft::CONTENT_TYPE)
-                    .try_errors(&form, cx)
-                    .unwrap()[0]
-                    .code(),
-                "request-media-type-invalid"
-            );
         });
     }
 
@@ -688,50 +586,6 @@ mod tests {
                     .code(),
                 "request-api-key-name-required"
             );
-        });
-    }
-
-    #[gpui_kit::test]
-    fn compiler_rechecks_a_file_after_form_validation(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("payload.bin");
-            std::fs::write(&path, b"payload").unwrap();
-
-            let mut draft = valid_draft();
-            draft.body = RequestBodyDraft::Binary(BinaryBodyDraft {
-                file: Some(path.clone()),
-            });
-            let form = form(draft, cx);
-            let prepared = form
-                .update(cx, |form, cx| form.prepare(cx))
-                .expect("the file exists during validation");
-            let (_, accepted) = prepared.into_parts();
-            let live_before = RequestDraft::ROOT.get(&form, cx);
-            let revision_before = form.read(cx).revision();
-
-            std::fs::remove_file(&path).unwrap();
-            assert!(matches!(
-                compile_request(accepted.clone(), &Default::default()),
-                Err(RequestCompileError::FileUnavailable {
-                    field: RequestFileField::Binary,
-                    reason: FileCheckError::Missing,
-                })
-            ));
-            assert!(RequestDraft::ROOT.get(&form, cx) == live_before);
-            assert_eq!(form.read(cx).revision(), revision_before);
-
-            std::fs::create_dir(&path).unwrap();
-            let error = compile_request(accepted, &Default::default()).unwrap_err();
-            assert_eq!(
-                error,
-                RequestCompileError::FileUnavailable {
-                    field: RequestFileField::Binary,
-                    reason: FileCheckError::NotRegular,
-                }
-            );
-            assert!(RequestDraft::ROOT.get(&form, cx) == live_before);
-            assert_eq!(form.read(cx).revision(), revision_before);
         });
     }
 

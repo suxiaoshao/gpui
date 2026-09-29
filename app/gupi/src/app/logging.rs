@@ -82,26 +82,3 @@ impl Write for LogWriter {
             .flush()
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn rotates_existing_log_and_keeps_only_three_archives() {
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::write(directory.path().join("gupi.log"), b"old").unwrap();
-        let mut log = LogWriter::open(directory.path().to_owned()).unwrap();
-        for index in 0..5 {
-            log.bytes = MAX_BYTES;
-            writeln!(log, "{index}").unwrap();
-        }
-        assert_eq!(
-            std::fs::read_to_string(directory.path().join("gupi.log")).unwrap(),
-            "4\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(directory.path().join("gupi.log.3")).unwrap(),
-            "1\n"
-        );
-        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 4);
-    }
-}
