@@ -1,27 +1,15 @@
 #![allow(deprecated)]
 mod platform;
-#[cfg(target_os = "macos")]
-mod quick_look;
 
 use gpui::{Bounds, DisplayId, Pixels, Window};
 #[cfg(target_os = "macos")]
-use objc2::{
-    ClassType, MainThreadMarker, msg_send,
-    rc::{Id, Retained},
-    runtime::{AnyClass, AnyObject, ClassBuilder, NSObject, Sel},
-    sel,
-};
+use objc2::{MainThreadMarker, rc::Id};
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSApplication, NSCursor, NSScreen, NSView, NSWindow};
-#[cfg(target_os = "macos")]
-use objc2_foundation::NSURL;
 use platform::*;
 #[cfg(target_os = "macos")]
 use raw_window_handle::AppKitWindowHandle;
 use raw_window_handle::{HandleError, HasRawWindowHandle, RawWindowHandle};
-use std::path::Path;
-#[cfg(target_os = "macos")]
-use std::{cell::RefCell, ptr, sync::OnceLock};
 use thiserror::Error;
 #[cfg(target_os = "windows")]
 use windows::Win32::{
@@ -61,16 +49,6 @@ pub enum WindowExtError {
     FailedSetTopMost,
     #[error("Failed to set window bounds")]
     FailedSetBounds,
-    #[error("Quick Look is only available on macOS")]
-    QuickLookUnavailable,
-    #[error("Quick Look must be opened on the main thread")]
-    QuickLookRequiresMainThread,
-    #[error("Failed to create Quick Look URL")]
-    FailedToCreateQuickLookUrl,
-    #[error("Failed to get Quick Look panel")]
-    FailedToGetQuickLookPanel,
-    #[error("Failed to create Quick Look data source")]
-    FailedToCreateQuickLookDataSource,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -277,19 +255,6 @@ pub trait WindowExt {
         bounds: Bounds<Pixels>,
         display_id: Option<DisplayId>,
     ) -> Result<(), WindowExtError>;
-}
-
-pub fn preview_file_with_quick_look(path: &Path) -> Result<(), WindowExtError> {
-    #[cfg(target_os = "macos")]
-    {
-        quick_look::preview_file(path)
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = path;
-        Err(WindowExtError::QuickLookUnavailable)
-    }
 }
 
 impl WindowExt for Window {

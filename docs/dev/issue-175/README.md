@@ -19,8 +19,6 @@ the implementation plan for Issue #199.
 - [`gpui-form`](../../../crates/gpui-form/docs/dev/issue-175/README.md)
 - [`gpui-form-macros`](../../../crates/gpui-form-macros/docs/dev/issue-175/README.md)
 - [`gpui-form-gpui-component`](../../../crates/gpui-form-gpui-component/docs/dev/issue-175/README.md)
-- [Jaco form migration](../../../app/jaco/docs/dev/issue-175/gpui-form-migration.md)
-- [Jaco Issue #175 product documents](../../../app/jaco/docs/dev/issue-175/README.md)
 
 ## Archival rule
 

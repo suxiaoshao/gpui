@@ -1,5 +1,7 @@
 # GPUI `1a246efd` / gpui-component `5b45bcb` 依赖证据
 
+此页保留该固定版本迁移的共享结论与历史证据；当前版本以根 manifest 为准。Jaco 专用工作包与发布验收已退役，不延续到现役应用。
+
 本文只保存本迁移批次共享的上游与依赖证据；各 package 的具体处理见
 [总计划](README.md)中的子计划索引。
 
@@ -19,13 +21,13 @@
 
 | Upstream change | Evidence | Semantic impact | Owner plan |
 | --- | --- | --- | --- |
-| Taffy `0.10.1 -> 0.12.1` | Zed `91fdd55889` | flex/root/scroll layout 可能在仍可编译时发生变化 | Jaco、Feiwen、HTTP、Novel 子计划 |
+| Taffy `0.10.1 -> 0.12.1` | Zed `91fdd55889` | flex/root/scroll layout 可能在仍可编译时发生变化 | Feiwen、HTTP、Novel 子计划 |
 | auto-sized root 填满 viewport | Zed `b0da438545` | 不能机械保留或删除所有 `.size_full()` | 各 app 视觉回归 |
-| `container_query` | Zed `49ad...` | 可按元素真实宽度布局，替代 viewport/chrome 常数 | Jaco 子计划 |
+| `container_query` | Zed `49ad...` | 可按元素真实宽度布局，替代 viewport/chrome 常数 | 应用消费侧 |
 | `View` trait | Zed `74b5207744` | entity-backed props 可获得稳定身份；`Render`/`RenderOnce` 仍兼容 | gpui-form-gpui-component 子计划 |
-| `WindowOptions::app_owns_titlebar_drag` | target public API | 调用 `start_window_move` 的 app 必须声明所有权 | Jaco、Feiwen 子计划 |
-| focus listener frame fix | Zed `af7de9a03c` | 降低 draw 中焦点重定向问题，但不替代 app focus policy | Jaco/Feiwen 回归 |
-| nested deferred popover fix | Zed `5e982c6bdc` | 改善嵌套 popover；不改变 `ListState` update 中 delegate 回调的重入边界 | Jaco 子计划保留 defer |
+| `WindowOptions::app_owns_titlebar_drag` | target public API | 调用 `start_window_move` 的 app 必须声明所有权 | Feiwen 子计划 |
+| focus listener frame fix | Zed `af7de9a03c` | 降低 draw 中焦点重定向问题，但不替代 app focus policy | Feiwen 回归 |
+| nested deferred popover fix | Zed `5e982c6bdc` | 改善嵌套 popover；不改变 `ListState` update 中 delegate 回调的重入边界 | 组件回调保留 defer |
 
 GPUI-owned delay 应使用 `cx.background_executor().timer(...)`；没有 GPUI context 的领域后台 retry 不强制迁移。
 
@@ -33,17 +35,17 @@ GPUI-owned delay 应使用 `cx.background_executor().timer(...)`；没有 GPUI c
 
 | Upstream change | Evidence | Semantic impact | Owner plan |
 | --- | --- | --- | --- |
-| `ThemeToken` / `ThemeTokens` / gradient background | `ea6b194d`, #2484 | 背景不再等同于单一 `Hsla`；Deref 错误用法会静默丢 gradient | app-theme、Jaco、Feiwen、Novel |
+| `ThemeToken` / `ThemeTokens` / gradient background | `ea6b194d`, #2484 | 背景不再等同于单一 `Hsla`；Deref 错误用法会静默丢 gradient | app-theme、Feiwen、Novel |
 | Aurora theme | #2487 | 本地 JSON snapshot 缺一份；preview 必须保留完整 Background | Jaco |
 | GPUI/Taffy migration and wrapper removal | `03155566`, #2573 | Form/GroupBox/Checkbox/Radio 临时 wrapper 被上游删除 | 各 package 编译/布局回归 |
-| Scrollable source/auto-height fixes | `dbf57ad9`, #2509；`52dfda33`, #2547 | source element 现在承载内容语义，wrapper 可能冗余或改变 gap/size | Jaco、Feiwen、HTTP |
-| base component roles/aria | `f0abdd9f` | 复用官方组件可获得语义；不自动覆盖自定义 editor/picker | Jaco、Feiwen |
+| Scrollable source/auto-height fixes | `dbf57ad9`, #2509；`52dfda33`, #2547 | source element 现在承载内容语义，wrapper 可能冗余或改变 gap/size | Feiwen、HTTP |
+| base component roles/aria | `f0abdd9f` | 复用官方组件可获得语义；不自动覆盖自定义 editor/picker | Feiwen |
 | `ComboboxState::set_selected_values` | `5b45bcb...`, #2576 | 用当前 delegate 进行 value 投影，不再需要旧 delegate/index cache | gpui-form-gpui-component |
-| `InputContentType::Password` / `Url` | target source/docs | 明确语义输入可提供平台/可访问性提示 | Jaco、Feiwen、HTTP |
+| `InputContentType::Password` / `Url` | target source/docs | 明确语义输入可提供平台/可访问性提示 | Feiwen、HTTP |
 | `TextViewState` rapid-update coalescing | `e416af7f`, #2371 | 连续 `push_str` 会合并待解析更新并丢弃过期结果；直接影响流式 Markdown，而不只是编辑器输入 | Jaco |
-| syntax highlighter / tree-sitter core refactor | `372446c0`, #2450；`3de68cd1`, #2567；`78095154`, #2557 | core parser 变为显式 feature；未知语言退化为 inert/plain text；Markdown source editor 的 fenced language injection 改进 | Jaco、HTTP |
-| highlight consumers | target `crates/ui/src/input/element.rs`、`crates/ui/src/text/node.rs` | Input editor 每次 render 读取当前 `ActiveTheme.highlight_theme`；rendered Markdown `CodeBlock` 使用同一 schema，但 target 在 parse 时克隆 theme，而背景在 render 时读取 `Theme.tokens.muted` | app-theme 生成；TextView theme lifecycle 需上游修复；Jaco 只验证消费 |
-| TextView theme snapshot/cache | target `text/state.rs:198-206,247-255,587-613`、`text/format/markdown.rs:398-402`、`text/node.rs:605-695` | 仅切换 ActiveTheme 不会触发 `set_text`/reparse；既有 CodeBlock 继续使用旧 `HighlightTheme` 和 styles cache，造成新背景配旧 syntax | `UPSTREAM-TEXT-15` release blocker；禁止在 Jaco 加局部 reparse/sync |
+| syntax highlighter / tree-sitter core refactor | `372446c0`, #2450；`3de68cd1`, #2567；`78095154`, #2557 | core parser 变为显式 feature；未知语言退化为 inert/plain text；Markdown source editor 的 fenced language injection 改进 | HTTP |
+| highlight consumers | target `crates/ui/src/input/element.rs`、`crates/ui/src/text/node.rs` | Input editor 每次 render 读取当前 `ActiveTheme.highlight_theme`；rendered Markdown `CodeBlock` 使用同一 schema，但 target 在 parse 时克隆 theme，而背景在 render 时读取 `Theme.tokens.muted` | app-theme 生成；TextView theme lifecycle 需上游修复；应用只验证消费 |
+| TextView theme snapshot/cache | target `text/state.rs:198-206,247-255,587-613`、`text/format/markdown.rs:398-402`、`text/node.rs:605-695` | 仅切换 ActiveTheme 不会触发 `set_text`/reparse；既有 CodeBlock 继续使用旧 `HighlightTheme` 和 styles cache，造成新背景配旧 syntax | `UPSTREAM-TEXT-15` release blocker；禁止在应用加局部 reparse/sync |
 | editor color fallback | target renderer source | `editor_foreground`、`editor_line_number`、`editor_active_line_number` 尚无直接 renderer consumer；普通文本/行号实际使用 `Theme.foreground` / `Theme.muted_foreground` | app-theme 保持 colors/highlight 的 plain/muted 语义一致；应用不补 override |
 | optional editor gutter | target `input/element.rs` | `editor_gutter_background = None` 时继承 editor background；只有显式 `Some` 才定义独立 gutter 表面 | app-theme 不生成同色 gutter override |
 
@@ -53,13 +55,7 @@ GPUI-owned delay 应使用 `cx.background_executor().timer(...)`；没有 GPUI c
 | --- | --- | --- | --- |
 | Feiwen 平台标题栏 shell | `gpui_component::TitleBar` | 删除平台 fork，保留业务内容组合 | Feiwen |
 | Feiwen 手画 progress | `Progress` | 直接复用 | Feiwen |
-| Jaco picker selectable row | `ListItem` | picker 视觉层复用；其余三类 row 保留既有无边框 selected 视觉；delegate/业务数据/defer 不变 | Jaco |
-| Jaco controlled picker | 标准 Combobox 缺受控 open/group/footer 契约 | 保留 | Jaco |
-| Jaco structured composer | 新 Input API 不覆盖 token/IME/skill/attachment/undo/completion | 保留 | Jaco |
-| Jaco rendered Markdown code blocks | `TextViewState::markdown` -> `CodeBlock` -> `SyntaxHighlighter(lang)` | 保留官方渲染链路；单独验证语言 feature、流式 fence、主题色和 plain fallback | Jaco |
 | app-owned Markdown/editor code palette | shared `ActiveTheme.highlight_theme` | 不新增；共享主题层一次生成 plain/muted/syntax，应用只消费 | app-theme |
-| Jaco theme-change reparse/sync | target TextView parse-time theme snapshot | 禁止本地 workaround；上游把 theme 移到 render stage，并让 styles cache 按 theme identity 失效 | UPSTREAM-TEXT-15 |
-| viewport theme-grid 推算 | `container_query` | 替换 | Jaco |
 | `IntegerInput<N>: RenderOnce` | entity-backed `View` | 定向适配，不批量迁移 | gpui-form-gpui-component |
 | `.bg(ThemeColor)` | `Theme.tokens` | 背景迁移；前景与颜色计算保留 Hsla | app-theme + affected apps |
 
@@ -78,7 +74,6 @@ GPUI-owned delay 应使用 `cx.background_executor().timer(...)`；没有 GPUI c
 ```bash
 cargo tree --locked -i gpui@0.2.2
 cargo tree --locked -d
-cargo tree --locked -e features -p jaco
 cargo tree --locked -e features -p feiwen
 cargo tree --locked -e features -p http-client
 cargo tree --locked -e features -p novel-download

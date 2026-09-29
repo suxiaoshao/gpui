@@ -1,5 +1,7 @@
 # `FormStore` derive breaking 重构实施计划
 
+本页为旧 Form 实现的共享设计归档，已由 Issue #199 取代；原 Jaco 消费方及其迁移、发布和 UI 验收要求已退役，文中历史编号不构成当前待办。
+
 > **历史归档（Superseded）。** 本计划随
 > [PR #176](https://github.com/suxiaoshao/gpui/pull/176) 交付；该 PR 的 closing issue 为
 > [#175](https://github.com/suxiaoshao/gpui/issues/175)。Issue #199 的 `FormModel` / associated
@@ -1259,7 +1261,6 @@ cargo fmt --all --check
 cargo test -p gpui-form-macros --locked
 cargo test -p gpui-form --all-features --locked
 cargo test -p gpui-form-gpui-component --all-features --locked
-cargo test -p jaco --all-features --locked
 cargo clippy -p gpui-form-macros -p gpui-form -p gpui-form-gpui-component \
   --all-targets --all-features --locked -- -D warnings
 cargo tree -p gpui-form-macros --edges dev --locked

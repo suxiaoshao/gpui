@@ -1,5 +1,7 @@
 # gpui-form vNext：递归 schema、runtime topology 与 session form 重构计划
 
+本页保留共享 Form 的设计与交付证据。原 Jaco 消费方及其专用工作包已退役；当前消费者以现役应用源码为准，历史应用计数和验证结果不作为当前验收。
+
 ## 状态与范围
 
 - 状态：`Done`。三个 Form crate 的 vNext producer、Jaco/Feiwen consumer、旧 surface 删除与

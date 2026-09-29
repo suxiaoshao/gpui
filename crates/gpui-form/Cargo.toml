@@ -3,6 +3,10 @@ name = "gpui-form"
 version = "0.1.0"
 edition = "2024"
 
+[package.metadata.cargo-shear]
+# Compiled by the trybuild harness in tests/ui.rs.
+ignored-paths = ["tests/ui/vnext/pass/*.rs", "tests/ui/vnext/fail/*.rs"]
+
 [features]
 default = []
 garde-adapter = ["dep:garde"]
@@ -15,6 +19,4 @@ gpui-operation = { workspace = true }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
-gpui-component = { workspace = true }
-gpui-form-gpui-component = { workspace = true }
 trybuild = "1.0.121"

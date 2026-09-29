@@ -1,5 +1,7 @@
 # 类型化 bound control 实施计划
 
+本页为旧 Form 实现的共享设计归档，已由 Issue #199 取代；原 Jaco 消费方及其迁移、发布和 UI 验收要求已退役，文中历史编号不构成当前待办。
+
 > **历史归档（Superseded）。** 本计划随
 > [PR #176](https://github.com/suxiaoshao/gpui/pull/176) 交付；该 PR 的 closing issue 为
 > [#175](https://github.com/suxiaoshao/gpui/issues/175)。Issue #199 的显式 form、
@@ -964,16 +966,6 @@ cargo clippy -p gpui-form-gpui-component --all-targets --all-features --locked -
 - 先确认 Jaco active source 已迁移，再删除模块和 export，最后用 residual gate 阻止兼容 alias
   或旧 free binding API 回流。
 
-**受影响 Jaco 调用点**
-
-- `app/jaco/src/components/run_settings.rs`
-- `app/jaco/src/features/settings/mcp/form_state.rs`
-- `app/jaco/src/features/settings/prompts/dialog.rs`
-- `app/jaco/src/features/settings/provider.rs`
-- `app/jaco/src/features/settings/shortcuts/dialog.rs`
-
-这些文件的具体字段所有权、render 与验证迁移由 Jaco 实施计划固定；本 work package 只确认
-这些 adapter 调用点已经不依赖旧 export。应用其余 legacy 清理由后续 `JACO-FORM-70` 负责。
 
 **Errors and lifecycle**
 
@@ -1000,7 +992,6 @@ cargo clippy -p gpui-form-gpui-component --all-targets --all-features --locked -
 rg -n 'Form(Input|Select|Combobox|IntegerInput|Bool)(State|Config)|FormControlStatus|bind_(input|number|select|combobox|bool)' \
   crates/gpui-form-gpui-component --glob '*.rs'
 cargo test -p gpui-form-gpui-component --all-features --locked
-cargo check -p jaco --all-targets --all-features --locked
 ```
 
 **Done condition**

@@ -33,4 +33,4 @@ Windows 的 npm shim 与 Unix 可执行脚本不同，尚未验证的支持不�
 
 ## 窗口恢复
 
-Pi 不负责 GUI 窗口布局。沿用 Jaco `app/jaco/src/state/layout.rs` 的 PersistedWindowBounds 转换思路：记录 GPUI Pixels 对应的 x/y/width/height、窗口模式和显示器标识，再恢复 WindowBounds；不可把坐标误当作硬件物理像素。Gupi 本阶段只取普通/最大化需求和离屏处理，不复制 Jaco 多窗口与业务状态。窗口恢复不读取 Pi 会话文件。
+Pi 不负责 GUI 窗口布局。PersistedWindowBounds 转换规则：记录 GPUI Pixels 对应的 x/y/width/height、窗口模式和显示器标识，再恢复 WindowBounds；不可把坐标误当作硬件物理像素。Gupi 本阶段只取普通/最大化需求和离屏处理。窗口恢复不读取 Pi 会话文件。

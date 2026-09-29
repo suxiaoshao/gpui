@@ -528,26 +528,26 @@ localizations = ["en-US", "zh-CN", "zh-TW", "ja", "ko", "de", "fr", "es", "pt-BR
         fs::create_dir_all(i18n_dir.join("zh-Hans.lproj"))?;
         fs::write(
             i18n_dir.join("en-US.lproj/InfoPlist.strings"),
-            "\"CFBundleName\" = \"Jaco\";\n",
+            "\"CFBundleName\" = \"Fixture\";\n",
         )?;
         fs::write(
             i18n_dir.join("zh-Hans.lproj/InfoPlist.strings"),
-            "\"CFBundleName\" = \"Jaco\";\n",
+            "\"CFBundleName\" = \"Fixture\";\n",
         )?;
 
         let manifest_path = temp_dir.path.join("Cargo.toml");
         fs::write(
             &manifest_path,
             r#"[package]
-name = "jaco"
+name = "fixture"
 version = "0.1.0"
 license-file = "LICENSE"
 
 [package.metadata.bundle]
-name = "Jaco"
-identifier = "top.sushao.jaco"
+name = "Fixture"
+identifier = "top.sushao.fixture"
 category = "DeveloperTool"
-deep_link_protocols = [{ schemes = ["jaco-screenclip"] }]
+deep_link_protocols = [{ schemes = ["fixture-preview"] }]
 
 [package.metadata.bundle.deb]
 depends = ["libasound2"]
@@ -574,7 +574,7 @@ depends = ["libasound2"]
                 .as_ref()
                 .expect("deep link protocols should be present")[0]
                 .schemes,
-            vec!["jaco-screenclip".to_string()]
+            vec!["fixture-preview".to_string()]
         );
         let resources_map = bundle_settings
             .resources_map

@@ -8,7 +8,7 @@ body:
       label: Affected scope
       description: Select the app or crate where the bug occurs.
       options:
-        - jaco
+        - gupi
         - feiwen
         - http-client
         - novel-download

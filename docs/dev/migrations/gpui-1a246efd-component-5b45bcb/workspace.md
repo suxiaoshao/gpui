@@ -1,5 +1,7 @@
 # GPUI `1a246efd` / gpui-component `5b45bcb` workspace 迁移门
 
+此页保留该固定版本迁移的共享结论与历史证据；当前版本以根 manifest 为准。Jaco 专用工作包与发布验收已退役，不延续到现役应用。
+
 ## 1. 状态与职责
 
 - 迁移 ID：`gpui-1a246efd-component-5b45bcb`。
@@ -60,7 +62,6 @@
 ```bash
 cargo tree --locked -i gpui@0.2.2
 cargo tree --locked -d
-cargo tree --locked -e features -p jaco
 cargo tree --locked -e features -p feiwen
 cargo tree --locked -e features -p http-client
 cargo tree --locked -e features -p novel-download
@@ -81,7 +82,7 @@ cargo tree --locked -e features -p novel-download
 
 **Prerequisites**
 
-- 总计划登记的 THEME、FORM、JACO、FEIWEN、HTTP、NOVEL、SKILL 与 `UPSTREAM-TEXT-15`
+- 总计划登记的 THEME、FORM、FEIWEN、HTTP、NOVEL、SKILL 与 `UPSTREAM-TEXT-15`
   工作包均完成。
 - workspace 已使用包含 TextView 修复的新 gpui-component SHA，并已建立后继 hash-specific
   迁移批次；这些条件满足时，实际执行 owner 已是后继 `workspace.md`，不是当前文件。
@@ -90,7 +91,7 @@ cargo tree --locked -e features -p novel-download
 
 1. 运行格式、workspace build/test/clippy、dependency graph 和 residual gates。
 2. 汇总每份 package 子计划的定向自动测试证据。
-3. 执行 Jaco、Feiwen、HTTP Client、Novel Download 视觉/交互 smoke。
+3. 执行 Feiwen、HTTP Client、Novel Download 视觉/交互 smoke。
 4. 运行 macOS、Linux、Windows CI；Linux Wayland/X11 与 Windows 至少完成启动 smoke。
 5. 把最终提交、PR、CI 和人工结果回填后继 hash-specific 总计划；当前总计划只补 successor
    链接并保留 blocked 历史，不回写为新 SHA 的完成状态。
@@ -110,18 +111,10 @@ rg -n '\.bg\(cx\.theme\(\)\.' app -g '*.rs' | rg -v '\.tokens\.'
 rg -n 'tokens\.[a-zA-Z0-9_]+\.opacity\(' app crates -g '*.rs'
 ```
 
-第一个 residual scan 只允许 Jaco composer 中两处 gpui-component `input_background()` 计算结果；
-它们是组件提供的最终 `Hsla` 输入外观，不是可替换的 `ThemeToken`。第二个 scan 预期为空，token
-opacity 必须经过 `.background`。
+组件提供的最终 `Hsla` 输入外观与 `ThemeToken` 分开处理；token opacity 必须经过 `.background`。
 
 **Manual/Computer Use matrix**
 
-- Jaco：Material light/dark、Aurora、main/settings/about/temporary/screenshot、theme grid、
-  conversation Markdown/code block 与 composer/editor、provider/MCP/prompt/shortcut dialogs；
-  既有 Markdown 必须在不修改 source/revision 的情况下消费当前共享 syntax palette，且
-  code-block surface 可读；静态 palette 与双 surface 关系由 `THEME-10` 自动门负责，运行时
-  current-theme/cache 由 upstream test 负责。连续切换 project/model/effort/approval，
-  验证 Up/Down/Enter/Escape、mouse selection、search/composer focus，不得出现 entity re-entry。
 - Feiwen：titlebar route/actions、traffic lights、drag/double-click/right-click/controls、progress 0/mid/100、advanced query scroll。
 - HTTP Client：URL input、request params/body、main scroll/layout。
 - Novel Download：workspace background/input/result layout。

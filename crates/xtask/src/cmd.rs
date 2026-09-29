@@ -84,7 +84,7 @@ mod tests {
         assert!(command_exists(current_exe.to_str().unwrap()));
 
         assert!(!command_exists(
-            "jaco-xtask-command-that-must-not-exist-5b5657b7"
+            "fixture-xtask-command-that-must-not-exist-5b5657b7"
         ));
     }
 }

@@ -90,55 +90,12 @@ manifest 与源码扫描结果如下：
 
 | App | `gpui-operation` | `gpui-store` | `gpui-form` | 当前判断 |
 | --- | --- | --- | --- | --- |
-| Jaco | 已接入 | 已接入 | 已接入 | Issue #177 与 #199 已形成当前基线；只评估剩余边界 |
 | Feiwen | 未接入 | 未接入 | **未接入** | 三类 crate 都有实际候选 |
 | HTTP Client | 未接入 | 未接入 | **未接入** | Form 有明确候选；Operation / Store 等待真实请求运行时 |
 | Novel Download | 未接入 | 未接入 | **未接入** | 下载状态适合自定义 Transition；当前没有直接 Store / Form 迁移必要 |
 
 依赖证据：Jaco 在 `app/jaco/Cargo.toml:60-63` 声明三个 crate；其余三个 app 的
 `Cargo.toml` 均未声明这些依赖，当前源码也没有相关 API 使用。
-
-## 4. Jaco
-
-### 4.1 已有正确基线
-
-Jaco 已经覆盖大部分典型组合，后续不应重复迁移或降级为另一套状态模型：
-
-| 现有表面 | 当前设计 | 判断 |
-| --- | --- | --- |
-| Config | `repair::Operation` + `Store`，支持 Reload / Reset 等显式 repair | 保留；这是预定义 repair family 的正确应用（`app/jaco/src/state/config.rs:46-67`、`656-707`） |
-| Provider / Project / Prompt / Shortcut catalogs | `refresh::Operation` + `Store`；Ready Data 通过领域消息更新 | 保留；例如 Provider 的类型与消息在 `app/jaco/src/state/providers.rs:16-18`、`174-196` |
-| Conversation catalog、conversation model、temporary search、sidebar search、skill catalog、runtime recovery | 预定义 `refresh::Operation` | 保留；这些都是可重复读取或 recovery fetch |
-| Database | 应用自定义 `DatabaseOperation` + `Transition<DatabaseMessage>` + `Store` | 保留；refresh 失败后必须先 `Retiring` session 再进入 `Unavailable`，预定义 repair family 无法表达该中间态（`app/jaco/src/database/operation.rs:8-61`、`135-223`） |
-| App shutdown | `Store<AppShutdownPhase>` | 保留；只有 `Running -> Draining` 的单向事实，不需要再引入 Operation（`app/jaco/src/app.rs:35-43`） |
-
-### 4.2 剩余 Transition 候选
-
-| 候选 | 分类 | 判断 |
-| --- | --- | --- |
-| MCP runtime | **移交 #201** | 技术判断仍是自定义 `Transition`，且实施前必须先拆分状态与服务：当前一个 Entity 同时持有 session manager、四类 keyed Task、server statuses、OAuth target 和全局错误；连接测试、授权、凭据写入、断连和 runtime event 分散修改多张 map（`app/jaco/src/state/mcp.rs:63-73`、`154-206`、`209-289`、`359-390`、`393-652`）。多服务器并发与 OAuth 子流程都不符合单个 refresh / repair enum；具体设计以 [#201](https://github.com/suxiaoshao/gpui/issues/201) 为准。 |
-| Conversation active run | **已实施** | `ConversationRuntimeStore` 已以应用私有 `Transition<Message>` 统一 `Submitting / Running / Stopping`、attempt ticket、Task owner 与迟到 completion 防护；完成证据见 [JACO-199-04](../../../app/jaco/docs/dev/issue-199/conversation-runtime-transition-plan.md)。 |
-| Settings 页 save / delete / fetch task | **保持现状** | Prompt、Shortcut、Provider、MCP editor 的任务只是页面或 dialog 局部互斥，并与 form revision、通知、关闭和 catalog command 绑定；底层 catalog 已有 Operation。当前 `Option<Task<()>>` 比再包一层 runtime enum 更直接，例如 `app/jaco/src/features/settings/provider.rs:245-300`、`930-1040`。 |
-| Layout、Theme、temporary window、screenshot overlay | **保持现状** | 它们分别是带 debounce persistence 的 UI cache、订阅驱动的主题副作用、窗口 handle 生命周期和局部拖拽 / capture 交互，不是可重复业务 Operation。 |
-
-### 4.3 Store 候选
-
-| 候选 | 分类 | Store 中只保存什么 | Store 外保留什么 |
-| --- | --- | --- | --- |
-| MCP runtime 发布快照 | **移交 #201** | 若 #201 采用 Store，只保存 server status、tool / auth snapshot、pending phase、last error，以及 UI 所需的派生 row 输入 | `McpSessionManager`、event listener、OAuth / connect / disconnect Task、网络与 keychain effect不得迁入 Store |
-| Hotkey runtime diagnostics | **适合拆出** | `ShortcutRuntimeDiagnostics` 中的 temporary hotkey、registered shortcuts、registration errors、last pressed；该 snapshot 已经独立存在并被 General / Shortcut settings 多处读取（`app/jaco/src/state/hotkey.rs:179-192`、`1155-1168`） | `GlobalHotKeyManager` backend、系统注册 / 注销、副作用 Task 和事件监听（`app/jaco/src/state/hotkey.rs:144-155`、`356-394`） |
-| Conversation runtime | **不整体迁移** | 无立即迁移项；未来只有确实出现多个独立消费者的纯 run summary 才另行评估 | active run、Task、cancellation token、approval broker、OpenAI session pool 继续由 Entity service owner 持有 |
-| Layout / Theme / temporary window / screenshot | **保持现状** | 无 | 当前 owner 已与窗口、平台资源或副作用生命周期一致；换 Store 不会增加新的权威数据边界 |
-
-MCP runtime 发布快照由 #201 继续评估；其边界仍是“拆出发布快照”，不是把名为
-`McpRuntimeStore` 的现有 Entity 机械换成 `gpui_store::Store<S>`。Hotkey runtime diagnostics
-候选同样只拆纯数据快照。类型名中有 `Store` 不代表它符合 `gpui-store` 的数据职责。
-
-### 4.4 Form 状态
-
-Jaco 已完成 Issue #199 的 form API 迁移。当前 Provider、Prompt、MCP、Shortcut、ChatInput 和
-RunSettings 都是现有契约的消费方，本次调研没有发现需要建立第二套 form runtime 或把 form 放入
-Store 的理由。
 
 ## 5. Feiwen
 
@@ -257,10 +214,9 @@ owner 负责。
 | 成熟度 | 候选 |
 | --- | --- |
 | 边界已经清楚 | Feiwen 查询 `refresh::Operation`；Feiwen 抓取自定义 Transition；Feiwen `Store<FetchRunState>`；Feiwen 抓取 Form；HTTP `RequestDraft` Form |
-| 先拆分 owner / data | Feiwen QueryCatalog 的 refresh + Store；Jaco HotkeyDiagnostics Store |
-| 已实施或已有 owner 计划 | Jaco conversation active run Transition；HTTP request runtime；Novel Download 下载 Transition 与 Form |
-| 已移交后继 issue | Jaco MCP runtime 的 custom Transition 与 status Store由 [#201](https://github.com/suxiaoshao/gpui/issues/201) 承接 |
-| 保持现状 | Jaco settings 局部任务与平台生命周期；HTTP 当前页面局部 Entity；Novel Download 当前单 Workspace；各 app 的 service / repository / I18n Global |
+| 先拆分 owner / data | Feiwen QueryCatalog 的 refresh + Store |
+| 已实施或已有 owner 计划 | HTTP request runtime；Novel Download 下载 Transition 与 Form |
+| 保持现状 | HTTP 当前页面局部 Entity；Novel Download 当前单 Workspace；各 app 的 service / repository / I18n Global |
 
 ### 8.2 明确不改变的公共契约
 
@@ -270,6 +226,5 @@ owner 负责。
   `update` / `update_if` / `set` 发布结果。
 - Store 不拥有 persistence、repository、service、平台 handle 或 effect runtime。
 - Form 不进入 Store，也不接管业务 Task；Form submit 只产生经过验证的 typed input。
-- Jaco MCP runtime 的 custom Transition 与 status Store 不进入 #199 的后续实施范围；由 #201 单独负责。
 - 本文不授权开始任何迁移。后续若实施，应在同一个 Issue #199 下为对应 app 建立 owner 文档，
   或由已登记的后继 issue 建立 owner 文档，再把候选转换成依赖、消息、状态、effect、Store snapshot 与验证清单。

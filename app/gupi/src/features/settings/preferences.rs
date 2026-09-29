@@ -242,7 +242,7 @@ impl SettingsView {
     }
 }
 
-// Match Jaco's equal-width grid: choose columns from the available width,
+// Build an equal-width grid: choose columns from the available width,
 // then let grid tracks share all remaining space after the gaps.
 pub(super) fn theme_columns(width: f32) -> u16 {
     if !width.is_finite() || width <= 178. {

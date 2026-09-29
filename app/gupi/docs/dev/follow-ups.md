@@ -45,7 +45,6 @@
 | --- | --- | --- |
 | Pi 配置图形化与项目级覆盖 | 管理 Pi 自身配置，显示继承、来源与生效范围；先选择默认模型/思考、范围、自动压缩、重试、队列模式、图片处理等实际字段。保留未知字段，不另存 Gupi 同义配置；现有会话仍沿用用户手动刷新规则 | [#244](https://github.com/suxiaoshao/gpui/issues/244) |
 | 插件包市场与资源发现 | 包搜索、详情与资源发现；复用现有个人包安装、更新、移除和资源管理入口 | [#245](https://github.com/suxiaoshao/gpui/issues/245) |
-| Jaco 退役及关联清理 | Gupi 合入 `main` 后执行。删除 Jaco 专用源码、旧 assets 宏、Lucide 子模块、MCP 工具及 CI/打包/文档引用；Quick Look、OCR 与 OCR 专用绑定生成链一并删除。保留仍有消费者的共享能力，不删除用户数据 | [#240](https://github.com/suxiaoshao/gpui/issues/240)、[清理清单](../../../../docs/dev/jaco-retirement/README.md) |
 | 自研共享库契约修复与精简 | 窗口句柄生命周期、Windows 显示器/坐标契约、Form 校验依赖与错误归属、阻塞写入的退出收尾；再按消费者价值评估 Store/Operation 等精简。已有结论含静态风险，开始时重核当前源码，不能写成已复现崩溃或数据丢失 | [#248](https://github.com/suxiaoshao/gpui/issues/248) |
 | app-theme 分类配色 | 原首个场景是 Jaco 模型用量图表；应结合退役重新确认仍维护应用的消费者，再决定联合配色评估和实现范围 | [#234](https://github.com/suxiaoshao/gpui/issues/234) |
 

@@ -1,5 +1,7 @@
 # Issue #199：Field 描述符与内部消息 Transition 改造
 
+本页保留共享 Form 的设计与交付证据。原 应用调用方 消费方及其专用工作包已退役；当前消费者以现役应用源码为准，历史应用计数和验证结果不作为当前验收。
+
 ## 文档定位与原计划所有权
 
 - 状态：`Done`（`WP-100`–`WP-104` 已实施并通过自动化/残留门禁）
@@ -10,7 +12,7 @@
 - 专题文档：`crates/gpui-form/docs/dev/issue-199/field-descriptors-and-internal-transitions.md`
 - 所有者索引：[gpui-form 开发计划](../README.md)
 - 所引用的根计划 ID：`S-01` 至 `S-12`；`C-01`（core ↔ macro）、
-  `C-02`（core ↔ adapter）、`C-03`（core ↔ Jaco）；`ERR-01`
+  `C-02`（core ↔ adapter）、`C-03`（core ↔ 应用调用方）；`ERR-01`
   （`FieldAccessError`）、`ERR-02`（`FieldMutationError`）、`ERR-03`
   （adapter/control 构造边界），以及 `ERR-04`（`SubmitError`）。
 - 所有者编写的本地 ID/范围：`E/D/F/L/ST/R/T-100..199`、
@@ -19,14 +21,14 @@
 - 负责：`gpui-form` 公共 runtime——静态与定位描述符、表单状态变更/事件、schema/path 解析、
   验证 runtime、提交准备、导出及其定向测试。
 - 不负责：`#[derive(FormModel)]` 展开与生成命名（`C-01`，macro owner）；原生 control wrapper
-  及其订阅（`C-02`，adapter owner）；或 Jaco 页面状态、持久化、operation 与可见恢复（`C-03`）。
+  及其订阅（`C-02`，adapter owner）；或 应用调用方 页面状态、持久化、operation 与可见恢复（`C-03`）。
 
 ## 实施结果（2026-08-02）
 
 - `FormState`、静态 `FormField`、`PartialFormField`、`ControlBinding`、非泛型 `FormEvent` 与
   `PreparedSubmit` 已按 C-01–C-03 落地；descriptor 内不再保存 form entity。
 - `FormRuntime` 与 validation runtime 的权威变更由 core-private `gpui_operation::Transition`
-  message/effect 实现；macro、adapter 与 Jaco 只调用领域 façade。
+  message/effect 实现；macro、adapter 与 应用调用方 只调用领域 façade。
 - `cargo test -p gpui-form --all-features --locked`、合并 clippy 与 active-source residual scan 通过。
 
 ## 所有者本地证据
@@ -43,7 +45,7 @@
 | E-107 | 当前事实 | Core 测试覆盖分布于 derive、validation、nested validation、corrective transaction/validation/Garde、submit 及 UI compile-fail suite。 | `tests/{derive,validation,nested_validation,corrective_transactions,corrective_validation,corrective_garde,submit,ui}.rs` | 仅在新公共契约要求时合并/重命名；保留行为覆盖而非只更新名称。 |
 | E-108 | 用户决定 | descriptor 永不持有 `Entity`/`WeakEntity`；静态 associated constant 零分配；每个同步操作接收 `&Entity<Form>`。 | Issue #199 设计决定 | 这是 breaking core API，而非可选模式。 |
 | E-109 | 用户决定 | `within` 保持 availability；`item` 和 `project_value` 产出 partial descriptor；静态 validation/transform policy 保持 associated，`WeakEntity` 限于 control/async/subscription 边界。 | Issue #199 设计决定 | 在 `L-100` 至 `L-106` 确立精确的 total/partial 与生命周期划分。 |
-| E-110 | 用户决定 | 表单状态变化在 core 内部使用 `gpui_operation::Transition` 和私有 owned message/effect；公开表面继续使用 `set`、`validate`、`reset`、`rebase`、`prepare_submit` 等领域方法，不要求调用方发送消息或导入 `Transition`。 | Issue #199 后续设计讨论；Issue 本身已包含迁移到 `gpui-operation` 的范围 | 本次只补充三个 form crate 的中文开发计划；不修改 Issue、公开 README/guide、根计划或 Jaco 文档。 |
+| E-110 | 用户决定 | 表单状态变化在 core 内部使用 `gpui_operation::Transition` 和私有 owned message/effect；公开表面继续使用 `set`、`validate`、`reset`、`rebase`、`prepare_submit` 等领域方法，不要求调用方发送消息或导入 `Transition`。 | Issue #199 后续设计讨论；Issue 本身已包含迁移到 `gpui-operation` 的范围 | 本次只补充三个 form crate 的中文开发计划；不修改 Issue、公开 README/guide、根计划或 应用调用方 文档。 |
 | E-111 | 当前事实 | `gpui_operation::Transition<Message>` 可独立表达“状态 + owned message → output”，不负责 GPUI `Context`、任务创建、emit 或 notify；`refresh`/`repair` family 面向单一 fallible resource operation，不匹配表单的多字段、分桶和按 key 并发验证。 | `../gpui-operation/src/transition.rs`、`../gpui-operation/src/{refresh,repair}.rs`、`../gpui-operation/dev/message-driven-transitions.md` | Core 只复用 `Transition` trait；继续拥有专用的表单/验证 runtime，不套用 `refresh::Operation` 或 `repair::Operation`。 |
 
 ## 所有者本地决策
@@ -57,7 +59,7 @@
 | D-104 | Form value mutation 保持为一个 root transaction：equal write 无副作用；changed write 提交一次 revision、使相交 state 失效、执行 scoped change validation、发出一次 `ValueChanged`，并只 notify 一次。 | E-102、E-103；S-05 | 让 nested descriptor 独立更新 ancestor form，或添加 origin echo suppression。 | `L-103`、`ST-101`、`R-100`。 |
 | D-105 | `FormEvent` 没有 field-enum type parameter。仅有 `ValueChanged { path, revision }`、`ModelReplaced { revision }` 和 `ValidationChanged { scope }`；descriptor observer 为相关 value/model event 重投影，忽略仅验证 event。 | E-101、E-106；S-04、S-05 | 保留 `FormEvent<Field>` 和 root enum ID，或跳过 source control。 | `src/form.rs`、`src/field.rs`、`C-02`、`R-101`。 |
 | D-106 | Validation adapter 和 submit transform 是静态 type-level policy，不是保留的 value，也不以 `Default` 构造。Validation 保持同步并返回 scoped bucket；submit transform 不可失败。 | E-105、E-109；S-06、S-08 | 存储 policy instance，或将 `TransformReport` 保留为 pseudo-validation failure。 | `L-104`、`L-105`、`ERR-04`；macro 通过 `C-01` 接收 associated type。 |
-| D-107 | `prepare_submit` 在同步 submit validation 与 pending-async rejection 后，从同一 snapshot 产出 `PreparedSubmit { revision, output }`。 | E-105；S-08、S-12 | 分开返回 output，并让调用方稍后读取 revision。 | Jaco 经 `C-03` 消费不可变 save handoff；core 不拥有 I/O 或 busy state。 |
+| D-107 | `prepare_submit` 在同步 submit validation 与 pending-async rejection 后，从同一 snapshot 产出 `PreparedSubmit { revision, output }`。 | E-105；S-08、S-12 | 分开返回 output，并让调用方稍后读取 revision。 | 应用调用方 经 `C-03` 消费不可变 save handoff；core 不拥有 I/O 或 busy state。 |
 | D-108 | 使 public API 有意不兼容，并在同一 migration 中删除此 owner 的 legacy name/path；不添加 compatibility alias、conversion wrapper 或 `FormReleased` fallback。 | E-106、E-108；S-10 | 在 core 内暂存两套 API。 | 根 rollout owner 在 `C-01` 至 `C-03` 下协调 downstream compilation。 |
 | D-109 | `FormRuntime` 与 `FormValidationRuntime` 保持唯一状态权威，并为多个私有 message 类型实现 `gpui_operation::Transition`。Transition 只执行合法性检查和原子状态变更并返回私有 effect；领域 façade 在同一次 entity update 中准备消息、合并 effect，并最多 emit 一个 `FormEvent`、notify 一次。 | E-102、E-103、E-110、E-111；D-104 至 D-107 | 复制一份本地 transition trait；公开统一 `FormMessage`/dispatch API；让 generated state、macro 或 adapter 实现/构造消息；把验证塞进 `refresh`/`repair` operation family；把整个 form 压成单一 phase enum。 | `F-100`、`F-102`、`F-107`、`F-121`、`L-102` 至 `L-107`、`ST-100` 至 `ST-103`、`WP-100` 至 `WP-104`。 |
 
@@ -569,7 +571,7 @@ impl Transition<StartAsyncValidation> for &mut FormValidationRuntime {
 | --- | --- | --- |
 | C-01 | `L-100`/`L-102` 定义 `FormField`、`PartialFormField`、`FormState`、static validation/transform policy、`PreparedSubmit` 和 non-generic `FormEvent`；`F-101` 保留只含领域委托的 macro-only runtime visibility。L-107 message/effect/`Transition` 实现保持 core-private。 | Macro 生成 named state + associated const descriptor，并针对精确的 v2 declaration 编译；不依赖 `gpui-operation`，不生成消息或 `Transition` impl。 |
 | C-02 | `L-100`、`L-103` 和 `L-106` 接收显式 form entity，并提供 total/partial binding creation 加 deferred intent；core 在 binding callback 后才进入 L-107。 | Adapter 拥有 wrapper/subscription 和 native state；没有 form descriptor 拥有 weak entity，也不依赖/构造内部 transition protocol。 |
-| C-03 | `L-102`/`L-105` 暴露 `PreparedSubmit` 和 `rebase_if_revision`；`ST-100` 不承担 persistence ownership。 | Jaco 捕获 prepared pair，拥有 save operation/error，并对 canonical saved model 执行 CAS-rebase。 |
+| C-03 | `L-102`/`L-105` 暴露 `PreparedSubmit` 和 `rebase_if_revision`；`ST-100` 不承担 persistence ownership。 | 应用调用方 捕获 prepared pair，拥有 save operation/error，并对 canonical saved model 执行 CAS-rebase。 |
 
 ## 所有者本地工作包
 
@@ -738,7 +740,7 @@ Core 返回一个不可变的 prepared handoff，不提供 transform-report、bu
 
 **前置条件与契约**
 
-- `WP-100` 至 `WP-103`、macro `WP-200..203`、adapter `WP-300..302` 以及 Jaco
+- `WP-100` 至 `WP-103`、macro `WP-200..203`、adapter `WP-300..302` 以及 应用调用方
   `WP-400..405`；`D-108`；`S-10`、`S-12`；C-01/C-02 producer gate 与 C-03/C-04
   consumer-complete 证据。该工作包有意置于 root residual-certification wave；
   `WP-100` 已在 atomic breaking worktree 内执行公开 v1 移除。
@@ -751,7 +753,7 @@ Core 返回一个不可变的 prepared handoff，不提供 transform-report、bu
 
 1. 在 active core source/test 中搜索所有已移除的 v1 name，只删除 residual export/helper 和 stale test fixture，并认证 `WP-100` 未留下 compatibility surface。另行认证 message/effect/transition module 没有 public/doc-hidden re-export，且 active core 没有采用 `refresh::Operation`、`repair::Operation` 或自建同名 transition trait。保留计划中的 Validify feature/dependency，且不添加 alias。
 2. 仅在 root plan 授权 final documentation status 后，才因整体 v2 公开 API 落地而更新 core README/guide；本次内部 `Transition` 决策不改变公开签名和使用方式，因此不新增 message/dispatch/phase 说明，也不单独触发公开文档修改。
-3. 运行 focused core suite和依赖树检查，随后运行 root-owned macro/adapter/Jaco integration sequence；将任何 consumer-specific failure 报告给 root hub，而非在 core 中泄漏内部协议或添加兼容层。
+3. 运行 focused core suite和依赖树检查，随后运行 root-owned macro/adapter/应用调用方 integration sequence；将任何 consumer-specific failure 报告给 root hub，而非在 core 中泄漏内部协议或添加兼容层。
 
 **测试**
 
@@ -795,7 +797,7 @@ rg -n "FormStore|FormFieldError|FormReleased|ControlAttachment|FormControl|Trans
 ```
 
 它不得有 active-source match。另需定向检查 `src/lib.rs`/`src/typed.rs`/macro-support exports 不含 message/effect
-或 `Transition` re-export。macro、adapter 和 Jaco 所有者计划拥有各自对应的 residual scan 和 package command。
+或 `Transition` re-export。macro、adapter 和 应用调用方 所有者计划拥有各自对应的 residual scan 和 package command。
 本文档记录已经完成的 `WP-100` 至 `WP-104` 设计、实施与验证档案。Issue #199 下
 `gpui-form` 后续设计、进度与状态统一由[总入口](README.md)跟踪；新的未定方案先记录在
 [设计草稿](design-draft.md)，不得从本文档推断为已确认的新契约。
