@@ -860,6 +860,8 @@ fn custom_message_preserves_block_order_copy_and_image_preview(cx: &mut TestAppC
 fn session_info_dialog_from_temporary_actions_copies_updates_and_closes(cx: &mut TestAppContext) {
     use gpui_kit::{component::WindowExt, test::TestWindowExt};
     init_interactions(cx);
+    // Keep click targets stationary, as in the upstream Dialog interaction tests.
+    cx.update(|cx| cx.set_reduce_motion(true));
     let state = cx.new(|cx| ConversationState::temporary("unused-pi".into(), cx));
     state.update(cx, |state, _| {
         let mut session = fixture_session("information");
