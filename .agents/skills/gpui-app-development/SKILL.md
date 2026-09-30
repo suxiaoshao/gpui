@@ -5,7 +5,7 @@ description: Choose app structure, shared ownership, and relevant skills for GPU
 
 # GPUI App Development
 
-Follow the app's existing `app`, `foundation`, `features`, and `state` boundaries. Product policy belongs in its app; reusable support belongs in a matching crate such as `window-ext`, `platform-ext`, `app-theme`, or `gpui-lucide`.
+Follow the app's existing `app`, `foundation`, `features`, and `state` boundaries. Product policy belongs in its app; reusable support belongs in a matching crate such as `platform-ext`, `app-theme`, or `gpui-lucide`.
 
 Keep one authority per business fact. Derive cheap values rather than caching them; a necessary cache needs clear invalidation. Let a retained task or runtime variant express activity without parallel loading flags.
 

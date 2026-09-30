@@ -2,7 +2,7 @@
 
 ## 状态与目标
 
-本页记录升级到 GPUI Kit 0.6.4 的已实施批次，下文版本盘点和 changelog 保留各自标注日期的基线。2026-09-28 起的新批次见 [0.7.0 升级与正文查找](../dependency-refresh-0.7.0/README.md)；Token / Questionnaire 已通过正式 0.7.0 接入，其应用行为与验证见 [#243](../../../app/gupi/docs/dev/issue-243/README.md)。当前范围与依赖边界以[统一待处理文档](../../../app/gupi/docs/dev/follow-ups.md#等待上游的工作)为准，不沿用本页历史等待条件。
+本页记录升级到 GPUI Kit 0.6.4 的已实施批次，下文版本盘点和 changelog 保留各自标注日期的基线。2026-09-28 起的新批次见 [0.7.0 升级与正文查找](../dependency-refresh-0.7.0/README.md)；Token / Questionnaire 已通过正式 0.7.0 接入，其应用行为与验证见 [#243](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/docs/dev/issue-243/README.md)。当前范围与依赖边界以[统一待处理文档](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/docs/dev/follow-ups.md#等待上游的工作)为准，不沿用本页历史等待条件。
 
 - 状态：Implemented；图标、普通依赖更新、官方 skills 迁移及 InputGroup / on_paste / Markdown stream_fade 已实施，macOS 构建、回归与重点界面检查完成。GPUI 配套版本为 0.6.4 / 0.3.5。验证边界见末尾。
 - 版本盘点日期：2026-09-19；changelog 与接入范围复核：2026-09-20。基线：主 Issue 分支合并提交 `d7c16081`，当前工作分支 `codex/222-gupi-queue-interaction`。
@@ -38,7 +38,7 @@ Jaco、专用 crate、旧资源宏、Lucide 子模块、MCP 工具、Quick Look 
 | 原子内联 Token（#3113） | 否，提交 `7f6d9232` 不在发布标签中 | 本批次未接入；后续已通过正式 0.7.0 接入 |
 | Questionnaire（#2878） | 否，提交 `f698b4bc` 不在发布标签中 | 本批次未接入；后续已通过正式 0.7.0 接入 |
 
-判断来自提交与发布标签的祖先关系，不能仅按合并时间早于发布时间判断。2026-09-19 上游 main 快照为 `f698b4bcac037b8d208b34eca86cc940081c498f`（本批次复核见下方 changelog 章节）。当时按用户决定保持正式依赖；以上发布边界仅描述 0.6.4，当前剩余限制见 [统一待处理文档](../../../app/gupi/docs/dev/follow-ups.md)。
+判断来自提交与发布标签的祖先关系，不能仅按合并时间早于发布时间判断。2026-09-19 上游 main 快照为 `f698b4bcac037b8d208b34eca86cc940081c498f`（本批次复核见下方 changelog 章节）。当时按用户决定保持正式依赖；以上发布边界仅描述 0.6.4，当前剩余限制见 [统一待处理文档](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/docs/dev/follow-ups.md)。
 
 ### 普通依赖
 
@@ -70,12 +70,12 @@ Rig/RMCP 和 Diesel/libsqlite3-sys 属于 Jaco 专用范围，本轮排除，不
 
 | 项目与正式 API | 当前代码/重复工作 | 计划替换与保留边界 | 受影响验证 |
 | --- | --- | --- | --- |
-| **InputGroup**：`InputGroup::input/addon`、`InputGroupTextarea`、`InputGroupAddonAlignment::BlockEnd`、`InputGroupButton`（0.6.2，#3042） | [共用 Composer](../../../app/gupi/src/features/composer.rs) 自己绘制边框、背景、圆角和底部控件布局；主对话和模板任务编辑器复用它 | 用上游共享输入框架承接 Textarea 和底部 addon，删除重复表面样式和布局。可以保留薄的业务组合函数，但不再维持平行的控件样式系统。草稿 Entity、附件、模型选择、发送/停止行为继续归 Gupi。主窗口、临时窗口和模板编辑器同步接入 | 输入聚焦、只读/禁用、窄窗口布局、模型选择和按钮焦点；模板编辑器禁用的是正文时，不把整个 group 禁用导致模型按钮不可用 |
-| **设置复合输入**：`InputGroupInput`、inline addon/button（0.6.2） | [快捷键编辑](../../../app/gupi/src/features/settings/keys.rs) 使用 Input suffix 和外层横排手工组合多按钮；配置路径也是输入与操作组合 | 对有多个附加按钮的复合控件使用 group 统一边框、间距及状态；单一普通 Input 不机械套一层。每个快捷键仍为独立 SettingItem，只读录制，保留清除、取消本次修改、恢复默认各自语义，不恢复手输或两段快捷键 | 点击录制、取消、清除、恢复默认和只读路径复制；动作 tooltip 不重复 |
-| **Markdown 流式呈现**：`TextView::stream_fade(true)` 或 `.motion(TextViewMotion)`（0.6.2，#3082） | [Markdown 适配](../../../app/gupi/src/features/home/messages/markdown.rs) 已使用 `TextViewState::push_str/set_text` 增量解析，但没有配置呈现动画 | 在已有受管理 TextView 上接入官方流式渐显，先使用上游默认分块效果；需要调整时使用 `with_stream_fade`、`with_stream_fade_easing`、`with_stream_fade_stagger`，不自建逐字 timer、动画文本副本或消息缓冲。历史/静态预览不重播，遵循系统减少动态效果偏好。无需为此新增设置页 | 快速增量、半截 Markdown/代码围栏、正文替换、结束/中止、历史切换、选择复制和滚动跟随 |
-| **粘贴接入**：Input/Textarea/Editor 的 `on_paste`（0.6.2，#3087） | [附件粘贴](../../../app/gupi/src/features/home/attachments.rs) 通过 Composer 外层 `capture_action(Paste)` 读取剪贴板并中止传播 | 改用控件回调接收 ClipboardItem，处理返回 true，普通文本返回 false 交给原输入引擎；删除外层重复的 action 捕获/剪贴板读取接线。继续保留应用的文件优先、图片其次、文本最后规则、附件检查和后台读取；回调不能替代附件业务 | 文件和图片各粘贴一次、普通文字不吞不重复、只读状态、剪贴板多种格式和失败反馈 |
+| **InputGroup**：`InputGroup::input/addon`、`InputGroupTextarea`、`InputGroupAddonAlignment::BlockEnd`、`InputGroupButton`（0.6.2，#3042） | [共用 Composer](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/src/features/composer.rs) 自己绘制边框、背景、圆角和底部控件布局；主对话和模板任务编辑器复用它 | 用上游共享输入框架承接 Textarea 和底部 addon，删除重复表面样式和布局。可以保留薄的业务组合函数，但不再维持平行的控件样式系统。草稿 Entity、附件、模型选择、发送/停止行为继续归 Gupi。主窗口、临时窗口和模板编辑器同步接入 | 输入聚焦、只读/禁用、窄窗口布局、模型选择和按钮焦点；模板编辑器禁用的是正文时，不把整个 group 禁用导致模型按钮不可用 |
+| **设置复合输入**：`InputGroupInput`、inline addon/button（0.6.2） | [快捷键编辑](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/src/features/settings/keys.rs) 使用 Input suffix 和外层横排手工组合多按钮；配置路径也是输入与操作组合 | 对有多个附加按钮的复合控件使用 group 统一边框、间距及状态；单一普通 Input 不机械套一层。每个快捷键仍为独立 SettingItem，只读录制，保留清除、取消本次修改、恢复默认各自语义，不恢复手输或两段快捷键 | 点击录制、取消、清除、恢复默认和只读路径复制；动作 tooltip 不重复 |
+| **Markdown 流式呈现**：`TextView::stream_fade(true)` 或 `.motion(TextViewMotion)`（0.6.2，#3082） | [Markdown 适配](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/src/features/home/messages/markdown.rs) 已使用 `TextViewState::push_str/set_text` 增量解析，但没有配置呈现动画 | 在已有受管理 TextView 上接入官方流式渐显，先使用上游默认分块效果；需要调整时使用 `with_stream_fade`、`with_stream_fade_easing`、`with_stream_fade_stagger`，不自建逐字 timer、动画文本副本或消息缓冲。历史/静态预览不重播，遵循系统减少动态效果偏好。无需为此新增设置页 | 快速增量、半截 Markdown/代码围栏、正文替换、结束/中止、历史切换、选择复制和滚动跟随 |
+| **粘贴接入**：Input/Textarea/Editor 的 `on_paste`（0.6.2，#3087） | [附件粘贴](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/src/features/home/attachments.rs) 通过 Composer 外层 `capture_action(Paste)` 读取剪贴板并中止传播 | 改用控件回调接收 ClipboardItem，处理返回 true，普通文本返回 false 交给原输入引擎；删除外层重复的 action 捕获/剪贴板读取接线。继续保留应用的文件优先、图片其次、文本最后规则、附件检查和后台读取；回调不能替代附件业务 | 文件和图片各粘贴一次、普通文字不吞不重复、只读状态、剪贴板多种格式和失败反馈 |
 
-**本批次的 InputGroup 迁移与当时未发布的 Token 分开：**0.6.4 批次接入 InputGroup、on_paste 和流式呈现；Skill/模板原子标签、Skill 填入行为及 Questionnaire 随后通过正式 0.7.0 接入，见 [#243](../../../app/gupi/docs/dev/issue-243/README.md)。
+**本批次的 InputGroup 迁移与当时未发布的 Token 分开：**0.6.4 批次接入 InputGroup、on_paste 和流式呈现；Skill/模板原子标签、Skill 填入行为及 Questionnaire 随后通过正式 0.7.0 接入，见 [#243](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/docs/dev/issue-243/README.md)。
 
 ### Markdown 哪些能替换，哪些不能直接删
 
@@ -136,7 +136,7 @@ Rig/RMCP 和 Diesel/libsqlite3-sys 属于 Jaco 专用范围，本轮排除，不
 
 **底层 gpui-pre：源码快照没有独立组件式 changelog。**发布工作流从 Zed revision 生成配套 crates，并把来源 revision 记录到发布工作流摘要。0.3.3/0.3.5 发布包没有足以列出完整 API 差异的独立 changelog；目前只能确认与 kit 0.6.4 的版本配套，不能把 Zed 整体 release notes 当作我们已获得的功能。其 API/平台差异仍需按实际构建检查；不借快照升级提前重写 window-ext/platform-ext。
 
-补充依据：[which 8.0.6 changelog](https://docs.rs/crate/which/8.0.6/source/CHANGELOG.md)、[Pi 查找调用](../../../crates/pi-rpc/src/client.rs)、[plist 1.10.1 changelog](https://docs.rs/crate/plist/1.10.1/source/CHANGELOG.md)、[Serde 1.0.229](https://github.com/serde-rs/serde/releases/tag/v1.0.229)、[Lucide 完整更新区间](https://github.com/lucide-icons/lucide/compare/5136572c10214634858fcf5f726b2a9d26683918...1.47.0)、[新 trash.svg](https://github.com/lucide-icons/lucide/blob/1.47.0/icons/trash.svg)、[Gupi 图标声明](../../../app/gupi/src/foundation/assets.rs)、[Base64 SIMD 说明](https://docs.rs/crate/base64/0.23.1/source/README.md)、[GPUI 快照发布流程](https://github.com/longbridge/gpui-kit/blob/0e63ea799766c486022a0cecfda6e48c5183a2d7/.github/workflows/release-gpui.yml)。
+补充依据：[which 8.0.6 changelog](https://docs.rs/crate/which/8.0.6/source/CHANGELOG.md)、[Pi 查找调用](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/crates/pi-rpc/src/client.rs)、[plist 1.10.1 changelog](https://docs.rs/crate/plist/1.10.1/source/CHANGELOG.md)、[Serde 1.0.229](https://github.com/serde-rs/serde/releases/tag/v1.0.229)、[Lucide 完整更新区间](https://github.com/lucide-icons/lucide/compare/5136572c10214634858fcf5f726b2a9d26683918...1.47.0)、[新 trash.svg](https://github.com/lucide-icons/lucide/blob/1.47.0/icons/trash.svg)、[Gupi 图标声明](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/src/foundation/assets.rs)、[Base64 SIMD 说明](https://docs.rs/crate/base64/0.23.1/source/README.md)、[GPUI 快照发布流程](https://github.com/longbridge/gpui-kit/blob/0e63ea799766c486022a0cecfda6e48c5183a2d7/.github/workflows/release-gpui.yml)。
 
 ### 本轮交付边界
 
@@ -303,7 +303,7 @@ Rig/RMCP 和 Diesel/libsqlite3-sys 属于 Jaco 专用范围，本轮排除，不
 以下成员均已纳入 manifest 盘点；标记停止维护的成员和工具排除升级与验证。依赖表中的 path 引用不按外部包计数。
 
 - [feiwen](../../../app/feiwen/Cargo.toml)：0.1.0。
-- [gupi](../../../app/gupi/Cargo.toml)：0.1.0。
+- [gupi](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/Cargo.toml)：0.1.0。
 - [http-client](../../../app/http-client/Cargo.toml)：0.1.0。
 - [jaco（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/app/jaco/Cargo.toml)：0.1.0。 **已退役；仅保留本次盘点的历史来源。**
 - [novel-download](../../../app/novel-download/Cargo.toml)：0.1.0。
@@ -322,9 +322,9 @@ Rig/RMCP 和 Diesel/libsqlite3-sys 属于 Jaco 专用范围，本轮排除，不
 - [jaco-conversation（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/crates/jaco-conversation/Cargo.toml)：0.1.0。 **已退役；仅保留本次盘点的历史来源。**
 - [jaco-core（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/crates/jaco-core/Cargo.toml)：0.1.0。 **已退役；仅保留本次盘点的历史来源。**
 - [jaco-db（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/crates/jaco-db/Cargo.toml)：0.1.0。 **已退役；仅保留本次盘点的历史来源。**
-- [pi-rpc](../../../crates/pi-rpc/Cargo.toml)：0.1.0。
+- [pi-rpc](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/crates/pi-rpc/Cargo.toml)：0.1.0。
 - [platform-ext](../../../crates/platform-ext/Cargo.toml)：0.1.0。
-- [window-ext](../../../crates/window-ext/Cargo.toml)：0.1.0。
+- [window-ext](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/crates/window-ext/Cargo.toml)：0.1.0。
 - [xtask](../../../crates/xtask/Cargo.toml)：0.1.0。
 - [mcp-auth-test-server（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/tools/mcp-auth-test-server/Cargo.toml)：0.1.0，独立 workspace / 独立锁文件。 **已退役；仅保留本次盘点的历史来源。**
 
@@ -367,5 +367,5 @@ Rig/RMCP 和 Diesel/libsqlite3-sys 属于 Jaco 专用范围，本轮排除，不
 - 新 GPUI 测试调度器发现一条既有启动测试在意外渲染 Home 时启动了真实 smol 文件读取。测试现使用空的窗口 host，保留对 StartupView 页面选择、临时状态及 Pi probe 的原断言，不读取用户历史；生产启动逻辑未修改。
 - HTTP 回环服务测试在沙箱内无法 bind，转为宿主权限后全部通过。格式与 diff 检查通过；仍有既有 `block v0.1.6` future-incompatibility 提示。
 - 原生验证使用本轮 debug 二进制组成的临时测试 `.app`，独立 config/data/agent/session 目录及 Runtime Gallery faux provider，无真实模型调用。检查了：设置跨页字段搜索、无结果及清空恢复；配置路径与两个 icon 同行；快捷键清除/取消；主输入框和模型入口；普通文本粘贴一次；两轮思考/工具过程与 Markdown 输出；停止后内容保留和输入恢复。运行中的图标可见，无丢失资源。测试窗口已退出。
-- 设置原索引错位不再复现；无结果时仍为空白、无说明，记录到[统一待处理文档](../../../app/gupi/docs/dev/follow-ups.md)。图片剪贴板的原生手动回归、动画逐帧时序、完整主题/窗口矩阵、其他三个应用的原生交互及 Windows/Linux 未覆盖。本轮不把截图当成这些验证的替代。
+- 设置原索引错位不再复现；无结果时仍为空白、无说明，记录到[统一待处理文档](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/docs/dev/follow-ups.md)。图片剪贴板的原生手动回归、动画逐帧时序、完整主题/窗口矩阵、其他三个应用的原生交互及 Windows/Linux 未覆盖。本轮不把截图当成这些验证的替代。
 - 临时 debug `.app` 仅供本次验证，不是 xtask release 发行包；未安装到 Applications。官方 skills 的自动发现需在重新加载的会话核实。

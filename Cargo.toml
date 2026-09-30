@@ -1,6 +1,5 @@
 [workspace]
 members = [
-  "app/gupi",
   "app/feiwen",
   "app/http-client",
   "app/novel-download",
@@ -15,8 +14,6 @@ members = [
   "crates/gpui-tokio",
   "crates/http-client-test-server",
   "crates/platform-ext",
-  "crates/pi-rpc",
-  "crates/window-ext",
   "crates/xtask",
 ]
 
@@ -42,9 +39,7 @@ gpui-lucide = { path = "./crates/gpui-lucide" }
 gpui-operation = { path = "./crates/gpui-operation" }
 gpui-store = { path = "./crates/gpui-store" }
 gpui-tokio = { path = "./crates/gpui-tokio" }
-pi-rpc = { path = "./crates/pi-rpc" }
 platform-ext = { path = "./crates/platform-ext" }
-window-ext = { path = "./crates/window-ext" }
 
 # Shared validation.
 garde = { version = "0.23.0", default-features = false, features = [

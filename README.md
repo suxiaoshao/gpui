@@ -4,31 +4,32 @@
 
 | 应用 | 用途 |
 | --- | --- |
-| [gupi](app/gupi/README.md) | 本机 Pi 的原生桌面宿主 |
 | [feiwen](app/feiwen/README.md) | 小说数据抓取、管理与检索 |
 | [http-client](app/http-client) | HTTP 请求测试工具 |
 | [novel-download](app/novel-download) | 小说与网页内容下载 |
+
+Gupi 已迁至独立项目 [suxiaoshao/gupi](https://github.com/suxiaoshao/gupi)，在新仓库开发、打包和发布。
 
 ## 开发与运行
 
 macOS / Linux 使用 `nix develop` 进入由 `flake.lock` 固定的 Rust、C/C++ 和系统库环境。Rust 版本与组件统一声明在 `rust-toolchain.toml`；Windows 原生开发使用 Rustup / MSVC，WSL 使用 Linux 环境。
 
-macOS 仍需完整 Xcode 与 Metal 工具（缺少组件时执行 `xcodebuild -downloadComponent MetalToolchain`）；Linux 运行 GUI 需要宿主图形会话和驱动。Feiwen 的 DuckDB 继续通过 Cargo 的 bundled feature 编译。Gupi 运行时使用的 Pi 仍由用户安装和配置。
+macOS 仍需完整 Xcode 与 Metal 工具（缺少组件时执行 `xcodebuild -downloadComponent MetalToolchain`）；Linux 运行 GUI 需要宿主图形会话和驱动。Feiwen 的 DuckDB 继续通过 Cargo 的 bundled feature 编译。
 
 ```sh
 nix develop
 # 使用当前 Fish：nix develop --command fish --no-config
 ```
 
-CI 的 macOS / Linux 检查进入同一 devShell，Windows 使用同一 Rust 版本的原生工具链。以下以 Gupi 为例，可替换为其他应用包名：
+CI 的 macOS / Linux 检查进入同一 devShell，Windows 使用同一 Rust 版本的原生工具链。以下以 Feiwen 为例，可替换为其他应用包名：
 
 ```sh
-cargo run -p gupi
-cargo test -p gupi
-cargo run -p xtask -- bundle gupi
+cargo run -p feiwen
+cargo test -p feiwen
+cargo run -p xtask -- bundle feiwen
 ```
 
-打包输出通常位于 `target/release/bundle/`；Windows MSI 位于 `target/<target-triple>/release/bundle/msi/`，支持 `bundle gupi --install`。
+打包输出通常位于 `target/release/bundle/`；Windows MSI 位于 `target/<target-triple>/release/bundle/msi/`，支持 `bundle feiwen --install`。
 
 ## 代码与资源
 

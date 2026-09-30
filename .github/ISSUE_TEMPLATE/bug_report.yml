@@ -8,11 +8,9 @@ body:
       label: Affected scope
       description: Select the app or crate where the bug occurs.
       options:
-        - gupi
         - feiwen
         - http-client
         - novel-download
-        - window-ext
         - xtask
         - workspace
     validations:

@@ -1,6 +1,6 @@
 # GPUI Kit 0.7.0、依赖更新与 Gupi 正文查找
 
-状态：**本轮实现完成；长文定位的无障碍场景与中文混排换行缺陷由后续依赖升级承接**。2026-09-28 完成正式依赖迁移、代码精简与正文查找，本批次基线为 `e41b6397`。本页统筹跨 workspace 的升级，搜索产品契约与状态归属仍以 [#242 开发文档](../../../app/gupi/docs/dev/issue-242/README.md)为准。
+状态：**本轮实现完成；长文定位的无障碍场景与中文混排换行缺陷由后续依赖升级承接**。2026-09-28 完成正式依赖迁移、代码精简与正文查找，本批次基线为 `e41b6397`。本页统筹跨 workspace 的升级，搜索产品契约与状态归属仍以 [#242 开发文档](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/docs/dev/issue-242/README.md)为准。
 
 ## 本轮交付范围
 
@@ -8,7 +8,7 @@
 2. 实现 #242 剩余的当前会话正文查找：原位高亮、匹配计数、上下处导航及滚动定位，主窗口与临时窗口共用。
 3. 同步升级下列五个普通依赖，接入能替代现有实现的 Root、Theme、Toolbar 能力；用既有成熟库/标准库收敛任务取消、临时目录和 UTF-8 边界助手，检查主题、图标和已安装官方 skill 的版本配套。
 
-**明确排除：**Token、Skill/模板输入行为、Markdown 资源标签及 Questionnaire 的应用接入归 [#243](../../../app/gupi/docs/dev/issue-243/README.md)，不随本轮控件升级实现。Jaco 专用依赖和功能继续不维护；只做 workspace 共用 GPUI 升级所必需的机械兼容。Jaco/OCR/Quick Look 清理与共享库大重构也不并入。
+**明确排除：**Token、Skill/模板输入行为、Markdown 资源标签及 Questionnaire 的应用接入归 [#243](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/docs/dev/issue-243/README.md)，不随本轮控件升级实现。Jaco 专用依赖和功能继续不维护；只做 workspace 共用 GPUI 升级所必需的机械兼容。Jaco/OCR/Quick Look 清理与共享库大重构也不并入。
 
 不改变 Pi 协议、附件发送策略、临时会话生命周期或通知规则；不为了使用新组件重做页面。已有 InputGroup、AttachmentGroup、附件临时文件预览、`on_paste`、Markdown 增量追加与渐显不重复列为新接入。
 
@@ -73,7 +73,7 @@ Tauri 的新增 `bundle_vc_runtime`、`binary_patching(false)` 不默认启用�
 | --- | --- | --- | --- |
 | **Root 自动托管与窗口入口（0.7.0）** | Gupi 启动、临时窗口、设置编辑器的手动 layer 渲染，以及普通窗口创建时重复的 Root 包装 | 由 Kit 的窗口 Root 统一处理；保留 WindowOptions、内容 Entity、应用恢复和关闭逻辑。只删除框架已接管的包装，不删除业务窗口管理 | Dialog/通知只显示一次，Esc、焦点、多窗口归属及原入口可用 |
 | **Theme::update（0.7.0）** | [app-theme 的 apply_theme_config](../../../crates/app-theme/src/lib.rs) 中显式 sync_base，与 Gupi 等调用点相邻的重复刷新 | 一次上游 update 包含 apply_config、token/Base 同步和刷新；包装函数可保留为共享应用入口，删除其重复实现。系统强调色、预设 ID 和 Material palette 继续归 app-theme | 复用主题投影测试，检查亮暗模式与预设切换 |
-| **Toolbar / ToolbarGroup（0.7.0）** | [历史画布操作栏](../../../app/gupi/src/features/home/history/canvas.rs) 的手工 h_flex、重复按钮密度配置及 div 分隔线 | 用 Toolbar + 标准 Separator 组合现有缩放/适配/定位按钮；百分比作为 content，外围圆角/边框仍由原画布容器负责。保留按钮名称、tooltip、disabled 与回调；不将所有 h_flex 或 Composer footer 批量改成 Toolbar，也不改图片预览现有圆形控件 | 缩放与查看全图已原生验证；方向键行为沿用组件，未单独确认原生键盘导航 |
+| **Toolbar / ToolbarGroup（0.7.0）** | [历史画布操作栏](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/src/features/home/history/canvas.rs) 的手工 h_flex、重复按钮密度配置及 div 分隔线 | 用 Toolbar + 标准 Separator 组合现有缩放/适配/定位按钮；百分比作为 content，外围圆角/边框仍由原画布容器负责。保留按钮名称、tooltip、disabled 与回调；不将所有 h_flex 或 Composer footer 批量改成 Toolbar，也不改图片预览现有圆形控件 | 缩放与查看全图已原生验证；方向键行为沿用组件，未单独确认原生键盘导航 |
 | **tokio-util::task::AbortOnDropHandle（当前已锁 0.7.19）** | [gpui-tokio](../../../crates/gpui-tokio/src/lib.rs) 私有 AbortOnDrop、Option<AbortHandle>、disarm 和自写 Drop，以及等待结果后手动解除守卫的代码 | 用上游 Future 包住 JoinHandle，再交给 GPUI background_spawn；保留 Task<Result<T, JoinError>>、runtime 所有权和外部 handle 接入。向该 crate 增加 `tokio-util = { version = "0.7.19", features = ["rt"] }` 直接声明，未增加 workspace 的新包种类 | 复用现有 panic→JoinError、丢弃 GPUI Task 取消 Tokio future、外部 runtime 存活三项测试；不得改成 detach 后丢弃取消语义 |
 | **tempfile::TempDir（当前已锁 3.27.0）** | xtask 的 [图标 staging](../../../crates/xtask/src/bundle/common.rs) 和 [actool 临时目录](../../../crates/xtask/src/bundle/macos.rs) 中 PID/时戳拼名、显式创建及多处 remove_dir_all；BundleIconAssets 的专用清理 Drop | xtask 直接声明 `tempfile = "3.27.0"`，由 TempDir 管理临时目录。BundleIconAssets 持有目录到 bundle 使用完，actool 目录持有到产物复制完；保留图标生成、多主题编译、资源复制和最后签名。受影响测试的同类 TestDir 可一并用 TempDir 替代 | 现有图标/打包配置回归及本机 .app 打包；确认目录不提前释放，错误返回自动清理 |
 | **str::floor_char_boundary（Rust 1.91 已稳定）** | [HTTP 预览 viewer.rs](../../../app/http-client/src/features/request/response/viewer.rs) 的同名手写字节回退循环 | 直接调用 `source.floor_char_boundary(limit)` 并删除局部函数；项目 Rust 1.98.1 已满足。不改变 HTTP 预览的字节/行数限制、截断提示或字符集策略 | 复用含多字节字符的 bounded_source 回归；无需新建 Unicode 工具包 |
@@ -84,11 +84,11 @@ Tauri 的新增 `bundle_vc_runtime`、`binary_patching(false)` 不默认启用�
 
 | 现有实现 | 对照结果与保留理由 |
 | --- | --- |
-| [消息/详情复制按钮](../../../app/gupi/src/features/home/messages/actions.rs)的 CopyAction / CopyState | 上游 Clipboard 已有复制后打勾和两秒恢复，本次对照的 0.6.4/0.7.0 源码一致，属于旧能力。其公开配置只有 value/value_fn、tooltip、size、on_copied，不能控制当前成功态的文案/禁用态、独立无障碍标签或失败时阻止成功反馈。我们还有剪贴板回读失败提示；直接替换会丢行为。暂保留，不仅为少一个 Task 换成另一套外置成功状态 |
-| [主窗口 PaneLayout / ResizeEvents](../../../app/gupi/src/features/home/panes.rs) | 0.7.0 resize_handle 增加状态与外观接口，仍只提供拖动起点回调；没有独立尺寸控件的完整 update/end 回调可接管当前全窗鼠标释放处理。ResizablePanelGroup 管相邻面板，不能直接替代当前“两侧宽度互不跟随、历史窄窗覆盖、释放时保存”的策略。保留防抖动所需的布局/拖动归属；不要因为上游改了拖动指示样式就删除它 |
-| [图片预览](../../../app/gupi/src/features/home/image_preview.rs)与历史树画布 | 0.7.0 无可直接承接的 ImageViewer 或会话图组件。Carousel/Plot/Tree 不覆盖原图缩放、鼠标锚点、平移及历史分支预览语义。底层继续用现有图像/滚动/绘制组件，局部操作栏可标准化，不能据此删除整个实现 |
-| [Composer](../../../app/gupi/src/features/composer.rs)、附件区、模型/思考选择器 | 已复用 InputGroup、AttachmentGroup、Attachment、List、Popover、Slider。保留的封装负责槽位、Pi 状态、默认覆盖/清空及提交语义，不是自造输入组件。Attachment::on_remove 没有独立 disabled 配置，仍不能替代禁用但可见的移除按钮；on_retry/progress 也不对应本地附件业务 |
-| [消息 MarkdownState](../../../app/gupi/src/features/home/messages/markdown.rs) | 上游优化内部解析和布局，但外层稳定身份、push_str/set_text 同步、MessageScroller 重测接线仍有实际职责。搜索接入要把纯高亮通知与解析通知分开；只删除重叠路径，不能删除整个状态包装 |
+| [消息/详情复制按钮](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/src/features/home/messages/actions.rs)的 CopyAction / CopyState | 上游 Clipboard 已有复制后打勾和两秒恢复，本次对照的 0.6.4/0.7.0 源码一致，属于旧能力。其公开配置只有 value/value_fn、tooltip、size、on_copied，不能控制当前成功态的文案/禁用态、独立无障碍标签或失败时阻止成功反馈。我们还有剪贴板回读失败提示；直接替换会丢行为。暂保留，不仅为少一个 Task 换成另一套外置成功状态 |
+| [主窗口 PaneLayout / ResizeEvents](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/src/features/home/panes.rs) | 0.7.0 resize_handle 增加状态与外观接口，仍只提供拖动起点回调；没有独立尺寸控件的完整 update/end 回调可接管当前全窗鼠标释放处理。ResizablePanelGroup 管相邻面板，不能直接替代当前“两侧宽度互不跟随、历史窄窗覆盖、释放时保存”的策略。保留防抖动所需的布局/拖动归属；不要因为上游改了拖动指示样式就删除它 |
+| [图片预览](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/src/features/home/image_preview.rs)与历史树画布 | 0.7.0 无可直接承接的 ImageViewer 或会话图组件。Carousel/Plot/Tree 不覆盖原图缩放、鼠标锚点、平移及历史分支预览语义。底层继续用现有图像/滚动/绘制组件，局部操作栏可标准化，不能据此删除整个实现 |
+| [Composer](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/src/features/composer.rs)、附件区、模型/思考选择器 | 已复用 InputGroup、AttachmentGroup、Attachment、List、Popover、Slider。保留的封装负责槽位、Pi 状态、默认覆盖/清空及提交语义，不是自造输入组件。Attachment::on_remove 没有独立 disabled 配置，仍不能替代禁用但可见的移除按钮；on_retry/progress 也不对应本地附件业务 |
+| [消息 MarkdownState](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/src/features/home/messages/markdown.rs) | 上游优化内部解析和布局，但外层稳定身份、push_str/set_text 同步、MessageScroller 重测接线仍有实际职责。搜索接入要把纯高亮通知与解析通知分开；只删除重叠路径，不能删除整个状态包装 |
 | GroupBox / SettingGroup 的 footer、variant | 0.7.0 可承接卡片外辅助说明和单组样式；当前 Gupi 已用 SettingGroup 的 title/description，整体选用 Normal，没有找到应删除的单组卡片补丁。不能为了采用 footer 改动说明的位置、搜索归属或新增包装 |
 | Form::columns / footer、Empty、DescriptionList | 属于可复用的呈现能力，不代替 typed form、动态查询模型或恢复命令。当前错误入口/recovery 是少量标题、说明与业务按钮，换 Empty 不减少实际逻辑；详情列表使用已有控件组合也不意味着每个键值行必须另封装。没有本次升级专用补丁可删 |
 | Command / SearchableVec / Tree 的缓存优化 | 升级后组件内部减少重测/复制；应用保留的目录 revision、会话身份、RPC 命令来源和模型能力分组不是组件缓存，不能顺带删。模型选择器的自定义 ListDelegate 还负责 provider 分组、能力标签、选择派发，不等于重复写了通用 List |
@@ -115,7 +115,7 @@ Tauri 的新增 `bundle_vc_runtime`、`binary_patching(false)` 不默认启用�
 
 ## 搜索接入与性能约束
 
-产品规则已经确认，完整说明由 [#242](../../../app/gupi/docs/dev/issue-242/README.md#3-查找范围匹配与定位)维护：搜索用户消息文字；助手消息每轮有最终输出只查最终输出，否则查 assistant 文字正文。当前查看分支内、大小写不敏感的字面查找，不包含工具、思考、摘要、插件消息及图片等附件内容。主窗口和临时窗口 Cmd/Ctrl+F 统一正文查找，临时会话过滤继续直接输入和 Tab 切换。
+产品规则已经确认，完整说明由 [#242](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/app/gupi/docs/dev/issue-242/README.md#3-查找范围匹配与定位)维护：搜索用户消息文字；助手消息每轮有最终输出只查最终输出，否则查 assistant 文字正文。当前查看分支内、大小写不敏感的字面查找，不包含工具、思考、摘要、插件消息及图片等附件内容。主窗口和临时窗口 Cmd/Ctrl+F 统一正文查找，临时会话过滤继续直接输入和 Tab 切换。
 
 实现包含以下四个接缝：
 

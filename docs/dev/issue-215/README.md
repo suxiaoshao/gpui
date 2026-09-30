@@ -31,7 +31,7 @@ Jaco、旧资源宏、Quick Look、OCR 和独立 MCP 工具已退役，对应工
 | crates/gpui-tokio | [gpui-tokio](../../../crates/gpui-tokio/docs/dev/issue-215/README.md) | WP-02 |
 | crates/http-client-test-server | [http-client-test-server](../../../crates/http-client-test-server/docs/dev/issue-215/README.md) | WP-05 |
 | crates/platform-ext | [platform-ext](../../../crates/platform-ext/docs/dev/issue-215/README.md) | WP-05 |
-| crates/window-ext | [window-ext](../../../crates/window-ext/docs/dev/issue-215/README.md) | WP-02、WP-05 |
+| crates/window-ext | [window-ext](https://github.com/suxiaoshao/gpui/blob/ca2c45f9bd96d24e06acfb7f445dcd2f6227273d/crates/window-ext/docs/dev/issue-215/README.md) | WP-02、WP-05 |
 | crates/xtask | [xtask](../../../crates/xtask/docs/dev/issue-215/README.md) | WP-05、WP-07 |
 
 ## 证据入口
