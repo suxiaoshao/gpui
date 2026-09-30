@@ -43,11 +43,6 @@ impl PdfWorkerHandle {
         self.events.take().ok_or_else(PdfProblem::internal)
     }
 
-    #[cfg(test)]
-    pub(crate) fn stop_probe(&self) -> Arc<AtomicBool> {
-        self.shared.stop_probe()
-    }
-
     pub(super) fn load(
         &self,
         token: PreviewToken,
@@ -170,8 +165,6 @@ struct WorkerShared {
     stopped: AtomicBool,
     mailbox: Mutex<Option<PdfWorkerCommand>>,
     wake: Condvar,
-    #[cfg(test)]
-    stop_probe: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl WorkerShared {
@@ -180,16 +173,7 @@ impl WorkerShared {
             stopped: AtomicBool::new(false),
             mailbox: Mutex::new(None),
             wake: Condvar::new(),
-            #[cfg(test)]
-            stop_probe: Mutex::new(None),
         }
-    }
-
-    #[cfg(test)]
-    fn stop_probe(&self) -> Arc<AtomicBool> {
-        let stopped = Arc::new(AtomicBool::new(false));
-        *self.stop_probe.lock().unwrap() = Some(Arc::clone(&stopped));
-        stopped
     }
 
     fn push(&self, command: PdfWorkerCommand) -> Result<(), PdfProblem> {
@@ -221,12 +205,6 @@ impl WorkerShared {
     }
 
     fn stop(&self) {
-        #[cfg(test)]
-        if let Ok(probe) = self.stop_probe.lock()
-            && let Some(probe) = probe.as_ref()
-        {
-            probe.store(true, Ordering::Release);
-        }
         self.stopped.store(true, Ordering::Release);
         self.wake.notify_all();
     }

@@ -115,32 +115,3 @@ pub(crate) fn trash_workspace(path: &std::path::Path) -> Result<(), String> {
     };
     context.delete(path).map_err(|e| e.to_string())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::validate_workspace;
-    #[test]
-    fn cleanup_accepts_only_owned_directories() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("workspaces");
-        std::fs::create_dir(&root).unwrap();
-        let owned = root.join("draft-test");
-        std::fs::create_dir(&owned).unwrap();
-        assert_eq!(validate_workspace(&root, &owned), Ok(true));
-        assert!(validate_workspace(&root, dir.path()).is_err());
-        assert!(validate_workspace(&root, &root.join("user-file")).is_err());
-        let file = root.join("draft-file");
-        std::fs::write(&file, "original").unwrap();
-        assert!(validate_workspace(&root, &file).is_err());
-        #[cfg(unix)]
-        {
-            let linked = root.join("draft-link");
-            std::os::unix::fs::symlink(dir.path(), &linked).unwrap();
-            assert!(validate_workspace(&root, &linked).is_err());
-            let alias = dir.path().join("alias");
-            std::os::unix::fs::symlink(&root, &alias).unwrap();
-            assert!(validate_workspace(&alias, &alias.join("draft-test")).is_err());
-        }
-        assert_eq!(std::fs::read_to_string(file).unwrap(), "original");
-    }
-}

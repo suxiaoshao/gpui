@@ -1,5 +1,7 @@
 # gpui-component：TextView 代码高亮主题生命周期上游修复
 
+此页保留该固定版本迁移的共享结论与历史证据；当前版本以根 manifest 为准。Jaco 专用工作包与发布验收已退役，不延续到现役应用。
+
 ## 1. 状态与范围
 
 - 发现版本：gpui-component
@@ -9,7 +11,7 @@
 - 当前状态：修复已在本地 gpui-component 工作区实现，并通过 `text::` 测试与 crate check；
   未创建 issue、未提交、未推送，也未纳入当前 workspace 的 `5b45bcb` 依赖，因此主题切换验收仍属于后继迁移。
 - 实现 owner：`longbridge/gpui-component` 的 `TextView` / Markdown / highlighter 链路，
-  不是 Jaco 或 `crates/app-theme`。
+  由组件负责，应用与 `crates/app-theme` 不承担该职责。
 
 本计划只修复 rendered Markdown `CodeBlock` 对高亮主题的生命周期与 styles cache。
 Material palette 生成仍由 `crates/app-theme` 负责，应用继续只消费 `ActiveTheme`。
@@ -85,7 +87,7 @@ impl CodeBlock {
 
 - 以 gpui-component `5b45bcb` 复现同一 `TextViewState` 在主题切换后 background 更新而 syntax
   styles 不更新。
-- 按 gpui-component 的 issue/PR 模板记录通用复现，不暴露 Jaco 内部实现。
+- 按 gpui-component 的 issue/PR 模板记录通用复现，不依赖特定应用的内部实现。
 
 **Files（upstream repository）**
 
@@ -134,14 +136,14 @@ git diff --check
 2. 新建以该 SHA 命名的 workspace 迁移批次；更新依赖、lockfile、上游证据和 skill vendoring
    来源，不能覆盖当前 `5b45bcb` 批次。
 3. 在新 target 上运行 gpui-component upstream tests、`app-theme` 双 surface invariant tests，
-   以及 Jaco `JACO-MARKDOWN-55` 的主题切换 smoke。
+   以及现役应用已有 Markdown 的主题切换 smoke。
 4. 只有旧消息代码块在不修改 source 的情况下随 `ActiveTheme` 更新 syntax，才能解除 release blocker。
 
 ## 6. No change 与完成条件
 
 - No change：Markdown AST、TextView source/revision、streaming append 合并、selection/copy/actions、
   language registry、unknown-language fallback、code-block background token。
-- 禁止方案：Jaco 监听主题后遍历 TextView、用同值 `set_text` 强制 reparse、维护 generation
+- 禁止方案：应用监听主题后遍历 TextView、用同值 `set_text` 强制 reparse、维护 generation
   counter，或缓存第二份 code palette。
 - `UPSTREAM-TEXT-15` 完成条件：上游 PR/API/定向测试已落地，并可取得包含修复的完整 commit SHA。
 - workspace handoff 完成条件：由后继 `ROOT-00` 锁定该 SHA、创建新的 hash-specific 迁移批次；

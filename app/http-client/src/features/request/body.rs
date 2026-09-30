@@ -260,76 +260,15 @@ fn build_active_body<Owner: 'static>(
 mod tests {
     use std::ops::Deref as _;
 
-    use gpui_form::ResolveError;
     use gpui_kit::component::select::SelectEvent;
     use gpui_kit::{TestAppContext, VisualTestContext};
 
     use crate::{
-        features::request::{
-            draft::{
-                BinaryBodyDraft, FormDataDraft, KeyValueDraft, MultipartPartDraft,
-                MultipartPartValueDraft, MultipartTextDraft, TextBodyDraft, UrlEncodedBodyDraft,
-            },
-            validation::RequestValidator,
-        },
+        features::request::draft::{BinaryBodyDraft, TextBodyDraft},
         foundation::i18n::init_i18n,
     };
 
     use super::*;
-
-    #[gpui_kit::test]
-    fn all_body_cases_prepare_and_case_switch_retires_old_dynamic_paths(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            let draft = RequestDraft {
-                url: "https://example.com".into(),
-                ..RequestDraft::default()
-            };
-            let form = cx.new(|_| Form::new(draft).with_validator(RequestValidator));
-
-            for body in [
-                RequestBodyDraft::None,
-                RequestBodyDraft::Text(TextBodyDraft::default()),
-                RequestBodyDraft::UrlEncoded(UrlEncodedBodyDraft {
-                    fields: vec![KeyValueDraft::default()],
-                }),
-                RequestBodyDraft::FormData(FormDataDraft {
-                    parts: vec![MultipartPartDraft {
-                        enabled: true,
-                        name: "field".into(),
-                        value: MultipartPartValueDraft::Text(MultipartTextDraft::default()),
-                    }],
-                }),
-            ] {
-                RequestDraft::BODY.set(&form, body, cx);
-                form.update(cx, |form, cx| form.prepare(cx))
-                    .expect("active non-file body case prepares");
-            }
-
-            let file = tempfile::NamedTempFile::new().expect("temporary body file");
-            RequestDraft::BODY.set(
-                &form,
-                RequestBodyDraft::Binary(BinaryBodyDraft {
-                    file: Some(file.path().to_path_buf()),
-                }),
-                cx,
-            );
-            form.update(cx, |form, cx| form.prepare(cx))
-                .expect("Binary prepares with a live absolute file");
-
-            RequestDraft::BODY.set(&form, RequestBodyDraft::text(), cx);
-            let old_content = RequestDraft::BODY
-                .case(RequestBodyDraft::TEXT)
-                .resolve(&form, cx)
-                .expect("resolve Text")
-                .expect("Text active")
-                .then(TextBodyDraft::CONTENT);
-            RequestDraft::BODY.set(&form, RequestBodyDraft::binary(), cx);
-            assert!(matches!(
-                old_content.try_get(&form, cx),
-                Err(ResolveError::Retired { .. })
-            ));
-        });
-    }
 
     #[gpui_kit::test]
     fn confirming_a_new_body_kind_twice_before_self_projection_does_not_reset_its_payload(

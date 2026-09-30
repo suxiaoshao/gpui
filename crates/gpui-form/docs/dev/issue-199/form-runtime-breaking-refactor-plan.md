@@ -1,5 +1,7 @@
 # gpui-form 运行时破坏性重构实施计划
 
+本页保留共享 Form 的设计与交付证据。原 Jaco 消费方及其专用工作包已退役；当前消费者以现役应用源码为准，历史应用计数和验证结果不作为当前验收。
+
 ## 状态与职责
 
 - 状态：`Done`（2026-08-09）。`C-900`–`C-904` 已达到 `consumer-complete`；实际 UI 操作测试按范围未执行。
@@ -8,7 +10,7 @@
 - 主所有者：`crates/gpui-form`；本文同时拥有 `C-900`–`C-904` 的跨 owner producer contract。
 - 协同 owner 计划：[gpui-form-macros](../../../../gpui-form-macros/docs/dev/issue-199/form-schema-generation-update-plan.md)、
   [gpui-form-gpui-component](../../../../gpui-form-gpui-component/docs/dev/issue-199/form-binding-adapter-update-plan.md)、
-  [Jaco](../../../../../app/jaco/docs/dev/issue-199/form-breaking-api-remigration-plan.md)、
+  [Jaco（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/app/jaco/docs/dev/issue-199/form-breaking-api-remigration-plan.md)、
   [Feiwen](../../../../../app/feiwen/docs/dev/issue-199/form-breaking-api-remigration-plan.md)。
 - 兼容策略：允许 breaking change，不保留旧 API、旧事件、旧 binding 或旧 identity 的兼容层。
 - 本地稳定编号：`E/D/F/L/ST/ERR/R/T-900..999`、`WP-900..909`。
@@ -755,7 +757,6 @@ cargo clippy -p gpui-form -p gpui-form-macros -p gpui-form-gpui-component \
 ### 消费者与汇总门禁
 
 ```bash
-cargo test -p jaco --all-features --locked
 cargo test -p feiwen --all-features --locked
 cargo check --workspace --all-targets --all-features --locked
 git diff --check
@@ -765,9 +766,9 @@ git diff --check
 
 ```bash
 rg -n "ControlLease|ControlBinding<|rebase_if_revision|FormBuildError|try_new_with_validator|Form::try_new\(" \
-  crates/gpui-form crates/gpui-form-macros crates/gpui-form-gpui-component app/jaco app/feiwen
+  crates/gpui-form crates/gpui-form-macros crates/gpui-form-gpui-component app/feiwen
 rg -n "FormEvent::(Committed|ModelReplaced)|ValidationTrigger::Manual" \
-  crates/gpui-form crates/gpui-form-macros crates/gpui-form-gpui-component app/jaco app/feiwen
+  crates/gpui-form crates/gpui-form-macros crates/gpui-form-gpui-component app/feiwen
 rg -n "^pub " crates/gpui-form/src/form/transition.rs crates/gpui-form/src/control/transition.rs \
   crates/gpui-form/src/validation/transition.rs
 ```
@@ -805,7 +806,7 @@ rg -n "^pub " crates/gpui-form/src/form/transition.rs crates/gpui-form/src/contr
 - `cargo test -p gpui-form -p gpui-form-macros -p gpui-form-gpui-component --all-features --locked`
   通过：core unit/integration/trybuild 全部通过，adapter 为 2 个 unit + 15 个 integration，macro 的 12 个
   compile-fail fixture 全部通过。
-- `cargo test -p jaco --bin jaco --all-features --locked` 通过：362 项；
+- `cargo test --bin jaco --all-features --locked` 通过：362 项；
   `cargo test -p feiwen --bin feiwen --all-features --locked` 通过：93 项。
 - 三个 producer crate 与 Jaco/Feiwen 的 `cargo clippy --all-targets --all-features --locked -- -D warnings`
   均通过；`cargo check --workspace --all-targets --all-features --locked` 通过。

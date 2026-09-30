@@ -6,7 +6,6 @@
 
 - `crates/gpui-operation/src/{lib,message,repair,refresh}.rs`：完整 Operation 接受 Transition 消息；Ready 可 Refresh，问题态通过显式 Repair 恢复；Complete 只用于运行态。Operation 拥有 Task，不负责启动或磁盘回滚。
 - `app/gupi/src/state/config.rs`：ConfigOperation 放在 Store 中，配置写入前重读最新文件并应用本次修改的字段；普通失败重试和损坏配置的备份重置由应用处理。
-- `app/jaco/src/features/home/root.rs`：JacoRoot 订阅资源状态，根据数据可用性呈现内容，保留 HomeView Entity。
 - `crates/gpui-form-gpui-component/src/{input,select}.rs`：实际适配器为 FormInput、FormSelect，通过 new 接收 owner、typed path 和 control builder。最终泛型调用受依赖升级后的类型一致性检查约束。
 
 ## L-110 / ST-110：唯一配置权威
@@ -55,7 +54,7 @@ ConfigRepair 只记录操作意图；提交快照由运行任务持有，失败�
 
 Ready→Refresh 是库的任务生命周期消息。应用将“保存/重读”等业务意图保留在任务闭包中，以决定完成时如何处理表单，不用 phase 名猜测操作种类。
 
-Degraded(Missing) 仍无可用配置，初次保存失败可能落到此状态：根界面应展示初始设置的错误与修复，不能因为 Operation.data().is_some() 就放行。Degraded(Configured) 则保留已应用配置和当前界面。这是 Gupi 与直接复制 Jaco `has_data` 判断的关键差异。
+Degraded(Missing) 仍无可用配置，初次保存失败可能落到此状态：根界面应展示初始设置的错误与修复，不能因为 Operation.data().is_some() 就放行。Degraded(Configured) 则保留已应用配置和当前界面。可用性应判断配置 variant。
 
 任务开始前在同一次 owner update 中检查状态、生成输入、构造任务、安装转移；中间不 await。所有配置读写互斥，无需额外读写 generation。完成后先转移到稳定状态，再通知订阅与更新表单。
 

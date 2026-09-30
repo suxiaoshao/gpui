@@ -51,11 +51,11 @@ compatibility shim。当前 workspace/lockfile 的未提交 crate skeleton 是�
 
 | S-ID | 系统面 | 状态 | 当前证据 | 目标决定 |
 | --- | --- | --- | --- | --- |
-| S-01 | Workspace、文件、模块与 owner 边界 | 适用 | crate 的 manifest、library、CLI 与 integration tests 已落地 | 测试服务器所有 runtime/contract 留在此 crate，HTTP Client 仅通过 dev-dependency 消费 |
+| S-01 | Workspace、文件、模块与 owner 边界 | 适用 | crate 的 manifest、library 与 CLI 已落地 | 测试服务器所有 runtime/contract 留在此 crate，HTTP Client 无 server crate 依赖；该服务用于手动调试 |
 | S-02 | GPUI 组件、布局、交互与可访问性 | 不适用 | crate 不链接 GPUI | 无 UI |
 | S-03 | Entity、Store、Global、identity 与 projection | 不适用 | crate 不链接 GPUI | 无 GPUI state |
 | S-04 | Action、event、subscription、focus 与 window | 不适用 | crate 不链接 GPUI | 无 action/window |
-| S-05 | 异步 task、并发、取消与 shutdown | 适用 | `HttpTransport` 测试现以临时 TCP task 建 fixture | `TestServer` 拥有 accept loop 与 connection `JoinSet`，明确 2 秒 shutdown |
+| S-05 | 异步 task、并发、取消与 shutdown | 适用 | 服务端管理实际 TCP 连接 | `TestServer` 拥有 accept loop 与 connection `JoinSet`，明确 2 秒 shutdown |
 | S-06 | 数据获取与 Operation 状态 | 不适用 | 服务不拥有业务 Operation | 不引入 `gpui-operation` |
 | S-07 | Form 与可编辑状态 | 不适用 | 无 GPUI form | JSON 仅是 test-control wire format |
 | S-08 | 跨 crate、provider、Rig、MCP、平台与外部契约 | 适用 | HTTP Client 现有 loopback tests 直接写 TCP response | 本 crate 定义 C-1800--C-1803 的 HTTP/test Rust contract |
@@ -78,7 +78,7 @@ compatibility shim。当前 workspace/lockfile 的未提交 crate skeleton 是�
 | E-1800 | 实施前事实 | crate skeleton 已登记为 workspace member，但 manifest 没有直接依赖，lib 只有说明注释 | 实施前的 `Cargo.toml` 与 `crates/http-client-test-server/{Cargo.toml,src/lib.rs}` | WP-1800 已建立实际模块/manifest |
 | E-1801 | 当前事实 | HTTP Client 禁用 Reqwest 自动 redirect/referer/content decoding，并手工处理最终 response | `app/http-client/src/features/request/transport.rs` | respond 必须能测 redirect 与四种 content coding |
 | E-1802 | 当前事实 | worker 在最终 response head 后才流式收集 body | `app/http-client/src/features/request/transport/worker.rs` | 两种 abort 需精确区分有无 head |
-| E-1803 | 当前事实 | client 已区分 `Transport` 与 `ResponseBodyRead`，且不接受截断 partial body | `app/http-client/src/features/request/runtime.rs`；`transport.rs` interrupted-body test | C-1802 成为现有错误语义的真实 fixture |
+| E-1803 | 当前事实 | client 已区分 `Transport` 与 `ResponseBodyRead`，且不接受截断 partial body | `app/http-client/src/features/request/runtime.rs`；响应读取错误分类 | C-1802 成为现有错误语义的真实 fixture |
 | E-1804 | 当前事实 | client capture encoded/stored 上限是 50 MiB，memory spill 是 8 MiB | `app/http-client/src/features/request/response/` 与 `request-send-and-response-plan.md` | `Repeat` 必须能以有界 server memory 发出 `50 MiB + 1` |
 | E-1805 | 上游事实 | Hyper 1.10.1 的 HTTP/1 `serve_connection` service error 可终止 connection；response body error 可终止已开始的 body | 本机 Cargo registry 中 `hyper-1.10.1` HTTP/1 server API | before-head 在 service boundary 返回 error；mid-body 在 body poll 返回 error |
 | E-1806 | 上游事实 | `http-body-util 0.1.3` 与 `futures-util 0.3.33` 可构造按需拉取的 HTTP body stream | 本机 Cargo registry | 普通 response 不以无界 producer task 缓冲 body |
@@ -120,7 +120,6 @@ crates/http-client-test-server/
 │   ├── abort.rs                        [F-1805 Add] connection-level abort body
 │   ├── echo.rs                         [F-1806 Add] 有界 request collector/echo response
 │   └── main.rs                         [F-1807 Add] `--port`、readiness 输出、Ctrl-C
-├── tests/integration.rs                [F-1808 Add] black-box Hyper/Reqwest/raw-TCP 覆盖
 └── examples/postman_redirect.rs        [F-1809 Add] 两个 loopback origin 的 302/307 手工对照夹具
 ```
 
@@ -342,7 +341,7 @@ library 以 `#[doc(hidden)] pub async fn run_cli(port: u16) -> Result<(), Server
 
 | C-ID | 方向/机制 | 权威定义 | Producer/consumer | 兼容性 | ERR |
 | --- | --- | --- | --- | --- | --- |
-| C-1800 | test -> crate Rust API | `src/lib.rs:TestServer` | crate -> HTTP Client integration tests | 新增 | ERR-1804 |
+| C-1800 | test -> crate Rust API | `src/lib.rs:TestServer` | crate -> 手动调试调用者 | 新增 | ERR-1804 |
 | C-1801 | test client -> HTTP/1 | `contract.rs:RespondSpec` 与 `/v1/respond` | crate -> HTTP Client transport tests | 新增 | ERR-1800/1801 |
 | C-1802 | test client -> HTTP/1 connection lifecycle | `abort.rs:AbortSpec` 与 `/v1/abort` | crate -> HTTP Client transport tests | 新增 | ERR-1800/1802/1803 |
 | C-1803 | test client -> HTTP/1 request/response body | `echo.rs` 与 `/v1/echo` | crate -> HTTP Client body tests | 新增 | ERR-1800/1801 |
@@ -469,80 +468,8 @@ unbounded `Vec` 或临时文件绕过该限制。
 
 **完成条件：** `cargo run -p http-client-test-server -- --port 0` 可被 harness 读取实际 URL，并能 Ctrl-C 有界退出。
 
-### WP-1806 ✅：crate black-box tests
+## 当前验证边界
 
-**文件：** F-1808。
-**前置：** WP-1800--WP-1805，T-1800--T-1807。
+自动测试保留 CLI 参数及请求规则的纯数据检查。启动服务、绑定回环端口、启动 CLI 子进程、实际延时和连接调度的集成测试已删除；`reqwest` 测试依赖随之移除。
 
-实现 server crate 的 TCP/Hyper/Reqwest integration tests，所有 test 使用 `TestServer::spawn()` 与 explicit
-`shutdown()`；不依赖固定端口或 sleep-only cleanup。
-
-### WP-1807 ✅：producer-ready 交接
-
-**文件：** F-1800--F-1808，本 owner plan/index。
-**前置：** WP-1806，C-1800--C-1803。
-
-1. 确认 public spec/helper/error API 与 HTTP endpoints 已经由 black-box tests 锁定，没有 consumer 需要
-   读取的 private state 或测试专用 bypass。
-2. 在 [HTTP Client consumer 计划](../../../../../app/http-client/docs/dev/issue-199/http-test-server-integration-plan.md)
-   登记实际可消费的 C/ERR 契约；不从 producer 直接修改 app 文件。
-
-**完成条件：** `C-1800`–`C-1803` 达到 `producer-ready`；consumer 可只通过 public API/HTTP 契约开始实施。
-
-### WP-1808 ✅：格式、focused gates 与残留扫描
-
-**前置：** WP-1806--WP-1807，T-1800--T-1807。
-
-执行本 producer 计划 Validation 表的最小充分命令；检查没有 Axum、HTTP/2 listener、固定端口、detached connection
-task、手写 framing header 或 unrestricted buffer 的残留。
-
-### WP-1809 ✅：完成回填
-
-**前置：** WP-1808。
-
-实际文件、Cargo.lock diff、命令结果、CLI SIGINT 结果、未执行边界和 owner/index 状态已回填；producer 与
-consumer 均完成后，根 `HTTP-199-05` 已标为 `Done`。
-
-## 测试矩阵与验证
-
-| T-ID | R-ID | 层级/场景 | Assertions |
-| --- | --- | --- | --- |
-| T-1800 | R-1800/R-1807 | `TestServer::spawn`、healthz、explicit shutdown、CLI parser/readiness | port 非固定；healthz 精确 body/type；shutdown 在 deadline 内 join/拒绝新连接；CLI 坏参数 exit 2 且就绪行拼写固定 |
-| T-1801 | R-1801/R-1805 | GET encoded/decoded 各 8 KiB cap、POST 24 MiB boundary、invalid JSON/status/header | 可到达的 encoded 边界成功；decoded 或 encoded 任一超限、invalid/restricted header 均返回 stable code；无 reflected value |
-| T-1802 | R-1802/R-1803 | Json/Base64/Repeat、duplicate `Set-Cookie`、status 404、ContentLength/Chunked | exact bytes/values；Json 无 automatic Content-Type；repeat 只按 chunk allocation |
-| T-1803 | R-1803/R-1804 | before-head delay、per-chunk delay、slow body reader、64-connection saturation | head 延后；next frame 不早于 delay；server 不预排完整 body；超出 permit 的新 socket 关闭且 shutdown 能收束全部 task |
-| T-1804 | R-1802/R-1805 | gzip/br/deflate/zstd、caller unknown coding、Location redirect target | 测试 client 显式关闭自动 content decoding；encoded bytes/header 正确；coding conflict rejected；redirect final target 可到达 |
-| T-1805 | R-1808 | raw TCP before-head | 发出 valid abort request 后 EOF 前 response bytes 长度为零 |
-| T-1806 | R-1808 | raw TCP/HTTP client mid-body | 200/head/prefix 已到达；missing final byte/terminal chunk；body read fails |
-| T-1807 | R-1806/R-1809 | echo binary、multiple/no Content-Type、64 MiB boundary | exact body；only expected type values；413 无 partial echo |
-| T-1808 | R-1802/R-1808 | HTTP Client consumer: delay/cancel/timeout and both abort phases | Sending/Receiving transitions；before-head `Transport`；mid-body head retained + `ResponseBodyRead` |
-| T-1809 | R-1802/R-1805/R-1809 | HTTP Client consumer: redirect/coding/large repeat/echo upload | manual redirect policy；decode/unsupported behavior；50 MiB cap；outbound bytes/type |
-| T-1810 | R-1802/R-1805 | Postman redirect example：两个 `TestServer` origin + 307 `Location` 到 `/v1/echo` | source/target origin 不同；Location 精确指向 target；target 可达；实际 Postman header 行为由 Console 人工观察 |
-
-实施后的验证顺序：
-
-1. `cargo fmt --all -- --check`
-2. `cargo test -p http-client-test-server --all-features --locked`
-3. `cargo clippy -p http-client-test-server --all-targets --all-features --locked -- -D warnings`
-4. `git diff --check`
-5. CLI black-box：启动 `--port 0`、读取 URL、请求 `/healthz`、在 Unix 发送 SIGINT，并断言 3 秒内以
-   exit code 0 退出；Windows 分支以显式终止保证测试不遗留子进程。
-
-若 local-loopback 测试只因 sandbox `PermissionDenied` 失败，以同一条原命令申请提权重跑，
-不改写为外网服务或换用固定端口。
-
-当前不把 packaged desktop UI、真实外网、TLS/proxy 或三平台 release app 验收当作本 crate 的完成前置条件；
-它们没有被 loopback server 自动化覆盖。
-
-## 完成证据
-
-| 证据 | 实际结果 |
-| --- | --- |
-| 实施 commit/PR | producer/consumer 主实现提交 `1559cc8`；workspace feature-unification 稳定性修正 `735bc41`；本轮未创建 PR |
-| 新增/修改文件与 Cargo.lock resolution | 新增 `contract/server/respond/abort/echo/main`、Postman redirect 对照 example 与 13 个 black-box integration tests；lockfile 只增加本 crate、`httpdate` 及既有 feature 所需的 `futures-util` |
-| 交付的 C/ERR/F/L/ST/R/T/WP ID | `C-1800`–`C-1803`、`ERR-1800`–`ERR-1804`、`F-1800`–`F-1809`、`L-1800`–`L-1804`、`ST-1800`–`ST-1804`、`R-1800`–`R-1809`、`T-1800`–`T-1810`、`WP-1800`–`WP-1809` |
-| 自动化命令与结果 | `cargo test -p http-client-test-server --all-features --locked`：2 library unit + 1 CLI unit + 13 integration，合计 16 passed；严格 Clippy、全 workspace fmt check 与 diff check 通过 |
-| CLI Ctrl-C 场景 | macOS/Unix black-box test 读取 readiness、请求 healthz、发送 SIGINT，并在 3 秒内以 code 0 退出；Windows native Ctrl-C 未在本机执行 |
-| HTTP Client consumer 迁移 | 已完成；最终 transport 聚焦 15/15、app 全量 161/161 通过，详见 consumer 计划 |
-| Owner/root 索引同步 | producer、consumer、owner/root 索引均已同步为 `Done` |
-| 未验证边界 | 实际桌面 UI、packaged app、真实外网、TLS/proxy 与三平台 release matrix；按用户要求未做实际 UI 测试 |
+服务契约及手动 Postman 示例继续保留。HTTP Client 的当前自动测试边界见 [owner 文档](../../../../../app/http-client/docs/dev/issue-199/http-test-server-integration-plan.md)。

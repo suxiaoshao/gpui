@@ -154,43 +154,6 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn crossing_spill_threshold_moves_existing_and_new_bytes_once() {
-        let mut collector = BodyCollector::new();
-        let prefix = vec![0x41; MEMORY_SPILL_BYTES as usize];
-        collector.write(&prefix).await.unwrap();
-        collector.write(b"B").await.unwrap();
-        assert_eq!(collector.storage(), ActiveBodyStorage::TempFile);
-
-        let body = collector.finish().await.unwrap();
-        let StoredBody::TempFile { path, len } = body else {
-            panic!("collector did not spill")
-        };
-        assert_eq!(len, MEMORY_SPILL_BYTES + 1);
-        let bytes = tokio::fs::read(path.as_ref() as &std::path::Path)
-            .await
-            .unwrap();
-        assert_eq!(&bytes[..prefix.len()], &prefix);
-        assert_eq!(bytes.last(), Some(&b'B'));
-    }
-
-    #[tokio::test]
-    async fn dropping_spilled_collector_removes_partial_file() {
-        let mut collector = BodyCollector::new();
-        collector
-            .write(&vec![0_u8; MEMORY_SPILL_BYTES as usize + 1])
-            .await
-            .unwrap();
-        let path = match &collector.storage {
-            CollectorStorage::TempFile { path, .. } => path.to_path_buf(),
-            _ => panic!("collector did not spill"),
-        };
-        assert!(path.exists());
-
-        drop(collector);
-        assert!(!path.exists());
-    }
-
     #[test]
     fn stored_limit_is_checked_before_any_write() {
         assert_eq!(

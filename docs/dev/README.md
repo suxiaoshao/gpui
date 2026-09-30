@@ -2,7 +2,7 @@
 
 ## Workspace cleanup
 
-- [Jaco 退役与关联清理](jaco-retirement/README.md)：专用代码、旧图标子模块、CI、打包、依赖与文档的统一清理范围。
+- [Jaco 退役与仓库边界](jaco-retirement/README.md)：已删除范围、共享能力保留边界与实际检查结果。
 
 ## Dependency upgrade plans
 
@@ -26,13 +26,6 @@
 | [#219](https://github.com/suxiaoshao/gpui/issues/219) Gupi Pi RPC 与进程生命周期 | [issue-219/README.md](issue-219/README.md) |
 | [#200](https://github.com/suxiaoshao/gpui/issues/200) HTTP Client Response 音频迁移与 GStreamer 删除 | [issue-200/README.md](issue-200/README.md) |
 | [#199](https://github.com/suxiaoshao/gpui/issues/199) form owner、app store/form/operation 与 Transition 重构 | [issue-199/README.md](issue-199/README.md) |
-| [#196](https://github.com/suxiaoshao/gpui/issues/196) Jaco provider 生成图片持久化与展示 | [issue-196/README.md](issue-196/README.md) |
-| [#195](https://github.com/suxiaoshao/gpui/issues/195) Jaco 会话时间线持久化文件附件 | [issue-195/README.md](issue-195/README.md) |
-| [#193](https://github.com/suxiaoshao/gpui/issues/193) Jaco 侧边栏会话悬浮预览、活动时间与运行状态 | [issue-193/README.md](issue-193/README.md) |
-| [#190](https://github.com/suxiaoshao/gpui/issues/190) Jaco 持久化工具调用详情 | [issue-190/README.md](issue-190/README.md) |
-| [#189](https://github.com/suxiaoshao/gpui/issues/189) Jaco 消息请求用量、输入框上下文占用、时间范围统计、活动热力图与费用 | [issue-189/README.md](issue-189/README.md) |
-| [#188](https://github.com/suxiaoshao/gpui/issues/188) Jaco 侧边栏项目与对话上下文菜单 | [issue-188/README.md](issue-188/README.md) |
-| [#178](https://github.com/suxiaoshao/gpui/issues/178) Jaco 外部文件变更监控 | [issue-178/README.md](issue-178/README.md) |
 | [#175](https://github.com/suxiaoshao/gpui/issues/175) previous typed form delivery | [issue-175/README.md](issue-175/README.md) |
 
 ## Framework migrations

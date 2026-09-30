@@ -10,33 +10,9 @@
 - Cmd/Ctrl+R 关闭旧 Pi 后重连，保留当前模型、思考等级及未发送正文；命令查询失败可独立重试。
 - 14 个 Pi 原始名称映射到 12 个本地候选。模型/思考共用选择器，tree/fork 共用打开历史入口；HTML 导出、复制会话、最后回答复制和默认手动压缩已接入。用户消息下的 fork 按钮位于复制按钮之前。
 
-## 自动验证（2026-09-14）
+## 当前自动测试范围
 
-| 检查 | 结果 |
-| --- | --- |
-| `cargo build -p gupi -p pi-rpc --locked --quiet` | 通过 |
-| `cargo test -p gupi -p pi-rpc --locked --quiet` | 125 项测试、10 项文档测试通过；2 项真实 Pi 集成测试默认忽略 |
-| `cargo clippy -p gupi -p pi-rpc --all-targets --all-features --locked --quiet -- -D warnings` | 通过 |
-| `cargo fmt --all -- --check` | 通过 |
-| `git diff --check` | 通过 |
-
-连接门禁调整后，受影响的 `cargo test -p gupi --locked --quiet` 通过 114 项测试，Gupi 构建、严格 Clippy 和 workspace 格式检查通过。回归覆盖历史会话启动期间刷新不移除实例、首次连接及重连期间主输入框只读并保留原文、就绪后恢复编辑和刷新，以及拒绝提前提交且就绪后不自动发送；修正 fork 测试对扩展输入事件的异步等待、导出 fixture 的 Windows 路径转义，以及关闭测试的 I18n 初始化。关闭回归同时检查正常退出和受控超时，均须等待终态且不得启动替代进程。Windows/Linux 的修正仍需对应 CI runner 确认。
-
-面向 `main` 的整体集成另完成 `cargo build --workspace --locked --quiet`、`cargo test --workspace --locked --quiet` 与 `cargo clippy --workspace --all-targets --all-features --locked --quiet -- -D warnings`，均通过。首次测试因沙箱禁止本地端口绑定导致 HTTP 测试失败；在允许回环测试服务器的环境中重跑 workspace 测试通过，无代码修改。macOS 链接器有 unwind 表大小警告，依赖 `block 0.1.6` 有 future-incompat 提示；不影响本次构建和测试结果。默认忽略的测试未启用。
-
-主要回归位于 `state/conversation/tests/loading.rs`、`tests/process.rs` 及 `features/command_palette.rs`：
-
-| 场景 | 已覆盖内容 |
-| --- | --- |
-| 重连 | 未落盘空会话、已落盘身份恢复、原模型/思考/草稿保留、旧进程先退出、重复触发、多会话隔离、文件身份变化及退出交错 |
-| 命令读取与提交 | 查询失败保留缓存及独立重试；在途重复提交被拒绝；成功/失败结果；正文和其他会话不被清空；命令文本不写入草稿文件 |
-| 配置保存 | 外部修改与首次保存合并、同字段以本次修改为准、可选字段清空、操作互斥、失败后按当前草稿重试、已应用值写回保留草稿、损坏配置备份重置 |
-| 命令搜索与补全 | 原始名称及大小写、同名插件独立保留、补全保留参数、无候选文本和 Esc 后抑制自动重开 |
-| HTML 导出与复制会话 | 保存窗口取消、RPC 成功/失败、重复操作门禁、成功后连接归属转交、原会话不被改写 |
-| 最后回答复制 | 来源为实际执行分支，历史预览不改变来源，忽略空的已中止输出 |
-| 手动压缩 | 运行中发起、重复触发只发一次、成功刷新历史、失败通知、abort 取消，以及输入与会话归属不变 |
-
-HTML 导出与复制接入时，另使用隔离临时会话运行过真实 Pi 集成测试，验证 HTML 输出、复制后历史保留和原文件不变，无模型请求。本次提交核对未重复运行该集成测试。
+保留命令搜索与补全、最后回答复制、消息投影及内存状态测试。启动真实 Pi fixture 的会话 loading/resources 回归和配置落盘测试已删除，相应运行流程不再由默认自动测试覆盖。
 
 ## 已有 macOS 原生证据
 

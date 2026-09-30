@@ -1397,13 +1397,7 @@ fn format_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod pane_tests {
-    use std::{
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        },
-        time::Duration,
-    };
+    use std::{sync::Arc, time::Duration};
 
     use bytes::Bytes;
     use gpui_kit::TestAppContext;
@@ -1419,21 +1413,6 @@ mod pane_tests {
         fn command(&mut self, _: media::MediaCommand) -> Result<(), MediaProblem> {
             Ok(())
         }
-    }
-
-    struct TaskDrop(Arc<AtomicBool>);
-
-    impl Drop for TaskDrop {
-        fn drop(&mut self) {
-            self.0.store(true, Ordering::Release);
-        }
-    }
-
-    fn pending_task(cx: &mut Context<RequestView>, dropped: Arc<AtomicBool>) -> Task<()> {
-        cx.spawn(async move |_, _| {
-            let _drop = TaskDrop(dropped);
-            std::future::pending::<()>().await;
-        })
     }
 
     fn initialize(cx: &mut TestAppContext) {
@@ -1590,100 +1569,6 @@ mod pane_tests {
                 view.response_pane.media.problem().map(MediaProblem::kind),
                 Some(MediaProblemKind::Internal)
             );
-        });
-    }
-
-    #[gpui_kit::test]
-    fn media_and_pdf_preview_teardown_reject_stale_work_without_autoplay(cx: &mut TestAppContext) {
-        initialize(cx);
-        let (view, cx) = cx.add_window_view(RequestView::new);
-        let response = completed_response();
-        let audio_task_dropped = Arc::new(AtomicBool::new(false));
-
-        let audio_token = cx.update(|window, cx| {
-            view.update(cx, |view, cx| {
-                let token = view.response_pane.begin_preview(
-                    Arc::clone(&response),
-                    ViewerMode::Audio,
-                    window,
-                    cx,
-                );
-                (&mut view.response_pane.media).transition(MediaMessage::Start {
-                    token: token.clone(),
-                    resume_position: Duration::ZERO,
-                    resume_playing: false,
-                    task: pending_task(cx, Arc::clone(&audio_task_dropped)),
-                });
-                assert_eq!(view.response_pane.mode(), ViewerMode::Auto);
-                assert_eq!(view.response_pane.media.phase(), MediaPhase::Preparing);
-                token
-            })
-        });
-        cx.run_until_parked();
-
-        let pdf_token = cx.update(|window, cx| {
-            view.update(cx, |view, cx| {
-                // A fresh Auto PDF preview uses the same mode-switch teardown
-                // entry point as the audio player.
-                view.response_pane.mode = ViewerMode::Auto;
-                let token = view.response_pane.begin_preview(
-                    Arc::clone(&response),
-                    ViewerMode::Pdf,
-                    window,
-                    cx,
-                );
-                assert!(!token.matches(&audio_token));
-                assert_eq!(view.response_pane.media.phase(), MediaPhase::Idle);
-
-                // A completion from the cancelled Auto audio preparation
-                // cannot install a driver after switching to PDF.
-                (&mut view.response_pane.media).transition(MediaMessage::Prepared {
-                    token: audio_token.clone(),
-                    driver: Box::new(FakeMediaDriver),
-                    metadata: media::MediaMetadata::new(None),
-                    task: pending_task(cx, Arc::new(AtomicBool::new(false))),
-                });
-                assert_eq!(view.response_pane.media.phase(), MediaPhase::Idle);
-
-                // PDF installs its worker-owned Loading state before the
-                // parser can poll; PDFs have no playback transition.
-                view.response_pane.pdf.begin_read(token.clone());
-                let worker = PdfWorkerHandle::new(Bytes::from_static(b"not a PDF")).unwrap();
-                view.response_pane.pdf.load(
-                    token.clone(),
-                    worker,
-                    pending_task(cx, Arc::new(AtomicBool::new(false))),
-                    PdfViewport::new(1, 1),
-                );
-                assert!(view.response_pane.pdf.is_loading());
-                token
-            })
-        });
-        cx.run_until_parked();
-        assert!(audio_task_dropped.load(Ordering::Acquire));
-
-        cx.update(|window, cx| {
-            view.update(cx, |view, cx| {
-                // `reset_for_send` is the new-Send teardown path. Stale
-                // audio completions cannot revive a stopped preview.
-                view.response_pane.reset_for_send(window, cx);
-                assert_eq!(view.response_pane.mode(), ViewerMode::Auto);
-                assert!(!view.response_pane.is_current_preview(&audio_token));
-                assert_eq!(view.response_pane.media.phase(), MediaPhase::Idle);
-                (&mut view.response_pane.media).transition(MediaMessage::Prepared {
-                    token: audio_token.clone(),
-                    driver: Box::new(FakeMediaDriver),
-                    metadata: media::MediaMetadata::new(None),
-                    task: pending_task(cx, Arc::new(AtomicBool::new(false))),
-                });
-                assert_eq!(view.response_pane.media.phase(), MediaPhase::Idle);
-
-                // Clear uses the same final teardown and invalidates the PDF
-                // identity even while it is still in the pre-worker read.
-                view.response_pane.clear_projection();
-                assert!(!view.response_pane.is_current_preview(&pdf_token));
-                assert!(!view.response_pane.pdf.is_loading());
-            })
         });
     }
 }

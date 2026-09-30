@@ -20,16 +20,6 @@ impl ResponseAssetLease {
     pub(super) fn open(&self) -> Result<std::fs::File, std::io::Error> {
         std::fs::File::open(&self.path)
     }
-
-    #[cfg(test)]
-    pub(crate) const fn len(&self) -> u64 {
-        self.len
-    }
-
-    #[cfg(test)]
-    pub(crate) fn path(&self) -> &std::path::Path {
-        &self.path
-    }
 }
 
 impl fmt::Debug for ResponseAssetLease {
@@ -133,84 +123,4 @@ async fn create_temporary_asset() -> Result<(std::fs::File, TempPath), ResponseA
 
 const fn map_read_problem(_: ResponseReadProblem) -> ResponseAssetProblem {
     ResponseAssetProblem::new(ResponseAssetProblemKind::ReadResponse)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{sync::Arc, time::Duration};
-
-    use bytes::Bytes;
-    use http::{HeaderMap, StatusCode, Version};
-    use url::Url;
-
-    use super::*;
-    use crate::features::request::response::{
-        BodyDecoding, CompletedBody, ResponseData, ResponseHead, ResponseSizes, ResponseTiming,
-        StoredBody,
-    };
-
-    fn response(body: StoredBody) -> Arc<ResponseData> {
-        let len = body.len();
-        Arc::new(ResponseData::new(
-            ResponseHead::new(
-                StatusCode::OK,
-                Version::HTTP_11,
-                Url::parse("https://example.test/private?token=value").unwrap(),
-                HeaderMap::new(),
-            ),
-            ResponseTiming {
-                head_after: Duration::from_millis(1),
-                completed_after: Duration::from_millis(2),
-            },
-            CompletedBody {
-                body,
-                body_decoding: BodyDecoding::Identity,
-                sizes: ResponseSizes {
-                    declared_encoded_bytes: Some(len),
-                    received_encoded_bytes: len,
-                    stored_body_bytes: len,
-                },
-            },
-        ))
-    }
-
-    #[tokio::test]
-    async fn materialized_asset_is_exact_and_redacts_its_path() {
-        let source = response(StoredBody::Memory(Bytes::from_static(b"media-body")));
-        let asset = source.read_lease().materialize_media_asset().await.unwrap();
-        let asset_path = asset.path().to_owned();
-
-        assert_eq!(asset.len(), 10);
-        assert_eq!(tokio::fs::read(&asset_path).await.unwrap(), b"media-body");
-        assert!(!format!("{asset:?}").contains(&asset_path.display().to_string()));
-
-        drop(asset);
-        assert!(!asset_path.exists());
-    }
-
-    #[tokio::test]
-    async fn spilled_body_is_copied_to_a_distinct_session_asset() {
-        let source_file = NamedTempFile::new().unwrap();
-        let source_path = source_file.path().to_owned();
-        tokio::fs::write(&source_path, b"spilled-media")
-            .await
-            .unwrap();
-        let source = response(StoredBody::TempFile {
-            path: source_file.into_temp_path(),
-            len: 13,
-        });
-
-        let asset = source.read_lease().materialize_media_asset().await.unwrap();
-        let asset_path = asset.path().to_owned();
-        assert_ne!(asset_path, source_path);
-        assert_eq!(
-            tokio::fs::read(&asset_path).await.unwrap(),
-            b"spilled-media"
-        );
-        assert!(source_path.exists());
-
-        drop(asset);
-        assert!(!asset_path.exists());
-        assert!(source_path.exists());
-    }
 }

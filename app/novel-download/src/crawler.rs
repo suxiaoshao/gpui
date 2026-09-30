@@ -89,39 +89,15 @@ pub(crate) trait DownloadBackend: Send + Sync + 'static {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct DownloadEngine {
-    output_root: OutputRoot,
-}
-
-#[derive(Clone, Debug)]
-enum OutputRoot {
-    SystemDownloads,
-    #[cfg(test)]
-    Fixed(PathBuf),
-}
+pub(crate) struct DownloadEngine;
 
 impl DownloadEngine {
     pub(crate) fn system_downloads() -> Self {
-        Self {
-            output_root: OutputRoot::SystemDownloads,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn fixed(root: PathBuf) -> Self {
-        Self {
-            output_root: OutputRoot::Fixed(root),
-        }
+        Self
     }
 
     fn output_root(&self) -> Result<PathBuf, OutputProblem> {
-        match &self.output_root {
-            OutputRoot::SystemDownloads => {
-                dirs_next::download_dir().ok_or(OutputProblem::DownloadDirectoryUnavailable)
-            }
-            #[cfg(test)]
-            OutputRoot::Fixed(root) => Ok(root.clone()),
-        }
+        dirs_next::download_dir().ok_or(OutputProblem::DownloadDirectoryUnavailable)
     }
 
     async fn run_inner(
@@ -268,19 +244,5 @@ impl DownloadReceipt {
 
     pub(crate) fn items_written(&self) -> usize {
         self.items_written
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use tempfile::tempdir;
-
-    use super::*;
-
-    #[test]
-    fn fixed_engine_root_is_reserved_for_isolated_tests() {
-        let directory = tempdir().unwrap();
-        let engine = DownloadEngine::fixed(directory.path().to_path_buf());
-        assert_eq!(engine.output_root().unwrap(), directory.path());
     }
 }

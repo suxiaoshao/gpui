@@ -1,5 +1,7 @@
 # Issue #199：统一 form 所有权，并为 store / operation 迁移建立前置契约
 
+本页保留共享 Form 的设计与交付证据。原 Jaco 消费方及其专用工作包已退役；当前消费者以现役应用源码为准，历史应用计数和验证结果不作为当前验收。
+
 ## 状态与范围
 
 - 状态：`Form 阶段已实施`（自动化门禁通过；Jaco 定向 UI smoke 已执行；Issue #199 后续 app/store/operation 阶段仍待规划）
@@ -87,7 +89,6 @@ generated state 暴露为 associated `const`，descriptor 不保存 entity、值
 | `gpui-form` | Done | [core owner plan](../../../crates/gpui-form/docs/dev/issue-199/README.md) | `E/D/F/L/ST/R/T-100..199` | `WP-100..104` | descriptor、runtime、validation、submit、event |
 | `gpui-form-macros` | Done | [derive owner plan](../../../crates/gpui-form-macros/docs/dev/issue-199/README.md) | `E/D/F/L/ST/R/T-200..299` | `WP-200..205` | canonical grammar、associated const 与 schema/access codegen |
 | `gpui-form-gpui-component` | Done | [adapter owner plan](../../../crates/gpui-form-gpui-component/docs/dev/issue-199/README.md) | `E/D/F/L/ST/R/T-300..399` | `WP-300..304` | `ControlBinding` 与最小 owning controls |
-| `jaco` | Implemented；UI smoke 部分受 Computer Use 命中限制 | [Jaco owner plan](../../../app/jaco/docs/dev/issue-199/README.md) | `E/D/F/L/ST/R/T-400..499` | `WP-400..406` | 所有当前 form 消费方原子迁移 |
 
 ### 后续阶段调研
 
@@ -107,7 +108,6 @@ generated state 暴露为 associated `const`，descriptor 不保存 entity、值
 | Core form runtime | Change | 移除 descriptor-owned form；引入 total/partial descriptor |
 | Derive macro | Change | `FormStore` -> `FormModel`，生成 state 与 associated const |
 | GPUI component adapter | Change | 构造器显式接收 form；弱引用收敛到 `ControlBinding` |
-| Jaco form consumers | Change | 所有 derive、字段、绑定、验证、submit 调用原子迁移 |
 | `gpui-store` | No change | 本阶段不修改其 API 或接入范围 |
 | `gpui-operation` | No change | 本阶段不修改 trait、family 或 Jaco operation |
 | Database / persistence format | No change | 不改 schema、migration、序列化或 secret 格式 |
@@ -181,8 +181,6 @@ only a deferred boundary
 | E-03 | `crates/gpui-form/src/form.rs`、`validation.rs`、`submit.rs` | model、revision、validation、task 与 submit runtime 已由 form state 统一持有，应继续保留 |
 | E-04 | `crates/gpui-form-macros/src/derive/{attributes,expand}.rs` | 当前 derive grammar 与 accessor/codegen 仍围绕 `FormStore` 和 per-call field construction |
 | E-05 | `crates/gpui-form-gpui-component/src/{input,select,combobox,integer_input}.rs` | adapter 已是 owning handle，但构造和同步依赖 field 内部的 form handle |
-| E-06 | `app/jaco/src/features/settings/{prompts,provider,mcp,shortcuts}` | Jaco settings 是 total、nested、identified item、custom control 与 validation 的完整消费矩阵 |
-| E-07 | `app/jaco/src/components/chat/{input,run_settings}.rs` | shared nested RunSettings 与 computed projection 会验证 composition/partial/lifetime 契约 |
 | E-08 | 三个 form crate 的 README 与 `docs/guide*.md` | 当前 Issue #199 v2 preview 已描述目标调用体验，可作为公开契约审阅面，不代表源码已实现 |
 | E-09 | commit `6351898874b727ae8155903645a2dbfcc1f0da54`、PR #176、Issue #175 | 旧四份 form 计划随 #175 的实现 PR 交付，按 delivery provenance 归档到 `issue-175` |
 | E-10 | `.agents/skills/gpui-form/SKILL.md` | 当前 skill 描述已实现的 v1 `FormStore`/`ControlAttachment` 契约；规划和实施 #199 时它是 current-state evidence，不是 v2 target，最终由 `WP-900` 同步 |
@@ -409,8 +407,7 @@ cargo fmt --all
 cargo test -p gpui-form --all-features --locked
 cargo test -p gpui-form-macros --locked
 cargo test -p gpui-form-gpui-component --locked
-cargo test -p jaco --locked
-cargo clippy -p gpui-form -p gpui-form-macros -p gpui-form-gpui-component -p jaco \
+cargo clippy -p gpui-form -p gpui-form-macros -p gpui-form-gpui-component \
   --all-targets --all-features --locked -- -D warnings
 git diff --check
 ```
@@ -428,14 +425,6 @@ git diff --check
 - residual scan：active source/docs/examples 中无 `derive(FormStore)`、`form(store`、`*_field(`、
   `*_in(`、`set_user_value`、`FormEvent<`、descriptor 内 `WeakEntity<Form>`。
 - 历史归档目录 `docs/dev/issue-175` 明确排除在旧 API residual failure 之外。
-
-### Jaco UI 场景
-
-- Prompt：total text input、change/blur/submit error、保存后 revision-safe rebase。
-- Provider：secret custom control、URL/name validation、select、provider variant 切换与 form lifecycle。
-- MCP：增加/删除/reorder identified rows，missing row 的 partial binding 安全失效，sibling errors 保留。
-- Shortcut / ChatInput：nested RunSettings、computed token budget、model options refresh、submit snapshot。
-- 所有场景检查 form owner 销毁后 deferred callback 静默退出，无 entity re-entry panic。
 
 ## Completion Evidence
 

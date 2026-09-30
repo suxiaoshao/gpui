@@ -7,7 +7,7 @@
 
 当前已确认的应用侧实现已完成。共用 InputGroup、Skill 填入正文、原子标签编辑、模板文件引用和 `@` 文件/目录候选均已通过正式组件接入，见[输入资源实现](../issue-243/README.md)，不再等待组件发布。原生交互与 Windows 尚未覆盖的验收见下方记录，跨阶段剩余项统一见[总待处理文档](../follow-ups.md)。
 
-临时窗口的配置与显隐规则见[窗口生命周期](temporary-window-comparison.md)。窗口配置（PopUp 类型、ModalPanel 等级，创建及每次显示时设置）、页面布局与显隐回收已按 Jaco 对齐；会话仍由 Global 持有，不落盘规则不变。
+临时窗口的配置与显隐规则见[窗口生命周期](temporary-window-comparison.md)。窗口配置（PopUp 类型、ModalPanel 等级，创建及每次显示时设置）、页面布局与显隐回收按下述契约实现；会话仍由 Global 持有，不落盘规则不变。
 
 ## 已确认行为
 

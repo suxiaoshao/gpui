@@ -55,8 +55,6 @@
               openssl
               zstd
               libxcb
-              # Jaco's get-selected-text -> enigo xdo backend links libxdo.
-              xdotool
               alsa-lib
               pipewire
               libgbm
@@ -75,7 +73,7 @@
             shellHook = lib.optionalString pkgs.stdenv.isDarwin ''
               export PATH="${appleTools}/bin:$PATH"
             '';
-            buildInputs = [ pkgs.sqlite ] ++ lib.optionals pkgs.stdenv.isLinux linuxLibraries;
+            buildInputs = lib.optionals pkgs.stdenv.isLinux linuxLibraries;
             LD_LIBRARY_PATH = lib.optionalString pkgs.stdenv.isLinux (lib.makeLibraryPath linuxLibraries);
           };
         }

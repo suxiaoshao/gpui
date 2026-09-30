@@ -21,7 +21,6 @@ pub struct BundleArgs {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum BundleApp {
-    Jaco,
     Gupi,
     Feiwen,
     HttpClient,
@@ -31,7 +30,6 @@ pub enum BundleApp {
 impl BundleApp {
     pub fn package_name(self) -> &'static str {
         match self {
-            Self::Jaco => "jaco",
             Self::Gupi => "gupi",
             Self::Feiwen => "feiwen",
             Self::HttpClient => "http-client",
@@ -61,11 +59,11 @@ mod tests {
 
     #[test]
     fn parses_bundle_install_flag() {
-        let cli = Cli::try_parse_from(["xtask", "bundle", "jaco", "--install"])
+        let cli = Cli::try_parse_from(["xtask", "bundle", "gupi", "--install"])
             .expect("bundle command should parse");
 
         let Commands::Bundle(args) = cli.command;
-        assert_eq!(args.app, BundleApp::Jaco);
+        assert_eq!(args.app, BundleApp::Gupi);
         assert!(args.install);
     }
 
@@ -77,16 +75,5 @@ mod tests {
         assert_eq!(args.app.package_name(), "gupi");
         assert_eq!(args.app.app_dir_name(), "gupi");
         assert!(!args.install);
-    }
-
-    #[test]
-    fn parses_jaco_bundle_app_argument() {
-        let cli =
-            Cli::try_parse_from(["xtask", "bundle", "jaco"]).expect("bundle command should parse");
-
-        let Commands::Bundle(args) = cli.command;
-        assert_eq!(args.app, BundleApp::Jaco);
-        assert_eq!(args.app.package_name(), "jaco");
-        assert_eq!(args.app.app_dir_name(), "jaco");
     }
 }

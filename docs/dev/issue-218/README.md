@@ -213,9 +213,9 @@ WP-01（根）：依赖门解决且设计 Ready、获得实施授权后，增加
 
 以下来源为本轮本地只读调查，代表所查看代码，不代表所有应用都遵循同样完整的实现。
 
-- [Jaco 应用编排](../../../app/jaco/src/app.rs)：配置、i18n、主题、窗口和退出初始化顺序。
-- [Jaco 配置](../../../app/jaco/src/state/config.rs)与[布局状态](../../../app/jaco/src/state/layout.rs)：配置与恢复状态的不同职责。
-- [Jaco 主题](../../../app/jaco/src/state/theme.rs)与[本地化](../../../app/jaco/src/foundation/i18n.rs)：设置变化、窗口外观与语言传播。
+- [Jaco 应用编排（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/app/jaco/src/app.rs)：配置、i18n、主题、窗口和退出初始化顺序。
+- [Jaco 配置（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/app/jaco/src/state/config.rs)与[布局状态（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/app/jaco/src/state/layout.rs)：配置与恢复状态的不同职责。
+- [Jaco 主题（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/app/jaco/src/state/theme.rs)与[本地化（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/app/jaco/src/foundation/i18n.rs)：设置变化、窗口外观与语言传播。
 - [HTTP Client 入口](../../../app/http-client/src/main.rs)、[Feiwen 入口](../../../app/feiwen/src/main.rs)、[Novel Download 入口](../../../app/novel-download/src/main.rs)：较轻量的初始化和窗口入口。
 - [共享主题](../../../crates/app-theme/src/lib.rs)与[打包 CLI](../../../crates/xtask/src/cli.rs)：实施前核对共享能力与新 app 接入位置。
 - [Pi RPC 文档](https://github.com/earendil-works/pi/blob/da840b621/packages/coding-agent/docs/rpc.md)：此前核对的本机源码版本，尚未完成本项目真实 RPC 验证。

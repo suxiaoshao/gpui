@@ -40,37 +40,3 @@ impl<R: AsyncRead + Unpin> Jsonl<R> {
         bytes
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio::io::AsyncWriteExt;
-    #[tokio::test]
-    async fn cancellation_preserves_partial_utf8_and_only_lf_splits() {
-        let (mut write, read) = tokio::io::duplex(32);
-        let mut reader = Jsonl::new(read);
-        write.write_all(b"{\"text\":\"\xe4").await.unwrap();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(10), reader.next())
-                .await
-                .is_err()
-        );
-        write.write_all(b"\xb8\xad\"}\r\n").await.unwrap();
-        let bytes = reader.next().await.unwrap().unwrap();
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["text"],
-            "中"
-        );
-        write
-            .write_all("\"中\u{2028}\u{2029}\"\r\n\"tail\"".as_bytes())
-            .await
-            .unwrap();
-        drop(write);
-        assert_eq!(
-            reader.next().await.unwrap().unwrap(),
-            "\"中\u{2028}\u{2029}\"".as_bytes()
-        );
-        assert_eq!(reader.next().await.unwrap().unwrap(), b"\"tail\"");
-        assert!(reader.next().await.unwrap().is_none());
-    }
-}

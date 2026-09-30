@@ -2,7 +2,7 @@
 
 - 授权：2026-09-07 用户要求“按照计划实现”。本记录对应 WP-01–WP-06 及直接相关验证。
 - 基线：`main@0dbe80e`；分支：`codex/215-gpui-kit-dependency-upgrade`。
-- 当前：代码和资料已落地，受影响自动化验证及本地 Jaco 界面抽查已完成。用户已要求提交、推送并创建面向 main 的 PR；WP-07 本地 CI 对应检查及四应用 release 打包通过，远程三平台 CI 待 PR 触发。
+- 本页为 2026-09-07 的历史实施与验证记录；当前运行范围见根 README，Jaco 专用实现与验收已退役。
 - 上游固定证据：GPUI Kit `v0.6.0` / `94a313a72a2513aee2780240cd322d552b2395f0`，
   registry `gpui-pre` / `gpui-pre-macros` / `gpui-pre-platform` `0.3.3`。
 
@@ -18,8 +18,8 @@
 | WP-02 theme | 删除 0.6.0 已移除的 accordion_hover 字段；其他 Material/主题映射保留。 |
 | WP-02 Tokio | 保留本地 bridge 与 owned/external runtime、JoinError、drop-to-abort 契约；新增三个对应回归。 |
 | WP-05 普通依赖 | 按 [draft §6](draft.md) 固定数值更新直接依赖，配套解析间接依赖；应用调用点通过受影响测试验证。Diesel 2.3.13 与 SQLite 0.38.2 配套，唯一 `libsqlite3-sys`；Feiwen 继续使用 DuckDB。 |
-| WP-05 Rig/MCP | Rig / rig-core 0.42.0、RMCP 2.2.0 保留；独立 `tools/mcp-auth-test-server` 的 manifest/lock 不变。 |
-| WP-05 Windows | bindgen 0.66.0 使用 `--no-allow`，删除生成后字符串裁剪。0.100.0 移除既有参数并要求不同 runtime API，未采用。保留 windows-core 0.62.2 / windows-future 0.3.2；没有 Windows 实机证据。 |
+| 历史 Rig/MCP | Rig / rig-core 0.42.0、RMCP 2.2.0 保留；独立 `tools/mcp-auth-test-server` 的 manifest/lock 不变。 |
+| 历史 OCR 生成器 | bindgen 0.66.0 使用 `--no-allow`，删除生成后字符串裁剪。0.100.0 移除既有参数并要求不同 runtime API，未采用。保留 windows-core 0.62.2 / windows-future 0.3.2；没有 Windows 实机证据。 |
 
 ## 应用迁移与删除边界
 

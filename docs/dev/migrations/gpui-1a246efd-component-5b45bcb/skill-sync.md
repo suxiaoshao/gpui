@@ -1,5 +1,7 @@
 # GPUI `1a246efd` / gpui-component `5b45bcb` skill 同步计划
 
+此页保留该固定版本迁移的共享结论与历史证据；当前版本以根 manifest 为准。Jaco 专用工作包与发布验收已退役，不延续到现役应用。
+
 ## 1. 状态与范围
 
 - 迁移 ID：`gpui-1a246efd-component-5b45bcb`。

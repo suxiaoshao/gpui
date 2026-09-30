@@ -5,10 +5,10 @@
 - GitHub issue：[suxiaoshao/gpui#177](https://github.com/suxiaoshao/gpui/issues/177)。
 - 实施分支：`codex/177-jaco-catalog-startup-model-selection`。
 - 文档位置：`crates/gpui-operation/dev/message-driven-transitions.md`。
-- 当前阶段：消息接口已实现，等待最终包级验证与 Jaco 接入。
+- 当前阶段：消息接口已实现，等待最终包级验证与 Feiwen 接入。
 - 兼容策略：crate 仍处于 `0.1.0`，直接修正错误设计，不提供 deprecated alias 或兼容
   wrapper。
-- 发布关系：本 crate 与 `gpui-store` 保持独立；Jaco Resource 迁移在两个 crate 的 API
+- 发布关系：本 crate 与 `gpui-store` 保持独立；Feiwen Resource 迁移在两个 crate 的 API
   确认后单独执行。
 
 ### 1.1 目标
@@ -110,7 +110,7 @@ enum。
 - `App::spawn` 可在完成时按类型重新查找普通 Global 或 typed-global Store。
 - 默认 feature 下 `gpui-operation` 没有 normal dependency；`tracing` 只在对应 feature
   开启时进入依赖图。GPUI 只在 dev dependency 中用于行为测试。
-- Jaco 接入时开启 `gpui-operation/tracing`，让非法状态消息成为可诊断的开发错误。
+- Feiwen 接入时开启 `gpui-operation/tracing`，让非法状态消息成为可诊断的开发错误。
 
 ## 3. 公开设计
 
@@ -162,7 +162,7 @@ runtime Transition 的 `Output = ()`。消息是否合法由当前 variant 决�
 因此不增加 `Debug` 等 bound。日志必须发生在原状态写回之后，避免 tracing subscriber
 重入时观察临时 Idle。
 
-Jaco 在依赖中开启该 feature：
+Feiwen 在依赖中开启该 feature：
 
 ```toml
 gpui-operation = { workspace = true, features = ["tracing"] }
@@ -516,7 +516,7 @@ git diff --check
 
 ### 5.4 Workspace 发布门槛
 
-Jaco 尚未迁移到 breaking Store/Operation API 时，不宣称 workspace 命令通过。最终合并仍需：
+Feiwen 尚未迁移到 breaking Store/Operation API 时，不宣称 workspace 命令通过。最终合并仍需：
 
 ```bash
 cargo build --workspace --locked
@@ -537,5 +537,5 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 - [x] final-state-before-drop 的重入与 panic 不变量已记录。
 - [x] Task/runtime、owner、通知、Repair 选择仍归调用者。
 - [x] Store 只需普通 `&mut S` update，不新增专用 adapter。
-- [x] 默认 feature 仍只有 std；非法消息 tracing 是可选 feature，Jaco 接入时开启。
+- [x] 默认 feature 仍只有 std；非法消息 tracing 是可选 feature，Feiwen 接入时开启。
 - [x] 双语文档、测试与验证命令有明确交接。

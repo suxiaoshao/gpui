@@ -124,7 +124,7 @@ fn catalog_loading(progress: Option<ScanProgress>, refresh: bool, cx: &App) -> A
         .into_any_element()
 }
 
-// Match Jaco's navigation rows: one full-width hit target, 28px height,
+// Use one full-width hit target per navigation row, 28px height,
 // sidebar theme tokens, and a shrinking label rather than a nested text button.
 fn navigation_row(
     id: impl Into<ElementId>,

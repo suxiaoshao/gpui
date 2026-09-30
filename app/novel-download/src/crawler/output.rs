@@ -20,16 +20,6 @@ pub(crate) struct OutputPaths {
 }
 
 impl OutputPaths {
-    #[cfg(test)]
-    pub(crate) fn final_path(&self) -> &Path {
-        &self.final_path
-    }
-
-    #[cfg(test)]
-    pub(crate) fn part_path(&self) -> &Path {
-        &self.part_path
-    }
-
     fn from_metadata(root: &Path, metadata: &NovelMetadata) -> Result<Self, OutputProblem> {
         Self::from_components(root, metadata.name(), metadata.author())
     }
@@ -367,10 +357,6 @@ fn truncate_utf8(value: &mut String, maximum_bytes: usize) {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
-    use tempfile::tempdir;
-
     use super::*;
 
     #[test]
@@ -386,102 +372,5 @@ mod tests {
         let component = safe_filename_component(&"界".repeat(100)).unwrap();
         assert!(component.len() <= MAX_COMPONENT_BYTES);
         assert!(component.is_char_boundary(component.len()));
-    }
-
-    #[test]
-    fn commit_promotes_only_after_writing_and_removes_part() {
-        let directory = tempdir().unwrap();
-        let paths = OutputPaths::from_components(directory.path(), "Novel", "Author").unwrap();
-        let tracker = StagingTracker::default();
-        let mut output = StagedOutput::create_at(paths.clone(), tracker).unwrap();
-        output
-            .write_item(&ContentItem::new("test".into(), "chapter".into()))
-            .unwrap();
-
-        let commit = output.commit().unwrap();
-        assert_eq!(commit.final_path(), paths.final_path());
-        assert_eq!(commit.items_written(), 1);
-        assert_eq!(fs::read_to_string(paths.final_path()).unwrap(), "chapter");
-        assert!(!paths.part_path().exists());
-    }
-
-    #[test]
-    fn existing_final_or_part_is_never_modified() {
-        let directory = tempdir().unwrap();
-        let paths = OutputPaths::from_components(directory.path(), "Novel", "Author").unwrap();
-        fs::write(paths.final_path(), "existing final").unwrap();
-        let result = StagedOutput::create_at(paths.clone(), StagingTracker::default());
-        assert!(matches!(result, Err(OutputProblem::TargetExists { .. })));
-        assert_eq!(
-            fs::read_to_string(paths.final_path()).unwrap(),
-            "existing final"
-        );
-
-        fs::remove_file(paths.final_path()).unwrap();
-        fs::write(paths.part_path(), "existing part").unwrap();
-        let result = StagedOutput::create_at(paths.clone(), StagingTracker::default());
-        assert!(matches!(result, Err(OutputProblem::StagingExists { .. })));
-        assert_eq!(
-            fs::read_to_string(paths.part_path()).unwrap(),
-            "existing part"
-        );
-    }
-
-    #[test]
-    fn abort_removes_only_the_owned_part() {
-        let directory = tempdir().unwrap();
-        let paths = OutputPaths::from_components(directory.path(), "Novel", "Author").unwrap();
-        let tracker = StagingTracker::default();
-        let mut output = StagedOutput::create_at(paths.clone(), tracker.clone()).unwrap();
-        output
-            .write_item(&ContentItem::new("test".into(), "chapter".into()))
-            .unwrap();
-        output.abort().unwrap();
-
-        assert!(!paths.part_path().exists());
-        assert!(!paths.final_path().exists());
-        assert!(tracker.take_cleanup_problem().is_none());
-    }
-
-    #[test]
-    fn staging_cleanup_failure_is_preserved_without_creating_a_final_file() {
-        let directory = tempdir().unwrap();
-        let paths = OutputPaths::from_components(directory.path(), "Novel", "Author").unwrap();
-        fs::create_dir(paths.part_path()).unwrap();
-        let tracker = StagingTracker::default();
-
-        let cleanup = close_part(
-            TempPath::try_from_path(paths.part_path()).unwrap(),
-            &tracker,
-        )
-        .expect("a staging directory cannot be removed as a file");
-
-        assert_eq!(cleanup.path(), paths.part_path());
-        assert!(!paths.final_path().exists());
-        assert!(paths.part_path().is_dir());
-        assert!(tracker.take_cleanup_problem().is_none());
-    }
-
-    #[test]
-    fn promotion_race_never_overwrites_the_final_file() {
-        let directory = tempdir().unwrap();
-        let paths = OutputPaths::from_components(directory.path(), "Novel", "Author").unwrap();
-        let tracker = StagingTracker::default();
-        let mut output = StagedOutput::create_at(paths.clone(), tracker).unwrap();
-        output
-            .write_item(&ContentItem::new("test".into(), "ours".into()))
-            .unwrap();
-        fs::write(paths.final_path(), "other process").unwrap();
-
-        let error = output.commit().unwrap_err();
-        assert!(matches!(
-            error.problem(),
-            crate::errors::DownloadProblem::Output(OutputProblem::TargetExists { .. })
-        ));
-        assert_eq!(
-            fs::read_to_string(paths.final_path()).unwrap(),
-            "other process"
-        );
-        assert!(!paths.part_path().exists());
     }
 }

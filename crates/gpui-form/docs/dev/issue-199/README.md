@@ -1,5 +1,7 @@
 # Issue #199：gpui-form 总指导、进度与状态
 
+本页保留共享 Form 的设计与交付证据。原 Jaco 消费方及其专用工作包已退役；当前消费者以现役应用源码为准，历史应用计数和验证结果不作为当前验收。
+
 ## 文档职责
 
 - 总体状态：`FORM-199-03 Done`；`C-900`–`C-904` 已达到 `consumer-complete`，上一轮
@@ -58,10 +60,7 @@
 - [gpui-form-gpui-component owner 文档](../../../../gpui-form-gpui-component/docs/dev/issue-199/README.md)
 - [gpui-form-macros 本轮实施计划](../../../../gpui-form-macros/docs/dev/issue-199/form-schema-generation-update-plan.md)
 - [gpui-form-gpui-component 本轮实施计划](../../../../gpui-form-gpui-component/docs/dev/issue-199/form-binding-adapter-update-plan.md)
-- [Jaco 本轮 Form 再迁移计划](../../../../../app/jaco/docs/dev/issue-199/form-breaking-api-remigration-plan.md)
 - [Feiwen 本轮 Form 再迁移计划](../../../../../app/feiwen/docs/dev/issue-199/form-breaking-api-remigration-plan.md)
-- [Jaco 上一轮 form 迁移文档](../../../../../app/jaco/docs/dev/issue-199/form-migration.md)
-- [Jaco Form vNext 迁移计划](../../../../../app/jaco/docs/dev/issue-199/form-vnext-migration.md)
 - [Feiwen Form/Operation/Store/DB 完整迁移计划](../../../../../app/feiwen/docs/dev/issue-199/form-operation-store-migration.md)
 
 ## 进度与状态

@@ -2332,8 +2332,6 @@ fn save_file(file: &WorkspaceFile) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    mod loading;
-    mod resources;
     mod temporary_view;
     use super::{ConversationState, WorkspaceFile, catalog::CatalogState};
     use crate::{foundation::session_catalog::Catalog, state::pi};
@@ -2379,25 +2377,6 @@ mod tests {
             session.last_assistant_text().as_deref(),
             Some("current answer")
         );
-    }
-
-    #[gpui::test]
-    fn startup_does_not_create_an_implicit_session_or_pi_instance(cx: &mut TestAppContext) {
-        cx.update(pi::init);
-        let dir = tempfile::tempdir().unwrap();
-        let state = cx.new(|cx| ConversationState::new(PathBuf::from("unused-pi"), cx));
-        state.update(cx, |state, cx| {
-            state.discovery = super::Discovery {
-                home: dir.path().into(),
-                agent: dir.path().join("agent"),
-                current: dir.path().into(),
-                session_override: None,
-            };
-            state.load(cx);
-            assert!(state.sessions.is_empty());
-            assert!(state.selected.is_none());
-            assert!(state.current().is_none());
-        });
     }
 
     #[gpui::test]

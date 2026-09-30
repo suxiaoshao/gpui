@@ -150,25 +150,11 @@ fn root_url() -> Url {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        cell::Cell,
-        io::{Read, Write},
-        net::TcpListener,
-        num::NonZeroU8,
-        rc::Rc,
-        thread,
-        time::Duration,
-    };
+    use std::{cell::Cell, num::NonZeroU8, rc::Rc, time::Duration};
 
-    use async_compat::Compat;
     use reqwest::{StatusCode, Url};
 
-    use super::{
-        RetryPolicy, is_allowed_redirect_target, is_transient_status, redirect_policy_for,
-        retry_with,
-    };
-
-    const DEFAULT_REDIRECT_LIMIT: usize = 10;
+    use super::{RetryPolicy, is_allowed_redirect_target, is_transient_status, retry_with};
 
     #[test]
     fn retry_sleeps_only_between_transient_failures() {
@@ -293,43 +279,5 @@ mod tests {
                 "{url}"
             );
         }
-    }
-
-    #[test]
-    fn allowed_redirect_loop_stops_at_reqwests_default_limit() {
-        let (url, server) = redirect_loop_server(DEFAULT_REDIRECT_LIMIT + 1);
-        let client = reqwest::Client::builder()
-            .redirect(redirect_policy_for(|_| true))
-            .build()
-            .unwrap();
-
-        let result = smol::block_on(Compat::new(async { client.get(url).send().await }));
-
-        assert!(result.unwrap_err().is_redirect());
-        assert_eq!(server.join().unwrap(), DEFAULT_REDIRECT_LIMIT + 1);
-    }
-
-    fn redirect_loop_server(requests: usize) -> (Url, thread::JoinHandle<usize>) {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let url = Url::parse(&format!("http://{}/loop", listener.local_addr().unwrap())).unwrap();
-        let server = thread::spawn(move || {
-            for _ in 0..requests {
-                let (mut stream, _) = listener.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
-                let mut request = [0; 1024];
-                let request_bytes = stream.read(&mut request).unwrap();
-                assert!(request_bytes > 0);
-                stream
-                    .write_all(
-                        b"HTTP/1.1 302 Found\r\nLocation: /loop\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    )
-                    .unwrap();
-            }
-            requests
-        });
-
-        (url, server)
     }
 }

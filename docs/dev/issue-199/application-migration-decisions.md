@@ -7,7 +7,7 @@
 - 总入口：[Issue #199 多轮任务索引](README.md)
 
 本文只保留尚未实施且仍会影响后续设计的用户决定、技术结论、暂缓范围和未回答问题。已经由源码、
-自动化与独立 owner 执行文档承接的 Form vNext、Jaco Form consumer、Jaco Conversation Transition、
+自动化与独立 owner 执行文档承接的 Form vNext、
 Feiwen Query/Fetch/Catalog/DB/Form 和 Novel Download 内容已从本草稿删除，不在这里维护第二份完成态说明。HTTP Client
 也已建立 owner 草稿；本文只保留其总状态和入口，不复制 HTTP 专属问题或回答。
 
@@ -26,7 +26,6 @@ HTTP 专属 `HTTP-*` 编号由
 
 | 范围 | 状态 | 已确认方向 | 仍需处理 |
 | --- | --- | --- | --- |
-| Jaco MCP runtime | 已移交 [#201](https://github.com/suxiaoshao/gpui/issues/201) | #199 不开始 Transition / Store 迁移 | 由 #201 建立独立 owner plan |
 | HTTP Client | 单请求 Request Form、Send 与 Response 均为 `Done` | 未来 History、multi-tab、Store 与 repair 问题只在 app owner 中维护 | [HTTP Client owner索引](../../../app/http-client/docs/dev/issue-199/README.md) |
 
 Issue 范围内继续有效的共通边界：
@@ -35,15 +34,6 @@ Issue 范围内继续有效的共通边界：
   `Transition<Message>`。
 - `gpui-store` 不新增公共 dispatch / message API；应用在 Store 所有的领域状态上运行 Transition，再用
   现有 `update` / `update_if` 发布。
-
-## 3. Jaco MCP runtime（已移交 #201）
-
-状态：**已从 #199 移交**。
-
-- 自定义 Transition、status Store、连接/OAuth/tool runtime 的后续设计由
-  [#201](https://github.com/suxiaoshao/gpui/issues/201) 唯一承接。
-- #201 必须继承 [#184](https://github.com/suxiaoshao/gpui/issues/184) 已确认的 MCP alias/wire-name
-  兼容护栏；本草稿不复制其问题和回答。
 
 ## 4. HTTP Client
 
@@ -59,6 +49,5 @@ viewer 与完成后 Save 均为 `Done`。已完成内容由
 
 ## 5. 后续入口
 
-1. Jaco MCP runtime 由 [#201](https://github.com/suxiaoshao/gpui/issues/201) 重新调研并建立 owner plan；必须继承 #184 的 alias/wire-name 兼容护栏。
-2. HTTP Client 后续只有在用户选择 History、multi-tab、Store 或 repair 范围后，才从 owner 草稿建立新的
+1. HTTP Client 后续只有在用户选择 History、multi-tab、Store 或 repair 范围后，才从 owner 草稿建立新的
    独立计划。

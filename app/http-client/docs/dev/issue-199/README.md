@@ -21,7 +21,7 @@ README。
 | `HTTP-199-02` | Request Form、prepared request 与 Store 适用性 | `Done`；56 个测试及 Check、Clippy、格式、残留扫描通过；实现提交 `933ee09` 已推送；实际 UI 操作未执行 | [Request Form 与 prepared request 实施计划](request-form-and-preparation-plan.md) |
 | `HTTP-199-03` | 真实 Send、私有 Transition、Response 收集与 viewer | `Done`；116 tests、Check、Clippy、格式与残留扫描通过；实现提交 `24e4a9f` 已推送；实际 UI 未执行 | [真实 Send 与 Response 实施计划](request-send-and-response-plan.md) |
 | `HTTP-199-04` | Response 媒体/PDF 早期方案 | `Superseded`；仅保留历史边界，不能作为实施指令；#200 是 Rodio 音频迁移与 GStreamer 删除的唯一入口 | [历史记录](response-media-and-pdf-preview-plan.md)、[#200 owner plan](../issue-200/README.md) |
-| `HTTP-199-05` | 使用 loopback 测试服务的 HTTP Client consumer 集成测试 | `Done`；实现提交 `1559cc8`、稳定性修正 `735bc41`；producer 15 tests、consumer transport 15 tests 与 app 全量 161 tests 通过；实际 UI 未执行 | [HTTP 测试服务 consumer 集成计划](http-test-server-integration-plan.md) |
+| `HTTP-199-05` | HTTP 自动测试边界 | 保留内存测试，已清理环境依赖集成测试；测试服务供手动调试 | [测试边界](http-test-server-integration-plan.md) |
 
 ## 跟踪规则
 

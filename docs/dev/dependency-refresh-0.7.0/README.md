@@ -38,7 +38,7 @@ Tauri 的新增 `bundle_vc_runtime`、`binary_patching(false)` 不默认启用�
 
 ### 保留的 Windows 配套版本
 
-`windows 0.62.2` 仍是该包的最新正式版，依赖 `windows-core ^0.62.2`、`windows-future ^0.3.2`；这两包独立发布的 0.100.0 与它不属同一个兼容家族。`platform-ext` 保留 core 0.62.2 / future 0.3.2。`windows-bindgen 0.66.0` 只服务待随 Jaco 退役的 OCR 绑定生成；不为了升到 0.100.0 迁移这条即将删除的生成链。依据：[windows 0.62.2 manifest](https://docs.rs/crate/windows/0.62.2/source/Cargo.toml)、[退役范围](../jaco-retirement/README.md)。
+`windows 0.62.2` 仍是该包的最新正式版，依赖 `windows-core ^0.62.2`、`windows-future ^0.3.2`；这两包独立发布的 0.100.0 与它不属同一个兼容家族。`platform-ext` 保留 core 0.62.2 供系统外观使用；直接 future 依赖、windows-bindgen 和 OCR 绑定生成链已随 Jaco 退役删除。依据：[windows 0.62.2 manifest](https://docs.rs/crate/windows/0.62.2/source/Cargo.toml)、[退役范围](../jaco-retirement/README.md)。
 
 ## GPUI 迁移与直接接入的优化
 
@@ -109,7 +109,7 @@ Tauri 的新增 `bundle_vc_runtime`、`binary_patching(false)` 不默认启用�
 | gpui-heatmap | 0.7.0 的 Plot 迁层和通用图表没有提供当前连续日历网格、准确 u64 值与本地化标签的 ActivityHeatmap；保持组件职责与现有通用绘制接口 |
 | window-ext / platform-ext | gpui-pre 0.3.7 没有完整替代单窗隐藏/无激活显示、原生窗口等级、跨显示器定位及应用图标/角标适配。特别是 GPUI Window::is_visible 表示帧是否展示，遮挡/最小化也会为 false；本地 is_visible 检查原生 shown/hidden，不得仅因同名就替换。系统通知投递和回调已经走 GPUI，不再重复迁移 |
 | pi-rpc / http-client-test-server / xtask | 分别承接 Pi 特有协议和子进程生命周期、HTTP 场景测试服务、应用专用资源与打包编排。新版通用传输库/打包器没有接管这些职责；只简化对应 helper 和迁移库 API |
-| app-assets / app-assets-macros、Jaco 专用 crates、OCR / Quick Look | 已列入 [Jaco 退役清理](../jaco-retirement/README.md)，删除依据为消费者退役及现役应用已完成迁移；不把删除提前到本轮，也不重复新建任务 |
+| app-assets / app-assets-macros、Jaco 专用 crates、OCR / Quick Look | 已按 [Jaco 退役清理](../jaco-retirement/README.md)删除；本表保留升级批次的历史边界 |
 
 原生接口依据：[gpui-pre 0.3.7 Window](https://docs.rs/crate/gpui-pre/0.3.7/source/src/window.rs)、[App](https://docs.rs/crate/gpui-pre/0.3.7/source/src/app.rs)；数值/图标依据：[NumberInput](https://github.com/longbridge/gpui-kit/blob/v0.7.0/crates/base/src/number_input.rs)、[Assets](https://github.com/longbridge/gpui-kit/blob/v0.7.0/crates/assets/src/native_assets.rs)。以上结论只判断这次依赖能否替代现有职责，不代表现有库无需独立重构。
 

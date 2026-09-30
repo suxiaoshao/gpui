@@ -1,10 +1,11 @@
 # GPUI `0.2.2@1a246efd` / gpui-component `0.5.2@5b45bcb` 迁移总计划
 
+此页保留该固定版本迁移的共享结论与历史证据；当前版本以根 manifest 为准。Jaco 专用工作包与发布验收已退役，不延续到现役应用。
+
 ## 1. 迁移身份与状态
 
 - 迁移 ID：`gpui-1a246efd-component-5b45bcb`。
 - 文档位置：`docs/dev/migrations/gpui-1a246efd-component-5b45bcb/README.md`。
-- 当前分支：`codex/175-jaco-shortcut-temporary-window`。
 - 实现基线：`6351898 refactor: redesign typed form state and bindings`。
 - 解析后的 crate versions：GPUI `0.2.2`；gpui-component `0.5.2`。两个 Git package 的
   crate version 在本区间未变化，因此迁移身份必须由 source SHA 区分。
@@ -43,44 +44,14 @@
 | gpui-component upstream | UPSTREAM-TEXT-15 | TextView CodeBlock 改为 render-time current theme 与 theme-aware styles cache | [upstream-text-theme.md](upstream-text-theme.md) |
 | `crates/app-theme` | THEME-10 | M3 颜色 role/button state layer、既有颜色兼容，以及 editor/Markdown 共用的代码内容 palette | [app-theme 子计划](../../../../crates/app-theme/docs/dev/migrations/gpui-1a246efd-component-5b45bcb.md) |
 | `crates/gpui-form-gpui-component` | FORM-20 | `IntegerInput<N>: View` 与新版 Combobox value API 验证 | [表单组件适配子计划](../../../../crates/gpui-form-gpui-component/docs/dev/migrations/gpui-1a246efd-component-5b45bcb.md) |
-| `app/jaco`（当前 target） | JACO-WINDOW-10..JACO-COMPONENT-50；JACO-MARKDOWN-55 非主题证据 | window/timer/layout、JSON preset、ThemeToken、List/picker/scroll/input，以及流式 Markdown/language/plain fallback | [Jaco 子计划](../../../../app/jaco/docs/dev/migrations/gpui-1a246efd-component-5b45bcb.md) |
-| `app/jaco`（后继 target） | JACO-MARKDOWN-55 current-theme 子门；JACO-VERIFY-60 | 既有 TextView 随当前主题刷新与 Jaco 最终发布门 | 新 SHA 冻结后创建独立 Jaco 计划；当前入口见 [UPSTREAM-TEXT-15](upstream-text-theme.md) |
 | `app/feiwen` | FEIWEN-10..40 | owned titlebar、官方 TitleBar/Progress、ThemeToken、URL/scroll/platform | [Feiwen 子计划](../../../../app/feiwen/docs/dev/migrations/gpui-1a246efd-component-5b45bcb.md) |
 | `app/http-client` | HTTP-10..20 | URL content type 与升级后的 request UI 回归 | [HTTP Client 子计划](../../../../app/http-client/docs/dev/migrations/gpui-1a246efd-component-5b45bcb.md) |
 | `app/novel-download` | NOVEL-10..20 | workspace ThemeToken；明确保留 crawler timer | [Novel Download 子计划](../../../../app/novel-download/docs/dev/migrations/gpui-1a246efd-component-5b45bcb.md) |
 | repo-local skills | SKILL-70 | GPUI strict mirror 与 gpui-component consumer docs/rules | [skill-sync.md](skill-sync.md) |
 
-## 3. 唯一执行顺序
+## 3. 共享迁移顺序
 
-```text
-ROOT-00
-├── THEME-10 ─────────────┬── JACO-WINDOW-10..JACO-COMPONENT-50
-│                         │    └── JACO-MARKDOWN-55 (non-theme evidence)
-│                         └── FEIWEN-10..40
-├── UPSTREAM-TEXT-15 ─────────> new gpui-component SHA / successor migration
-│                                └──> successor JACO-MARKDOWN / SKILL / ROOT release gates
-├── FORM-20 ─────────────────> JACO-WINDOW-10..JACO-COMPONENT-50
-├── HTTP-10..20
-└── NOVEL-10..20
-
-THEME-10 + FORM-20 + JACO-WINDOW-10..JACO-COMPONENT-50
-  + JACO-MARKDOWN-55 (non-theme evidence) + FEIWEN + HTTP + NOVEL
-  -> SKILL-70 (5b45bcb snapshot + known-blocker rule)
-
-ROOT-80 is blocked for this target and is carried into the successor migration.
-```
-
-- `ROOT-00` 只确认依赖 source、锁文件和工具链基线，不再次无目标升级依赖。
-- `UPSTREAM-TEXT-15` 是当前 `5b45bcb` target 的 release blocker。修复落地后 source SHA
-  会变化，必须新建 hash-specific 后继迁移，不能直接把当前文档改写成已包含修复。
-- `THEME-10` 必须先固定全部 generated theme 语义，包括 colors、component tokens、
-  `HighlightThemeStyle` 以及 editor/Markdown 共用的代码内容 palette；使用 `app-theme` 的
-  Jaco/Feiwen 随后只做消费和视觉验收。Novel Download 只消费 gpui-component token，不依赖该 crate。
-- `FORM-20` 先验证新 `View` 与 Combobox 契约，Jaco 再进行完整 picker/form 回归。
-- `SKILL-70` 只同步当前 target 的真实 API，并记录 TextView blocker；后继 target 必须再次同步，
-  不能让当前 skill 文档预告尚不存在的 API。
-- `ROOT-80` 是唯一发布门；它在 `5b45bcb` 上不可达，必须由包含修复的新 hash-specific
-  迁移批次继承并完成。当前批次只能保持 blocked，不能标为完成。
+workspace 类型来源先统一，再验证 app-theme 和 Form，最后由现役应用消费；共享 Markdown 主题缓存问题由组件层负责。原 Jaco 工作包与专用发布门已退役。
 
 ## 4. 跨 package 冻结契约
 
@@ -90,10 +61,8 @@ ROOT-80 is blocked for this target and is carried into the successor migration.
    `WindowOptions::app_owns_titlebar_drag = true`。
 4. 可渲染背景使用 `Theme.tokens`；文字、边框、caret、图标和颜色计算继续使用 `Hsla`。
    token 透明度必须写在 `.background.opacity(...)`，禁止经 `ThemeToken::Deref` 丢失 gradient。
-5. Jaco 的 `ListState` confirm/cancel 回调继续使用 `window.defer`；上游焦点或 popover 修复不替代本地重入边界。
-6. JSON themes 必须完整同步上游目标 SHA `themes/` 目录的 22 个文件，不能只补 Aurora；同步后
-   按 theme variant 比较 active/inactive tab：上游已区分时采用上游五个 tab 键，仍未区分时
-   才重放该 variant 已确认的 Jaco tab overlay，持久化 theme ID 不迁移。
+5. 应用的 `ListState` confirm/cancel 回调继续使用 `window.defer`；上游焦点或 popover 修复不替代本地重入边界。
+6. 共享主题生成与应用 JSON 预设保持原所有权，持久化 theme ID 不迁移。
 7. `.agents/skills/gpui` 是 strict upstream mirror，不能混入 repo-local 说明；消费规则写入 `gpui-component-usage`。
 8. `crates/app-theme` 是 generated Material theme 的唯一 owner：editor 与 rendered Markdown
    共用 plain/muted/syntax 内容 palette，但各自保留 editor chrome 与 code-block surface；
@@ -102,7 +71,7 @@ ROOT-80 is blocked for this target and is carried into the successor migration.
    typography、shadow/elevation、动效和 focus ring 由 gpui-component 负责，应用不得按 Android
    组件参数二次覆盖。
 10. [当前缺口 / 后继发布契约] TextView code-block syntax 必须在 render 时使用当前 active
-   highlight theme，并按 theme identity 失效 styles cache；`5b45bcb` 尚不满足。禁止由 Jaco
+   highlight theme，并按 theme identity 失效 styles cache；`5b45bcb` 尚不满足。禁止由应用
    监听主题、遍历 TextView 或用同值 `set_text` 伪造更新。
 
 ## 5. 验收责任汇总
@@ -113,8 +82,6 @@ ROOT-80 is blocked for this target and is carried into the successor migration.
 | Material semantics | THEME-10 | app-theme role/state、共享代码 palette 与双 surface invariant tests | light/dark editor 与 Markdown 代码块 |
 | TextView theme lifecycle | UPSTREAM-TEXT-15 | upstream current-theme/cache tests | 既有消息只切换主题即可更新 syntax |
 | form component adapter | FORM-20 | adapter tests | integer/combobox interaction |
-| Jaco current-target runtime/theme/list/focus | JACO-WINDOW-10..JACO-COMPONENT-50 + JACO-MARKDOWN-55 非主题证据 | Jaco focused tests | main/settings/about/temporary/screenshot、Aurora、picker、streaming/fallback |
-| Jaco successor release | JACO-MARKDOWN-55 current-theme 子门 + JACO-VERIFY-60 | successor dependency gate + Jaco/upstream tests | 既有消息主题切换与完整 Jaco matrix |
 | Feiwen titlebar/progress/theme | FEIWEN-10..40 | Feiwen tests + CI | macOS/Linux/Windows titlebar、progress |
 | HTTP Client request UI | HTTP-10..20 | package tests | URL/request/scroll smoke |
 | Novel workspace | NOVEL-10..20 | package tests + source gate | light/dark workspace |

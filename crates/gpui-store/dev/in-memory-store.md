@@ -3,17 +3,13 @@
 ## 1. 状态与范围
 
 - GitHub issue：[suxiaoshao/gpui#177](https://github.com/suxiaoshao/gpui/issues/177)。
-- 实施分支：`codex/177-jaco-catalog-startup-model-selection`。
 - 文档位置：`crates/gpui-store/dev/in-memory-store.md`。
-- 当前阶段：目标 API 已确定，当前源码仍是
-  `SharedStore / LocalStore + Backend + Binding + Revision` 旧实现，尚未迁移。
+- 当前阶段：纯内存 Store 已实现；本文保留共享契约与实施设计，现役消费者见应用源码。
 - 兼容策略：这是 `0.1.0` 阶段的破坏性替换；直接删除旧 API，不提供 deprecated
   alias、兼容 wrapper、backend feature 或迁移期 façade。
 - 旧计划策略：`docs/development-plan.md` 和
   `docs/catalog-snapshot-projection-plan.md` 保持删除；新计划只放在内部 `dev/` 目录，
   不重新混入对外 `docs/`。
-- 发布关系：本 crate 可完成包级实现与验证，但旧 Jaco 调用方会在 breaking rewrite后
-  无法编译。最终 workspace/merge gate必须等待后续 Jaco Store调用面迁移全部完成。
 
 ### 1.1 目标
 
@@ -35,7 +31,6 @@
 - 不定义 reducer、action、middleware、delta、revision或 mutation origin。
 - 不提供 writable selection、`StoreBinding` 或表单自动双向同步。
 - 不提供 `LocalStore` / `SharedStore` 两套所有权模型。
-- 不迁移 Jaco；本计划只列出精确发布门槛。
 - 不暴露内部 Entity、状态 cell、观察 phase或 weak handle。
 
 ### 1.3 已冻结的需求
@@ -70,27 +65,6 @@
 | `src/selection.rs` | selection暴露 snapshot、revision和比较/格式转发 | 只保留 `read` / `cloned` |
 | `src/tests.rs` | 17个测试主要覆盖旧 backend、binding与 revision | 整体替换为目标 API矩阵 |
 | `README*`、`docs/guide*` | 已描述 target纯内存设计，但仍标记未实施 | 实施完成后同步最终签名 |
-
-### 2.2 当前 Jaco 调用面
-
-当前静态扫描确认以下直接迁移面；这是 Store计划的已知 inventory，不冒充后续 Jaco迁移的
-穷尽证明：
-
-- `app/jaco/src/components/chat_input.rs`：`StoreBinding`；
-- `app/jaco/src/components/run_settings.rs`：catalog `entity()` / `read_cloned()`；
-- `app/jaco/src/features/home/new_conversation.rs`：旧 `StoreSelection`；
-- `app/jaco/src/features/settings/{projects,prompts,skills}.rs`：旧 selection；
-- `app/jaco/src/features/settings/shortcuts.rs`：直接观察旧 Store Entity；
-- `app/jaco/src/state/config.rs`：`SharedStore`、backend、commit backend；
-- `app/jaco/src/state/config/mcp.rs`：`try_update_field`；
-- `app/jaco/src/state/skills.rs`：filesystem backend；
-- `app/jaco/src/state/prompts.rs`：database backend；
-- `app/jaco/src/state/{providers,projects,shortcuts}.rs`：`SharedStore` / `StoreState`；
-- `app/jaco/src/state/workspace.rs`：旧 Store handle与 raw Entity观察。
-
-因此本计划不能把 workspace build声明为 crate完成条件，也不能为了维持中间态编译而保留
-旧 wrapper。类型名扫描还会漏掉 method-only调用；只有后续 Jaco迁移后的 workspace编译
-才能证明迁移面穷尽。
 
 ### 2.3 GPUI 上游证据
 
@@ -131,7 +105,6 @@ workspace 的 `gpui = "=0.2.2"` 来自 Zed git，`Cargo.lock` 锁定 commit
 
 | 系统面 | 决定 |
 | --- | --- |
-| Jaco实现 | 本计划不修改；后续独立迁移 |
 | 数据库、migration、schema、查询 | No change |
 | 文件、网络、凭据、持久化 | No change |
 | UI、组件、图标、assets、Fluent i18n | No change |
@@ -606,7 +579,6 @@ initial-delivery glue。
 **前置条件**
 
 - 本计划第 3、4 节为冻结契约。
-- 接受执行后 Jaco暂时不能通过 workspace编译的发布顺序。
 
 **证据**
 
@@ -651,7 +623,7 @@ initial-delivery glue。
 **UI / 数据 / 数据库 / 图标 / i18n / 依赖**
 
 - UI、数据模型、数据库、图标、i18n、依赖：No change。
-- 旧 backend删除不等于迁移其 I/O；Jaco迁移另做。
+- 旧 backend 删除后，I/O 由应用自己的持久化层承担。
 
 **测试**
 
@@ -910,64 +882,9 @@ rg -n 'SharedStore|LocalStore|StoreState|StoreBackend|StoreCommitBackend|StoreBi
 - 旧测试、helper和旧文档计划不再存在；
 - `docs/` 只保留对外文档。
 
-### ST-50：包级完成与 Jaco 发布交接
+### ST-50：包级验证
 
-**前置条件**
-
-- ST-10 至 ST-40。
-
-**证据**
-
-- 第 2.2 节记录了当前静态扫描发现的旧 Jaco调用类别，但明确不是穷尽证明。
-
-**文件**
-
-- 本工作包不修改 Jaco。
-- 只记录实际包级验证结果和后续迁移门槛。
-
-**API 契约**
-
-- 不增加临时 alias使 Jaco继续编译。
-
-**实施流程**
-
-1. 完成第 7.1 节所有包级门禁。
-2. 用类型名和 method名两组 `rg` 重新生成 Jaco旧 API inventory，供后续迁移使用。
-3. 将 Store实现状态标记为“package complete, workspace release-gated”。
-4. 停止；Jaco迁移由 issue #177 的独立实施计划继续。
-
-**错误与生命周期**
-
-- 本工作包不运行 workspace编译，也不声称已知 inventory穷尽；若 gpui-store包级门禁失败
-  则不得交接。
-
-**UI / 数据 / 数据库 / 图标 / i18n / 依赖**
-
-- 全部 No change。
-
-**测试**
-
-| 需求 | 测试文件 | 测试名 | Fixture | 断言 |
-| --- | --- | --- | --- | --- |
-| 发布边界 | shell scan | `jaco_old_store_api_inventory` | 类型名 + method名 `rg` | 保存当前已知迁移面，不声称穷尽 |
-| 包完成 | package gates | 全部 Store tests | GPUI test support | 包级全绿 |
-
-**验证**
-
-```bash
-rg -n 'SharedStore|LocalStore|StoreState|StoreBackend|StoreCommitBackend|StoreBinding' \
-  app/jaco/src
-rg -n 'read_cloned|select_cloned|sync_initial|refresh_from_backend|bind_committed|try_set|try_update|try_update_if|try_update_field' \
-  app/jaco/src
-rg -n '(catalog|project_catalog|provider_catalog|skill_catalog|prompt_catalog)\.entity\(' \
-  app/jaco/src
-```
-
-**完成条件**
-
-- Store package实现与文档完整；
-- 当前已知 Jaco迁移面已记录且未被兼容层隐藏；穷尽性留给后续迁移与 workspace编译证明；
-- 不声称 workspace/CI已通过。
+完成第 7 节包级与 workspace 验证，结果按实际平台记录。应用迁移不由 Store crate 承担。
 
 ## 7. 跨工作包验证
 
@@ -996,7 +913,7 @@ git diff --check
 
 ### 7.2 Workspace / merge gate
 
-breaking Store实现完成后，不运行或宣称以下命令已通过，直到 Jaco迁移完成：
+共享实现与现役调用方一起执行以下验证：
 
 ```bash
 cargo build --workspace --locked
@@ -1008,7 +925,6 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
 ```text
 gpui-store package complete
-  + Jaco Store call sites migrated
   -> workspace build/test/clippy
   -> macOS/Linux/Windows CI
   -> merge-ready
@@ -1029,6 +945,6 @@ CI 最终仍以 `.github/workflows/ci.yml` 为准：三平台 build/test，macOS
 - [x] 旧模块、API、测试和计划均有删除清单。
 - [x] GPUI 上游能力已按 lockfile commit核对，不自建 observer。
 - [x] 数据库、UI、图标、i18n、依赖和平台面均有明确 No change。
-- [x] 包级完成与 Jaco/workspace发布门槛已分开。
+- [x] 包级完成与 workspace 验证边界已分开。
 - [x] 实施者无需再选择架构；若目标签名无法按本文实现，应停止并回到设计评审，
   不得自行增加 Clone bound、兼容 wrapper、backend或第二份状态。

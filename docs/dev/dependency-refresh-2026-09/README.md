@@ -10,11 +10,9 @@
 - 当前实施范围：按已确认的依赖与组件接入计划执行；不夹带队列产品行为或未发布 Token / Questionnaire。此前 Gupi 能力盘点文档保留。
 - 这是新的更新批次，不修改 [#215 旧批次](../issue-215/README.md) 的历史交付。继续复制上游 skill 资料的方式由官方安装替代；其他约束按本次维护范围重新核对。
 
-## Jaco 停止维护与后续删除
+## Jaco 退役
 
-用户已确认：Jaco 后续不再维护，等 Gupi 合入后清理。统一范围、连带调整及共享能力保留依据见 [Jaco 退役与关联清理](../jaco-retirement/README.md)，不在本页维护第二份清单。
-
-本次依赖更新仍排除 `app/jaco`、四个 jaco-* crate、旧 app-assets / app-assets-macros 与专用 `tools/mcp-auth-test-server`；共享 crate 按现役消费者保留。不提前删除源码或用户数据。
+Jaco、专用 crate、旧资源宏、Lucide 子模块、MCP 工具、Quick Look 和 OCR 已删除；范围与验证见 [退役记录](../jaco-retirement/README.md)。本页依赖表保留原盘点日期的数量与来源，已退役项不构成维护任务。
 
 ## 盘点范围与方法
 
@@ -30,7 +28,7 @@
 
 升级前 `gpui-kit`、`gpui-component`、`gpui-kit-assets` 均精确固定 `0.6.0`；`gpui-pre`、`gpui-pre-platform` 声明固定 `0.3.3`。图标改造已将它们配套升级为 **0.6.4 + 0.3.5**。已核对 0.6.4 发布索引中的配套依赖：kit/component 都使用 gpui-pre 0.3.5；必须一起更新，防止共享 crate 与应用出现两份 GPUI 类型。
 
-应用继续经 `gpui_kit` 接入；共享 crate 的 gpui/component alias 与新 gpui-lucide 使用同一配套类型。旧 app-assets 仅供待删除的 Jaco 使用。更新不自动意味着重写本地 gpui-tokio、Form、Store、Operation 或引入新的产品功能。
+应用继续经 `gpui_kit` 接入；共享 crate 的 gpui/component alias 与新 gpui-lucide 使用同一配套类型。旧 app-assets 已删除。更新不自动意味着重写本地 gpui-tokio、Form、Store、Operation 或引入新的产品功能。
 
 正式版本与 Gupi 输入组件等待项必须分开：
 
@@ -166,7 +164,7 @@ Rig/RMCP 和 Diesel/libsqlite3-sys 属于 Jaco 专用范围，本轮排除，不
 
 | 对象 | 当前状态 | 更新目标或处理 |
 | --- | --- | --- |
-| Lucide 来源 | 新 gpui-lucide 使用 gpui-kit-assets 0.6.4 随包目录（Lucide 1.43.0 + 保留图标），构建时无网络 | 原 third_party/lucide 不再为 Gupi/Feiwen 提供图标；它与 app-assets/app-assets-macros 暂留给 Jaco，按 Gupi 合入后的清理计划一起删除。无需同步到独立 Lucide 1.47.0 |
+| Lucide 来源 | 新 gpui-lucide 使用 gpui-kit-assets 0.6.4 随包目录（Lucide 1.43.0 + 保留图标），构建时无网络 | 原 third_party/lucide 不再为 Gupi/Feiwen 提供图标；它与 app-assets/app-assets-macros 已随 Jaco 删除。无需同步到独立 Lucide 1.47.0 |
 | Rust / Cargo | `rust-toolchain.toml` 固定 1.98.1；macOS/Linux 的 Nix 环境及 Windows Rustup 共用该声明 | 候选依赖的 MSRV 仍须结合新锁图验证，不额外改成 nightly |
 | GitHub Actions | checkout v7.0.1、rust-cache v2.9.2 与 install-nix-action v31 均固定 SHA；Rust 版本由仓库统一声明 | macOS/Linux 通过 `nix develop --command` 执行检查；Windows 使用原生工具链 |
 | Pi 运行时 | 用户安装/配置的可执行文件；当前审计协议 0.85.1，官方最新 v0.85.1 | 非 Cargo 内嵌库，不擅自替用户升级全局 Pi；沿用独立进程启动和 RPC 契约 |
@@ -307,10 +305,10 @@ Rig/RMCP 和 Diesel/libsqlite3-sys 属于 Jaco 专用范围，本轮排除，不
 - [feiwen](../../../app/feiwen/Cargo.toml)：0.1.0。
 - [gupi](../../../app/gupi/Cargo.toml)：0.1.0。
 - [http-client](../../../app/http-client/Cargo.toml)：0.1.0。
-- [jaco](../../../app/jaco/Cargo.toml)：0.1.0。 **停止维护；本次排除，Gupi 合入后清理。**
+- [jaco（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/app/jaco/Cargo.toml)：0.1.0。 **已退役；仅保留本次盘点的历史来源。**
 - [novel-download](../../../app/novel-download/Cargo.toml)：0.1.0。
-- [app-assets](../../../crates/app-assets/Cargo.toml)：0.1.0。
-- [app-assets-macros](../../../crates/app-assets-macros/Cargo.toml)：0.1.0。
+- [app-assets（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/crates/app-assets/Cargo.toml)：0.1.0。
+- [app-assets-macros（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/crates/app-assets-macros/Cargo.toml)：0.1.0。
 - [app-theme](../../../crates/app-theme/Cargo.toml)：0.1.0。
 - [gpui-form](../../../crates/gpui-form/Cargo.toml)：0.1.0。
 - [gpui-form-gpui-component](../../../crates/gpui-form-gpui-component/Cargo.toml)：0.1.0。
@@ -320,15 +318,15 @@ Rig/RMCP 和 Diesel/libsqlite3-sys 属于 Jaco 专用范围，本轮排除，不
 - [gpui-store](../../../crates/gpui-store/Cargo.toml)：0.1.0。
 - [gpui-tokio](../../../crates/gpui-tokio/Cargo.toml)：0.1.0。
 - [http-client-test-server](../../../crates/http-client-test-server/Cargo.toml)：0.1.0。
-- [jaco-agent](../../../crates/jaco-agent/Cargo.toml)：0.1.0。 **停止维护；本次排除，Gupi 合入后清理。**
-- [jaco-conversation](../../../crates/jaco-conversation/Cargo.toml)：0.1.0。 **停止维护；本次排除，Gupi 合入后清理。**
-- [jaco-core](../../../crates/jaco-core/Cargo.toml)：0.1.0。 **停止维护；本次排除，Gupi 合入后清理。**
-- [jaco-db](../../../crates/jaco-db/Cargo.toml)：0.1.0。 **停止维护；本次排除，Gupi 合入后清理。**
+- [jaco-agent（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/crates/jaco-agent/Cargo.toml)：0.1.0。 **已退役；仅保留本次盘点的历史来源。**
+- [jaco-conversation（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/crates/jaco-conversation/Cargo.toml)：0.1.0。 **已退役；仅保留本次盘点的历史来源。**
+- [jaco-core（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/crates/jaco-core/Cargo.toml)：0.1.0。 **已退役；仅保留本次盘点的历史来源。**
+- [jaco-db（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/crates/jaco-db/Cargo.toml)：0.1.0。 **已退役；仅保留本次盘点的历史来源。**
 - [pi-rpc](../../../crates/pi-rpc/Cargo.toml)：0.1.0。
 - [platform-ext](../../../crates/platform-ext/Cargo.toml)：0.1.0。
 - [window-ext](../../../crates/window-ext/Cargo.toml)：0.1.0。
 - [xtask](../../../crates/xtask/Cargo.toml)：0.1.0。
-- [mcp-auth-test-server](../../../tools/mcp-auth-test-server/Cargo.toml)：0.1.0，独立 workspace / 独立锁文件。 **停止维护；本次排除，Gupi 合入后清理。**
+- [mcp-auth-test-server（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/tools/mcp-auth-test-server/Cargo.toml)：0.1.0，独立 workspace / 独立锁文件。 **已退役；仅保留本次盘点的历史来源。**
 
 ## 来源与调查边界
 
@@ -336,7 +334,7 @@ Rig/RMCP 和 Diesel/libsqlite3-sys 属于 Jaco 专用范围，本轮排除，不
 - [GPUI Kit v0.6.4](https://github.com/longbridge/gpui-kit/releases/tag/v0.6.4)、[固定 main README](https://github.com/longbridge/gpui-kit/blob/f698b4bcac037b8d208b34eca86cc940081c498f/README.md)、[官方 skill 目录](https://github.com/longbridge/gpui-kit/tree/f698b4bcac037b8d208b34eca86cc940081c498f/skills)。
 - [skills 安装工具说明](https://github.com/vercel-labs/skills#readme)：项目范围、指定 agent/skill、链接与更新方式。
 - [Lucide 1.47.0](https://github.com/lucide-icons/lucide/releases/tag/1.47.0)、[Rust 1.98.1](https://github.com/rust-lang/rust/releases/tag/1.98.1)、[Pi 0.85.1](https://github.com/earendil-works/pi/releases/tag/v0.85.1)。
-- 本项目：[root manifest](../../../Cargo.toml)、[主锁](../../../Cargo.lock)、[独立工具](../../../tools/mcp-auth-test-server/Cargo.toml)、[CI](../../../.github/workflows/ci.yml)、[开发环境](../../../flake.nix)、[图标来源](../../../.gitmodules)。
+- 本项目：[root manifest](../../../Cargo.toml)、[主锁](../../../Cargo.lock)、[独立工具（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/tools/mcp-auth-test-server/Cargo.toml)、[CI](../../../.github/workflows/ci.yml)、[开发环境](../../../flake.nix)、[图标来源（历史来源）](https://github.com/suxiaoshao/gpui/blob/8afc8e4d080c6b06b5f2ee10ab753d6ffda43f1f/.gitmodules)。
 
 前期版本与 changelog 调查记录保留作基线；以下记录实际实施与验证。未进行漏洞审计。
 
@@ -346,7 +344,7 @@ Rig/RMCP 和 Diesel/libsqlite3-sys 属于 Jaco 专用范围，本轮排除，不
 - `SvgIcon` 是静态 bytes 的可复制值，`IconName` 是其别名，每个图标为独立关联常量；没有引用全目录的 enum match 或 ALL 表。动态代码实际引用的多个图标会同时保留，未引用图标可由链接器剔除。
 - 实现 `From<SvgIcon> for gpui_component::Icon` 和 RenderOnce，默认样式、克隆、原生图标转换仍由上游负责；不实现只支持路径的 IconNamed，不另外实现一套渲染器。
 - Gupi/Feiwen 改用新库；Gupi Provider SVG 走同一字节转换。默认组件图标和应用黑白 Logo 仍注册原有 AssetSource。
-- 因原 0.6.0 无 Icon::data，此步需要同时升级 GPUI Kit 0.6.4 与 GPUI 0.3.5。Jaco 不迁移，旧两个 crate 与子模块留待其删除，避免为停止维护的应用做额外接入。
+- 因原 0.6.0 无 Icon::data，此步需要同时升级 GPUI Kit 0.6.4 与 GPUI 0.3.5。Jaco 与旧两个 crate、子模块现已删除。
 - 必要兼容适配：删除 app-theme 已失效的 tiles 映射，内置 Aurora 主题将 chart_bullish/chart_bearish 改成上游的 chart.bullish/chart.bearish；按新序列化字段更新主题基线，颜色值未改变。
 - 验证通过：四个仍维护应用 `cargo check --locked --offline`；gpui-lucide 转换测试和文档测试；app-theme 全部 23 项测试；gpui-lucide/Gupi/Feiwen/app-theme 的 all-targets Clippy（-D warnings）；cargo fmt 与 diff 空白检查。
 - 链接验证：macOS arm64 上编译 one_icon/two_icons 示例（dev 依赖 + 示例 opt-level=3、debuginfo=0），运行成功。以官方包的 1,830 份完整 SVG bytes 检查二进制：one_icon 仅命中 search，two_icons 仅命中 brain/search。该结果证明实际 Into<Icon> 路径没有保留完整目录；它不是整个应用 release 体积或运行时内存基准。

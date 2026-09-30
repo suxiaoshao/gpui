@@ -1,15 +1,12 @@
 # gpui-heatmap：Issue #189 活动热力图组件
 
-## 根计划与 owner 边界
+## 组件职责与状态
 
 - Plan ID：`issue-189`
-- Root hub：[Issue #189](../../../../../docs/dev/issue-189/README.md)
-- 执行文档：[Settings activity heatmap](../../../../../docs/dev/issue-189/settings-usage-activity-heatmap-plan.md)
 - Owner directory：`crates/gpui-heatmap`
-- Owner status：`Implemented`（`WP-601` production component与聚焦自动化已完成；GUI人工矩阵、workspace-wide gates与三平台CI待执行）
-- Assigned WP：`WP-601`
+- Owner status：`Implemented`；本页保留独立组件契约与历史验证，应用统计专题已随 Jaco 退役删除
 - Owns：产品无关的连续日期series、Monday activity grid、month labels、0 + 4级linear max色阶、gpui-component Plot tooltip、theme、size、scroll、caption/legend、whole-chart accessibility与组件测试
-- Does not own：Jaco数据库查询、时区/rolling range、Fluent、Token业务语义、费用、provider/model、Settings Entity/Operation/GroupBox或empty/error状态
+- Does not own：应用数据库查询、时区/rolling range、Fluent、Token业务语义、费用、provider/model、Settings Entity/Operation/GroupBox或empty/error状态
 
 ## Owner-local 证据与决定
 
@@ -137,7 +134,7 @@ impl ActivityHeatmap {
 - `len - 1`以checked转换到`i64`，再用`Date::checked_add(Duration::days(...))`计算end；失败返回`RangeOverflow`。
 - `max_value`在构造时计算；不对值求和，避免组件发明overflow语义。
 - error手写`fmt::Display + std::error::Error`；不增加`thiserror`。
-- constructor预生成ISO `Date::to_string()`与完整十进制`u64::to_string()` label vectors。`format_date`/`format_value`立即遍历series并替换owned labels，不保存caller closure或要求`'static`；Jaco可借用当前I18n后安全返回组件。
+- constructor预生成ISO `Date::to_string()`与完整十进制`u64::to_string()` label vectors。`format_date`/`format_value`立即遍历series并替换owned labels，不保存caller closure或要求`'static`；调用方可借用当前I18n后安全返回组件。
 - `ActivityHeatmap::new`要求accessible summary，避免出现无文字等价信息的组件实例。
 
 ## Layout contract
@@ -217,7 +214,7 @@ struct ActivityHeatmapPlot {
 
 ### Scroll tooltip风险
 
-Plot tooltip的deferred box仍继承horizontal scroll content mask。未滚动和滚动到最右时，可视区域左右端的tooltip必须完整显示。若人工/GPUI验证发现裁切，`WP-601`必须在component内部修正tooltip定位/overlay边界；Jaco consumer不得加局部兜底。
+Plot tooltip的deferred box仍继承horizontal scroll content mask。未滚动和滚动到最右时，可视区域左右端的tooltip必须完整显示。若人工/GPUI验证发现裁切，`WP-601`必须在component内部修正tooltip定位/overlay边界；应用 consumer不得加局部兜底。
 
 ## Cargo与dependency contract
 
@@ -242,7 +239,7 @@ gpui = { workspace = true, features = ["test-support"] }
 5. 更新双语README，给出product-neutral构造示例和caller responsibilities。
 6. 完成focused automated/manual validation，记录实际API差异和证据。
 
-依赖：当前crate骨架。可与`jaco-db/WP-204`并行；完成后解锁`app/jaco/WP-504`。
+组件不依赖应用数据库或业务状态。
 
 ## Tests
 
@@ -274,8 +271,7 @@ git diff --check -- crates/gpui-heatmap Cargo.toml Cargo.lock
 
 - `C-23`、layout、level、theme、tooltip与AX contract全部落地，无app/business dependency。
 - `T-601`–`T-609`通过；滚动tooltip阻断矩阵无裁切。
-- README与owner/root plans同步实际稳定API。
-- 记录implementation commit/PR和未执行的workspace/three-platform gates。
+- 双语 README 与本页同步实际稳定 API。
 
 ## 实施证据
 
@@ -283,4 +279,3 @@ git diff --check -- crates/gpui-heatmap Cargo.toml Cargo.lock
 - 2026-08-21：`ActivityHeatmapSeries`、公开组件、Monday-first布局、月份标记、精确tooltip、theme、caption/legend、single-image AX及caller-id keyed滚动已实现，API与`C-23`一致。
 - `cargo test -p gpui-heatmap`通过10项；`cargo check -p gpui-heatmap`、`cargo clippy -p gpui-heatmap --all-targets --all-features -- -D warnings`与scoped diff check通过。
 - GPUI测试覆盖render/theme/tooltip smoke和同一callsite双实例滚动隔离；完整窗口中的横向滚动两端tooltip与Accessibility Inspector矩阵因当前macOS图形会话锁定而待执行。
-- implementation commit / PR、workspace-wide gates与三平台CI：`Pending`。

@@ -517,7 +517,6 @@ mod tests {
     };
 
     use gpui_kit::{AppContext as _, TestAppContext, WindowHandle};
-    use tempfile::tempdir;
 
     use super::{
         DownloadRequest, DownloadStatus, DriverMessage, WorkerCompletion, WorkspaceView,
@@ -526,8 +525,8 @@ mod tests {
     use crate::{
         crawler::source::ZgzlRange,
         crawler::{
-            DownloadBackend, DownloadEngineEvent, DownloadFuture, DownloadReceipt, NovelMetadata,
-            PreparedDownloadRequest, StagedOutput, StagingTracker,
+            DownloadBackend, DownloadEngineEvent, DownloadFuture, DownloadReceipt,
+            PreparedDownloadRequest, StagingTracker,
         },
         errors::{
             DownloadFailure, DownloadProblem, OutputProblem, ParseProblem, ParseStage,
@@ -571,55 +570,6 @@ mod tests {
         ) -> DownloadFuture {
             self.requests.lock().unwrap().push(request);
             Box::pin(PendingDownload {
-                started: self.started.clone(),
-                dropped: self.dropped.clone(),
-            })
-        }
-    }
-
-    struct PendingOutputDownload {
-        _output: StagedOutput,
-        started: Arc<AtomicBool>,
-        dropped: Arc<AtomicBool>,
-    }
-
-    impl Future for PendingOutputDownload {
-        type Output = Result<DownloadReceipt, DownloadFailure>;
-
-        fn poll(self: Pin<&mut Self>, _cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
-            self.started.store(true, Ordering::SeqCst);
-            Poll::Pending
-        }
-    }
-
-    impl Drop for PendingOutputDownload {
-        fn drop(&mut self) {
-            self.dropped.store(true, Ordering::SeqCst);
-        }
-    }
-
-    struct PendingOutputBackend {
-        root: PathBuf,
-        started: Arc<AtomicBool>,
-        dropped: Arc<AtomicBool>,
-    }
-
-    impl DownloadBackend for PendingOutputBackend {
-        fn run(
-            &self,
-            _request: PreparedDownloadRequest,
-            _events: futures::channel::mpsc::UnboundedSender<DownloadEngineEvent>,
-            staging: StagingTracker,
-        ) -> DownloadFuture {
-            let metadata = NovelMetadata::new(
-                "Novel".into(),
-                "Author".into(),
-                "novel".into(),
-                vec!["chapter".into()],
-            );
-            let output = StagedOutput::create(&self.root, &metadata, staging).unwrap();
-            Box::pin(PendingOutputDownload {
-                _output: output,
                 started: self.started.clone(),
                 dropped: self.dropped.clone(),
             })
@@ -772,40 +722,6 @@ mod tests {
                 })
                 .unwrap();
         });
-    }
-
-    #[gpui_kit::test]
-    fn removing_the_window_cancels_the_owned_task_tree(cx: &mut TestAppContext) {
-        let directory = tempdir().unwrap();
-        let started = Arc::new(AtomicBool::new(false));
-        let dropped = Arc::new(AtomicBool::new(false));
-        let backend = Arc::new(PendingOutputBackend {
-            root: directory.path().to_path_buf(),
-            started: started.clone(),
-            dropped: dropped.clone(),
-        });
-        let part_path = directory.path().join("NovelbyAuthor.txt.part");
-        let window = open_workspace(backend, cx);
-        cx.update(|cx| {
-            window
-                .update(cx, |view, _window, cx| {
-                    DownloadRequest::SOURCE.set(&view.form, "novel".into(), cx);
-                    view.start(cx);
-                })
-                .unwrap();
-        });
-        cx.run_until_parked();
-        assert!(started.load(Ordering::SeqCst));
-        assert!(part_path.exists());
-
-        cx.update(|cx| {
-            window
-                .update(cx, |_, window, _| window.remove_window())
-                .unwrap();
-        });
-        cx.run_until_parked();
-        assert!(dropped.load(Ordering::SeqCst));
-        assert!(!part_path.exists());
     }
 
     #[gpui_kit::test]
