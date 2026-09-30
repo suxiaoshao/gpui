@@ -13,7 +13,7 @@
 
 macOS / Linux 使用 `nix develop` 进入由 `flake.lock` 固定的 Rust、C/C++ 和系统库环境。Rust 版本与组件统一声明在 `rust-toolchain.toml`；Windows 原生开发使用 Rustup / MSVC，WSL 使用 Linux 环境。
 
-macOS 仍需完整 Xcode 与 Metal 工具（缺少组件时执行 `xcodebuild -downloadComponent MetalToolchain`）；Linux 运行 GUI 需要宿主图形会话和驱动。SQLite 由 Nix 提供，Feiwen 的 DuckDB 继续通过 Cargo 的 bundled feature 编译。Gupi 运行时使用的 Pi 仍由用户安装和配置。
+macOS 仍需完整 Xcode 与 Metal 工具（缺少组件时执行 `xcodebuild -downloadComponent MetalToolchain`）；Linux 运行 GUI 需要宿主图形会话和驱动。Feiwen 的 DuckDB 继续通过 Cargo 的 bundled feature 编译。Gupi 运行时使用的 Pi 仍由用户安装和配置。
 
 ```sh
 nix develop
