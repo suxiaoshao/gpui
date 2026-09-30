@@ -21,7 +21,6 @@ pub struct BundleArgs {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum BundleApp {
-    Gupi,
     Feiwen,
     HttpClient,
     NovelDownload,
@@ -30,7 +29,6 @@ pub enum BundleApp {
 impl BundleApp {
     pub fn package_name(self) -> &'static str {
         match self {
-            Self::Gupi => "gupi",
             Self::Feiwen => "feiwen",
             Self::HttpClient => "http-client",
             Self::NovelDownload => "novel-download",
@@ -59,21 +57,11 @@ mod tests {
 
     #[test]
     fn parses_bundle_install_flag() {
-        let cli = Cli::try_parse_from(["xtask", "bundle", "gupi", "--install"])
+        let cli = Cli::try_parse_from(["xtask", "bundle", "feiwen", "--install"])
             .expect("bundle command should parse");
 
         let Commands::Bundle(args) = cli.command;
-        assert_eq!(args.app, BundleApp::Gupi);
+        assert_eq!(args.app, BundleApp::Feiwen);
         assert!(args.install);
-    }
-
-    #[test]
-    fn parses_gupi_bundle_app_argument() {
-        let cli = Cli::try_parse_from(["xtask", "bundle", "gupi"]).expect("Gupi bundle command");
-        let Commands::Bundle(args) = cli.command;
-        assert_eq!(args.app, BundleApp::Gupi);
-        assert_eq!(args.app.package_name(), "gupi");
-        assert_eq!(args.app.app_dir_name(), "gupi");
-        assert!(!args.install);
     }
 }

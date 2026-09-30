@@ -8,11 +8,9 @@ body:
       label: Target scope
       description: Select the primary area affected by this engineering task.
       options:
-        - gupi
         - feiwen
         - http-client
         - novel-download
-        - window-ext
         - xtask
         - workspace
         - ci

@@ -52,11 +52,8 @@
             ++ [
               fontconfig
               freetype
-              openssl
-              zstd
               libxcb
               alsa-lib
-              pipewire
               libgbm
             ];
         in
@@ -66,10 +63,7 @@
               rust
               pkgs.pkg-config
               pkgs.cmake
-              pkgs.nodejs_24
-              pkgs.python3
             ];
-            nativeBuildInputs = [ pkgs.rustPlatform.bindgenHook ];
             shellHook = lib.optionalString pkgs.stdenv.isDarwin ''
               export PATH="${appleTools}/bin:$PATH"
             '';

@@ -1,1 +1,0 @@
-Provider logos are bundled in this directory with their original source metadata. Typed declarations in `src/foundation/assets.rs` retain each logo’s source and slug. Unknown Pi providers use the generic Sparkles icon.

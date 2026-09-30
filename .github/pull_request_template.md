@@ -1,7 +1,7 @@
 ## Summary
 
 - What changed in this PR?
-- Which app or crate is affected: `gupi`, `feiwen`, `http-client`, `novel-download`, `window-ext`, `xtask`, or `workspace`?
+- Which app or crate is affected: `feiwen`, `http-client`, `novel-download`, `xtask`, or `workspace`?
 
 ## Motivation
 
