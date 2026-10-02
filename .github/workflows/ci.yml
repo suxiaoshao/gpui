@@ -16,7 +16,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.changes.outputs.run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Determine whether build checks are needed
+        id: changes
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # Unknown comparisons and manual runs retain the full checks.
+          echo 'run=true' >> "$GITHUB_OUTPUT"
+          if [[ "$EVENT" == workflow_dispatch || -z "$BASE" || "$BASE" =~ ^0+$ ]]; then
+            exit 0
+          fi
+          if [[ "$EVENT" == pull_request ]]; then
+            BASE=$(git merge-base "$BASE" "$HEAD")
+          fi
+          git diff --no-renames --name-only -z "$BASE" "$HEAD" > "$RUNNER_TEMP/changed-files"
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              README.md|README.zh-CN.md|AGENTS.md|CLAUDE.md|docs/*.md|.agents/skills/*.md|.claude/skills) ;;
+              *) exit 0 ;;
+            esac
+          done < "$RUNNER_TEMP/changed-files"
+          echo 'run=false' >> "$GITHUB_OUTPUT"
+          echo 'Documentation-only changes: skipping build and test jobs.' >> "$GITHUB_STEP_SUMMARY"
+
   test:
+    needs: changes
+    # If classification fails, keep running the existing checks.
+    if: ${{ !cancelled() && needs.changes.outputs.run != 'false' }}
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
