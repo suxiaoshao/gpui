@@ -37,16 +37,26 @@ jobs:
           # Unknown comparisons and manual runs retain the full checks.
           echo 'run=true' >> "$GITHUB_OUTPUT"
           if [[ "$EVENT" == workflow_dispatch || -z "$BASE" || "$BASE" =~ ^0+$ ]]; then
+            echo 'Manual run or missing comparison base: running full checks.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           if [[ "$EVENT" == pull_request ]]; then
-            BASE=$(git merge-base "$BASE" "$HEAD")
+            if ! BASE=$(git merge-base "$BASE" "$HEAD"); then
+              echo 'Cannot determine the PR merge base: running full checks.' >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
           fi
-          git diff --no-renames --name-only -z "$BASE" "$HEAD" > "$RUNNER_TEMP/changed-files"
+          if ! git diff --no-renames --name-only -z "$BASE" "$HEAD" > "$RUNNER_TEMP/changed-files"; then
+            echo 'Cannot compare commits: running full checks.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           while IFS= read -r -d '' path; do
             case "$path" in
               README.md|README.zh-CN.md|AGENTS.md|CLAUDE.md|docs/*.md|.agents/skills/*.md|.claude/skills) ;;
-              *) exit 0 ;;
+              *)
+                echo 'Changes include paths outside the documentation allowlist: running full checks.' >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+                ;;
             esac
           done < "$RUNNER_TEMP/changed-files"
           echo 'run=false' >> "$GITHUB_OUTPUT"
