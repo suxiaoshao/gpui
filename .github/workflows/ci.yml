@@ -50,12 +50,13 @@ jobs:
             esac
           done < "$RUNNER_TEMP/changed-files"
           echo 'run=false' >> "$GITHUB_OUTPUT"
-          echo 'Documentation-only changes: skipping build and test jobs.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Documentation-only changes: skipping build and test steps.' >> "$GITHUB_STEP_SUMMARY"
 
   test:
     needs: changes
+    # Instantiate all required matrix checks, including documentation-only runs.
     # If classification fails, keep running the existing checks.
-    if: ${{ !cancelled() && needs.changes.outputs.run != 'false' }}
+    if: ${{ !cancelled() }}
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
@@ -77,13 +78,19 @@ jobs:
             timeout_minutes: 90
 
     steps:
+      - name: Documentation-only changes
+        if: ${{ needs.changes.outputs.run == 'false' }}
+        shell: bash
+        run: echo 'Documentation-only changes; build and test steps are not required.' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Checkout
+        if: ${{ needs.changes.outputs.run != 'false' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Ensure Xcode Metal compiler
-        if: ${{ runner.os == 'macOS' }}
+        if: ${{ needs.changes.outputs.run != 'false' && runner.os == 'macOS' }}
         run: |
           if ! /usr/bin/xcrun metal --version; then
             /usr/bin/xcodebuild -downloadComponent MetalToolchain
@@ -91,18 +98,19 @@ jobs:
           /usr/bin/xcrun metal --version
 
       - name: Install Nix
-        if: ${{ runner.os != 'Windows' }}
+        if: ${{ needs.changes.outputs.run != 'false' && runner.os != 'Windows' }}
         uses: cachix/install-nix-action@b85815f71a6de0ddee80b8a80a98d43f4bcc66c7 # v31
 
       - name: Install pinned Rust on Windows
-        if: ${{ runner.os == 'Windows' }}
+        if: ${{ needs.changes.outputs.run != 'false' && runner.os == 'Windows' }}
         run: rustup toolchain install --no-self-update
 
       - name: Prepare Nix toolchain for the Cargo cache
-        if: ${{ runner.os != 'Windows' }}
+        if: ${{ needs.changes.outputs.run != 'false' && runner.os != 'Windows' }}
         run: nix develop --command bash -c 'dirname "$(command -v rustc)" >> "$GITHUB_PATH"'
 
       - name: Cache cargo artifacts
+        if: ${{ needs.changes.outputs.run != 'false' }}
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: ${{ runner.os }}-${{ hashFiles('flake.lock', 'rust-toolchain.toml') }}
@@ -111,14 +119,17 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Cargo fmt
+        if: ${{ needs.changes.outputs.run != 'false' }}
         run: ${{ matrix.command }} cargo fmt --all -- --check
 
       - name: Cargo build
+        if: ${{ needs.changes.outputs.run != 'false' }}
         run: ${{ matrix.command }} cargo build --workspace --locked
 
       - name: Cargo test
+        if: ${{ needs.changes.outputs.run != 'false' }}
         run: ${{ matrix.command }} cargo test --workspace --locked
 
       - name: Cargo clippy
-        if: ${{ matrix.runs_on == 'macos-latest' }}
+        if: ${{ needs.changes.outputs.run != 'false' && matrix.runs_on == 'macos-latest' }}
         run: ${{ matrix.command }} cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
