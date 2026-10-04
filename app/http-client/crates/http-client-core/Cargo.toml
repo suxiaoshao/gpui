@@ -1,0 +1,36 @@
+[package]
+name = "http-client-core"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+
+url = "2.5.8"
+http = "1.5.0"
+mime = "0.3.17"
+async-channel = "2.5.0"
+async-compression = { version = "0.4.48", default-features = false, features = [
+  "tokio",
+  "brotli",
+  "gzip",
+  "zlib",
+  "zstd",
+] }
+bytes = "1.12.1"
+encoding_rs = "0.8.42"
+futures-util = "0.3.34"
+reqwest = { version = "0.13.5", default-features = false, features = [
+  "rustls",
+  "http2",
+  "multipart",
+  "stream",
+  "system-proxy",
+] }
+tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["fs", "io-util", "time"] }
+tokio-util = { version = "0.7.19", features = ["io"] }
+
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread"] }

@@ -11,7 +11,7 @@
 ## 文件与实施范围
 
 - F-01：`Cargo.toml`，只改根计划指定的依赖/feature；root lock 由 WP-01/WP-05 协调。
-- F-02：src/main.rs；src/features/request/body/http_text.rs；src/features/request/response.rs；src/features/request/tests.rs。应用 import 统一经 gpui-kit；行为改动与具体映射见下文和根实施记录。
+- F-02：src/main.rs；crates/http-client-request/src/body/http_text.rs；crates/http-client-response/src/lib.rs；crates/http-client-request/src/tests.rs。应用 import 统一经 gpui-kit；行为改动与具体映射见下文和根实施记录。
 - F-03：本 owner 现有 README/guide 中受影响的 API/依赖示例；不重写无关章节或历史计划。
 
 将请求体代码输入与响应编辑器迁移到独立 EditorState/Editor；有 Form 绑定的请求体使用 FormEditor。保留语法语言选择、只读响应、查找、行号、请求/响应原始内容及任务取消。继续全语言 feature。

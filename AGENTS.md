@@ -1,6 +1,6 @@
 # 项目约定
 
-- Rust 多应用 workspace，成员和版本以根 `Cargo.toml` 为准。应用入口在 `app/{name}/src/main.rs`；业务放在应用，跨应用能力放在对应 `crates/`。
+- Rust 多应用 workspace，成员和版本以根 `Cargo.toml` 为准。应用入口在 `app/{name}/src/main.rs`；应用专属业务能力放在 `app/{name}/crates/`，入口负责窗口和功能组合；跨应用能力放在根 `crates/`。
 - Rust 模块使用 `{module}.rs`，新增依赖写完整版本号；遵循项目格式配置。
 - 应用通过 `gpui_kit`、`gpui_kit::component`、`gpui_kit::assets` 接入；共享 crate 的别名以根 manifest 为准。
 

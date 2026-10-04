@@ -19,11 +19,11 @@
 
 ## 2. 证据与决定
 
-- `app/novel-download/src/features/workspace.rs` 的 root surface 当前使用
+- `app/novel-download/crates/novel-download-feature/src/lib.rs` 的 root surface 当前使用
   `.bg(cx.theme().background)`，这会丢失 gpui-component 新 `ThemeToken` 的 renderable gradient。
 - 目标 gpui-component 的 `ThemeToken` 同时持有代表 `Hsla` 与 `Background`；元素背景使用
   `cx.theme().tokens.background.background`。
-- `app/novel-download/src/crawler/implement.rs` 的 `smol::Timer::after(duration)` 属于无 GPUI
+- `app/novel-download/crates/novel-download-feature/src/crawler/implement.rs` 的 `smol::Timer::after(duration)` 属于无 GPUI
   context 的领域重试等待，不是 GPUI entity/task 定时器；明确保留。
 - 决定：只修改 workspace root 背景。crawler、window、input、button 和 fetch state 不做代码迁移。
 
@@ -31,11 +31,11 @@
 
 **修改**
 
-- `app/novel-download/src/features/workspace.rs`。
+- `app/novel-download/crates/novel-download-feature/src/lib.rs`。
 
 **明确保留且不修改**
 
-- `app/novel-download/src/crawler/implement.rs`。
+- `app/novel-download/crates/novel-download-feature/src/crawler/implement.rs`。
 - `app/novel-download/src/main.rs`。
 
 目标背景契约：
@@ -53,7 +53,7 @@ div()
 - 背景读取 `ThemeToken.background`；foreground 仍使用顶层 `Hsla`。
 - 不使用 `cx.theme().tokens.background.opacity(...)`；如未来需要透明度，必须调用
   `.background.opacity(...)`，避免经 `Deref<Target = Hsla>` 丢失渐变。
-- `WorkspaceView` 字段、event、subscription、fetch task 和 focus path 全部不变。
+- `DownloadView` 字段、event、subscription、fetch task 和 focus path 全部不变。
 
 保留 timer 契约：
 
@@ -98,7 +98,7 @@ git diff --check
 cargo test --locked -p novel-download
 cargo clippy --locked -p novel-download --all-targets --all-features -- -D warnings
 rg -n '\.bg\(cx\.theme\(\)\.' app/novel-download/src -g '*.rs' | rg -v '\.tokens\.'
-rg -n 'smol::Timer::after' app/novel-download/src/crawler/implement.rs
+rg -n 'smol::Timer::after' app/novel-download/crates/novel-download-feature/src/crawler/implement.rs
 ```
 
 第一个 `rg` 预期无输出；第二个必须命中 crawler timer，证明本迁移没有误删领域等待。

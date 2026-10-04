@@ -1,0 +1,26 @@
+[package]
+name = "feiwen-data"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# ui
+gpui-kit.workspace = true
+gpui-operation = { workspace = true, features = ["tracing"] }
+gpui-store.workspace = true
+
+# err
+thiserror = "2.0.21"
+
+
+# database
+duckdb = { version = "1.10505.0", features = ["bundled", "parquet", "r2d2"] }
+r2d2 = "0.8.10"
+
+# log
+tracing = "0.1.44"
+
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }

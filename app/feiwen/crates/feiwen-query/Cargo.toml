@@ -1,0 +1,24 @@
+[package]
+name = "feiwen-query"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+app-i18n.workspace = true
+feiwen-data.workspace = true
+# ui
+gpui-kit.workspace = true
+gpui-form.workspace = true
+gpui-form-gpui-component.workspace = true
+gpui-operation = { workspace = true, features = ["tracing"] }
+gpui-lucide.workspace = true
+fluent-bundle = "0.16.0"
+pinyin = "0.11.0"
+
+# log
+tracing = "0.1.44"
+
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }

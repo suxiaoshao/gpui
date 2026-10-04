@@ -25,7 +25,7 @@
 | --- | --- | --- |
 | GPUI owned titlebar | `app/feiwen/src/main.rs` 打开透明自绘标题栏；本地标题栏调用 `start_window_move` | `WindowOptions::app_owns_titlebar_drag = true` |
 | 官方标题栏 | `app/feiwen/src/app/titlebar.rs` 自行维护 drag、双击、Linux 菜单和 Windows/Linux 控件 | 官方 `gpui_component::TitleBar` 拥有平台 shell；Feiwen 只拥有路由、摘要和操作内容 |
-| 官方进度条 | `app/feiwen/src/features/fetch.rs::progress_bar` 手画 track/fill | `gpui_component::progress::Progress`；输入为 `0.0..=100.0` |
+| 官方进度条 | `app/feiwen/crates/feiwen-fetch/src/lib.rs::progress_bar` 手画 track/fill | `gpui_component::progress::Progress`；输入为 `0.0..=100.0` |
 | URL content type | 抓取 URL 使用普通 `Input` | `Input::content_type(InputContentType::Url)`；不改变 value、validation 或 masking |
 | renderable theme token | 五个 Feiwen 文件直接把顶层 `Hsla` 传给 `.bg(...)` | 背景使用 `cx.theme().tokens.<role>.background`；文字和边框继续用 `Hsla` |
 | Scrollable/Taffy | 高级查询 filter/sort 容器直接使用 `overflow_y_scrollbar()` | 保留直接滚动结构，不新增或删除 wrapper；只做新版布局回归 |
@@ -78,7 +78,7 @@ gpui_component::TitleBar::new()
   drag/double-click/right-click/platform-control 实现。
 - 官方非 macOS 控件尺寸作为目标行为；不得恢复整份平台 fork。
 
-`app/feiwen/src/features/fetch.rs` 新增：
+`app/feiwen/crates/feiwen-fetch/src/lib.rs` 新增：
 
 ```rust,ignore
 fn progress_percent(progress: &FetchProgress) -> f32;
@@ -141,7 +141,7 @@ fn progress_percent(progress: &FetchProgress) -> f32;
 
 **Files**
 
-- 修改 `app/feiwen/src/features/fetch.rs`。
+- 修改 `app/feiwen/crates/feiwen-fetch/src/lib.rs`。
 
 **Implementation flow**
 
@@ -161,10 +161,10 @@ fn progress_percent(progress: &FetchProgress) -> f32;
 
 **Files**
 
-- 修改 `app/feiwen/src/features/fetch.rs`。
-- 修改 `app/feiwen/src/features/query.rs`。
-- 修改 `app/feiwen/src/features/query/advanced/render.rs`。
-- 修改 `app/feiwen/src/features/query/advanced/sort.rs`。
+- 修改 `app/feiwen/crates/feiwen-fetch/src/lib.rs`。
+- 修改 `app/feiwen/crates/feiwen-query/src/lib.rs`。
+- 修改 `app/feiwen/crates/feiwen-query/src/advanced/render.rs`。
+- 修改 `app/feiwen/crates/feiwen-query/src/advanced/sort.rs`。
 - `app/feiwen/src/app/titlebar.rs` 的背景由官方 `TitleBar` 接管，不另写 app token。
 
 **Implementation flow**

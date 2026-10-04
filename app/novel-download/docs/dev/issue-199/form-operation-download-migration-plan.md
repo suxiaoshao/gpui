@@ -57,7 +57,7 @@
 | S-ID | 系统表面 | 适用性 | 本轮结论 | 负责工作包 |
 | --- | --- | --- | --- | --- |
 | `S-01` | workspace/crate 拓扑与模块所有权 | 适用 | 重组 Novel Download 内的 workspace、crawler、source、output 边界，不增加 workspace member | `WP-1400`–`WP-1406` |
-| `S-02` | GPUI view、组件、布局与主题 | 适用 | `WorkspaceView` 组合 Form field、Input、Start/Cancel、Progress、Alert；继续使用现有主题 token | `WP-1403`–`WP-1405` |
+| `S-02` | GPUI view、组件、布局与主题 | 适用 | `DownloadView` 组合 Form field、Input、Start/Cancel、Progress、Alert；继续使用现有主题 token | `WP-1403`–`WP-1405` |
 | `S-03` | Entity、Store、Global、Form 与 identity | 适用 | 页面拥有 Form 与私有 runtime；不使用 Store；native Input 只拥有交互状态 | `WP-1403`、`WP-1404` |
 | `S-04` | action、event、subscription、focus 与窗口 | 适用 | 删除 `WorkspaceEvent` 总线；Form observer 只重绘；保留当前单窗口和 focus owner | `WP-1403`–`WP-1405` |
 | `S-05` | async Task、并发、取消与 shutdown | 适用 | 唯一 driver Task 持有唯一 worker；AbortHandle 取消；view/window/app drop 取消 | `WP-1404` |
@@ -80,10 +80,10 @@
 
 ### 当前执行流
 
-1. `WorkspaceView::new` 创建裸 `InputState` 与另一个 `Entity<Workspace>`，再通过
+1. `DownloadView::new` 创建裸 `InputState` 与另一个 `Entity<Workspace>`，再通过
    `WorkspaceEvent` 订阅连接页面和状态。
 2. Start 点击读取 native input，发 `Send`，立即清空输入；没有 typed Form 或提交验证。
-3. `WorkspaceView::fetch` 创建前台 Task 后立即 `detach`，Task 内的 `Runner` 通过 `WeakEntity<Workspace>`
+3. `DownloadView::fetch` 创建前台 Task 后立即 `detach`，Task 内的 `Runner` 通过 `WeakEntity<Workspace>`
    发进度事件。
 4. callback 型 `Fetch::__inner_fetch` 获取元数据、打开最终 `.txt`、流式写入内容；`fetch()` 将最终
    `Result` 吞掉并只调用 `on_error`。
@@ -96,10 +96,10 @@
 
 | ID | 分类 | 已核实事实 | 证据 | 计划后果 |
 | --- | --- | --- | --- | --- |
-| `E-1400` | 当前事实 | `WorkspaceEvent`、`FetchState` 与 `Workspace` 同时表达同一运行过程 | `src/features/workspace.rs:20-95` | 删除平行 authority，以 `DownloadRuntime` 为唯一运行权威 |
+| `E-1400` | 当前事实 | `WorkspaceEvent`、`FetchState` 与 `Workspace` 同时表达同一运行过程 | `crates/novel-download-feature/src/lib.rs:20-95` | 删除平行 authority，以 `DownloadRuntime` 为唯一运行权威 |
 | `E-1401` | 当前事实 | `loading()` 漏掉初始 `Fetching`；Start 总能 emit，输入随后被清空 | `workspace.rs:86-92,264-299` | Start gate 由 Transition 保证；Form 始终保留且运行中可编辑 |
 | `E-1402` | 当前事实 | runner 直接 append/create 最终 `.txt`，每个 item 立即写入 | `workspace.rs:118-143` | 改成同目录 staging、单次内容写入与整体 commit |
-| `E-1403` | 当前事实 | lifecycle Task 被 detach；`Fetch::fetch` 不返回失败给 owner | `workspace.rs:246-260`、`src/crawler.rs:21-53` | 唯一 Task 必须被状态持有；worker 返回 typed terminal result |
+| `E-1403` | 当前事实 | lifecycle Task 被 detach；`Fetch::fetch` 不返回失败给 owner | `workspace.rs:246-260`、`crates/novel-download-feature/src/crawler.rs:21-53` | 唯一 Task 必须被状态持有；worker 返回 typed terminal result |
 | `E-1404` | 当前事实 | parser 对任意失败回退 raw ID、URL 可部分匹配、page 使用 float；missing range 可空成功 | `crawler/implement/zgzl/novel.rs:103-221` | 建立 all-consuming typed parser 与显式远端 range 校验 |
 | `E-1405` | 当前事实 | `get_doc` 未 `error_for_status`；retry 最后失败后仍 sleep，且只覆盖部分页面 | `crawler/implement.rs:11-54`、`crawler/implement/zgzl/novel.rs:114-156` | 所有 HTTP 获取统一三次总尝试，解析/文件错误不 retry |
 | `E-1406` | 当前事实 | `NovelError` 过宽，运行映射遇到 `LogFileNotFound` 会 `unimplemented!()` | `src/errors.rs:3-29`、`workspace.rs:156-171` | 分离 app 初始化错误与结构化下载错误，运行错误路径不得 panic |
@@ -126,9 +126,9 @@ Download 不修改三个 Form crate，也不反向要求它们加入下载、Tas
 
 ## 架构决定
 
-### `D-1400`：`WorkspaceView` 是唯一页面 owner，不引入 Store
+### `D-1400`：`DownloadView` 是唯一页面 owner，不引入 Store
 
-- `WorkspaceView` 直接拥有 `DownloadRuntime`、`Arc<dyn DownloadBackend>`、Form entity、native source
+- `DownloadView` 直接拥有 `DownloadRuntime`、`Arc<dyn DownloadBackend>`、Form entity、native source
   input、adapter、observer 与 focus handle。
 - `Entity<Form<DownloadRequest>>` 是可编辑值、baseline/revision、validation 的唯一权威。
 - `DownloadRuntime` 是 active/terminal phase、frozen snapshot、progress、Task 和 failure 的唯一权威。
@@ -249,7 +249,7 @@ stateDiagram-v2
 
 ```text
 DownloadRuntime::Running.task                     # 唯一 lifecycle owner
-└── foreground driver Task                        # WeakEntity<WorkspaceView> completion route
+└── foreground driver Task                        # WeakEntity<DownloadView> completion route
     ├── background worker Task                    # Abortable<DownloadBackend::run>
     │   └── DownloadEngine -> HTTP/source/output  # 不直接访问 GPUI
     └── progress receiver                         # worker 唯一 sender 的有序投影
@@ -258,10 +258,10 @@ DownloadRuntime::Running.task                     # 唯一 lifecycle owner
 1. Start handler 先同步检查 `runtime.is_active()`；active 时在构造任何 Task 前返回。
 2. Form prepare 与 typed conversion 成功后创建 progress channel、AbortHandle/background worker、foreground
    driver 和一次性 start gate；worker 在 gate 打开前不能调用 backend，也不能执行网络或文件副作用。
-3. owner 在同一 `Context<WorkspaceView>` update 内先让 Transition 接受 `Start`、安装 Running，再打开 gate。
+3. owner 在同一 `Context<DownloadView>` update 内先让 Transition 接受 `Start`、安装 Running，再打开 gate。
    正确性不依赖 GPUI 是否会在当前 update 返回前 poll 新建 Task。
 4. worker 在 `cx.background_spawn(Compat::new(...))` 上执行网络、scraper 解析和同步文件写入，不阻塞 UI。
-5. driver 同时 poll worker 与 progress receiver；每条进度通过自身 `WeakEntity<WorkspaceView>` 同步 update
+5. driver 同时 poll worker 与 progress receiver；每条进度通过自身 `WeakEntity<DownloadView>` 同步 update
    runtime。worker 完成时先 drain 已发送进度，再投递一次 `Complete` 或 `Cancelled`。
 6. driver 强持有 worker；runtime 强持有 driver。取消 outer Abortable、drop runtime Task 或 owner 消失都会
    切断 worker和唯一 completion route，禁止 worker/HTTP/source 内 detach child Task。
@@ -333,7 +333,7 @@ DownloadRuntime::Running.task                     # 唯一 lifecycle owner
 
 - source 区使用 `gpui_component::form::field`、普通 `Input`、help 文案与字段下 danger `Label`；raw ID 不是
   URL，因此不设置 `InputContentType::Url`。
-- `FormInput` 负责 Form/native 双向绑定；`WorkspaceView` 只保留 `cx.observe(&form, ... cx.notify())` 用于
+- `FormInput` 负责 Form/native 双向绑定；`DownloadView` 只保留 `cx.observe(&form, ... cx.notify())` 用于
   页面重绘和错误展示，不手写 `InputEvent`、方向 flag 或 FormEvent 值回投。
 - Input 在所有 runtime phase 都可编辑；Start 在 Running/Cancelling disabled，运行中不会清空输入或强制
   focus。
@@ -364,19 +364,19 @@ app/novel-download/
 ├── Cargo.toml                                                # F-1400 [修改] Form/adapter/Operation/tempfile 直接依赖
 ├── src/main.rs                                               # F-1402 [修改] app 初始化错误类型与日志边界
 ├── src/errors.rs                                             # F-1403 [修改] AppError、DownloadFailure/Problem、range/output/cleanup 错误
-├── src/features/workspace.rs                                 # F-1404 [重写] 页面组装、Start/Cancel、Task 启动、render；删除旧并行状态
-├── src/features/workspace/form.rs                            # F-1405 [新增] DownloadRequest FormSchema、validator、prepared conversion
-├── src/features/workspace/runtime.rs                         # F-1406 [新增] DownloadRuntime/Message/Effect/Transition 与 runtime tests
-├── src/crawler.rs                                            # F-1407 [重写] backend trait、engine、progress/receipt 与 worker result
-├── src/crawler/http.rs                                       # F-1408 [由 implement.rs 移动并重写] Client、redirect、status、retry
-├── src/crawler/output.rs                                     # F-1409 [新增] safe path、StagedOutput、commit/abort 与 tempdir tests
-├── src/crawler/source.rs                                     # F-1410 [新增] DownloadSource/ZgzlRange strict parser
-├── src/crawler/source/zgzl.rs                                # F-1411 [由 implement/zgzl.rs 移动] zgzl source owner
-├── src/crawler/source/zgzl/chapter.rs                        # F-1412 [由 implement/zgzl/chapter.rs 移动并改写] chapter/page fetch
-├── src/crawler/source/zgzl/novel.rs                          # F-1413 [由 implement/zgzl/novel.rs 移动并改写] metadata/range/content stream
-├── src/crawler/chapter.rs                                    # F-1414 [删除] callback trait/content wrapper迁入新 domain
-├── src/crawler/novel.rs                                      # F-1415 [删除] callback trait由具体 source contract取代
-├── src/crawler/implement.rs 与 src/crawler/implement/**      # F-1416 [删除旧位置] 内容按 F-1408/F-1411..1413 移动
+├── crates/novel-download-feature/src/lib.rs                                 # F-1404 [重写] 页面组装、Start/Cancel、Task 启动、render；删除旧并行状态
+├── crates/novel-download-feature/src/form.rs                            # F-1405 [新增] DownloadRequest FormSchema、validator、prepared conversion
+├── crates/novel-download-feature/src/runtime.rs                         # F-1406 [新增] DownloadRuntime/Message/Effect/Transition 与 runtime tests
+├── crates/novel-download-feature/src/crawler.rs                                            # F-1407 [重写] backend trait、engine、progress/receipt 与 worker result
+├── crates/novel-download-feature/src/crawler/http.rs                                       # F-1408 [由 implement.rs 移动并重写] Client、redirect、status、retry
+├── crates/novel-download-feature/src/crawler/output.rs                                     # F-1409 [新增] safe path、StagedOutput、commit/abort 与 tempdir tests
+├── crates/novel-download-feature/src/crawler/source.rs                                     # F-1410 [新增] DownloadSource/ZgzlRange strict parser
+├── crates/novel-download-feature/src/crawler/source/zgzl.rs                                # F-1411 [由 implement/zgzl.rs 移动] zgzl source owner
+├── crates/novel-download-feature/src/crawler/source/zgzl/chapter.rs                        # F-1412 [由 implement/zgzl/chapter.rs 移动并改写] chapter/page fetch
+├── crates/novel-download-feature/src/crawler/source/zgzl/novel.rs                          # F-1413 [由 implement/zgzl/novel.rs 移动并改写] metadata/range/content stream
+├── crates/novel-download-feature/src/crawler/chapter.rs                                    # F-1414 [删除] callback trait/content wrapper迁入新 domain
+├── crates/novel-download-feature/src/crawler/novel.rs                                      # F-1415 [删除] callback trait由具体 source contract取代
+├── crates/novel-download-feature/src/crawler/implement.rs 与 crates/novel-download-feature/src/crawler/implement/**      # F-1416 [删除旧位置] 内容按 F-1408/F-1411..1413 移动
 ├── src/foundation/i18n.rs                                    # F-1417 [修改] ValidationMessage 转译、test locale/key parity
 ├── locales/en-US/main.ftl                                    # F-1418 [修改] 英文 Form/runtime/error keys；删除旧 fetch keys
 ├── locales/zh-CN/main.ftl                                    # F-1419 [修改] 中文对应 keys；变量严格同构
@@ -624,10 +624,10 @@ impl gpui_operation::Transition<DownloadMessage> for &mut DownloadRuntime {
 
 `DownloadStatus<'_>` 仅为 render 的借用投影，不复制 state、Task、failure 或 snapshot。
 
-### `L-1407`：WorkspaceView（`F-1404`）
+### `L-1407`：DownloadView（`F-1404`）
 
 ```rust,ignore
-pub struct WorkspaceView {
+pub struct DownloadView {
     form: gpui::Entity<gpui_form::Form<DownloadRequest>>,
     source_input: gpui::Entity<gpui_component::input::InputState>,
     _source_control: gpui_form_gpui_component::FormInput,
@@ -637,7 +637,7 @@ pub struct WorkspaceView {
     _form_observer: gpui::Subscription,
 }
 
-impl WorkspaceView {
+impl DownloadView {
     pub fn new(window: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> Self;
     #[cfg(test)]
     fn new_with_backend(
@@ -671,7 +671,7 @@ pub(crate) fn validation_message(
 ### `ST-1400`：可编辑 source
 
 - **权威：** `Entity<Form<DownloadRequest>>`。
-- **初始化/生命周期：** `WorkspaceView::new` 创建，随 view drop。
+- **初始化/生命周期：** `DownloadView::new` 创建，随 view drop。
 - **读者：** FormInput projector、字段错误 render、Start prepare。
 - **写入：** 只由 FormInput writer 或明确 Form API；runtime/worker 不写。
 - **发布：** FormInput 内部同步 native value；view observer 只 `cx.notify()`。
@@ -686,7 +686,7 @@ pub(crate) fn validation_message(
 
 ### `ST-1402`：下载生命周期
 
-- **权威：** `WorkspaceView.runtime: DownloadRuntime`。
+- **权威：** `DownloadView.runtime: DownloadRuntime`。
 - **写入：** Start/Cancel handler和唯一 driver投递 `DownloadMessage`；render只借用。
 - **发布：** 每次接受的消息完成 state/effect 后最多一次 `cx.notify()`；非法消息不 notify。
 - **持久化：** 无；terminal 只保留到下一 Start 或 view drop。
@@ -1022,7 +1022,7 @@ Start/Cancel 的 disabled/loading 只是 UI 投影；handler和Transition仍做�
 **实施顺序**
 
 1. 消费`WP-1400`已加入的`gpui-form`与`gpui-form-gpui-component`依赖。
-2. WorkspaceView创建Form、FormInput、source Input与只重绘observer，并强持有adapter/subscription。
+2. DownloadView创建Form、FormInput、source Input与只重绘observer，并强持有adapter/subscription。
 3. Start handler改为prepare+typed conversion；删裸Input读取/clear/WorkspaceEvent Send路径。
 4. render字段级first error；input在active时仍可编辑。
 
@@ -1130,7 +1130,7 @@ trait Fetch
 trait NovelFn
 trait ChapterFn
 task.detach()
-.append(true)（仅扫描 `src/crawler/output.rs`、`src/crawler/source.rs` 与 `src/crawler/source/`；
+.append(true)（仅扫描 `crates/novel-download-feature/src/crawler/output.rs`、`crates/novel-download-feature/src/crawler/source.rs` 与 `crates/novel-download-feature/src/crawler/source/`；
 `src/main.rs` 的日志文件 append 是允许项）
 get_start_from_url
 unimplemented!()

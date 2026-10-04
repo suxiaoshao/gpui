@@ -67,7 +67,7 @@
 
 | ID | 当前事实 | 主要位置 | 迁移影响 |
 | --- | --- | --- | --- |
-| `E-700` | `QueryView` 同时持有 AdvancedQueryState、options、validation error、Search Task和table | `src/features/query.rs` | 拆成Form、QueryRun、Catalog与table projection |
+| `E-700` | `QueryView` 同时持有 AdvancedQueryState、options、validation error、Search Task和table | `crates/feiwen-query/src/lib.rs` | 拆成Form、QueryRun、Catalog与table projection |
 | `E-701` | Query start设置loading但不先清旧rows，运行期间锁整个advanced editor | `query.rs::start_search` | 开始即清表；只禁用submit/catalog controls，不锁普通Form |
 | `E-702` | QueryOptions在页面创建/Reset时同步从Db读取 | `advanced/options.rs`、`query.rs` | 移到global Catalog；Reset只reset Form |
 | `E-703` | AdvancedQueryState混合递归业务draft、u64 ID、native entities、subscriptions和error | `advanced/state.rs` | typed tree与adapter/runtime identity拆开 |
@@ -75,7 +75,7 @@
 | `E-705` | Fetch Resume/Retry重新读取当前可编辑字段 | `fetch.rs::start_fetch_from` | 终态保存immutable snapshot并固定续跑范围 |
 | `E-706` | 当前fetch唯一spawned runner串行投递全部事件，没有detached producer | `fetch.rs::Runner` | 维持唯一Task；本轮不加RunId |
 | `E-707` | 每个Novel save独立事务；后续失败不回滚此前成功写入 | `store/service/novel.rs`、fetch runner | 每次成功commit推进catalog invalidation generation |
-| `E-708` | `Db` 是一次性Global；打开失败只日志后return，consumer仍假设global存在 | `src/store.rs` | 始终安装Database Store并统一resource UI |
+| `E-708` | `Db` 是一次性Global；打开失败只日志后return，consumer仍假设global存在 | `crates/feiwen-data/src/lib.rs` | 始终安装Database Store并统一resource UI |
 | `E-709` | DuckDB依赖为duckdb-rs `1.10505.0`，对应DuckDB `1.5.5` | `app/feiwen/Cargo.toml`、crate metadata | repair协议按DuckDB 1.5.5验证 |
 | `E-710` | workspace强持有一个FetchTaskState并让Query观察它 | `app/workspace.rs` | 改观察FetchRun Store selection，不让Query持有fetch draft |
 | `E-711` | titlebar Query Reset/Search都受searching gate，尚无Cancel | `app/titlebar.rs` | Reset保持可用；新增Cancel；Search按DB/Catalog/Run gate |
@@ -336,24 +336,24 @@ checkpoint。因此备份必须保留原始主文件和存在的 `.wal`，不能
 | ID | 文件 | 动作 | 责任 |
 | --- | --- | --- | --- |
 | `F-700` | `app/feiwen/Cargo.toml` | 添加workspace `gpui-form`、adapter、`gpui-store`、`gpui-operation` | 不新增外部版本，不手改lockfile |
-| `F-701` | `src/store.rs` | 删除一次性`Db` Global consumer API；保留schema/query/service exports | 数据模块入口 |
-| `F-702` | `src/store/database.rs` | 新增Database Store、Transition、Ready gate、open/reopen/rebuild protocol | DB唯一resource owner |
+| `F-701` | `crates/feiwen-data/src/lib.rs` | 删除一次性`Db` Global consumer API；保留schema/query/service exports | 数据模块入口 |
+| `F-702` | `crates/feiwen-data/src/database.rs` | 新增Database Store、Transition、Ready gate、open/reopen/rebuild protocol | DB唯一resource owner |
 | `F-703` | `src/main.rs` | 按顺序安装DB Store、Catalog Store和app | startup wiring |
 | `F-704` | `src/app/resource.rs` | 新增数据库loading/problem/repair页面与confirm/path picker | 仅Unavailable显示repair |
 | `F-705` | `src/app/workspace.rs` | 创建Query/Fetch Form session、安装/观察FetchRun Store、按DB phase路由resource page | workspace composition |
 | `F-706` | `src/app/titlebar.rs` | Query Reset/Search/Cancel、Catalog/DB gate、Fetch Fresh gate | intent入口，不持有状态副本 |
-| `F-707` | `src/features/query.rs` | 重写为QueryRun Transition、snapshot、table effect、error/recovery UI | Query单次run owner |
-| `F-708` | `src/store/catalog.rs` | 新增global Catalog Store、Operation、generation、selectors/intents | catalog唯一owner |
-| `F-709` | `src/features/query/form.rs` | 新增QueryDraft typed tree、validator、Prepared->QuerySpec与逆转换 | 纯业务draft/compile |
-| `F-710` | `src/features/query/advanced.rs` | 改为advanced Form renderer/adapter入口 | 不持有business state副本 |
-| `F-711` | `src/features/query/advanced/{state,spec}.rs` | 已迁移tests并删除 | 旧mixed owner退出 |
-| `F-712` | `src/features/query/advanced/{controller,options,render,sort}.rs` | 拆成typed path controller、静态choices、native adapter与renderer | runtime PathKey定位并按key复用未受影响controls |
-| `F-713` | `src/features/query/advanced/components.rs`、`components/numeric_range_input.rs` | 已删除，由typed number operands与Form adapter替代 | 不保存业务value副本 |
-| `F-714` | `src/features/query/results_table.rs` | 只保留rows/sort/render projection | 不保存QueryRun authority |
-| `F-715` | `src/features/fetch.rs` | 收缩为feature facade/page composition | 删除FetchTaskState mixed owner |
-| `F-716` | `src/features/fetch/form.rs` | 新增FetchDraft、validator、snapshot转换 | 可编辑Form owner |
-| `F-717` | `src/features/fetch/run.rs` | 新增FetchRun/Message/Transition、Store selectors/intents | 唯一run authority |
-| `F-718` | `src/features/fetch/runner.rs` | page runner、snapshot-only续跑、commit后Catalog invalidation | 唯一Task producer |
+| `F-707` | `crates/feiwen-query/src/lib.rs` | 重写为QueryRun Transition、snapshot、table effect、error/recovery UI | Query单次run owner |
+| `F-708` | `crates/feiwen-data/src/catalog.rs` | 新增global Catalog Store、Operation、generation、selectors/intents | catalog唯一owner |
+| `F-709` | `crates/feiwen-query/src/form.rs` | 新增QueryDraft typed tree、validator、Prepared->QuerySpec与逆转换 | 纯业务draft/compile |
+| `F-710` | `crates/feiwen-query/src/advanced.rs` | 改为advanced Form renderer/adapter入口 | 不持有business state副本 |
+| `F-711` | `crates/feiwen-query/src/advanced/{state,spec}.rs` | 已迁移tests并删除 | 旧mixed owner退出 |
+| `F-712` | `crates/feiwen-query/src/advanced/{controller,options,render,sort}.rs` | 拆成typed path controller、静态choices、native adapter与renderer | runtime PathKey定位并按key复用未受影响controls |
+| `F-713` | `crates/feiwen-query/src/advanced/components.rs`、`components/numeric_range_input.rs` | 已删除，由typed number operands与Form adapter替代 | 不保存业务value副本 |
+| `F-714` | `crates/feiwen-query/src/results_table.rs` | 只保留rows/sort/render projection | 不保存QueryRun authority |
+| `F-715` | `crates/feiwen-fetch/src/lib.rs` | 收缩为feature facade/page composition | 删除FetchTaskState mixed owner |
+| `F-716` | `crates/feiwen-fetch/src/form.rs` | 新增FetchDraft、validator、snapshot转换 | 可编辑Form owner |
+| `F-717` | `crates/feiwen-fetch/src/run.rs` | 新增FetchRun/Message/Transition、Store selectors/intents | 唯一run authority |
+| `F-718` | `crates/feiwen-fetch/src/runner.rs` | page runner、snapshot-only续跑、commit后Catalog invalidation | 唯一Task producer |
 | `F-719` | `locales/{zh-CN,en-US}/main.ftl` | 新增Query/Fetch snapshot、Cancel、Catalog phase、DB repair等同构keys | 用户可见文案双语 |
 | `F-720` | `docs/advanced-query-prd.md`、`docs/fetch-workflow-prd.md`及受影响feature docs | 实施后同步已确认产品语义 | 稳定产品文档 |
 | `F-721` | `docs/dev/issue-199/README.md`与本文 | README只索引；本文登记实施/验证 | 中文开发文档 |

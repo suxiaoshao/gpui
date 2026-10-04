@@ -1,0 +1,33 @@
+[package]
+name = "http-client-request"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+app-i18n.workspace = true
+http-client-core.workspace = true
+gpui-kit = { workspace = true, features = [
+  "tree-sitter-languages",
+] }
+gpui-form.workspace = true
+gpui-form-gpui-component.workspace = true
+gpui-operation = { workspace = true, features = ["tracing"] }
+gpui-tokio.workspace = true
+fluent-bundle = "0.16.0"
+unic-langid = "0.9.6"
+
+url = "2.5.8"
+http = "1.5.0"
+mime = "0.3.17"
+mime_guess = "2.0.5"
+base64 = { version = "0.23.1", default-features = false, features = ["std"] }
+bytes = "1.12.1"
+thiserror = "2.0.21"
+
+# log
+tracing = "0.1.44"
+
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }

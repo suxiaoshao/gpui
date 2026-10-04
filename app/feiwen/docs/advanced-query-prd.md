@@ -185,7 +185,7 @@ ID 类字段不在筛选字段选择器中单独暴露；编号只作为作者�
 - `ConditionValueEditor`：根据字段和条件选择具体值输入器。
 - 范围条件直接组合两个绑定到 typed Form path 的 `NumberInput`，不维护额外的范围组件状态。
 
-这些组件先放在 `app/feiwen/src/features/query/` 目录下，不进入 `gpui-component`。
+这些组件先放在 `app/feiwen/crates/feiwen-query/src/` 目录下，不进入 `gpui-component`。
 
 ## 图标清单
 
