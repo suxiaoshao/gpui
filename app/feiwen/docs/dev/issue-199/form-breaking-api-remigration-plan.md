@@ -170,14 +170,14 @@ match event {
 
 ```text
 app/feiwen/
-├── src/features/fetch.rs                              # F-1300 [修改] 构造器、total 读取、Form observer、Prepared 提取
-├── src/features/fetch/form.rs                         # F-1301 [修改] 快照 Validator 签名；保留显式 URL triggers
-├── src/features/query.rs                              # F-1302 [仅当 Prepared/FormVersion 类型或 Query observer 调用点变化时修改]
-├── src/features/query/form.rs                         # F-1303 [修改] 递归快照 validator、cases/items、测试
-├── src/features/query/advanced/controller.rs          # F-1304 [修改] 类型化拆分、resolver、impact 订阅、行协调、内建 adapters
-├── src/features/query/advanced/render.rs              # F-1305 [修改] 渲染具体 total/dynamic path 及感知退休的行
-├── src/features/query/advanced/sort.rs                # F-1306 [仅在不透明 PathKey/行投影 API 需要调整时修改]
-└── src/features/query/advanced/options.rs             # F-1307 [仅改类型] 将 sort direction 值归一为 SortDirection；catalog 语义不变
+├── crates/feiwen-fetch/src/lib.rs                              # F-1300 [修改] 构造器、total 读取、Form observer、Prepared 提取
+├── crates/feiwen-fetch/src/form.rs                         # F-1301 [修改] 快照 Validator 签名；保留显式 URL triggers
+├── crates/feiwen-query/src/lib.rs                              # F-1302 [仅当 Prepared/FormVersion 类型或 Query observer 调用点变化时修改]
+├── crates/feiwen-query/src/form.rs                         # F-1303 [修改] 递归快照 validator、cases/items、测试
+├── crates/feiwen-query/src/advanced/controller.rs          # F-1304 [修改] 类型化拆分、resolver、impact 订阅、行协调、内建 adapters
+├── crates/feiwen-query/src/advanced/render.rs              # F-1305 [修改] 渲染具体 total/dynamic path 及感知退休的行
+├── crates/feiwen-query/src/advanced/sort.rs                # F-1306 [仅在不透明 PathKey/行投影 API 需要调整时修改]
+└── crates/feiwen-query/src/advanced/options.rs             # F-1307 [仅改类型] 将 sort direction 值归一为 SortDirection；catalog 语义不变
 ```
 
 本计划不包含 form model schema、operation/store/database/catalog owner、manifest、生成产物、locale 或 asset 的修改。

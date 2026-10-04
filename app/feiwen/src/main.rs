@@ -9,11 +9,9 @@ use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod app;
-mod errors;
-mod features;
-mod fetch;
 mod foundation;
-mod store;
+use feiwen_data as store;
+mod errors;
 
 static APP_NAME: &str = "top.sushao.feiwen";
 
@@ -33,7 +31,13 @@ fn init(cx: &mut App) {
     cx.on_action(quit);
 
     foundation::i18n::init_i18n(cx);
-    store::init_store(cx);
+    store::init_store(
+        std::env::var_os("FEIWEN_DATA_DIR")
+            .map(PathBuf::from)
+            .or_else(|| dirs_next::config_dir().map(|root| root.join(APP_NAME)))
+            .map(|root| root.join("data.duckdb")),
+        cx,
+    );
     event!(Level::INFO, "feiwen app initialized");
 }
 

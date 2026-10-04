@@ -84,7 +84,7 @@ fn confirm_backup_and_rebuild(window: &mut Window, cx: &mut App) {
                     .cancel_text(cancel.clone())
                     .ok_text(continue_label.clone())
                     .on_ok(|_, window, cx| {
-                        let initial = crate::store::get_data_url()
+                        let initial = feiwen_data::get_data_url(cx)
                             .ok()
                             .and_then(|path| path.parent().map(ToOwned::to_owned))
                             .unwrap_or_else(std::env::temp_dir);

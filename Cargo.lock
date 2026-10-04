@@ -303,6 +303,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "app-i18n"
+version = "0.1.0"
+dependencies = [
+ "fluent-bundle",
+ "gpui-kit",
+ "sys-locale",
+ "unic-langid",
+]
+
+[[package]]
 name = "app-theme"
 version = "0.1.0"
 dependencies = [
@@ -3388,11 +3398,41 @@ checksum = "b97b65636e5b9ef369943878ac74335ba1c55c1cb6adbf1e2c293c624248d693"
 name = "feiwen"
 version = "0.1.0"
 dependencies = [
+ "app-i18n",
  "app-theme",
- "async-compat",
  "dirs-next",
- "duckdb",
+ "feiwen-data",
+ "feiwen-fetch",
+ "feiwen-query",
  "fluent-bundle",
+ "gpui-kit",
+ "gpui-lucide",
+ "thiserror 2.0.21",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "feiwen-data"
+version = "0.1.0"
+dependencies = [
+ "duckdb",
+ "gpui-kit",
+ "gpui-operation",
+ "gpui-store",
+ "r2d2",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "feiwen-fetch"
+version = "0.1.0"
+dependencies = [
+ "app-i18n",
+ "async-compat",
+ "duckdb",
+ "feiwen-data",
  "gpui-form",
  "gpui-form-gpui-component",
  "gpui-kit",
@@ -3400,16 +3440,28 @@ dependencies = [
  "gpui-operation",
  "gpui-store",
  "nom 8.0.0",
- "pinyin",
  "r2d2",
  "reqwest 0.13.5",
  "scraper",
- "sys-locale",
  "thiserror 2.0.21",
  "tracing",
- "tracing-subscriber",
- "unic-langid",
  "url",
+]
+
+[[package]]
+name = "feiwen-query"
+version = "0.1.0"
+dependencies = [
+ "app-i18n",
+ "feiwen-data",
+ "fluent-bundle",
+ "gpui-form",
+ "gpui-form-gpui-component",
+ "gpui-kit",
+ "gpui-lucide",
+ "gpui-operation",
+ "pinyin",
+ "tracing",
 ]
 
 [[package]]
@@ -5178,36 +5230,81 @@ dependencies = [
 name = "http-client"
 version = "0.1.0"
 dependencies = [
+ "app-i18n",
+ "dirs-next",
+ "gpui-kit",
+ "gpui-tokio",
+ "http-client-request",
+ "http-client-response",
+ "thiserror 2.0.21",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "http-client-core"
+version = "0.1.0"
+dependencies = [
  "async-channel",
  "async-compression",
- "base64 0.23.1",
- "bytemuck",
  "bytes",
- "dirs-next",
  "encoding_rs",
- "fluent-bundle",
  "futures-util",
+ "http",
+ "mime",
+ "reqwest 0.13.5",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
+name = "http-client-request"
+version = "0.1.0"
+dependencies = [
+ "app-i18n",
+ "base64 0.23.1",
+ "bytes",
+ "fluent-bundle",
  "gpui-form",
  "gpui-form-gpui-component",
  "gpui-kit",
  "gpui-operation",
  "gpui-tokio",
- "hayro",
  "http",
- "image",
+ "http-client-core",
  "mime",
  "mime_guess",
- "reqwest 0.13.5",
+ "thiserror 2.0.21",
+ "tracing",
+ "unic-langid",
+ "url",
+]
+
+[[package]]
+name = "http-client-response"
+version = "0.1.0"
+dependencies = [
+ "app-i18n",
+ "async-channel",
+ "base64 0.23.1",
+ "bytemuck",
+ "bytes",
+ "fluent-bundle",
+ "futures-util",
+ "gpui-kit",
+ "gpui-operation",
+ "gpui-tokio",
+ "hayro",
+ "http",
+ "http-client-core",
+ "image",
  "rodio",
  "serde_json",
- "sys-locale",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
- "tokio-util",
  "tracing",
- "tracing-subscriber",
- "unic-langid",
  "url",
 ]
 
@@ -6720,9 +6817,22 @@ dependencies = [
 name = "novel-download"
 version = "0.1.0"
 dependencies = [
+ "app-i18n",
+ "dirs-next",
+ "gpui-kit",
+ "novel-download-feature",
+ "thiserror 2.0.21",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "novel-download-feature"
+version = "0.1.0"
+dependencies = [
+ "app-i18n",
  "async-compat",
  "async-stream",
- "dirs-next",
  "fluent-bundle",
  "futures",
  "gpui-form",
@@ -6732,11 +6842,9 @@ dependencies = [
  "reqwest 0.13.5",
  "scraper",
  "smol",
- "sys-locale",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
- "tracing-subscriber",
  "unic-langid",
 ]
 

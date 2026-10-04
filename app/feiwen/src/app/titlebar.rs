@@ -1,3 +1,5 @@
+use feiwen_fetch::FetchView;
+use feiwen_query::QueryView;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Sizable, StyledExt, TitleBar,
     button::{Button, ButtonVariants},
@@ -13,10 +15,7 @@ use gpui_kit::{
 use tracing::{Level, event};
 
 use super::workspace::{RouterType, Workspace};
-use crate::{
-    features::{fetch::FetchView, query::QueryView},
-    foundation::{I18n, IconName as FeiwenIconName},
-};
+use crate::foundation::{I18n, IconName as FeiwenIconName};
 
 pub(crate) const FEIWEN_TITLE_BAR_HEIGHT: Pixels = px(44.);
 pub(crate) const FEIWEN_TRAFFIC_LIGHT_INSET: Pixels = px(14.);
@@ -283,11 +282,11 @@ fn update_router_from_titlebar(workspace: &Entity<Workspace>, target: RouterType
 #[cfg(test)]
 mod tests {
     use super::{route_from_tab_index, route_tab_index, route_title, window_title};
-    use crate::{app::RouterType, foundation::i18n::I18n};
+    use crate::app::workspace::RouterType;
 
     #[test]
     fn route_title_matches_workspace_routes() {
-        let i18n = I18n::chinese_for_test();
+        let i18n = crate::foundation::i18n::for_locale_tag("zh-CN");
         assert_eq!(route_title(RouterType::Query, &i18n).as_ref(), "高级检索");
         assert_eq!(route_title(RouterType::Fetch, &i18n).as_ref(), "数据抓取");
     }

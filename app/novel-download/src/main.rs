@@ -1,7 +1,7 @@
 use errors::{AppError, AppResult};
-use features::WorkspaceView;
 use foundation::I18n;
 use gpui_kit::*;
+use novel_download_feature::DownloadView;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{
@@ -11,9 +11,7 @@ use tracing_subscriber::{
     util::SubscriberInitExt,
 };
 
-mod crawler;
 mod errors;
-mod features;
 mod foundation;
 
 static APP_NAME: &str = "top.sushao.novel-download";
@@ -87,7 +85,7 @@ fn main() -> AppResult<()> {
                 ..Default::default()
             },
             cx,
-            |window, cx| cx.new(|cx| WorkspaceView::new(window, cx)),
+            |window, cx| cx.new(|cx| DownloadView::new(dirs_next::download_dir(), window, cx)),
         ) {
             event!(Level::ERROR, "{}", err)
         };

@@ -6,19 +6,19 @@
 
 - 不使用用户真实数据库、真实 Cookie、真实抓取入口或真实导出目录作为测试对象。
 - 每次手测使用独立测试数据目录或测试数据库。推荐路径示例：`/tmp/feiwen-qa-data`。
-- 如果测试目标不是“抓取真实分页流程”，但需要小说、作者、标签或章节数据作为前置条件，优先在启动 app 前用命令行写入测试 SQLite 数据库。
+- 如果测试目标不是“抓取真实分页流程”，但需要小说、作者、标签或章节数据作为前置条件，优先在启动 app 前通过 DuckDB CLI 或 DuckDB API 写入测试数据库。
 - 抓取类测试优先使用本地 mock HTTP 服务或测试 fixture。只有专门的 live smoke 测试才允许访问真实站点，并且不能作为质量门禁。
 - Cookie 使用测试占位值，不截图、不提交、不记录真实 Cookie。
 - 测试结束后删除测试数据库、mock 服务数据、日志截图和临时配置。
 
 ## 命令行预置数据建议
 
-具体命令应以当前 Diesel migration 和 schema 为准。建议流程：
+具体命令应以`feiwen-data::initialize_schema` 为准。建议流程：
 
 1. 创建临时数据目录，例如 `/tmp/feiwen-qa-data`。
-2. 使用测试数据目录启动 app 一次，让迁移创建 SQLite 数据库。
+2. 使用 `FEIWEN_DATA_DIR=/tmp/feiwen-qa-data cargo run -p feiwen` 启动 app 一次，让迁移创建 DuckDB 数据库。
 3. 关闭 app。
-4. 使用 `sqlite3 <测试数据库路径>` 写入测试小说、作者、标签和关联关系。
+4. 使用 DuckDB CLI / API（数据库文件为 `<测试数据目录>/data.duckdb`） 写入测试小说、作者、标签和关联关系。
 5. 再次启动 app，确认页面只显示 `QA` 前缀数据。
 
 如果不能确认数据库路径，停止测试并先定位测试环境，不要继续操作默认用户数据目录。

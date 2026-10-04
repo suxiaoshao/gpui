@@ -11,7 +11,7 @@
 ## 文件与实施范围
 
 - F-01：`Cargo.toml`，只改根计划指定的依赖/feature；root lock 由 WP-01/WP-05 协调。
-- F-02：src/main.rs；src/features/workspace.rs；Cargo.toml。应用 import 统一经 gpui-kit；行为改动与具体映射见下文和根实施记录。
+- F-02：src/main.rs；crates/novel-download-feature/src/lib.rs；Cargo.toml。应用 import 统一经 gpui-kit；行为改动与具体映射见下文和根实施记录。
 - F-03：本 owner 现有 README/guide 中受影响的 API/依赖示例；不重写无关章节或历史计划。
 
 迁移初始化、assets 包名和相关测试。普通依赖只调整已列候选及必要 API；保留下载控制、进度、失败及取消语义，不扩大抓取范围。

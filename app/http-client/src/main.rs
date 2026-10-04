@@ -1,20 +1,20 @@
 use errors::HttpClientResult;
-use features::RequestView;
 use foundation::I18n;
 use gpui_kit::*;
 use std::{fs::create_dir_all, path::PathBuf};
 use tracing::{Level, event, level_filters::LevelFilter};
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use workspace::WorkspaceView;
 
 use crate::errors::HttpClientError;
 
 mod errors;
-mod features;
 mod foundation;
+mod workspace;
 
 static APP_NAME: &str = "top.sushao.http-client";
 
-actions!(feiwen, [Quit]);
+actions!(http_client, [Quit]);
 
 fn quit(_: &Quit, cx: &mut App) {
     event!(Level::INFO, "quit by action");
@@ -89,7 +89,7 @@ fn main() -> HttpClientResult<()> {
                 ..Default::default()
             },
             cx,
-            |window, cx| cx.new(|cx| RequestView::new(window, cx)),
+            |window, cx| cx.new(|cx| WorkspaceView::new(window, cx)),
         ) {
             event!(Level::ERROR, "{}", err)
         };

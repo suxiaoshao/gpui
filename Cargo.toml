@@ -1,9 +1,17 @@
 [workspace]
 members = [
   "app/feiwen",
+  "app/feiwen/crates/feiwen-data",
+  "app/feiwen/crates/feiwen-fetch",
+  "app/feiwen/crates/feiwen-query",
   "app/http-client",
+  "app/http-client/crates/http-client-core",
+  "app/http-client/crates/http-client-request",
+  "app/http-client/crates/http-client-response",
   "app/novel-download",
+  "app/novel-download/crates/novel-download-feature",
   "crates/app-theme",
+  "crates/app-i18n",
   "crates/gpui-form",
   "crates/gpui-form-gpui-component",
   "crates/gpui-form-macros",
@@ -30,7 +38,18 @@ gpui-kit = "=0.7.0"
 gpui-component = "=0.7.0"
 gpui-component-assets = { package = "gpui-kit-assets", version = "=0.7.0" }
 
+# Application capabilities.
+novel-download-feature = { path = "./app/novel-download/crates/novel-download-feature" }
+http-client-core = { path = "./app/http-client/crates/http-client-core" }
+http-client-request = { path = "./app/http-client/crates/http-client-request" }
+http-client-response = { path = "./app/http-client/crates/http-client-response" }
+
+feiwen-data = { path = "./app/feiwen/crates/feiwen-data" }
+feiwen-fetch = { path = "./app/feiwen/crates/feiwen-fetch" }
+feiwen-query = { path = "./app/feiwen/crates/feiwen-query" }
+
 # Shared workspace crates.
+app-i18n = { path = "./crates/app-i18n" }
 app-theme = { path = "./crates/app-theme", default-features = false }
 gpui-form = { path = "./crates/gpui-form", features = ["garde-adapter"] }
 gpui-form-gpui-component = { path = "./crates/gpui-form-gpui-component" }

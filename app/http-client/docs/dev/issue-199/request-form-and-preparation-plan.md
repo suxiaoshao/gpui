@@ -101,7 +101,7 @@ Send / Operation / Response 计划必须消费本文固定的 `PreparedRequest`�
 
 | ID | 分类 | 已核实事实或决定 | 证据 | 计划后果 |
 | --- | --- | --- | --- | --- |
-| `E-1500` | 当前事实 | 根 model 不含 Body/Auth/Settings，Headers 业务值位于 native entity | `src/features/request.rs`、`request/headers.rs` | 新建统一 `RequestDraft`；删除平行 authority |
+| `E-1500` | 当前事实 | 根 model 不含 Body/Auth/Settings，Headers 业务值位于 native entity | `crates/http-client-request/src/lib.rs`、`request/headers.rs` | 新建统一 `RequestDraft`；删除平行 authority |
 | `E-1501` | 当前事实 | URL/Params 依靠 `HttpFormEvent` 循环并重建 native control | `request/url_input.rs`、`request/params.rs` | 改为同一 total path 的两个 source-aware binding |
 | `E-1502` | 当前事实 | Params、Headers、x-form 删除与回调以数组 index 识别 | `request/params.rs`、`headers.rs`、`body/x_form.rs` | Form collection 使用 `ItemPath`/`PathKey`；Params 使用组件私有 identity |
 | `E-1503` | 当前事实 | Body 只有菜单四项；真正有状态的只有 Text 与 urlencoded；multipart 为空 | `request/body.rs`、`body/form_data.rs` | 一次补齐五种完整 Body，不保留占位 variant |
@@ -571,27 +571,27 @@ owner 与测试责任。
 | ID | 文件 | 动作 | 唯一职责 / 禁止项 | 工作包 |
 | --- | --- | --- | --- | --- |
 | `F-1500` | `app/http-client/Cargo.toml` | 修改 | 增加 Form/adapter 与编译依赖；禁止 Store/Operation/transport | `WP-1500` |
-| `F-1501` | `app/http-client/src/features/request/draft.rs` | 新增 | 全部 Request FormSchema、defaults、枚举与 transport setting | `WP-1500` |
-| `F-1502` | `app/http-client/src/features/request/prepared.rs` | 新增 | `PreparedRequest`、prepared body/part/redirect、共享 parse/compile helper | `WP-1501` |
-| `F-1503` | `app/http-client/src/features/request/validation.rs` | 新增 | request-bound Submit validator、精确 issue 与 helper error映射 | `WP-1501` |
-| `F-1504` | `app/http-client/src/features/request.rs` | 重写 | `RequestView` owner、Form、tabs、observer、settings、禁用 Send与 prepare入口 | `WP-1501`、`WP-1506` |
-| `F-1505` | `app/http-client/src/features/request/controls.rs` | 新增 | scalar/case Select binding与`FormFilePathInput`；不含业务model | `WP-1502`、`WP-1505` |
-| `F-1506` | `app/http-client/src/features/request/method.rs` | 修改 | 保留 method domain/select presentation，写入 typed Form path | `WP-1502` |
-| `F-1507` | `app/http-client/src/features/request/url_input.rs` | 重写 | URL `FormInput` 包装/呈现；不持有 Form entity作业务 authority | `WP-1502` |
-| `F-1508` | `app/http-client/src/features/request/params.rs` | 重写 | 单 URL binding、private row identity、disabled invalid projection | `WP-1502` |
-| `F-1509` | `app/http-client/src/features/request/headers.rs` | 重写 | Header collection controller、dynamic row adapters 与 override提示 | `WP-1503` |
-| `F-1510` | `app/http-client/src/features/request/body.rs` | 重写 | 五种 Body selector、active case resolve与子 view owner | `WP-1504` |
-| `F-1511` | `app/http-client/src/features/request/body/http_text.rs` | 重写 | Text typed format Select、占满剩余空间的 code editor 与派生高亮 | `WP-1504` |
-| `F-1512` | `app/http-client/src/features/request/body/x_form.rs` | 重写 | UrlEncoded collection controller；不保留 `XForm` 业务 type | `WP-1504` |
-| `F-1513` | `app/http-client/src/features/request/body/form_data.rs` | 重写 | Multipart collection、Text/File case、文件 adapter | `WP-1504`、`WP-1505` |
-| `F-1514` | `app/http-client/src/features/request/body/binary.rs` | 新增 | Binary file选择/清除与精确错误显示 | `WP-1505` |
-| `F-1515` | `app/http-client/src/features/request/auth.rs` | 新增 | Auth selector、Basic/Bearer/API Key active case UI与冲突提示 | `WP-1505` |
-| `F-1516` | `app/http-client/src/features/request/settings.rs` | 新增 | redirect controls与 page-owned timeout编辑器 | `WP-1505` |
-| `F-1517` | `app/http-client/src/features/request/tab.rs` | 重写 | Params/Auth/Headers/Body/Settings 五 tab及安全 index映射 | `WP-1506` |
-| `F-1518` | `app/http-client/src/features/request/tests.rs` | 新增 | GPUI Form/control/controller/picker测试 harness | `WP-1502`–`WP-1508` |
+| `F-1501` | `app/http-client/crates/http-client-request/src/draft.rs` | 新增 | 全部 Request FormSchema、defaults、枚举与 transport setting | `WP-1500` |
+| `F-1502` | `app/http-client/crates/http-client-request/src/prepared.rs` | 新增 | `PreparedRequest`、prepared body/part/redirect、共享 parse/compile helper | `WP-1501` |
+| `F-1503` | `app/http-client/crates/http-client-request/src/validation.rs` | 新增 | request-bound Submit validator、精确 issue 与 helper error映射 | `WP-1501` |
+| `F-1504` | `app/http-client/crates/http-client-request/src/lib.rs` | 重写 | `RequestView` owner、Form、tabs、observer、settings、禁用 Send与 prepare入口 | `WP-1501`、`WP-1506` |
+| `F-1505` | `app/http-client/crates/http-client-request/src/controls.rs` | 新增 | scalar/case Select binding与`FormFilePathInput`；不含业务model | `WP-1502`、`WP-1505` |
+| `F-1506` | `app/http-client/crates/http-client-request/src/method.rs` | 修改 | 保留 method domain/select presentation，写入 typed Form path | `WP-1502` |
+| `F-1507` | `app/http-client/crates/http-client-request/src/url_input.rs` | 重写 | URL `FormInput` 包装/呈现；不持有 Form entity作业务 authority | `WP-1502` |
+| `F-1508` | `app/http-client/crates/http-client-request/src/params.rs` | 重写 | 单 URL binding、private row identity、disabled invalid projection | `WP-1502` |
+| `F-1509` | `app/http-client/crates/http-client-request/src/headers.rs` | 重写 | Header collection controller、dynamic row adapters 与 override提示 | `WP-1503` |
+| `F-1510` | `app/http-client/crates/http-client-request/src/body.rs` | 重写 | 五种 Body selector、active case resolve与子 view owner | `WP-1504` |
+| `F-1511` | `app/http-client/crates/http-client-request/src/body/http_text.rs` | 重写 | Text typed format Select、占满剩余空间的 code editor 与派生高亮 | `WP-1504` |
+| `F-1512` | `app/http-client/crates/http-client-request/src/body/x_form.rs` | 重写 | UrlEncoded collection controller；不保留 `XForm` 业务 type | `WP-1504` |
+| `F-1513` | `app/http-client/crates/http-client-request/src/body/form_data.rs` | 重写 | Multipart collection、Text/File case、文件 adapter | `WP-1504`、`WP-1505` |
+| `F-1514` | `app/http-client/crates/http-client-request/src/body/binary.rs` | 新增 | Binary file选择/清除与精确错误显示 | `WP-1505` |
+| `F-1515` | `app/http-client/crates/http-client-request/src/auth.rs` | 新增 | Auth selector、Basic/Bearer/API Key active case UI与冲突提示 | `WP-1505` |
+| `F-1516` | `app/http-client/crates/http-client-request/src/settings.rs` | 新增 | redirect controls与 page-owned timeout编辑器 | `WP-1505` |
+| `F-1517` | `app/http-client/crates/http-client-request/src/tab.rs` | 重写 | Params/Auth/Headers/Body/Settings 五 tab及安全 index映射 | `WP-1506` |
+| `F-1518` | `app/http-client/crates/http-client-request/src/tests.rs` | 新增 | GPUI Form/control/controller/picker测试 harness | `WP-1502`–`WP-1508` |
 | `F-1519` | `app/http-client/src/features.rs` | 修改 | re-export `RequestView` | `WP-1506` |
 | `F-1520` | `app/http-client/src/main.rs` | 修改 | 创建 `RequestView`；不增加 Store/Operation global | `WP-1506` |
-| `F-1521` | `app/http-client/src/features/request/prepared.rs`（实际归位；与 `F-1502` 同一文件） | 归入 `F-1502` | `RequestPrepareError` / `RequestCompileError` 与 prepared compiler 同域；`src/errors.rs` 继续只管理 app startup 错误 | `WP-1501` |
+| `F-1521` | `app/http-client/crates/http-client-request/src/prepared.rs`（实际归位；与 `F-1502` 同一文件） | 归入 `F-1502` | `RequestPrepareError` / `RequestCompileError` 与 prepared compiler 同域；`src/errors.rs` 继续只管理 app startup 错误 | `WP-1501` |
 | `F-1522` | `app/http-client/src/foundation/i18n.rs` | 修改 | `ValidationMessage` 翻译 helper与 locale parity tests | `WP-1507` |
 | `F-1523` | `app/http-client/locales/en-US/main.ftl` | 修改 | 英文 Request/Form UI与validation keys | `WP-1507` |
 | `F-1524` | `app/http-client/locales/zh-CN/main.ftl` | 修改 | 与 en-US 同 key/变量的中文文案 | `WP-1507` |
@@ -1093,7 +1093,7 @@ git diff --check -- app/http-client docs/dev/issue-199
 ```bash
 ! rg -n 'HttpFormEvent|struct HttpForm\b|Entity<HttpForm>|HttpBodyEvent|struct HttpBodyForm\b|struct HttpHeader\b|struct XForm\b|struct HttpText\b' app/http-client/src
 ! rg -n 'gpui_store|gpui::store|gpui_operation|gpui-operation|gpui-store' app/http-client/src app/http-client/Cargo.toml
-! rg -n 'SetUrlByInput|SetUrlByParams|DeleteHeader\(usize\)|DeleteXForm\(usize\)|unimplemented!\(\)' app/http-client/src/features/request.rs app/http-client/src/features/request
+! rg -n 'SetUrlByInput|SetUrlByParams|DeleteHeader\(usize\)|DeleteXForm\(usize\)|unimplemented!\(\)' app/http-client/crates/http-client-request/src/lib.rs app/http-client/src/features/request
 ```
 
 三条反向断言均应返回成功；任一`rg`命中都会让对应命令失败。`gpui_form::FormEvent` 的typed structure subscription、native Input/Select event、

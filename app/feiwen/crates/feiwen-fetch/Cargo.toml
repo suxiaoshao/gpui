@@ -1,0 +1,37 @@
+[package]
+name = "feiwen-fetch"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+thiserror = "2.0.21"
+app-i18n.workspace = true
+feiwen-data.workspace = true
+# ui
+gpui-kit.workspace = true
+gpui-form.workspace = true
+gpui-form-gpui-component.workspace = true
+gpui-operation = { workspace = true, features = ["tracing"] }
+gpui-store.workspace = true
+gpui-lucide.workspace = true
+
+# http
+reqwest = {version = "0.13.5",features=["query"]}
+async-compat = "0.2.6"
+
+# html
+scraper = "0.27.0"
+nom = "8.0.0"
+url = "2.5.8"
+
+# database
+duckdb = { version = "1.10505.0", features = ["bundled", "parquet", "r2d2"] }
+r2d2 = "0.8.10"
+
+# log
+tracing = "0.1.44"
+
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }

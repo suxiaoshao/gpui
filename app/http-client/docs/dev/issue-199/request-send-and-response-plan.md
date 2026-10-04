@@ -82,8 +82,8 @@ head，流式收集有明确上限的完整 response，完成后可安全查看�
 
 | ID | 分类 | 已核实事实/决定 | 证据 | 计划后果 |
 | --- | --- | --- | --- | --- |
-| E-1600 | 实施前事实 | `RequestView` 仅拥有 Form、transport settings、五个 request tabs 和 focus；`button-send` 固定 `.disabled(true)`。 | `HTTP-199-02` 的 `933ee09` 与本计划建立时的 `src/features/request.rs:RequestView` | 此 view 是唯一 response/runtime owner，实施后接通 Send/Cancel/Clear/Save。 |
-| E-1601 | 当前事实 | `prepare_request` 先 `Form::prepare`，再 `compile_request`，产生含 method、URL、`HeaderMap`、body、redirect 和 timeout 的不可变 `PreparedRequest`。 | `src/features/request.rs:prepare_request`、`request/prepared.rs:compile_request` | Send 只 move 此值进入 task；prepare 失败时不改变当前 runtime。 |
+| E-1600 | 实施前事实 | `RequestView` 仅拥有 Form、transport settings、五个 request tabs 和 focus；`button-send` 固定 `.disabled(true)`。 | `HTTP-199-02` 的 `933ee09` 与本计划建立时的 `crates/http-client-request/src/lib.rs:RequestView` | RequestView 持有发送 runtime，ResponseView 持有预览和保存；shell 协调二者。 |
+| E-1601 | 当前事实 | `prepare_request` 先 `Form::prepare`，再 `compile_request`，产生含 method、URL、`HeaderMap`、body、redirect 和 timeout 的不可变 `PreparedRequest`。 | `crates/http-client-request/src/lib.rs:prepare_request`、`request/prepared.rs:compile_request` | Send 只 move 此值进入 task；prepare 失败时不改变当前 runtime。 |
 | E-1602 | 当前事实 | 编译期已验证 HTTP(S) URL，body 可为内存 text/urlencoded、multipart 文件或 binary 文件；redirect 已冻结 max 10 hops、method 和跨 host Authorization 策略。 | `request/prepared.rs:PreparedRequest`、`PreparedBody`、`PreparedRedirect` | executor 每一跳从 frozen value 重建 request/body，不能重用已消耗的 stream。 |
 | E-1603 | 当前事实 | `gpui-tokio::Tokio::spawn` 在 workspace Tokio runtime 运行 `Send + 'static` future，返回的 GPUI Task drop 会 abort Tokio JoinHandle。 | `crates/gpui-tokio/src/lib.rs:Tokio::spawn` | outer owner task 是取消根；不得 detach worker 或另造 generation state。 |
 | E-1604 | 当前事实 | `gpui-operation` 的 runtime task 规则是 final state 先安装、再 drop task/payload；tracing feature 只记录脱敏非法消息。 | `crates/gpui-operation/README.md`、`dev/message-driven-transitions.md` | 私有 Transition 复用该顺序与诊断原则，不能把此 HTTP 多阶段状态塞进 `refresh::Operation`。 |
@@ -104,19 +104,19 @@ head，流式收集有明确上限的完整 response，完成后可安全查看�
 └── app/http-client/
     ├── Cargo.toml                                       # F-1600 [修改，手写] 精确依赖与 feature
     ├── src/main.rs                                      # F-1602 [修改，手写] gpui-tokio 初始化
-    ├── src/features/request.rs                          # F-1603 [修改，手写] RequestView owner、命令与总布局
-    ├── src/features/request/runtime.rs                  # F-1604 [新增，手写] 私有 Transition、message、effect 与问题类型
-    ├── src/features/request/transport.rs                # F-1605 [新增，手写] HttpTransport、worker/event 边界
-    ├── src/features/request/transport/body.rs           # F-1606 [新增，手写] PreparedBody replay 与 request body I/O
-    ├── src/features/request/transport/redirect.rs       # F-1607 [新增，手写] 手工 redirect policy
-    ├── src/features/request/transport/worker.rs         # F-1608 [新增，手写] Reqwest/Tokio 执行与 channel 顺序
-    ├── src/features/request/response.rs                 # F-1609 [新增，手写] Response pane/controller 入口
-    ├── src/features/request/response/data.rs            # F-1610 [新增，手写] ResponseData、StoredBody、read lease
-    ├── src/features/request/response/collector.rs       # F-1611 [新增，手写] 8/50 MiB collector 与临时文件
-    ├── src/features/request/response/decoding.rs        # F-1612 [新增，手写] Content-Encoding/charset 与 projection helper
-    ├── src/features/request/response/viewer.rs          # F-1613 [新增，手写] Body/Headers、安全文本/图片 viewer
-    ├── src/features/request/response/save.rs            # F-1614 [新增，手写] 完成 Response 的事务式 Save
-    ├── src/features/request/tests.rs                    # F-1615 [修改，手写] page/runtime GPUI tests
+    ├── crates/http-client-request/src/lib.rs                          # F-1603 [修改，手写] RequestView owner、命令与总布局
+    ├── crates/http-client-request/src/runtime.rs                  # F-1604 [新增，手写] 私有 Transition、message、effect 与问题类型
+    ├── crates/http-client-core/src/transport.rs                # F-1605 [新增，手写] HttpTransport、worker/event 边界
+    ├── crates/http-client-core/src/transport/body.rs           # F-1606 [新增，手写] PreparedBody replay 与 request body I/O
+    ├── crates/http-client-core/src/transport/redirect.rs       # F-1607 [新增，手写] 手工 redirect policy
+    ├── crates/http-client-core/src/transport/worker.rs         # F-1608 [新增，手写] Reqwest/Tokio 执行与 channel 顺序
+    ├── crates/http-client-response/src/lib.rs                 # F-1609 [新增，手写] Response pane/controller 入口
+    ├── crates/http-client-core/src/data.rs            # F-1610 [新增，手写] ResponseData、StoredBody、read lease
+    ├── crates/http-client-core/src/collector.rs       # F-1611 [新增，手写] 8/50 MiB collector 与临时文件
+    ├── crates/http-client-core/src/decoding.rs        # F-1612 [新增，手写] Content-Encoding/charset 与 projection helper
+    ├── crates/http-client-response/src/viewer.rs          # F-1613 [新增，手写] Body/Headers、安全文本/图片 viewer
+    ├── crates/http-client-response/src/save.rs            # F-1614 [新增，手写] 完成 Response 的事务式 Save
+    ├── crates/http-client-request/src/tests.rs                    # F-1615 [修改，手写] page/runtime GPUI tests
     ├── src/foundation/i18n.rs                           # F-1616 [修改，手写] required-key 与变量契约
     ├── locales/en-US/main.ftl                           # F-1617 [修改，手写] 英文 runtime 文案
     ├── locales/zh-CN/main.ftl                           # F-1618 [修改，手写] 中文 runtime 文案
@@ -494,8 +494,8 @@ warning/Alert，不发送 `HttpRunMessage`，也不能把 `Ready` 改成 `Failed
 
 ### L-1603：UI composition与 i18n
 
-`RequestView::render` 使用 `v_resizable("request-response")`：上部保留现有 Request editor 且可扩展，下部
-Response pane 默认约 320 px、最小 160 px。Response 使用 `TabBar("response-tabs")` 的 Body/Headers；
+shell 的 `WorkspaceView::render` 使用 `v_resizable("request-response")`：上部保留现有 Request editor 且可扩展，下部
+ResponseView 默认 20 rem、最小 10 rem。Response 使用 `TabBar("response-tabs")` 的 Body/Headers；
 按钮 ID 固定为 `request-send`、`request-cancel`、`response-clear`、`response-save`。运行态禁用 Send 并
 显示 Cancel；terminal 显示 Clear；Request 输入仍可编辑并保留 focus，不新增全局 keybinding。
 
@@ -659,7 +659,7 @@ cargo clippy -p http-client --all-targets --all-features --locked -- -D warnings
 rg -n 'gpui_store|gpui-store|refresh::Operation|repair::Operation|error_for_status|Client::new\(|\.detach\(' app/http-client/src app/http-client/Cargo.toml
 rg -n '\.gzip\(|\.brotli\(|\.deflate\(|\.zstd\(' app/http-client/src/features/request
 rg -n 'TextView::html|TextView::markdown|fenced_source' app/http-client/src/features/request
-rg -n 'TempPath|PathBuf' app/http-client/src/features/request/response app/http-client/src/features/request/transport
+rg -n 'TempPath|PathBuf' app/http-client/crates/http-client-request/src/response app/http-client/crates/http-client-request/src/transport
 git diff --check -- app/http-client Cargo.lock docs/dev/issue-199
 ```
 

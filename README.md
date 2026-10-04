@@ -33,9 +33,11 @@ cargo run -p xtask -- bundle feiwen
 
 ## 代码与资源
 
-- `app/`：独立应用；配置、数据位置及业务说明见各应用文档和 `foundation` 模块。
+- `app/{name}/src/`：应用启动、窗口、导航和功能组合；`app/{name}/crates/`：应用专属业务能力。配置、数据位置及业务说明见各应用 README。
 - `crates/`：共享库；`crates/xtask` 提供打包入口。
 - `app/{name}/assets/`：运行时资源；`locales/`：运行时及 macOS 本地化。
 - `app/{name}/build-assets/`：打包资源。基础图标为 `icon/app-icon.png`，平台派生图标由 xtask 生成；Liquid Glass 构建失败时回退普通图标。
 
 开发约定见 [AGENTS.md](AGENTS.md)，设计与迁移入口见 [开发文档索引](docs/dev/README.md)。
+
+官方 GPUI skills 使用 npx skills 管理，来源由 [skills-lock.json](skills-lock.json) 记录；项目自有架构和接入规则位于 `.agents/skills/`。

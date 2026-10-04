@@ -1,5 +1,9 @@
 # Workspace development plans
 
+## Architecture
+
+- [Coding Guides 对齐与功能 crate 拆分](issue-255/README.md)：三个应用的能力边界、文本与生命周期、布局，以及官方 skills 管理和项目规则同步。
+
 ## Workspace cleanup
 
 - [Jaco 退役与仓库边界](jaco-retirement/README.md)：已删除范围、共享能力保留边界与实际检查结果。

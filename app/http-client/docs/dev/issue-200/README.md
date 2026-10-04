@@ -30,12 +30,12 @@ GStreamer、视频或 package-manifest 工作。
 ```text
 app/http-client/
 ├── Cargo.toml                                             # F-2000 [Modify, handwritten] remove gstreamer; pin Rodio 0.22.2 features; declare Deb ALSA runtime
-├── src/features/request/response/media.rs                  # F-2001 [Modify, handwritten] stop exporting/declaring GStreamer runtime
-├── src/features/request/response/media/asset.rs            # F-2002 [Modify, handwritten] retain private File opening; remove URI-only GStreamer projection
-├── src/features/request/response/media/audio.rs            # F-2003 [Modify, handwritten] AudioDriver over Rodio/CPAL
-├── src/features/request/response/media/runtime.rs           # F-2004 [Delete, handwritten] process-global GStreamer bootstrap/environment contract
-├── src/features/request/response/media/session.rs           # F-2005 [Modify, handwritten] remove GStreamer plugin/software-decoder-only state, retain generic session contract
-├── src/features/request/response.rs                         # F-2006 [Modify, handwritten] keep prepare/event task ownership while removing decoder-policy retry
+├── crates/http-client-response/src/media.rs                  # F-2001 [Modify, handwritten] stop exporting/declaring GStreamer runtime
+├── crates/http-client-response/src/media/asset.rs            # F-2002 [Modify, handwritten] retain private File opening; remove URI-only GStreamer projection
+├── crates/http-client-response/src/media/audio.rs            # F-2003 [Modify, handwritten] AudioDriver over Rodio/CPAL
+├── crates/http-client-response/src/media/runtime.rs           # F-2004 [Delete, handwritten] process-global GStreamer bootstrap/environment contract
+├── crates/http-client-response/src/media/session.rs           # F-2005 [Modify, handwritten] remove GStreamer plugin/software-decoder-only state, retain generic session contract
+├── crates/http-client-response/src/lib.rs                         # F-2006 [Modify, handwritten] keep prepare/event task ownership while removing decoder-policy retry
 ├── build-assets/gstreamer/runtime-manifest.toml             # F-2007 [Delete, handwritten] obsolete private runtime input
 ├── build-assets/gstreamer/THIRD_PARTY_NOTICES.md            # F-2008 [Delete, handwritten] obsolete runtime notice input
 └── docs/dev/issue-200/README.md                             # this owner plan

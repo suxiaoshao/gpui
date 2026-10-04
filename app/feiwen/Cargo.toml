@@ -20,35 +20,17 @@ Feiwen novel metadata.
 category = "DeveloperTool"
 
 [dependencies]
+thiserror = "2.0.21"
+feiwen-data.workspace = true
+feiwen-fetch.workspace = true
+feiwen-query.workspace = true
+app-i18n.workspace = true
 # ui
 gpui-kit.workspace = true
-gpui-form.workspace = true
-gpui-form-gpui-component.workspace = true
-gpui-operation = { workspace = true, features = ["tracing"] }
-gpui-store.workspace = true
 gpui-lucide.workspace = true
 app-theme = { workspace = true, default-features = false, features = ["system-accent"] }
 fluent-bundle = "0.16.0"
-unic-langid = "0.9.6"
-sys-locale = "0.3.2"
-pinyin = "0.11.0"
-
-# err
-thiserror = "2.0.21"
-
-# http
-reqwest = {version = "0.13.5",features=["query"]}
-async-compat = "0.2.6"
-
-# html
-scraper = "0.27.0"
-nom = "8.0.0"
-url = "2.5.8"
-
-# database
-duckdb = { version = "1.10505.0", features = ["bundled", "parquet", "r2d2"] }
 dirs-next = "2.0.0"
-r2d2 = "0.8.10"
 
 # log
 tracing = "0.1.44"

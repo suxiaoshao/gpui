@@ -20,38 +20,16 @@ content from supported sources.
 category = "Utility"
 
 [dependencies]
+novel-download-feature.workspace = true
+app-i18n.workspace = true
 # ui
 gpui-kit.workspace = true
-gpui-form.workspace = true
-gpui-form-gpui-component.workspace = true
-gpui-operation = { workspace = true, features = ["tracing"] }
-fluent-bundle = "0.16.0"
-unic-langid = "0.9.6"
-sys-locale = "0.3.2"
 
 # error
 thiserror = "2.0.21"
 
-# http
-reqwest = { version = "0.13.5", features = [
-    "gzip",
-    "charset",
-    "query",
-    "rustls"
-], default-features = false }
-
-# parser
-scraper = "0.27.0"
-
-# async
-futures = "0.3.34"
-async-stream = "0.3.6"
-async-compat = "0.2.6"
-
 # path
 dirs-next = "2.0.0"
-smol = "2.0.2"
-tempfile = "3.27.0"
 
 # log
 tracing = "0.1.44"

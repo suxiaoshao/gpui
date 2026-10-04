@@ -1,17 +1,12 @@
+use feiwen_fetch::FetchView;
+use feiwen_query::QueryView;
 use gpui_kit::component::v_flex;
 use gpui_kit::*;
-use gpui_store::Store;
 use tracing::{Level, event};
 
 use super::resource::{DatabaseResourcePage, notify_backup_completed};
 use super::titlebar::{FeiwenTitleBar, route_title, window_title};
-use crate::{
-    features::{
-        fetch::{FetchRun, FetchView},
-        query::QueryView,
-    },
-    foundation::I18n,
-};
+use crate::foundation::I18n;
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RouterType {
@@ -20,21 +15,14 @@ pub(crate) enum RouterType {
     Query,
 }
 
-pub(crate) enum WorkspaceEvent {
-    UpdateRouter(RouterType),
-}
-
 #[derive(Default)]
 pub(crate) struct Workspace {
     pub(super) router: RouterType,
 }
 
-impl EventEmitter<WorkspaceEvent> for Workspace {}
-
 pub(crate) struct WorkspaceView {
     workspace: Entity<Workspace>,
     focus_handle: FocusHandle,
-    _fetch_task: Store<FetchRun>,
     fetch_view: Entity<FetchView>,
     query_view: Entity<QueryView>,
     _subscriptions: Vec<Subscription>,
@@ -44,31 +32,41 @@ impl WorkspaceView {
     pub(crate) fn new(window: &mut Window, workspace_cx: &mut Context<Self>) -> Self {
         event!(Level::INFO, "creating feiwen workspace");
         let workspace = workspace_cx.new(|_cx| Default::default());
-        let fetch_task = Store::new(workspace_cx, FetchRun::default());
-        let fetch_view = workspace_cx.new(|cx| FetchView::new(window, fetch_task.clone(), cx));
-        let query_view = workspace_cx
-            .new(|cx| QueryView::new(workspace.clone(), fetch_task.clone(), window, cx));
+        let fetch_view = workspace_cx.new(|cx| FetchView::new(window, cx));
+        let query_view = workspace_cx.new(|cx| QueryView::new(window, cx));
         apply_current_theme(window, workspace_cx);
         let _subscriptions = vec![
-            workspace_cx.subscribe(&workspace, Self::subscribe),
             workspace_cx.observe(&query_view, |_, _, cx| {
                 cx.notify();
             }),
-            fetch_task.observe(workspace_cx, |_, _, cx| cx.notify()),
-            crate::store::database::store(workspace_cx)
+            workspace_cx.observe(&fetch_view, |this, view, cx| {
+                let summary = view.read(cx).summary(cx);
+                this.query_view
+                    .update(cx, |query, cx| query.set_fetch_summary(summary, cx));
+                cx.notify();
+            }),
+            workspace_cx.subscribe(&query_view, |this, _, event, cx| match event {
+                feiwen_query::QueryEvent::OpenFetch => {
+                    this.workspace.update(cx, |workspace, cx| {
+                        workspace.router = RouterType::Fetch;
+                        cx.notify();
+                    });
+                    cx.notify();
+                }
+            }),
+            feiwen_data::database::store(workspace_cx)
                 .observe(workspace_cx, |_, _, cx| cx.notify()),
-            crate::store::database::store(workspace_cx).observe_select_in(
+            feiwen_data::database::store(workspace_cx).observe_select_in(
                 workspace_cx,
                 window,
-                |resource: &crate::store::database::DatabaseResource| resource.completed_backup(),
+                |resource: &feiwen_data::database::DatabaseResource| resource.completed_backup(),
                 |_, backup, window, cx| {
                     if let Some(backup) = backup {
                         notify_backup_completed(backup, window, cx);
                     }
                 },
             ),
-            crate::store::catalog::store(workspace_cx)
-                .observe(workspace_cx, |_, _, cx| cx.notify()),
+            feiwen_data::catalog::store(workspace_cx).observe(workspace_cx, |_, _, cx| cx.notify()),
             workspace_cx.observe_window_appearance(window, |_state, window, cx| {
                 apply_current_theme(window, cx);
                 cx.refresh_windows();
@@ -85,7 +83,6 @@ impl WorkspaceView {
             focus_handle: workspace_cx.focus_handle(),
             fetch_view,
             query_view,
-            _fetch_task: fetch_task,
             workspace,
             _subscriptions,
         };
@@ -93,33 +90,12 @@ impl WorkspaceView {
         this
     }
     fn child_view(&self, cx: &mut Context<Self>) -> AnyElement {
-        if crate::store::database::phase(cx) != crate::store::database::DatabasePhase::Ready {
+        if feiwen_data::database::phase(cx) != feiwen_data::database::DatabasePhase::Ready {
             return DatabaseResourcePage::new().into_any_element();
         }
         match self.workspace.read(cx).router {
             RouterType::Fetch => self.fetch_view.clone().into_any_element(),
             RouterType::Query => self.query_view.clone().into_any_element(),
-        }
-    }
-
-    fn subscribe(
-        &mut self,
-        subscriber: Entity<Workspace>,
-        emitter: &WorkspaceEvent,
-        cx: &mut Context<Self>,
-    ) {
-        match emitter {
-            WorkspaceEvent::UpdateRouter(router) => {
-                subscriber.update(cx, |data, _| {
-                    event!(
-                        Level::INFO,
-                        from = %data.router.label(),
-                        to = %router.label(),
-                        "switching feiwen route"
-                    );
-                    data.router = *router;
-                });
-            }
         }
     }
 }

@@ -18,13 +18,13 @@
 
 ## 2. 证据与决定
 
-- `app/http-client/src/features/request/url_input.rs` 在 render 中使用
+- `app/http-client/crates/http-client-request/src/url_input.rs` 在 render 中使用
   `Input::new(&self.input)`；form 从 params 更新 URL 时会重建 `Entity<InputState>`，但 render
   builder 每帧应用到当前 entity。
 - 目标 gpui-component 提供
   `Input::content_type(InputContentType::Url)`；这是 native/autofill/accessibility hint，不改变
   text value、mask、change event 或 validation。
-- `app/http-client/src/features/request.rs` 由 method select、URL input、send button 和 tab body
+- `app/http-client/crates/http-client-request/src/lib.rs` 由 method select、URL input、send button 和 tab body
   构成；Taffy/root-fill 行为变化需要回归，但当前结构不需要预先新增尺寸 wrapper。
 - 决定：唯一代码改动是 URL input render；其余文件仅作为受影响布局和数据流验收面，不做计划内
   结构修改。
@@ -33,15 +33,15 @@
 
 **修改**
 
-- `app/http-client/src/features/request/url_input.rs`。
+- `app/http-client/crates/http-client-request/src/url_input.rs`。
 
 **验证但不修改**
 
-- `app/http-client/src/features/request.rs`：method/URL/send header 与 main flex layout。
-- `app/http-client/src/features/request/tab.rs`：params/headers/body tab body 尺寸。
-- `app/http-client/src/features/request/params.rs`：URL ↔ query params 投影与 popover。
-- `app/http-client/src/features/request/headers.rs`：header rows。
-- `app/http-client/src/features/request/body.rs` 及其现有 child modules：body tabs/editors。
+- `app/http-client/crates/http-client-request/src/lib.rs`：method/URL/send header 与 main flex layout。
+- `app/http-client/crates/http-client-request/src/tab.rs`：params/headers/body tab body 尺寸。
+- `app/http-client/crates/http-client-request/src/params.rs`：URL ↔ query params 投影与 popover。
+- `app/http-client/crates/http-client-request/src/headers.rs`：header rows。
+- `app/http-client/crates/http-client-request/src/body.rs` 及其现有 child modules：body tabs/editors。
 
 目标 render 契约：
 
@@ -94,7 +94,7 @@ cargo fmt --all -- --check
 git diff --check
 cargo test --locked -p http-client
 cargo clippy --locked -p http-client --all-targets --all-features -- -D warnings
-git diff -- app/http-client/src/features/request/url_input.rs
+git diff -- app/http-client/crates/http-client-request/src/url_input.rs
 ```
 
 最后一个 diff 的预期功能变化只有 import 与 `.content_type(InputContentType::Url)`；若其他
