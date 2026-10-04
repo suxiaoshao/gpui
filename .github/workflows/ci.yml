@@ -109,7 +109,7 @@ jobs:
 
       - name: Install Nix
         if: ${{ needs.changes.outputs.run != 'false' && runner.os != 'Windows' }}
-        uses: cachix/install-nix-action@b85815f71a6de0ddee80b8a80a98d43f4bcc66c7 # v31
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
 
       - name: Install pinned Rust on Windows
         if: ${{ needs.changes.outputs.run != 'false' && runner.os == 'Windows' }}
