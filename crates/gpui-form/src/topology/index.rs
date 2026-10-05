@@ -47,7 +47,7 @@ impl TopologyIndex {
     /// never exposes a recoverable identity-build error.
     pub(crate) fn new() -> Self {
         let session = NEXT_SESSION_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .map(SessionId)

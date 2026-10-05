@@ -33,10 +33,10 @@ ignored = ["gpui-component-assets"]
 
 [workspace.dependencies]
 # GPUI runtime and component versions are kept together.
-gpui = { package = "gpui-pre", version = "=0.3.7" }
-gpui-kit = "=0.7.0"
-gpui-component = "=0.7.0"
-gpui-component-assets = { package = "gpui-kit-assets", version = "=0.7.0" }
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui-kit = "=0.7.1"
+gpui-component = "=0.7.1"
+gpui-component-assets = { package = "gpui-kit-assets", version = "=0.7.1" }
 
 # Application capabilities.
 novel-download-feature = { path = "./app/novel-download/crates/novel-download-feature" }

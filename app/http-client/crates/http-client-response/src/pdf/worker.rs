@@ -8,6 +8,7 @@ use std::{
 
 use bytes::Bytes;
 use gpui_kit::RenderImage;
+use hayro::hayro_interpret::util::TransformExt;
 
 use super::super::PreviewToken;
 use super::{
@@ -400,16 +401,28 @@ fn render_page<'a>(
 
     let scale_x = width as f32 / source_width;
     let scale_y = height as f32 / source_height;
-    let pixmap = hayro::render(
+    // Keep the budgeted output size exact instead of deriving it from float scales.
+    let mut context = hayro::vello_cpu::RenderContext::new(width as u16, height as u16);
+    let transform = hayro::kurbo::Affine::scale_non_uniform(scale_x as f64, scale_y as f64)
+        * page.initial_transform(true).to_kurbo();
+    hayro::render_into(
         page,
         cache,
         settings,
-        &hayro::RenderSettings {
-            x_scale: scale_x,
-            y_scale: scale_y,
-            width: Some(width as u16),
-            height: Some(height as u16),
-            bg_color: hayro::vello_cpu::color::palette::css::WHITE,
+        &hayro::RenderSettings::default(),
+        &mut context,
+        transform,
+    );
+    context.flush();
+    let mut pixmap = hayro::vello_cpu::Pixmap::new(width as u16, height as u16);
+    context.render_with(
+        &mut pixmap,
+        &mut hayro::vello_cpu::Resources::default(),
+        hayro::vello_cpu::RasterizerSettings {
+            target_init: hayro::vello_cpu::TargetInit::Clear(
+                hayro::vello_cpu::color::palette::css::WHITE,
+            ),
+            ..Default::default()
         },
     );
     let actual_width = u32::from(pixmap.width());
@@ -422,10 +435,8 @@ fn render_page<'a>(
     // Hayro yields premultiplied RGBA.  GPUI's RenderImage stores
     // premultiplied BGRA, so swap only the red/blue bytes in place and then
     // transfer the one pixmap allocation into the single image frame.
-    let mut pixels = pixmap.take();
-    let bytes = bytemuck::cast_slice_mut(&mut pixels);
-    rgba_to_bgra(bytes);
-    let bytes = bytemuck::allocation::try_cast_vec(pixels).map_err(|_| PdfProblem::internal())?;
+    let mut bytes = pixmap.take_rgba8(hayro::vello_cpu::peniko::ImageAlphaType::AlphaPremultiplied);
+    rgba_to_bgra(&mut bytes);
     let buffer = image::RgbaImage::from_raw(actual_width, actual_height, bytes)
         .ok_or_else(PdfProblem::internal)?;
     Ok(Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])))

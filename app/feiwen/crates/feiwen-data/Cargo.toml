@@ -15,7 +15,7 @@ thiserror = "2.0.21"
 
 
 # database
-duckdb = { version = "1.10505.0", features = ["bundled", "parquet", "r2d2"] }
+duckdb = { version = "1.10506.0", features = ["bundled", "parquet", "r2d2"] }
 r2d2 = "0.8.10"
 
 # log
