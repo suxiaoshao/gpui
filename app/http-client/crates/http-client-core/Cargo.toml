@@ -10,7 +10,7 @@ url = "2.5.8"
 http = "1.5.0"
 mime = "0.3.17"
 async-channel = "2.5.0"
-async-compression = { version = "0.4.48", default-features = false, features = [
+async-compression = { version = "0.4.50", default-features = false, features = [
   "tokio",
   "brotli",
   "gzip",
@@ -28,9 +28,9 @@ reqwest = { version = "0.13.5", default-features = false, features = [
   "system-proxy",
 ] }
 tempfile = "3.27.0"
-tokio = { version = "1.53.1", features = ["fs", "io-util", "time"] }
+tokio = { version = "1.53.2", features = ["fs", "io-util", "time"] }
 tokio-util = { version = "0.7.19", features = ["io"] }
 
 
 [dev-dependencies]
-tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread"] }
+tokio = { version = "1.53.2", features = ["macros", "net", "rt-multi-thread"] }

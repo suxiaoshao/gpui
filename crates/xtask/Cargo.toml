@@ -12,8 +12,8 @@ serde = { version = "1.0.229", features = ["derive"] }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 toml = "1.1.6"
-tauri-bundler = "2.10.0"
-tauri-utils = "2.10.0"
+tauri-bundler = "2.10.1"
+tauri-utils = "2.10.1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
 walkdir = "2.5.0"

@@ -25,7 +25,7 @@ static NEXT_CONTROL_ID: AtomicU64 = AtomicU64::new(1);
 
 fn next_control_id() -> u64 {
     NEXT_CONTROL_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             value.checked_add(1)
         })
         .expect("form control identity space exhausted")
@@ -157,7 +157,7 @@ impl BindingShared {
 
     fn advance_generation(&self) {
         self.lifecycle_generation
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 value.checked_add(1)
             })
             .expect("form binding lifecycle generation exhausted");
@@ -165,7 +165,7 @@ impl BindingShared {
 
     fn advance_editor_sequence(&self) -> u64 {
         self.editor_sequence
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 value.checked_add(1)
             })
             .map(|value| value + 1)
