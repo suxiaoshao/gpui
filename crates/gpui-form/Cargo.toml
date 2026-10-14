@@ -19,4 +19,4 @@ gpui-operation = { workspace = true }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
-trybuild = "1.0.121"
+trybuild = "1.0.122"
