@@ -200,6 +200,7 @@ fetch the component's `.md` doc.
 | `Collapsible`     | `collapsible::Collapsible`                                               | Single collapsible        |
 | `GroupBox`        | `group_box::GroupBox`                                                    | Labeled container         |
 | `Resizable`       | `resizable::{h_resizable, v_resizable, resizable_panel, ResizableState}` | Draggable split panes     |
+| `ResizeHandle`    | `resizable::{resize_handle, HandleEdge}`                                 | Standalone resize edge    |
 | `Scrollbar`       | `scroll::Scrollbar`                                                      | Custom scrollbar          |
 
 ### Data Display
@@ -207,6 +208,7 @@ fetch the component's `.md` doc.
 | Component         | Import                                          | Notes                         |
 | ----------------- | ----------------------------------------------- | ----------------------------- |
 | `DataTable`       | `table::{DataTable, TableState, TableDelegate}` | Stateful. Full-featured table |
+| `Diff`            | `diff::{Diff, DiffState, DiffFile}`           | Retained state, `RenderOnce` element. Readonly unified/Git diff display of one or more files, merge conflicts and source files; application supplies the patch |
 | `Table`           | `table::{Table, ...}`                           | Simpler table                 |
 | `VirtualList`     | `{v_virtual_list, h_virtual_list}`              | High-perf large lists         |
 | `List`            | `list::{List, ListState, ListDelegate}`         | Stateful. Searchable list     |
