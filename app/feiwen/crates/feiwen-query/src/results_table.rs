@@ -180,6 +180,8 @@ impl TableDelegate for ResultsTableDelegate {
         window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
+        // Sorting must not bubble into column selection and clear the selected row.
+        cx.stop_propagation();
         let old_row_ids: Vec<_> = self
             .order
             .iter()
@@ -489,6 +491,67 @@ mod tests {
                     table
                         .delegate()
                         .novel_at(table.selected_row().unwrap())
+                        .unwrap()
+                        .title
+                        .id,
+                    1
+                );
+            });
+        }
+    }
+
+    #[gpui_kit::test]
+    fn clicking_sort_icon_preserves_row_selection(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::test::TestWindowExt as _;
+
+        cx.update(gpui_kit::init);
+        let (handle, table) = cx.update(|cx| {
+            gpui_kit::open_window(
+                gpui_kit::WindowOptions {
+                    window_bounds: Some(gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::new(
+                        Default::default(),
+                        gpui_kit::size(gpui_kit::px(1400.), gpui_kit::px(400.)),
+                    ))),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| {
+                    cx.new(|cx| {
+                        let mut delegate = ResultsTableDelegate::new(window.rem_size());
+                        delegate.set_novels(vec![
+                            novel_with_read_count(1, Some(10)),
+                            novel_with_read_count(2, Some(5)),
+                        ]);
+                        let mut table = TableState::new(delegate, window, cx);
+                        table.set_selected_row(0, cx);
+                        table
+                    })
+                },
+            )
+            .unwrap()
+        });
+        let column = ResultColumn::ALL
+            .iter()
+            .position(|column| *column == ResultColumn::ReadCount)
+            .unwrap();
+        for expected_order in [vec![1, 2], vec![2, 1], vec![1, 2]] {
+            cx.update_window(handle, |_, window, cx| {
+                window.click(("icon-sort", column), cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update(|cx| {
+                let table = table.read(cx);
+                assert_eq!(table.delegate().novel_ids(), expected_order);
+                assert_eq!(
+                    table
+                        .delegate()
+                        .novel_at(
+                            table
+                                .selected_row()
+                                .expect("sorting must retain row selection")
+                        )
                         .unwrap()
                         .title
                         .id,

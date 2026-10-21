@@ -8,12 +8,12 @@ use gpui::{
     px, quad,
 };
 use gpui_component::{
-    ActiveTheme as _, Sizable, Size, StyledExt as _,
+    ActiveTheme as _, InteractiveElementExt as _, Sizable, Size, StyledExt as _,
     plot::{
         IntoPlot, Plot,
         tooltip::{Tooltip, TooltipState},
     },
-    scroll::Scrollbar,
+    scroll::{ScrollableMask, Scrollbar},
     v_flex,
 };
 use time::{Date, Duration};
@@ -192,6 +192,7 @@ impl RenderOnce for ActivityHeatmap {
         let scroll_root_id = child_id(&self.id, "scroll-root");
         let scroll_area_id = child_id(&self.id, "scroll-area");
         let scroll_content_id = child_id(&self.id, "scroll-content");
+        let scroll_mask_id = child_id(&self.id, "scroll-mask");
         let scrollbar_id = child_id(&self.id, "scrollbar");
 
         let scroll_state =
@@ -277,6 +278,7 @@ impl RenderOnce for ActivityHeatmap {
             .flex_row()
             .track_scroll(&scroll_handle)
             .overflow_x_scroll()
+            .lock_scroll_axis()
             .child(content);
 
         let scroll_root = div()
@@ -285,6 +287,7 @@ impl RenderOnce for ActivityHeatmap {
             .w_full()
             .overflow_hidden()
             .child(scroll_area)
+            .child(ScrollableMask::vertical_wheel(&scroll_handle).id(scroll_mask_id))
             .when(!window.is_inspector_picking(cx), |this| {
                 this.child(
                     div()
@@ -563,8 +566,11 @@ impl Plot for ActivityHeatmapPlot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Context, Entity, Render, TestAppContext, VisualTestContext, Window, rgb};
-    use gpui_component::Theme;
+    use gpui::{
+        Context, Entity, Render, ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext,
+        Window, rgb,
+    };
+    use gpui_component::{Theme, scroll::ScrollbarHandle as _};
     use time::Month;
 
     fn date(year: i32, month: Month, day: u8) -> Date {
@@ -751,26 +757,37 @@ mod tests {
     struct HeatmapRenderTest {
         left_scroll: Option<Entity<ScrollHandle>>,
         right_scroll: Option<Entity<ScrollHandle>>,
+        page_scroll: ScrollHandle,
     }
 
     impl Render for HeatmapRenderTest {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            self.left_scroll = Some(window.use_keyed_state(
-                child_id(&ElementId::from("left-heatmap"), "scroll-state"),
-                cx,
-                |_, _| ScrollHandle::default(),
-            ));
-            self.right_scroll = Some(window.use_keyed_state(
-                child_id(&ElementId::from("right-heatmap"), "scroll-state"),
-                cx,
-                |_, _| ScrollHandle::default(),
-            ));
+            window.with_element_namespace("heatmap-test-page", |window| {
+                // RenderOnce adds its type namespace before creating the real scroll state.
+                window.with_element_namespace(std::any::type_name::<ActivityHeatmap>(), |window| {
+                    self.left_scroll = Some(window.use_keyed_state(
+                        child_id(&ElementId::from("left-heatmap"), "scroll-state"),
+                        cx,
+                        |_, _| ScrollHandle::default(),
+                    ));
+                    self.right_scroll = Some(window.use_keyed_state(
+                        child_id(&ElementId::from("right-heatmap"), "scroll-state"),
+                        cx,
+                        |_, _| ScrollHandle::default(),
+                    ));
+                });
+            });
             v_flex()
+                .id("heatmap-test-page")
                 .w(px(180.))
+                .h(px(220.))
+                .overflow_y_scroll()
+                .track_scroll(&self.page_scroll)
                 .children(["left-heatmap", "right-heatmap"].map(|id| {
                     div()
                         .w(px(180.))
                         .h(px(160.))
+                        .flex_none()
                         .overflow_hidden()
                         .child(test_heatmap(id))
                 }))
@@ -850,6 +867,46 @@ mod tests {
         draw(cx);
         assert_eq!(scroll_x(cx, &left), px(-64.));
         assert_eq!(scroll_x(cx, &right), px(0.));
+    }
+
+    #[gpui::test]
+    fn mouse_wheel_scrolls_only_the_target_heatmap_and_chains_at_its_edge(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (view, cx) = cx.add_window_view(|_, _| HeatmapRenderTest::default());
+        draw(cx);
+
+        let (left, right, page) = cx.update(|_, cx| {
+            let view = view.read(cx);
+            (
+                view.left_scroll.clone().unwrap(),
+                view.right_scroll.clone().unwrap(),
+                view.page_scroll.clone(),
+            )
+        });
+        let viewport = cx.update(|_, cx| left.read(cx).viewport_bounds());
+        assert!(viewport.size.width > px(0.));
+        assert!(viewport.size.height > px(0.));
+        let wheel = |cx: &mut VisualTestContext, lines| {
+            cx.simulate_event(ScrollWheelEvent {
+                position: viewport.center(),
+                delta: ScrollDelta::Lines(point(0., lines)),
+                ..Default::default()
+            });
+            draw(cx);
+        };
+
+        wheel(cx, -1.);
+        assert!(scroll_x(cx, &left) < px(0.));
+        assert_eq!(scroll_x(cx, &right), px(0.));
+        assert_eq!(page.offset().y, px(0.));
+
+        wheel(cx, -1000.);
+        let end = scroll_x(cx, &left);
+        assert_eq!(page.offset().y, px(0.));
+        wheel(cx, -1.);
+        assert_eq!(scroll_x(cx, &left), end);
+        assert_eq!(scroll_x(cx, &right), px(0.));
+        assert!(page.offset().y < px(0.));
     }
 
     #[test]

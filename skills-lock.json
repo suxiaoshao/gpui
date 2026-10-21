@@ -3,15 +3,17 @@
   "skills": {
     "gpui-kit": {
       "source": "longbridge/gpui-kit",
+      "ref": "v0.8.0",
       "sourceType": "github",
       "skillPath": "skills/gpui-kit/SKILL.md",
-      "computedHash": "711da6fe691b91a77b5bf91fd1db63993d98d334b4c67acb0d280025d18ba92a"
+      "computedHash": "e401812a1269fd2caa07d307867f25c38c974f706f34bd52a8da8465b85ddd75"
     },
     "gpui-kit-design-guides": {
       "source": "longbridge/gpui-kit",
+      "ref": "v0.8.0",
       "sourceType": "github",
       "skillPath": "skills/gpui-kit-design-guides/SKILL.md",
-      "computedHash": "f5e085823154439a093fbfb947d522213c40842e1d06ebc611e033a854127c0b"
+      "computedHash": "cc144ee0cc35978c387e6a13e8bc2cd25bfac45363ad25235d5b9cf09f8fa017"
     }
   }
 }

@@ -14,6 +14,7 @@ The crate owns presentation and interaction only. Applications remain responsibl
 - colors, radius, typography, tooltip, sizing, and scrollbar behavior from `gpui-component`;
 - immediate pointer tooltips with caller-formatted dates and exact values;
 - fixed-size cells with horizontal scrolling at narrow widths;
+- vertical mouse-wheel scrolling across the grid, with parent scrolling at either horizontal edge;
 - one caller-provided accessible image summary, without per-day keyboard stops.
 
 ```rust,no_run
