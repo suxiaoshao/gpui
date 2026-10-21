@@ -8,6 +8,46 @@ use gpui_kit::component::{
 };
 use gpui_kit::{App, Context, InteractiveElement, IntoElement, ParentElement, Styled, Window, div};
 
+// Fit is an explicit approximation of visible content, never a full-result scan.
+const FIT_MAX_ROWS: usize = 64;
+const FIT_MAX_CELL_BYTES: usize = 512;
+const FIT_MAX_BYTES: usize = 8 * 1024;
+const FIT_CACHE_ENTRIES: usize = 512;
+const FIT_MAX_REMS: f32 = 45.0;
+
+#[derive(Default)]
+struct TextWidthCache {
+    widths:
+        std::collections::HashMap<(gpui_kit::SharedString, gpui_kit::Font, u32), gpui_kit::Pixels>,
+}
+
+impl TextWidthCache {
+    fn measure(
+        &mut self,
+        text: gpui_kit::SharedString,
+        font: gpui_kit::Font,
+        font_size: gpui_kit::Pixels,
+        bytes_left: &mut usize,
+        shape: impl FnOnce(gpui_kit::SharedString, gpui_kit::Font, gpui_kit::Pixels) -> gpui_kit::Pixels,
+    ) -> Option<gpui_kit::Pixels> {
+        // Guard before hashing, copying or shaping text; cache hits consume work too.
+        if text.len() > FIT_MAX_CELL_BYTES || text.len() > *bytes_left {
+            return None;
+        }
+        *bytes_left -= text.len();
+        let key = (text.clone(), font.clone(), f32::from(font_size).to_bits());
+        if let Some(width) = self.widths.get(&key) {
+            return Some(*width);
+        }
+        if self.widths.len() >= FIT_CACHE_ENTRIES {
+            self.widths.clear();
+        }
+        let width = shape(text, font, font_size);
+        self.widths.insert(key, width);
+        Some(width)
+    }
+}
+
 const SITE_ORIGIN: &str = "https://xn--pxtr7m.com";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -42,6 +82,8 @@ pub(crate) struct ResultsTableDelegate {
     novels: Vec<Novel>,
     order: Vec<usize>,
     loading: bool,
+    fit_visible: std::ops::Range<usize>,
+    fit_cache: TextWidthCache,
 }
 
 impl ResultsTableDelegate {
@@ -51,10 +93,13 @@ impl ResultsTableDelegate {
             novels: Vec::new(),
             order: Vec::new(),
             loading: false,
+            fit_visible: 0..0,
+            fit_cache: Default::default(),
         }
     }
 
     pub(crate) fn set_novels(&mut self, novels: Vec<Novel>) {
+        self.fit_cache.widths.clear();
         self.order = (0..novels.len()).collect();
         self.novels = novels;
     }
@@ -171,6 +216,113 @@ impl TableDelegate for ResultsTableDelegate {
             .copied()
             .map(|column| Self::column_spec(column, self.rem_size))
             .unwrap_or_else(|| Column::new("unknown", ""))
+    }
+
+    fn fit_column(
+        &mut self,
+        col_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> Option<gpui_kit::Pixels> {
+        use gpui_kit::{Font, FontWeight, Hsla, TextRun, px};
+        let column = *ResultColumn::ALL.get(col_ix)?;
+        // Badge wrapping/padding is not equivalent to a single text measurement.
+        if matches!(column, ResultColumn::Tags | ResultColumn::IsLimit) {
+            return None;
+        }
+        let rem = window.rem_size();
+        let spec = Self::column_spec(column, rem);
+        let padding = spec
+            .paddings
+            .unwrap_or_else(|| gpui_kit::component::Size::default().table_cell_padding());
+        let scale = window.scale_factor();
+        // Reserve table-owned padding and one device pixel for upstream rounding.
+        // This only caps explicit fit; the ordinary manual-resize bounds are unchanged.
+        let content_cap = px(((f32::from(rem * FIT_MAX_REMS) * scale).floor()
+            - (f32::from(padding.left) * scale).ceil()
+            - (f32::from(padding.right) * scale).ceil()
+            - 1.)
+            .max(0.)
+            / scale);
+        let mut font = window.text_style().font();
+        font.family = cx.theme().font_family.clone();
+        let mut bytes_left = FIT_MAX_BYTES;
+        let mut measure = |text, weight| {
+            self.fit_cache.measure(
+                text,
+                Font {
+                    weight,
+                    ..font.clone()
+                },
+                rem * 0.875,
+                &mut bytes_left,
+                |text, font, size| {
+                    let run = TextRun {
+                        len: text.len(),
+                        font,
+                        color: Hsla::default(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    window
+                        .text_system()
+                        .shape_line(text, size, &[run], None)
+                        .width()
+                },
+            )
+        };
+        let sort_icon = if spec.sort.is_some() {
+            rem * 0.75 + px(4.)
+        } else {
+            px(0.)
+        };
+        let mut width = measure(spec.name, FontWeight::NORMAL).unwrap_or(content_cap) + sort_icon;
+        let start_row = self.fit_visible.start.min(self.order.len());
+        let end_row = self
+            .fit_visible
+            .end
+            .min(start_row.saturating_add(FIT_MAX_ROWS))
+            .min(self.order.len());
+        for novel in self.order[start_row..end_row]
+            .iter()
+            .filter_map(|ix| self.novels.get(*ix))
+        {
+            let text = match column {
+                ResultColumn::Title => novel.title.name.clone(),
+                ResultColumn::Description => novel.desc.clone(),
+                ResultColumn::Author => Self::author_label(novel),
+                ResultColumn::WordCount => number_text(Some(novel.count.word_count)),
+                ResultColumn::ReadCount => number_text(novel.count.read_count),
+                ResultColumn::ReplyCount => number_text(novel.count.reply_count),
+                ResultColumn::LatestChapter => novel.latest_chapter.name.clone(),
+                ResultColumn::Tags | ResultColumn::IsLimit => unreachable!(),
+            };
+            let weight = if column == ResultColumn::Title {
+                FontWeight::MEDIUM
+            } else {
+                FontWeight::NORMAL
+            };
+            // Oversized cells or an exhausted callback budget choose the bounded
+            // automatic width, without hashing or shaping the rest of that text.
+            let Some(measured) = measure(text, weight) else {
+                return Some(content_cap);
+            };
+            width = width.max(measured);
+            if width >= content_cap {
+                break;
+            }
+        }
+        Some(width.min(content_cap))
+    }
+
+    fn visible_rows_changed(
+        &mut self,
+        range: std::ops::Range<usize>,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) {
+        self.fit_visible = range;
     }
 
     fn perform_sort(
@@ -307,13 +459,15 @@ impl TableDelegate for ResultsTableDelegate {
     }
 }
 
+fn number_text(value: Option<i32>) -> gpui_kit::SharedString {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "-".to_owned())
+        .into()
+}
+
 fn number_cell(value: Option<i32>) -> impl IntoElement {
-    Label::new(
-        value
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "-".to_owned()),
-    )
-    .text_sm()
+    Label::new(number_text(value)).text_sm()
 }
 
 fn novel_url(id: i32) -> String {
@@ -455,6 +609,261 @@ mod tests {
         assert_ne!(author_link_id(&first), author_link_id(&second));
         assert_eq!(author_link_id(&first), "author-link-1-42");
         assert_eq!(author_link_id(&second), "author-link-2-42");
+    }
+
+    #[test]
+    fn fit_budget_guards_oversized_text_and_cache_hits() {
+        use gpui_kit::{Font, SharedString, px};
+        let mut cache = TextWidthCache::default();
+        let mut bytes_left = FIT_MAX_BYTES;
+        let oversized: SharedString = "汉".repeat(FIT_MAX_CELL_BYTES / 3 + 1).into();
+        assert!(
+            cache
+                .measure(
+                    oversized,
+                    Font::default(),
+                    px(14.),
+                    &mut bytes_left,
+                    |_, _, _| panic!("oversized text must not be shaped")
+                )
+                .is_none()
+        );
+        assert_eq!(bytes_left, FIT_MAX_BYTES);
+        assert!(cache.widths.is_empty());
+        let text: SharedString = "a".repeat(FIT_MAX_CELL_BYTES).into();
+        let mut shapes = 0;
+        for _ in 0..FIT_MAX_BYTES / FIT_MAX_CELL_BYTES {
+            assert_eq!(
+                cache.measure(
+                    text.clone(),
+                    Font::default(),
+                    px(14.),
+                    &mut bytes_left,
+                    |_, _, _| {
+                        shapes += 1;
+                        px(30.)
+                    }
+                ),
+                Some(px(30.))
+            );
+        }
+        assert_eq!(shapes, 1);
+        assert_eq!(bytes_left, 0);
+        assert!(
+            cache
+                .measure(
+                    text,
+                    Font::default(),
+                    px(14.),
+                    &mut bytes_left,
+                    |_, _, _| panic!("exhausted fit must not shape text")
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn fit_cache_keys_font_size_and_text_and_bounds_retention() {
+        use gpui_kit::{Font, FontWeight, px};
+        let mut cache = TextWidthCache::default();
+        let mut bytes_left = FIT_MAX_BYTES;
+        let font = Font::default();
+        assert_eq!(
+            cache.measure(
+                "same".into(),
+                font.clone(),
+                px(14.),
+                &mut bytes_left,
+                |_, _, _| px(10.)
+            ),
+            Some(px(10.))
+        );
+        assert_eq!(
+            cache.measure(
+                "same".into(),
+                font.clone(),
+                px(14.),
+                &mut bytes_left,
+                |_, _, _| panic!("cached width should be reused")
+            ),
+            Some(px(10.))
+        );
+        assert_eq!(
+            cache.measure(
+                "same".into(),
+                Font {
+                    weight: FontWeight::MEDIUM,
+                    ..font.clone()
+                },
+                px(14.),
+                &mut bytes_left,
+                |_, _, _| px(11.)
+            ),
+            Some(px(11.))
+        );
+        assert_eq!(
+            cache.measure(
+                "same".into(),
+                font.clone(),
+                px(21.),
+                &mut bytes_left,
+                |_, _, _| px(15.)
+            ),
+            Some(px(15.))
+        );
+        assert_eq!(
+            cache.measure(
+                "other".into(),
+                font.clone(),
+                px(14.),
+                &mut bytes_left,
+                |_, _, _| px(20.)
+            ),
+            Some(px(20.))
+        );
+        for id in 0..=FIT_CACHE_ENTRIES {
+            cache
+                .measure(
+                    id.to_string().into(),
+                    font.clone(),
+                    px(14.),
+                    &mut bytes_left,
+                    |_, _, _| px(10.),
+                )
+                .unwrap();
+            assert!(cache.widths.len() <= FIT_CACHE_ENTRIES);
+        }
+    }
+
+    #[gpui_kit::test]
+    fn fit_follows_visible_rows_and_caps_only_automatic_width(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::px;
+        cx.update(gpui_kit::init);
+        let (table, cx) = cx.add_window_view(|window, cx| {
+            let mut delegate = ResultsTableDelegate::new(window.rem_size());
+            let mut novels = (1..=200)
+                .map(|id| novel_with_read_count(id, Some(id)))
+                .collect::<Vec<_>>();
+            novels.last_mut().unwrap().title.name = "汉".repeat(FIT_MAX_CELL_BYTES * 2).into();
+            delegate.set_novels(novels);
+            TableState::new(delegate, window, cx).col_resizable(true)
+        });
+        cx.update(|window, cx| {
+            table.update(cx, |table, cx| {
+                assert!(!table.visible_range().rows().contains(&199));
+                assert!(table.fit_col(0, window, cx));
+                assert!(table.col_width(0).unwrap() < window.rem_size() * 15.);
+                assert_eq!(table.delegate().column(0, cx).max_width, px(1200.));
+                assert!(table.fit_col(4, window, cx));
+                // The heading plus sort affordance must fit even when counts are short.
+                assert!(table.col_width(4).unwrap() >= px(40.));
+                assert!(!table.fit_col(6, window, cx));
+                assert!(!table.fit_col(8, window, cx));
+                table.scroll_to_row(199, cx);
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            table.update(cx, |table, cx| {
+                assert!(table.visible_range().rows().contains(&199));
+                assert!(table.fit_col(0, window, cx));
+                let fitted = table.col_width(0).unwrap();
+                assert!(fitted <= window.rem_size() * FIT_MAX_REMS);
+                assert!(fitted > window.rem_size() * 40.);
+                assert!(
+                    table
+                        .delegate()
+                        .fit_cache
+                        .widths
+                        .keys()
+                        .all(|(text, _, _)| text.len() <= FIT_MAX_CELL_BYTES)
+                );
+                assert_eq!(table.delegate().column(0, cx).max_width, px(1200.));
+            })
+        });
+    }
+
+    #[gpui_kit::test]
+    fn fit_caps_visible_row_work_and_uses_display_order(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (table, cx) = cx.add_window_view(|window, cx| {
+            let mut delegate = ResultsTableDelegate::new(window.rem_size());
+            let mut novels = (1..=128)
+                .map(|id| novel_with_read_count(id, None))
+                .collect::<Vec<_>>();
+            novels[FIT_MAX_ROWS].title.name = "x".repeat(FIT_MAX_CELL_BYTES + 1).into();
+            delegate.set_novels(novels);
+            TableState::new(delegate, window, cx).col_resizable(true)
+        });
+        cx.update(|window, cx| {
+            table.update(cx, |table, cx| {
+                // Model a tall viewport through the delegate's normal range callback.
+                table
+                    .delegate_mut()
+                    .visible_rows_changed(0..128, window, cx);
+                assert!(table.fit_col(0, window, cx));
+                assert!(table.col_width(0).unwrap() < window.rem_size() * 15.);
+                // The same novel becomes measurable when sorting puts it in range.
+                table.delegate_mut().order.swap(0, FIT_MAX_ROWS);
+                assert!(table.fit_col(0, window, cx));
+                assert!(table.col_width(0).unwrap() > window.rem_size() * 40.);
+                assert!(table.col_width(0).unwrap() <= window.rem_size() * FIT_MAX_REMS);
+            })
+        });
+    }
+
+    #[gpui_kit::test]
+    fn fit_remeasures_theme_size_and_replacement_results(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::px;
+        cx.update(gpui_kit::init);
+        let (table, cx) = cx.add_window_view(|window, cx| {
+            let mut delegate = ResultsTableDelegate::new(window.rem_size());
+            let mut novel = novel_with_read_count(1, Some(1));
+            novel.title.name = "A visible title that needs fitting".into();
+            delegate.set_novels(vec![novel]);
+            TableState::new(delegate, window, cx).col_resizable(true)
+        });
+        let before = cx.update(|window, cx| {
+            table.update(cx, |table, cx| {
+                assert!(table.fit_col(0, window, cx));
+                table.col_width(0).unwrap()
+            })
+        });
+        cx.update(|window, cx| {
+            gpui_kit::component::Theme::update(cx, |theme| theme.font_size = px(24.));
+            window.set_rem_size(px(24.));
+            table.update(cx, |table, cx| {
+                table.delegate_mut().rem_size = window.rem_size();
+                table.refresh(cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            table.update(cx, |table, cx| {
+                assert!(table.fit_col(0, window, cx));
+                assert!(table.col_width(0).unwrap() > before);
+                table
+                    .delegate_mut()
+                    .set_novels(vec![novel_with_read_count(2, None)]);
+                assert!(table.delegate().fit_cache.widths.is_empty());
+                table.refresh(cx);
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            table.update(cx, |table, cx| {
+                assert!(table.fit_col(0, window, cx));
+                assert!(table.col_width(0).unwrap() < before);
+                assert!(
+                    table
+                        .delegate()
+                        .fit_cache
+                        .widths
+                        .keys()
+                        .any(|(text, _, _)| text.as_ref() == "title 2")
+                );
+            })
+        });
     }
 
     #[gpui_kit::test]
