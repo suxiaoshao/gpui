@@ -268,7 +268,7 @@ impl SourceLanguage {
         match self {
             Self::Plain => "text",
             Self::Json => "json",
-            Self::Xml | Self::Svg => "text",
+            Self::Xml | Self::Svg => "xml",
             Self::Html => "html",
             Self::Css => "css",
             Self::JavaScript => "javascript",
@@ -724,15 +724,15 @@ mod tests {
     }
 
     #[test]
-    fn response_languages_map_only_to_available_editor_highlighters() {
+    fn response_languages_preserve_source_syntax_names() {
         assert_eq!(SourceLanguage::Plain.editor_language(), "text");
         assert_eq!(SourceLanguage::Json.editor_language(), "json");
-        assert_eq!(SourceLanguage::Xml.editor_language(), "text");
+        assert_eq!(SourceLanguage::Xml.editor_language(), "xml");
         assert_eq!(SourceLanguage::Html.editor_language(), "html");
         assert_eq!(SourceLanguage::Css.editor_language(), "css");
         assert_eq!(SourceLanguage::JavaScript.editor_language(), "javascript");
         assert_eq!(SourceLanguage::Yaml.editor_language(), "yaml");
         assert_eq!(SourceLanguage::Markdown.editor_language(), "markdown");
-        assert_eq!(SourceLanguage::Svg.editor_language(), "text");
+        assert_eq!(SourceLanguage::Svg.editor_language(), "xml");
     }
 }

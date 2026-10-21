@@ -128,11 +128,11 @@ mod macos {
 mod windows {
     use super::{ObserverInner, SystemAccentColor, SystemAccentColorObserver};
     use std::sync::Arc;
+    use windows::core::IInspectable;
     use windows::{
         Foundation::TypedEventHandler,
         UI::ViewManagement::{UIColorType, UISettings},
     };
-    use windows_core::IInspectable;
 
     pub(super) struct WindowsObserver {
         settings: UISettings,
