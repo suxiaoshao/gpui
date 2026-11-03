@@ -7,7 +7,9 @@ use std::{
 };
 
 use gpui::{AppContext as _, TestAppContext};
-use gpui_form::{AsyncValidationIssue, Form, FormEvent, FormSchema, ValidationMessage};
+use gpui_form::{
+    AsyncValidationIssue, DraftPolicy, Form, FormEvent, FormSchema, PrepareError, ValidationMessage,
+};
 
 struct ManualState<T> {
     output: Option<T>,
@@ -300,4 +302,153 @@ fn retired_occurrence_completion_has_no_model_report_or_publication_side_effects
     assert_eq!(after, before);
     assert_eq!(events.get(), 0);
     assert_eq!(notifications.get(), 0);
+}
+
+#[derive(Clone, Debug, PartialEq, FormSchema)]
+struct RefreshRow {
+    #[form(required)]
+    value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, FormSchema)]
+struct RefreshDraft {
+    changed: String,
+    untouched: String,
+    #[form(items)]
+    rows: Vec<RefreshRow>,
+}
+
+#[gpui::test]
+fn preserving_rebase_removes_retired_and_changed_validation_facts(cx: &mut TestAppContext) {
+    let form = cx.update(|cx| {
+        cx.new(|_| {
+            Form::new(RefreshDraft {
+                changed: "old".into(),
+                untouched: "keep".into(),
+                rows: vec![RefreshRow {
+                    value: String::new(),
+                }],
+            })
+        })
+    });
+    let rows = RefreshDraft::ROOT.then(RefreshDraft::ROWS);
+    let old_item = cx.update(|cx| {
+        assert!(matches!(
+            form.update(cx, |form, cx| form.prepare(cx)),
+            Err(PrepareError::Validation(_))
+        ));
+        let item = rows.items(&form, cx).remove(0);
+        form.update(cx, |form, cx| {
+            form.start_async_validation(
+                RefreshDraft::CHANGED,
+                "changed",
+                |_| std::future::ready(issue("old-value")),
+                cx,
+            )
+            .unwrap();
+            form.start_async_validation(
+                RefreshDraft::UNTOUCHED,
+                "untouched",
+                |_| std::future::ready(issue("unchanged-value")),
+                cx,
+            )
+            .unwrap();
+        });
+        item
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(form.read(cx).validation_report().issues().len(), 3);
+        assert!(!form.read(cx).is_validating());
+        form.update(cx, |form, cx| {
+            form.rebase_preserving_edits(
+                RefreshDraft {
+                    changed: "new".into(),
+                    untouched: "keep".into(),
+                    rows: Vec::new(),
+                },
+                cx,
+            )
+            .unwrap();
+        });
+        assert!(old_item.try_get(&form, cx).is_err());
+        assert_eq!(RefreshDraft::CHANGED.get(&form, cx), "new");
+        let report = form.read(cx).validation_report();
+        assert_eq!(report.issues().len(), 1);
+        assert_eq!(report.issues()[0].code(), "unchanged-value");
+        form.update(cx, |form, cx| {
+            form.start_async_validation(
+                RefreshDraft::UNTOUCHED,
+                "untouched",
+                |_| std::future::ready(Ok(())),
+                cx,
+            )
+            .unwrap();
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(form.update(cx, |form, cx| form.prepare(cx)).is_ok());
+    });
+}
+
+#[gpui::test]
+fn unchanged_lifecycle_cancels_pending_validation_and_publishes_the_change(
+    cx: &mut TestAppContext,
+) {
+    for lifecycle in ["reset", "replace", "rebase"] {
+        for policy in [DraftPolicy::Preserve, DraftPolicy::Discard] {
+            let initial = Pair {
+                left: "left".into(),
+                right: "right".into(),
+            };
+            let (form, events, notifications) = cx.update(|cx| {
+                let form = cx.new(|_| Form::new(initial.clone()));
+                let (events, notifications) = counters(&form, cx);
+                (form, events, notifications)
+            });
+            let (completion, future) = manual();
+            cx.update(|cx| {
+                form.update(cx, |form, cx| {
+                    form.start_async_validation(Pair::LEFT, "remote", |_| future, cx)
+                        .unwrap();
+                });
+            });
+            cx.run_until_parked();
+            events.set(0);
+            notifications.set(0);
+            cx.update(|cx| {
+                assert!(form.read(cx).is_validating());
+                assert!(matches!(
+                    form.update(cx, |form, cx| form.prepare(cx)),
+                    Err(PrepareError::ValidationPending)
+                ));
+                let revision = form.read(cx).revision();
+                form.update(cx, |form, cx| {
+                    match lifecycle {
+                        "reset" => form.reset(policy, cx),
+                        "replace" => form.replace(initial.clone(), policy, cx),
+                        "rebase" => form.rebase(initial.clone(), policy, cx),
+                        _ => unreachable!(),
+                    }
+                    .unwrap();
+                });
+                assert!(!form.read(cx).is_validating(), "{lifecycle} {policy:?}");
+                assert_eq!(form.read(cx).revision(), revision);
+                assert!(form.update(cx, |form, cx| form.prepare(cx)).is_ok());
+            });
+            assert_eq!(events.get(), 1, "{lifecycle} {policy:?}");
+            assert_eq!(notifications.get(), 1, "{lifecycle} {policy:?}");
+            events.set(0);
+            notifications.set(0);
+            completion.complete(issue("late"));
+            cx.run_until_parked();
+            cx.update(|cx| {
+                assert!(form.read(cx).validation_report().is_valid());
+                assert!(form.update(cx, |form, cx| form.prepare(cx)).is_ok());
+            });
+            assert_eq!(events.get(), 0, "{lifecycle} {policy:?}");
+            assert_eq!(notifications.get(), 0, "{lifecycle} {policy:?}");
+        }
+    }
 }

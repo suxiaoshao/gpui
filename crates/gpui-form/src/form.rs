@@ -301,7 +301,8 @@ impl<M: FormSchema> Form<M> {
             .filter_map(|a| self.topology.key(a))
             .collect();
         if changed || baseline_changed {
-            self.cancel_all_async_validation();
+            self.validation.retain_current(&self.topology);
+            self.invalidate_async_for_model_change(&plan.external);
             self.run_validation(ValidationTrigger::External, None, self.next_version());
             let retired = difference(&before, &self.topology.dynamic_addresses());
             if changed {
@@ -360,6 +361,8 @@ impl<M: FormSchema> Form<M> {
             || abandoning_tickets;
         if !changed {
             let before = self.validation.clone();
+            let was_validating = self.async_validation.is_pending();
+            self.cancel_all_async_validation();
             self.validation
                 .issues
                 .retain(|i| i.source() == &ValidationSource::Control);
@@ -368,7 +371,7 @@ impl<M: FormSchema> Form<M> {
                 rule.started = false;
             }
             self.run_validation(ValidationTrigger::Mount, None, self.version());
-            if self.validation != before {
+            if self.validation != before || was_validating {
                 self.publish_validation(cx);
             }
             return;
