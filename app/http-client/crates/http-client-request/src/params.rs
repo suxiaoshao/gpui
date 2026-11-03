@@ -639,7 +639,9 @@ mod tests {
         let (form, _, params) = harness_entities(&root, &mut cx);
 
         cx.update(|_, cx| {
-            RequestDraft::URL.set(&form, "https://example.com/path".into(), cx);
+            RequestDraft::URL
+                .set(&form, "https://example.com/path".into(), cx)
+                .unwrap();
         });
         cx.run_until_parked();
         cx.update(|window, cx| {
@@ -676,7 +678,7 @@ mod tests {
         let (form, _, params) = harness_entities(&root, &mut cx);
 
         let encoded = "https://example.com/path?%74ag=rust";
-        cx.update(|_, cx| RequestDraft::URL.set(&form, encoded.into(), cx));
+        cx.update(|_, cx| RequestDraft::URL.set(&form, encoded.into(), cx).unwrap());
         cx.run_until_parked();
         cx.update(|_, cx| {
             assert!(params.read(cx).has_decoded_key("tag"));
@@ -684,7 +686,11 @@ mod tests {
             assert_eq!(RequestDraft::URL.get(&form, cx), encoded);
         });
 
-        cx.update(|_, cx| RequestDraft::URL.set(&form, "not a URL".into(), cx));
+        cx.update(|_, cx| {
+            RequestDraft::URL
+                .set(&form, "not a URL".into(), cx)
+                .unwrap()
+        });
         cx.run_until_parked();
         cx.update(|_, cx| {
             assert!(!params.read(cx).has_decoded_key("tag"));
@@ -703,7 +709,9 @@ mod tests {
         let (initial_id, _, initial_value) = first_row(&params, &mut cx);
 
         cx.update(|_, cx| {
-            RequestDraft::URL.set(&form, "not a URL".into(), cx);
+            RequestDraft::URL
+                .set(&form, "not a URL".into(), cx)
+                .unwrap();
         });
         cx.run_until_parked();
 
@@ -718,7 +726,7 @@ mod tests {
 
         let projected = " https://example.com/path?tag=rust ";
         cx.update(|_, cx| {
-            RequestDraft::URL.set(&form, projected.into(), cx);
+            RequestDraft::URL.set(&form, projected.into(), cx).unwrap();
         });
         cx.run_until_parked();
 

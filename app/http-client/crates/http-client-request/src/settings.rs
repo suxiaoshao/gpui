@@ -80,7 +80,7 @@ impl gpui_kit::Render for SettingsView {
                         .label(follow_label)
                         .checked(follow)
                         .on_click(cx.listener(move |_, checked, _, cx| {
-                            follow_path.set(&follow_form, *checked, cx);
+                            follow_path.set(&follow_form, *checked, cx).unwrap();
                         })),
                 ),
             )
@@ -91,7 +91,7 @@ impl gpui_kit::Render for SettingsView {
                         .checked(preserve)
                         .disabled(!follow)
                         .on_click(cx.listener(move |_, checked, _, cx| {
-                            preserve_path.set(&preserve_form, *checked, cx);
+                            preserve_path.set(&preserve_form, *checked, cx).unwrap();
                         })),
                 ),
             )

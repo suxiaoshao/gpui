@@ -205,7 +205,11 @@ impl AdvancedQueryController {
         window: &mut Window,
         cx: &mut Context<QueryView>,
     ) -> Self {
-        let form = cx.new(|_| Form::new(QueryDraft::default()).with_validator(QueryDraftValidator));
+        let form = cx.new(|_| {
+            Form::new(QueryDraft::default())
+                .with_rules(QueryDraftValidator.rules())
+                .expect("valid rules")
+        });
         let (root, sorts) = Self::build_controls(&form, &options, window, cx)
             .expect("default query form paths must bind");
         let _subscriptions = vec![cx.subscribe_in(
@@ -240,11 +244,16 @@ impl AdvancedQueryController {
         _window: &mut Window,
         cx: &mut Context<QueryView>,
     ) {
-        self.form.update(cx, |form, cx| form.replace(draft, cx));
+        self.form.update(cx, |form, cx| {
+            form.replace(draft, gpui_form::DraftPolicy::Discard, cx)
+                .unwrap()
+        });
     }
 
     pub(crate) fn reset(&mut self, _window: &mut Window, cx: &mut Context<QueryView>) {
-        self.form.update(cx, |form, cx| form.reset(cx));
+        self.form.update(cx, |form, cx| {
+            form.reset(gpui_form::DraftPolicy::Discard, cx).unwrap()
+        });
     }
 
     pub(crate) fn update_options(
@@ -336,7 +345,7 @@ impl AdvancedQueryController {
         cx: &mut Context<QueryView>,
     ) {
         if self.root.id == group_id {
-            self.root.relation.set(&self.form, relation, cx);
+            self.root.relation.set(&self.form, relation, cx).unwrap();
         } else if let Some(group) = self.root.find_dynamic_group(&group_id)
             && let Err(error) = group.relation.try_set(&self.form, relation, cx)
         {
@@ -351,7 +360,7 @@ impl AdvancedQueryController {
         cx: &mut Context<QueryView>,
     ) {
         if self.root.id == group_id {
-            self.root.negated.set(&self.form, negated, cx);
+            self.root.negated.set(&self.form, negated, cx).unwrap();
         } else if let Some(group) = self.root.find_dynamic_group(&group_id)
             && let Err(error) = group.negated.try_set(&self.form, negated, cx)
         {
@@ -1079,7 +1088,9 @@ impl AdvancedQueryController {
 }
 
 fn needs_structural_reconcile(event: &gpui_form::FormEvent<QueryDraft>) -> bool {
-    let gpui_form::FormEvent::ModelChanged(change) = event else {
+    let (gpui_form::FormEvent::ModelChanged(change) | gpui_form::FormEvent::SessionChanged(change)) =
+        event
+    else {
         return false;
     };
     let filters = QueryDraft::ROOT
@@ -1328,8 +1339,11 @@ mod tests {
     impl ControllerHarness {
         fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
             let options = QueryOptions::default();
-            let form =
-                cx.new(|_| Form::new(QueryDraft::default()).with_validator(QueryDraftValidator));
+            let form = cx.new(|_| {
+                Form::new(QueryDraft::default())
+                    .with_rules(QueryDraftValidator.rules())
+                    .expect("valid rules")
+            });
             let (root, sorts) =
                 AdvancedQueryController::build_controls(&form, &options, window, cx)
                     .expect("default query controls must bind");

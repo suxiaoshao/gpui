@@ -135,7 +135,8 @@ impl AuthView {
             &form,
             window,
             |this, _, event: &FormEvent<RequestDraft>, window, cx| {
-                let FormEvent::ModelChanged(change) = event else {
+                let (FormEvent::ModelChanged(change) | FormEvent::SessionChanged(change)) = event
+                else {
                     cx.notify();
                     return;
                 };
@@ -510,7 +511,9 @@ mod tests {
         });
 
         cx.update(|_, cx| {
-            RequestDraft::AUTH.set(&form, RequestAuthDraft::bearer(), cx);
+            RequestDraft::AUTH
+                .set(&form, RequestAuthDraft::bearer(), cx)
+                .unwrap();
         });
         cx.run_until_parked();
         cx.update(|_, cx| {

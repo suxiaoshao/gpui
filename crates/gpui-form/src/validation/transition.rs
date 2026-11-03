@@ -12,6 +12,7 @@ pub(crate) struct AsyncValidationRuntime {
 
 struct PendingValidation {
     address: CanonicalAddress,
+    rule: std::borrow::Cow<'static, str>,
     task: Option<Task<()>>,
 }
 
@@ -29,11 +30,23 @@ impl AsyncValidationRuntime {
 }
 
 pub(crate) enum Message {
-    Reserve { address: CanonicalAddress },
-    Attach { generation: u64, task: Task<()> },
-    CancelIntersecting { address: CanonicalAddress },
+    Reserve {
+        address: CanonicalAddress,
+        rule: std::borrow::Cow<'static, str>,
+    },
+    Attach {
+        generation: u64,
+        task: Task<()>,
+    },
+    CancelRule {
+        address: CanonicalAddress,
+        rule: std::borrow::Cow<'static, str>,
+    },
     CancelAll,
-    Complete { generation: u64, fresh: bool },
+    Complete {
+        generation: u64,
+        fresh: bool,
+    },
 }
 
 pub(crate) enum Effect {
@@ -48,7 +61,7 @@ impl Transition<Message> for &mut AsyncValidationRuntime {
 
     fn transition(self, message: Message) -> Self::Output {
         match message {
-            Message::Reserve { address } => {
+            Message::Reserve { address, rule } => {
                 let generation = self.next_generation;
                 self.next_generation = generation
                     .checked_add(1)
@@ -57,6 +70,7 @@ impl Transition<Message> for &mut AsyncValidationRuntime {
                     generation,
                     PendingValidation {
                         address,
+                        rule,
                         task: None,
                     },
                 );
@@ -68,12 +82,12 @@ impl Transition<Message> for &mut AsyncValidationRuntime {
                 }
                 Effect::None
             }
-            Message::CancelIntersecting { address } => {
+            Message::CancelRule { address, rule } => {
                 let generations = self
                     .pending
                     .iter()
                     .filter_map(|(generation, pending)| {
-                        super::intersects(&address, &pending.address).then_some(*generation)
+                        (address == pending.address && rule == pending.rule).then_some(*generation)
                     })
                     .collect::<HashSet<_>>();
                 self.pending

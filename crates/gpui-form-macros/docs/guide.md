@@ -24,7 +24,7 @@ entity and passes it explicitly to descriptors and composed paths.
 use gpui::Entity;
 use gpui_form::{Form, FormSchema};
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct AccountDraft {
     email: String,
     max_projects: u32,
@@ -42,7 +42,7 @@ let changed: bool = AccountDraft::EMAIL.set(
     &form,
     "team@example.com".to_owned(),
     cx,
-);
+).unwrap();
 ```
 
 `AccountDraft::EMAIL` is `FieldDef<AccountDraft, String>`. It is a total path:
@@ -56,12 +56,12 @@ of nested schemas. A required child is statically present, so composing through
 it keeps a total path.
 
 ```rust,ignore
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct AddressDraft {
     city: String,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct ProfileDraft {
     #[form(child)]
     address: AddressDraft,
@@ -72,7 +72,7 @@ let profile_form = cx.new(|_| Form::new(ProfileDraft {
 }));
 let city = ProfileDraft::ADDRESS.then(AddressDraft::CITY);
 let value: String = city.get(&profile_form, cx);
-city.set(&profile_form, "Shanghai".to_owned(), cx);
+city.set(&profile_form, "Shanghai".to_owned(), cx).unwrap();
 ```
 
 The derive creates `ChildDef<ProfileDraft, AddressDraft>` for `ADDRESS`. The
@@ -83,12 +83,12 @@ For a collection, declare only business data. Do not add an ID field or a key
 trait for Form navigation:
 
 ```rust,ignore
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct RuleDraft {
     label: String,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct PolicyDraft {
     #[form(items)]
     rules: Vec<RuleDraft>,
@@ -118,7 +118,7 @@ struct CredentialsDraft {
     token: String,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct ConnectionDraft {
     #[form(child)]
     credentials: Option<CredentialsDraft>,
@@ -131,7 +131,7 @@ ConnectionDraft::CREDENTIALS.set(
     &connection_form,
     Some(CredentialsDraft::default()),
     cx,
-);
+).unwrap();
 
 let credentials = ConnectionDraft::CREDENTIALS
     .some()
@@ -155,30 +155,30 @@ Recursive forms use the same Rust types as the business model. The collection
 and resolver APIs carry the exact payload type through every level.
 
 ```rust,ignore
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterCondition {
     value: String,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterGroup {
     #[form(items)]
     children: Vec<FilterNode>,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct QueryDraft {
     #[form(child)]
     filters: FilterGroup,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterNode {
     #[form(child)]
     kind: FilterNodeKind,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 enum FilterNodeKind {
     Condition(FilterCondition),
     Group(FilterGroup),
@@ -267,10 +267,10 @@ second model parameter or rereading the live Form.
 
 ```rust,ignore
 use gpui_form::{
-    ValidationMessage, ValidationRequest, ValidationSink, Validator,
+    ValidationMessage, ValidationRequest, ValidationSink, ValidationRule,
 };
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct ProviderDraft {
     #[form(required, validate(on_submit, on_external))]
     name: String,
@@ -278,7 +278,12 @@ struct ProviderDraft {
 
 struct ProviderValidator;
 
-impl Validator<ProviderDraft> for ProviderValidator {
+impl ProviderValidator {
+    fn rules(self) -> Vec<ValidationRule<ProviderDraft>> {
+        vec![ValidationRule::new("ProviderValidator", move |request, out| self.validate(request, out))
+            .dependency(ProviderDraft::ROOT)]
+    }
+
     fn validate(
         &self,
         request: ValidationRequest<'_, ProviderDraft>,
@@ -297,7 +302,7 @@ impl Validator<ProviderDraft> for ProviderValidator {
 
 let form = cx.new(|_| {
     Form::new(ProviderDraft { name: String::new() })
-        .with_validator(ProviderValidator)
+        .with_rules(ProviderValidator.rules()).expect("valid rules")
 });
 ```
 
@@ -355,3 +360,39 @@ The derive diagnoses unsupported schema shapes at the declaration:
 The macro keeps unsupported shapes out of application runtime code. Runtime
 resolution errors remain limited to dynamic paths that once referred to an
 active item, case, or optional payload.
+
+
+## Three-way merge driver (#248)
+
+Generated merge traversal merges ordinary fields independently and recurses
+through direct child schemas. Collections, Option and enums are conservative
+whole units by default. Handwritten `FormSchema` implementations remain
+responsible for covering every merge unit in their internal traversal.
+Total `set` returns `Result<bool, ResolveError>` and can reject retirement of
+unresolved drafts.
+
+### Field merge declarations
+
+A named struct field may declare `#[form(merge = function_path)]`, including
+qualified paths such as `domain::merge_overrides`. It may accompany `child`,
+`items`, or leaf validation metadata. The function must accept three `&T`
+arguments (baseline, local storage, remote) and return `gpui_form::FieldMerge<T>`
+for the complete declared field type. For an optional child, T is `Option<Child>`;
+for items, T is `Vec<Item>`. Repeated `merge` options, including across separate
+attributes, produce a declaration-site error. Rust checks the hook signature
+and return type.
+
+The hook overrides that field's default merge while keeping its existing schema
+traversal and validation metadata. It runs only when traversal reaches the field:
+hooks nested inside an enclosing whole collection, Option or enum unit are not
+automatically visited. No container- or variant-level hook is provided.
+
+Use the attribute and public `FieldMerge::merged(candidate)` /
+`FieldMerge::conflicted(candidate)` constructors as the application extension.
+`FormSchema::__merge` and `__private::MergePlan` are hidden traversal machinery.
+Hooks are pure candidate functions and never receive Form, GPUI context, native
+controls or occurrence IDs. Pending native admission rejects before hooks run;
+an unresolved draft in a hook field keeps the entire local field and skips that
+hook. Candidates install atomically, conflicts locate the field, and the baseline
+remains the original remote value. The [Form guide](../../gpui-form/docs/guide.md#domain-field-merges)
+has a complete example and the dynamic identity/baseline rules.

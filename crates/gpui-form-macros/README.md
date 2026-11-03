@@ -25,7 +25,7 @@ is read or changed.
 use gpui::Entity;
 use gpui_form::{Form, FormSchema};
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct ProviderDraft {
     name: String,
     retry_limit: u32,
@@ -39,12 +39,12 @@ let form: Entity<Form<ProviderDraft>> = cx.new(|_| {
 });
 
 let name: String = ProviderDraft::NAME.get(&form, cx);
-let changed: bool = ProviderDraft::NAME.set(&form, "backup".to_owned(), cx);
+let changed: bool = ProviderDraft::NAME.set(&form, "backup".to_owned(), cx).unwrap();
 ```
 
 `ProviderDraft::NAME` is a `FieldDef<ProviderDraft, String>`, which is also a
 total path. A total path has no runtime-dependent boundary, so `get` and `set`
-are infallible. `set` returns whether the model actually changed.
+always resolve for reads. `set` returns Result<bool, ResolveError> and can reject retirement of unresolved drafts.
 
 ## Describe nested shapes
 
@@ -109,3 +109,18 @@ The derive rejects unsupported declarations near the model definition:
 
 Supported enum variants are unit variants or variants with one concrete tuple
 payload implementing `FormSchema`. See the guide for complete examples.
+
+
+## Three-way merge driver (#248)
+
+Derived schemas merge ordinary fields independently and recurse through direct
+children. Collections, Option and enums are conservative whole units by default.
+Total `set` returns `Result<bool, ResolveError>` and can reject retirement of drafts.
+
+Declare `#[form(merge = function_path)]` on a field, optionally alongside `child`
+or `items`, to override that field's merge. The pure function receives
+baseline/local/remote `&T` values and returns `gpui_form::FieldMerge<T>` through
+`merged(candidate)` or `conflicted(candidate)`. Duplicate hooks are rejected.
+Form keeps fields with unresolved drafts intact and skips their hooks; all other
+candidates install in the same transaction with the original remote baseline.
+See [field merge declarations](docs/guide.md#field-merge-declarations).

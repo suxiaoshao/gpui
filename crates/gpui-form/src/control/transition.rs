@@ -45,6 +45,10 @@ pub(super) enum Message {
         revision: FormRevision,
         editor_sequence: u64,
     },
+    RefreshValue {
+        revision: FormRevision,
+        editor_sequence: u64,
+    },
     SuppressThrough(FormRevision),
     Retire,
     Drain,
@@ -67,6 +71,24 @@ impl Transition<Message> for &mut BindingState {
                 editor_sequence,
             } => {
                 if self.lifecycle != Lifecycle::Active || revision <= self.suppressed_through {
+                    return Effect::None;
+                }
+                self.pending = Some(PendingProjection::Value {
+                    revision,
+                    editor_sequence,
+                });
+                if self.drain_scheduled {
+                    Effect::None
+                } else {
+                    self.drain_scheduled = true;
+                    Effect::ScheduleDrain
+                }
+            }
+            Message::RefreshValue {
+                revision,
+                editor_sequence,
+            } => {
+                if self.lifecycle != Lifecycle::Active {
                     return Effect::None;
                 }
                 self.pending = Some(PendingProjection::Value {

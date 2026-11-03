@@ -1,4 +1,4 @@
-use gpui_form::{FormSchema, ValidationMessage, ValidationRequest, ValidationSink, Validator};
+use gpui_form::{FormSchema, ValidationMessage, ValidationRequest, ValidationSink};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct FetchRequest {
@@ -63,14 +63,23 @@ impl From<&FetchRequest> for FetchDraft {
 
 pub(super) struct FetchValidator;
 
-impl Validator<FetchDraft> for FetchValidator {
+impl FetchValidator {
+    pub(crate) fn rules(self) -> Vec<gpui_form::ValidationRule<FetchDraft>> {
+        vec![
+            gpui_form::ValidationRule::new("FetchValidator", move |request, out| {
+                self.validate(request, out)
+            })
+            .dependency(FetchDraft::START_PAGE)
+            .dependency(FetchDraft::END_PAGE),
+        ]
+    }
     fn validate(
         &self,
         request: ValidationRequest<'_, FetchDraft>,
         out: &mut ValidationSink<'_, FetchDraft>,
     ) {
         let model = request.model();
-        if request.includes(&FetchDraft::END_PAGE) && model.start_page > model.end_page {
+        if model.start_page > model.end_page {
             out.at(FetchDraft::END_PAGE).error(
                 "page_range",
                 ValidationMessage::key("fetch-error-invalid-page-range"),
@@ -96,4 +105,28 @@ mod tests {
         assert_eq!(FetchRequest::from(restored), request);
         assert!(!format!("{request:?}").contains("secret"));
     }
+}
+
+#[cfg(test)]
+#[gpui_kit::test]
+fn page_range_rechecks_both_inputs_and_ignores_cookie(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::AppContext as _;
+    cx.update(|cx| {
+        let form = cx.new(|_| {
+            gpui_form::Form::new(FetchDraft::default())
+                .with_rules(FetchValidator.rules())
+                .unwrap()
+        });
+        FetchDraft::START_PAGE.set(&form, 9, cx).unwrap();
+        assert!(FetchDraft::END_PAGE.errors(&form, cx).is_empty());
+        assert!(form.update(cx, |form, cx| form.prepare(cx)).is_err());
+        assert_eq!(FetchDraft::END_PAGE.errors(&form, cx).len(), 1);
+        FetchDraft::COOKIE.set(&form, "cookie".into(), cx).unwrap();
+        assert_eq!(FetchDraft::END_PAGE.errors(&form, cx).len(), 1);
+        FetchDraft::START_PAGE.set(&form, 1, cx).unwrap();
+        assert!(FetchDraft::END_PAGE.errors(&form, cx).is_empty());
+        FetchDraft::START_PAGE.set(&form, 9, cx).unwrap();
+        FetchDraft::END_PAGE.set(&form, 10, cx).unwrap();
+        assert!(FetchDraft::END_PAGE.errors(&form, cx).is_empty());
+    });
 }

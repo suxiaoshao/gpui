@@ -53,4 +53,11 @@ pub trait SchemaVisitor {
 pub trait FormSchema: Clone + PartialEq + 'static {
     #[doc(hidden)]
     fn __visit(&self, visitor: &mut dyn SchemaVisitor);
+    #[doc(hidden)]
+    fn __merge(
+        base: &Self,
+        local: &Self,
+        remote: &Self,
+        plan: &mut crate::__private::MergePlan,
+    ) -> Self;
 }

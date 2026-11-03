@@ -234,7 +234,8 @@ impl FormDataView {
             &form,
             window,
             |this, _, event: &FormEvent<RequestDraft>, window, cx| {
-                let FormEvent::ModelChanged(change) = event else {
+                let (FormEvent::ModelChanged(change) | FormEvent::SessionChanged(change)) = event
+                else {
                     return;
                 };
                 let impact = change.impact(&this.parts);
@@ -652,7 +653,11 @@ mod tests {
                 body: RequestBodyDraft::FormData(FormDataDraft { parts }),
                 ..RequestDraft::default()
             };
-            let form = cx.new(|_| Form::new(draft).with_validator(RequestValidator));
+            let form = cx.new(|_| {
+                Form::new(draft)
+                    .with_rules(RequestValidator.rules())
+                    .expect("valid rules")
+            });
             let payload = RequestDraft::BODY
                 .case(RequestBodyDraft::FORM_DATA)
                 .resolve(&form, cx)
@@ -973,7 +978,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn disabled_multipart_part_hides_previous_submit_issues(cx: &mut TestAppContext) {
+    fn disabled_multipart_part_clears_previous_submit_issues(cx: &mut TestAppContext) {
         let (form, window) = open_form_data(vec![text_part("", "value")], cx);
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let item = cx.update(|_, cx| {
@@ -990,11 +995,11 @@ mod tests {
             enabled
                 .try_set(&form, false, cx)
                 .expect("disable multipart part");
-            let stale_issues = name.try_errors(&form, cx).expect("name remains live");
+            let issues = name.try_errors(&form, cx).expect("name remains live");
             assert!(visible_dynamic_error(false, &name, &form, cx).is_none());
             assert!(
-                !stale_issues.is_empty(),
-                "the renderer is hiding an old issue"
+                issues.is_empty(),
+                "the rule rechecks its enabled dependency and removes the old name issue"
             );
         });
     }

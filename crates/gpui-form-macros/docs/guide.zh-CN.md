@@ -22,7 +22,7 @@ gpui-form.workspace = true
 use gpui::Entity;
 use gpui_form::{Form, FormSchema};
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct AccountDraft {
     email: String,
     max_projects: u32,
@@ -40,7 +40,7 @@ let changed: bool = AccountDraft::EMAIL.set(
     &form,
     "team@example.com".to_owned(),
     cx,
-);
+).unwrap();
 ```
 
 `AccountDraft::EMAIL` 是 `FieldDef<AccountDraft, String>`。它是 total path：在此 form session
@@ -53,12 +53,12 @@ let changed: bool = AccountDraft::EMAIL.set(
 在静态上一定存在，因此穿过它组合后的 path 仍是 total。
 
 ```rust,ignore
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct AddressDraft {
     city: String,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct ProfileDraft {
     #[form(child)]
     address: AddressDraft,
@@ -69,7 +69,7 @@ let profile_form = cx.new(|_| Form::new(ProfileDraft {
 }));
 let city = ProfileDraft::ADDRESS.then(AddressDraft::CITY);
 let value: String = city.get(&profile_form, cx);
-city.set(&profile_form, "Shanghai".to_owned(), cx);
+city.set(&profile_form, "Shanghai".to_owned(), cx).unwrap();
 ```
 
 derive 会为 `ADDRESS` 生成 `ChildDef<ProfileDraft, AddressDraft>`。组合后的 `city` path
@@ -78,12 +78,12 @@ derive 会为 `ADDRESS` 生成 `ChildDef<ProfileDraft, AddressDraft>`。组合�
 对于 collection，只声明业务数据。不要为了 Form 导航增加 ID field 或 key trait：
 
 ```rust,ignore
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct RuleDraft {
     label: String,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct PolicyDraft {
     #[form(items)]
     rules: Vec<RuleDraft>,
@@ -108,7 +108,7 @@ struct CredentialsDraft {
     token: String,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct ConnectionDraft {
     #[form(child)]
     credentials: Option<CredentialsDraft>,
@@ -121,7 +121,7 @@ ConnectionDraft::CREDENTIALS.set(
     &connection_form,
     Some(CredentialsDraft::default()),
     cx,
-);
+).unwrap();
 
 let credentials = ConnectionDraft::CREDENTIALS
     .some()
@@ -143,30 +143,30 @@ path 一旦跨过 item、optional 或 case 边界，就成为 dynamic path。使
 payload type。
 
 ```rust,ignore
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterCondition {
     value: String,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterGroup {
     #[form(items)]
     children: Vec<FilterNode>,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct QueryDraft {
     #[form(child)]
     filters: FilterGroup,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterNode {
     #[form(child)]
     kind: FilterNodeKind,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 enum FilterNodeKind {
     Condition(FilterCondition),
     Group(FilterGroup),
@@ -250,10 +250,10 @@ model parameter 或重新读取 live Form。
 
 ```rust,ignore
 use gpui_form::{
-    ValidationMessage, ValidationRequest, ValidationSink, Validator,
+    ValidationMessage, ValidationRequest, ValidationSink, ValidationRule,
 };
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct ProviderDraft {
     #[form(required, validate(on_submit, on_external))]
     name: String,
@@ -261,7 +261,12 @@ struct ProviderDraft {
 
 struct ProviderValidator;
 
-impl Validator<ProviderDraft> for ProviderValidator {
+impl ProviderValidator {
+    fn rules(self) -> Vec<ValidationRule<ProviderDraft>> {
+        vec![ValidationRule::new("ProviderValidator", move |request, out| self.validate(request, out))
+            .dependency(ProviderDraft::ROOT)]
+    }
+
     fn validate(
         &self,
         request: ValidationRequest<'_, ProviderDraft>,
@@ -280,7 +285,7 @@ impl Validator<ProviderDraft> for ProviderValidator {
 
 let form = cx.new(|_| {
     Form::new(ProviderDraft { name: String::new() })
-        .with_validator(ProviderValidator)
+        .with_rules(ProviderValidator.rules()).expect("valid rules")
 });
 ```
 
@@ -335,3 +340,29 @@ derive 会在声明处诊断不支持的 schema 形状：
 
 macro 将不支持的形状排除在 application runtime code 之外。runtime resolution error 只限于曾指向
 active item、case 或 optional payload 的 dynamic path。
+
+
+## 三方合并遍历（#248）
+
+生成的合并遍历对普通字段独立合并、直接 child 递归；集合、Option、枚举默认作为整体保守合并。
+手写 `FormSchema` 仍需在内部遍历中覆盖每个合并单元。Total `set` 返回
+`Result<bool, ResolveError>`，可能拒绝退休未解析草稿。
+
+### 字段合并声明
+
+具名 struct 字段可以声明 `#[form(merge = function_path)]`，支持
+`domain::merge_overrides` 等限定路径，可与 `child`、`items` 或 leaf 校验元数据共用。
+函数接收三个 `&T`（基线、本地存储值、远端），返回 `gpui_form::FieldMerge<T>`，
+T 是声明的完整字段类型：optional child 为 `Option<Child>`，items 为 `Vec<Item>`。
+重复的 `merge`（包括跨独立 attribute）会在声明处报错，函数签名和返回类型由 Rust 检查。
+
+hook 覆盖该字段默认合并策略，保留原有 schema 遍历和校验元数据。只有合并遍历到达该字段时
+才执行；位于外层整体集合、Option 或枚举单元内部的 hook 不会自动遍历。
+不提供 container 或 variant 层 hook。
+
+应用通过此 attribute 和公开的 `FieldMerge::merged(candidate)` /
+`FieldMerge::conflicted(candidate)` 构造器接入。`FormSchema::__merge` 和
+`__private::MergePlan` 属于隐藏遍历机制。hook 是纯候选函数，不接收 Form、GPUI context、
+原生控件或 occurrence ID。待接纳输入会在调用 hook 前拒绝整个事务；hook 字段存在未解析草稿时
+整字段保留本地并跳过 hook。候选原子安装，冲突定位字段，基线始终是原始远端。
+完整示例及动态身份/基线规则见 [Form 指南](../../gpui-form/docs/guide.zh-CN.md#字段级领域合并)。

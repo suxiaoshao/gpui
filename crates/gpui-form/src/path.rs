@@ -481,6 +481,16 @@ impl<Root: FormSchema, Item: FormSchema> ItemPath<Root, Item> {
         )
     }
 
+    pub fn try_baseline(
+        &self,
+        form: &Entity<Form<Root>>,
+        cx: &App,
+    ) -> Result<Option<Item>, ResolveError> {
+        self.path.try_baseline(form, cx)
+    }
+    pub fn try_is_dirty(&self, form: &Entity<Form<Root>>, cx: &App) -> Result<bool, ResolveError> {
+        self.path.try_is_dirty(form, cx)
+    }
     pub fn try_get(&self, form: &Entity<Form<Root>>, cx: &App) -> Result<Item, ResolveError> {
         self.path.try_get(form, cx)
     }
@@ -541,9 +551,25 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> TotalPath<Root, T> {
             .clone()
     }
 
-    pub fn set(&self, form: &Entity<Form<Root>>, value: T, cx: &mut App) -> bool {
+    pub fn baseline(&self, form: &Entity<Form<Root>>, cx: &App) -> T {
+        form.read(cx)
+            .baseline_for(&self.core)
+            .expect("total baseline always resolves")
+    }
+    pub fn is_dirty(&self, form: &Entity<Form<Root>>, cx: &App) -> bool {
+        self.get(form, cx) != self.baseline(form, cx)
+            || form.read(cx).has_drafts_at(&self.core.address)
+    }
+
+    pub fn set(
+        &self,
+        form: &Entity<Form<Root>>,
+        value: T,
+        cx: &mut App,
+    ) -> Result<bool, ResolveError> {
         let path = self.clone();
         form.update(cx, move |form, cx| {
+            let can_retire = form.ensure_can_retire(&path.core.address);
             let changed = {
                 let (model, topology) = form.model_and_topology();
                 let snapshot = topology.snapshot();
@@ -555,6 +581,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> TotalPath<Root, T> {
                 if current == &value {
                     false
                 } else {
+                    can_retire?;
                     *path
                         .core
                         .access
@@ -564,10 +591,10 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> TotalPath<Root, T> {
                 }
             };
             if !changed {
-                return false;
+                return Ok(false);
             }
             form.commit_value(path.core.address.clone(), cx);
-            true
+            Ok(true)
         })
     }
 
@@ -609,6 +636,21 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> DynamicPath<Root, T> {
             .clone())
     }
 
+    pub fn try_baseline(
+        &self,
+        form: &Entity<Form<Root>>,
+        cx: &App,
+    ) -> Result<Option<T>, ResolveError> {
+        self.core.check(form.read(cx))?;
+        Ok(form.read(cx).baseline_for(&self.core))
+    }
+    pub fn try_is_dirty(&self, form: &Entity<Form<Root>>, cx: &App) -> Result<bool, ResolveError> {
+        Ok(self
+            .try_baseline(form, cx)?
+            .is_none_or(|b| self.try_get(form, cx).is_ok_and(|v| v != b))
+            || form.read(cx).has_drafts_at(&self.core.address))
+    }
+
     pub fn try_set(
         &self,
         form: &Entity<Form<Root>>,
@@ -618,6 +660,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> DynamicPath<Root, T> {
         let path = self.clone();
         form.update(cx, move |form, cx| {
             path.core.check(form)?;
+            let can_retire = form.ensure_can_retire(&path.core.address);
             let changed = {
                 let (model, topology) = form.model_and_topology();
                 let snapshot = topology.snapshot();
@@ -625,6 +668,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> DynamicPath<Root, T> {
                 if current == &value {
                     false
                 } else {
+                    can_retire?;
                     *path.core.access.get_mut(model, &snapshot)? = value;
                     true
                 }
@@ -998,6 +1042,19 @@ pub(crate) fn validation_some_in<'a, Root: FormSchema, T: FormSchema>(
 }
 
 impl<Root: FormSchema, Item: FormSchema> TotalItemsPath<Root, Item> {
+    pub fn baseline(&self, form: &Entity<Form<Root>>, cx: &App) -> Vec<Item> {
+        form.read(cx)
+            .baseline_for(&self.core)
+            .expect("total collection baseline")
+    }
+    pub fn is_dirty(&self, form: &Entity<Form<Root>>, cx: &App) -> bool {
+        self.core
+            .access
+            .get(form.read(cx).value(), &form.read(cx).topology().snapshot())
+            .expect("total collection")
+            != &self.baseline(form, cx)
+            || form.read(cx).has_drafts_at(&self.core.address)
+    }
     pub fn items(&self, form: &Entity<Form<Root>>, cx: &App) -> Vec<ItemPath<Root, Item>> {
         let form = form.read(cx);
         item_paths_in(&self.core, form.value(), form.topology())
@@ -1006,6 +1063,26 @@ impl<Root: FormSchema, Item: FormSchema> TotalItemsPath<Root, Item> {
 }
 
 impl<Root: FormSchema, Item: FormSchema> DynamicItemsPath<Root, Item> {
+    pub fn try_baseline(
+        &self,
+        form: &Entity<Form<Root>>,
+        cx: &App,
+    ) -> Result<Option<Vec<Item>>, ResolveError> {
+        self.core.check(form.read(cx))?;
+        Ok(form.read(cx).baseline_for(&self.core))
+    }
+    pub fn try_is_dirty(&self, form: &Entity<Form<Root>>, cx: &App) -> Result<bool, ResolveError> {
+        self.core.check(form.read(cx))?;
+        let form_ref = form.read(cx);
+        let current = self
+            .core
+            .access
+            .get(form_ref.value(), &form_ref.topology().snapshot())?;
+        Ok(form_ref
+            .baseline_for(&self.core)
+            .is_none_or(|b| current != &b)
+            || form_ref.has_drafts_at(&self.core.address))
+    }
     pub fn try_items(
         &self,
         form: &Entity<Form<Root>>,
@@ -1100,7 +1177,7 @@ macro_rules! impl_items_path {
                     {
                         return Err(TopologyError::WrongCollection { path: item.key() }.into());
                     }
-                    let changed = {
+                    let (changed, model_changed) = {
                         let (model, topology) = form.model_and_topology();
                         let snapshot = topology.snapshot();
                         let len = path.core.access.get(model, &snapshot)?.len();
@@ -1113,21 +1190,33 @@ macro_rules! impl_items_path {
                             .item_index(&path.core.address, anchor.token)
                             .ok_or_else(|| ResolveError::MissingItem { path: anchor.key() })?;
                         if source == target || source + 1 == target {
-                            false
+                            (false, false)
                         } else {
                             edit.move_item(&path.core.address, source, target)?;
                             let values = path.core.access.get_mut(model, &snapshot)?;
+                            let crossed = if source < target {
+                                source + 1..target
+                            } else {
+                                target..source
+                            };
+                            let model_changed =
+                                values[crossed].iter().any(|other| other != &values[source]);
                             let value = values.remove(source);
                             let adjusted = if source < target { target - 1 } else { target };
                             values.insert(adjusted, value);
                             topology.commit(edit);
-                            true
+                            (true, model_changed)
                         }
                     };
                     if !changed {
                         return Ok(());
                     }
-                    form.commit_topology(path.core.address.clone(), cx);
+                    form.commit_topology_replacing(
+                        path.core.address.clone(),
+                        Vec::new(),
+                        model_changed,
+                        cx,
+                    );
                     Ok(())
                 })
             }
@@ -1142,6 +1231,7 @@ macro_rules! impl_items_path {
                 form.update(cx, move |form, cx| {
                     path.core.check(form)?;
                     item.path.core.check(form)?;
+                    form.ensure_can_remove(&item.path.core.address)?;
                     if item.collection != path.core.address {
                         return Err(TopologyError::WrongCollection { path: item.key() }.into());
                     }
@@ -1174,6 +1264,12 @@ macro_rules! impl_items_path {
                 let path = self.clone();
                 form.update(cx, move |form, cx| {
                     path.core.check(form)?;
+                    form.ensure_can_retire(&path.core.address)?;
+                    let model_changed = path
+                        .core
+                        .access
+                        .get(form.value(), &form.topology().snapshot())?
+                        != &values;
                     let retired = form
                         .topology()
                         .items(&path.core.address)
@@ -1190,7 +1286,12 @@ macro_rules! impl_items_path {
                         *path.core.access.get_mut(model, &snapshot)? = values;
                         topology.commit(edit);
                     }
-                    form.commit_topology_retiring(path.core.address.clone(), retired, cx);
+                    form.commit_topology_replacing(
+                        path.core.address.clone(),
+                        retired,
+                        model_changed,
+                        cx,
+                    );
                     Ok(item_paths_in(&path.core, form.value(), form.topology())?)
                 })
             }
@@ -1210,6 +1311,7 @@ fn move_between<Root: FormSchema, Item: FormSchema>(
 ) -> Result<ItemPath<Root, Item>, MutationError> {
     form.update(cx, move |form, cx| {
         source.path.core.check(form)?;
+        form.ensure_can_remove(&source.path.core.address)?;
         destination.check(form)?;
         if source.path.core.address.is_prefix_of(&destination.address) {
             return Err(TopologyError::MoveIntoDescendant { path: source.key() }.into());
@@ -1294,7 +1396,19 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> FieldDef<Root, T> {
         (*self).into_total_path().get(form, cx)
     }
 
-    pub fn set(&self, form: &Entity<Form<Root>>, value: T, cx: &mut App) -> bool {
+    pub fn baseline(&self, form: &Entity<Form<Root>>, cx: &App) -> T {
+        (*self).into_total_path().baseline(form, cx)
+    }
+    pub fn is_dirty(&self, form: &Entity<Form<Root>>, cx: &App) -> bool {
+        (*self).into_total_path().is_dirty(form, cx)
+    }
+
+    pub fn set(
+        &self,
+        form: &Entity<Form<Root>>,
+        value: T,
+        cx: &mut App,
+    ) -> Result<bool, ResolveError> {
         (*self).into_total_path().set(form, value, cx)
     }
 
@@ -1329,7 +1443,19 @@ impl<Root: FormSchema> RootDef<Root> {
         (*self).into_total_path().get(form, cx)
     }
 
-    pub fn set(&self, form: &Entity<Form<Root>>, value: Root, cx: &mut App) -> bool {
+    pub fn baseline(&self, form: &Entity<Form<Root>>, cx: &App) -> Root {
+        (*self).into_total_path().baseline(form, cx)
+    }
+    pub fn is_dirty(&self, form: &Entity<Form<Root>>, cx: &App) -> bool {
+        (*self).into_total_path().is_dirty(form, cx)
+    }
+
+    pub fn set(
+        &self,
+        form: &Entity<Form<Root>>,
+        value: Root,
+        cx: &mut App,
+    ) -> Result<bool, ResolveError> {
         (*self).into_total_path().set(form, value, cx)
     }
 
@@ -1370,7 +1496,19 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> ChildDef<Root, T> {
         (*self).into_total_path().get(form, cx)
     }
 
-    pub fn set(&self, form: &Entity<Form<Root>>, value: T, cx: &mut App) -> bool {
+    pub fn baseline(&self, form: &Entity<Form<Root>>, cx: &App) -> T {
+        (*self).into_total_path().baseline(form, cx)
+    }
+    pub fn is_dirty(&self, form: &Entity<Form<Root>>, cx: &App) -> bool {
+        (*self).into_total_path().is_dirty(form, cx)
+    }
+
+    pub fn set(
+        &self,
+        form: &Entity<Form<Root>>,
+        value: T,
+        cx: &mut App,
+    ) -> Result<bool, ResolveError> {
         (*self).into_total_path().set(form, value, cx)
     }
 

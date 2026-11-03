@@ -22,12 +22,14 @@ impl std::error::Error for IntegerInputPolicyError {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FormIntegerInputBuildError {
     Resolve(ResolveError),
+    EditorType(gpui_form::EditorTypeMismatch),
     Policy(IntegerInputPolicyError),
 }
 
 impl fmt::Display for FormIntegerInputBuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::EditorType(error) => error.fmt(f),
             Self::Resolve(error) => error.fmt(f),
             Self::Policy(error) => error.fmt(f),
         }

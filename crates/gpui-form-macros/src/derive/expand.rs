@@ -24,6 +24,7 @@ fn expand_struct(name: &Ident, fields: &[SchemaField]) -> syn::Result<TokenStrea
     let mut functions = Vec::new();
     let mut constants = Vec::new();
     let mut visits = Vec::new();
+    let mut merges = Vec::new();
 
     for field in fields {
         let field_name = &field.ident;
@@ -36,6 +37,22 @@ fn expand_struct(name: &Ident, fields: &[SchemaField]) -> syn::Result<TokenStrea
             fn #read(value: &Self) -> &#field_type { &value.#field_name }
             fn #read_mut(value: &mut Self) -> &mut #field_type { &mut value.#field_name }
         });
+
+        let merge = if let Some(hook) = &field.merge {
+            quote! {
+                plan.child(#literal, |plan| plan.merge_with(&base.#field_name, &local.#field_name, &remote.#field_name, #hook))
+            }
+        } else {
+            match &field.kind {
+                SchemaFieldKind::Child(ChildKind::Direct) => quote! {
+                    plan.child(#literal, |plan| <#field_type as ::gpui_form::FormSchema>::__merge(&base.#field_name, &local.#field_name, &remote.#field_name, plan))
+                },
+                _ => {
+                    quote! { plan.child(#literal, |plan| plan.atomic(&base.#field_name, &local.#field_name, &remote.#field_name)) }
+                }
+            }
+        };
+        merges.push(quote! { #field_name: #merge });
 
         match &field.kind {
             SchemaFieldKind::Leaf => {
@@ -114,7 +131,11 @@ fn expand_struct(name: &Ident, fields: &[SchemaField]) -> syn::Result<TokenStrea
     }
 
     let definition = definition::model_definition(name, &functions, &constants);
-    let driver = driver::schema_driver(name, quote! { #(#visits)* });
+    let driver = driver::schema_driver(
+        name,
+        quote! { #(#visits)* },
+        quote! { Self { #(#merges),* } },
+    );
     Ok(quote! { #definition #driver })
 }
 
@@ -164,6 +185,10 @@ fn expand_enum(name: &Ident, variants: &[SchemaVariant]) -> syn::Result<TokenStr
     }
 
     let definition = definition::model_definition(name, &functions, &constants);
-    let driver = driver::schema_driver(name, quote! { match self { #(#arms)* } });
+    let driver = driver::schema_driver(
+        name,
+        quote! { match self { #(#arms)* } },
+        quote! { plan.atomic(base, local, remote) },
+    );
     Ok(quote! { #definition #driver })
 }

@@ -30,7 +30,7 @@ use gpui_component::{
 };
 use gpui_form::{
     Form, FormEvent, FormSchema, Prepared, ValidationMessage,
-    ValidationItemPath, ValidationRequest, ValidationSink, ValidationTrigger, Validator,
+    ValidationItemPath, ValidationRequest, ValidationSink, ValidationTrigger, ValidationRule,
 };
 use gpui_form_gpui_component::{FormInput, FormIntegerInput, IntegerInputState};
 ```
@@ -54,11 +54,11 @@ struct ProviderDraft {
 
 `FormSchema` 会创建可复用的静态 descriptor，例如 `ProviderDraft::NAME`。descriptor 只包含 schema
 metadata 与 typed access；它不会保留 form entity、value、subscription 或 native control。root descriptor
-也是 total path，所以它的 `get` 与 `set` 操作不会失败。
+也是 total path：get 总能 resolve；set 返回 Result，防止结构替换丢失未解析草稿。
 
 ### 创建编辑 session
 
-构造函数是 infallible。先提供初始 draft，再按需为本次编辑 session 附加 validator：
+Form::new 创建 session；with_rules 显式注册规则并返回配置 Result：
 
 ```rust,ignore
 let form: Entity<Form<ProviderDraft>> = cx.new(|_| {
@@ -67,7 +67,7 @@ let form: Entity<Form<ProviderDraft>> = cx.new(|_| {
         retry_limit: 3,
         enabled: true,
     })
-    .with_validator(ProviderValidator::new(reserved_names))
+    .with_rules(ProviderValidator::new(reserved_names).rules()).expect("valid rules")
 });
 ```
 
@@ -89,7 +89,12 @@ impl ProviderValidator {
     }
 }
 
-impl Validator<ProviderDraft> for ProviderValidator {
+impl ProviderValidator {
+    fn rules(self) -> Vec<ValidationRule<ProviderDraft>> {
+        vec![ValidationRule::new("ProviderValidator", move |request, out| self.validate(request, out))
+            .dependency(ProviderDraft::ROOT)]
+    }
+
     fn validate(
         &self,
         request: ValidationRequest<'_, ProviderDraft>,
@@ -142,6 +147,7 @@ impl ProviderPage {
         let retry_limit_input = FormIntegerInput::new(
             &form,
             ProviderDraft::RETRY_LIMIT,
+    "budget-editor",
             |window, cx| IntegerInputState::new(window, cx).min(0u32).max(10u32),
             window,
             cx,
@@ -168,7 +174,7 @@ let form = self.form.clone();
 Checkbox::new("provider-enabled")
     .checked(checked)
     .on_click(move |checked, _, cx| {
-        enabled.set(&form, *checked, cx);
+        enabled.set(&form, *checked, cx).unwrap();
     });
 ```
 
@@ -213,26 +219,26 @@ if !applied {
 model 不包含 Form 专用 ID：
 
 ```rust,ignore
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct QueryDraft {
     #[form(child)]
     filters: FilterGroup,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterGroup {
     title: String,
     #[form(items)]
     children: Vec<FilterNode>,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 enum FilterNode {
     Condition(FilterCondition),
     Group(FilterGroup),
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterCondition {
     value: String,
 }
@@ -248,7 +254,7 @@ let title = QueryDraft::ROOT
     .then(QueryDraft::FILTERS)
     .then(FilterGroup::TITLE);
 let value: String = title.get(&query_form, cx);
-title.set(&query_form, "Recent articles".into(), cx);
+title.set(&query_form, "Recent articles".into(), cx).unwrap();
 ```
 
 item、enum case 和 `Option::Some` 位置是 dynamic。Form 生成它们的 identity；调用方不生成 ID，也不按数组
@@ -290,7 +296,7 @@ Form 持有的当前位置。
 
 ```rust,ignore
 let subscription = cx.subscribe(&form, |_, _, event, cx| {
-    if let FormEvent::ModelChanged(change) = event {
+    if let FormEvent::ModelChanged(change) | FormEvent::SessionChanged(change) = event {
         let children = QueryDraft::ROOT
             .then(QueryDraft::FILTERS)
             .then(FilterGroup::CHILDREN);
@@ -316,3 +322,17 @@ let subscription = cx.subscribe(&form, |_, _, event, cx| {
   diagnostic。
 - [Component adapter 使用指南](../gpui-form-gpui-component/docs/guide.zh-CN.md)：内置控件及 custom
   control binding API。
+
+
+## 字段级领域合并
+
+在字段上声明 `#[form(merge = merge_overrides)]`，定制它在
+`rebase_preserving_edits` 中的合并。纯函数接收基线/本地/远端存储值，返回
+`FieldMerge::merged(candidate)` 或 `FieldMerge::conflicted(candidate)`，也可与
+`child`、`items` 一起声明。Form 在同一事务中安装所有候选，始终保存原始远端基线。
+存在未解析草稿的字段会整字段保留本地值，并在本轮刷新跳过 hook。身份、冲突和基线规则见
+[字段合并指南](docs/guide.zh-CN.md#字段级领域合并)。
+
+## 编辑会话迁移（#248）
+
+旧 Validator 入口已删除；with_rules 显式注册规则依赖并返回 Result。Form 持有未解析草稿与原生编辑票据。Total set 返回 Result；replace/reset/rebase 强制 DraftPolicy 并返回生命周期报告。刷新用 rebase_preserving_edits 原子保留本地编辑并报告冲突。数字构造函数新增稳定 editor key；FormMappedInput 提供存储/展示映射。签名、路径基线/dirty 和迁移详情见[指南](docs/guide.zh-CN.md)。

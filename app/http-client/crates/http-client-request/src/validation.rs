@@ -1,6 +1,4 @@
-use gpui_form::{
-    ValidationMessage, ValidationRequest, ValidationSink, ValidationTrigger, Validator,
-};
+use gpui_form::{ValidationMessage, ValidationRequest, ValidationSink};
 use http::HeaderValue;
 
 use super::{
@@ -19,20 +17,18 @@ use super::{
 
 pub(crate) struct RequestValidator;
 
-impl Validator<RequestDraft> for RequestValidator {
-    fn validate(
-        &self,
-        request: ValidationRequest<'_, RequestDraft>,
-        out: &mut ValidationSink<'_, RequestDraft>,
-    ) {
-        if request.trigger() != ValidationTrigger::Submit {
-            return;
-        }
-
-        validate_url(&request, out);
-        validate_headers(&request, out);
-        validate_body(&request, out);
-        validate_auth(&request, out);
+impl RequestValidator {
+    pub(crate) fn rules(self) -> Vec<gpui_form::ValidationRule<RequestDraft>> {
+        vec![
+            gpui_form::ValidationRule::new("request.url", |r, out| validate_url(&r, out))
+                .dependency(RequestDraft::URL),
+            gpui_form::ValidationRule::new("request.headers", |r, out| validate_headers(&r, out))
+                .dependency(RequestDraft::HEADERS),
+            gpui_form::ValidationRule::new("request.body", |r, out| validate_body(&r, out))
+                .dependency(RequestDraft::BODY),
+            gpui_form::ValidationRule::new("request.auth", |r, out| validate_auth(&r, out))
+                .dependency(RequestDraft::AUTH),
+        ]
     }
 }
 
@@ -334,7 +330,7 @@ fn validate_api_key<'a>(
 
 #[cfg(test)]
 mod tests {
-    use gpui_form::{Form, PrepareError, ValidationTrigger};
+    use gpui_form::{Form, PrepareError};
     use gpui_kit::{AppContext as _, TestAppContext};
 
     use super::*;
@@ -342,7 +338,11 @@ mod tests {
     use crate::prepared::compile_request;
 
     fn form(draft: RequestDraft, cx: &mut gpui_kit::App) -> gpui_kit::Entity<Form<RequestDraft>> {
-        cx.new(|_| Form::new(draft).with_validator(RequestValidator))
+        cx.new(|_| {
+            Form::new(draft)
+                .with_rules(RequestValidator.rules())
+                .expect("valid rules")
+        })
     }
 
     fn valid_draft() -> RequestDraft {
@@ -362,9 +362,11 @@ mod tests {
             let form = form(valid_draft(), cx);
 
             assert!(RequestDraft::URL.errors(&form, cx).is_empty());
-            RequestDraft::URL.set(&form, "file:///tmp/request".into(), cx);
+            RequestDraft::URL
+                .set(&form, "file:///tmp/request".into(), cx)
+                .unwrap();
             assert!(RequestDraft::URL.errors(&form, cx).is_empty());
-            RequestDraft::URL.validate(&form, ValidationTrigger::Blur, cx);
+            RequestDraft::URL.validate(&form, gpui_form::ValidationTrigger::Blur, cx);
             assert!(RequestDraft::URL.errors(&form, cx).is_empty());
             assert!(matches!(
                 form.update(cx, |form, cx| form.prepare(cx)),
@@ -636,11 +638,13 @@ mod tests {
             RequestDraft::ROOT
                 .then(RequestDraft::SETTINGS)
                 .then(super::super::draft::RequestSettingsDraft::FOLLOW_REDIRECTS)
-                .set(&form, false, cx);
+                .set(&form, false, cx)
+                .unwrap();
             RequestDraft::ROOT
                 .then(RequestDraft::SETTINGS)
                 .then(super::super::draft::RequestSettingsDraft::FOLLOW_ORIGINAL_METHOD)
-                .set(&form, false, cx);
+                .set(&form, false, cx)
+                .unwrap();
 
             assert_eq!(
                 prepared.timeout,

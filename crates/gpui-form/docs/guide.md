@@ -22,7 +22,7 @@ Create one `Entity<Form<M>>` for one editing session. It owns the current
 typed model, its baseline, validation facts, and dynamic field locations. A
 page owns save/load operations, button policy, error visibility, focus, and
 presentation. A native control owns its editing state such as IME, cursor,
-selection, popup state, and incomplete text.
+selection, and popup state. The Form owns unresolved display drafts under stable editor keys.
 
 Schema descriptors never own the session. That makes each descriptor reusable:
 
@@ -42,11 +42,11 @@ let form = cx.new(|_| {
         retry_limit: 3,
         enabled: true,
     })
-    .with_validator(ProviderValidator::new(reserved_names))
+    .with_rules(ProviderValidator::new(reserved_names).rules()).expect("valid rules")
 });
 ```
 
-`Form::new` and `with_validator` are infallible. The descriptor generated for
+`Form::new` is infallible; `with_rules` rejects duplicate IDs, missing dependencies, and invalid instances. The descriptor generated for
 `name` is a static value such as `ProviderDraft::NAME`; every read or mutation
 explicitly receives `&form`.
 
@@ -60,10 +60,10 @@ including after `replace`, `reset`, or `rebase`:
 let name = ProviderDraft::NAME;
 
 let current: String = name.get(&form, cx);
-let changed: bool = name.set(&form, "primary".into(), cx);
+let changed: bool = name.set(&form, "primary".into(), cx).unwrap();
 
 let enabled = ProviderDraft::ENABLED;
-enabled.set(&form, true, cx);
+enabled.set(&form, true, cx).unwrap();
 ```
 
 `set` returns whether the model changed. An equal normal write is a model
@@ -73,13 +73,13 @@ rendering.
 Static nesting keeps the same property:
 
 ```rust,ignore
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct AuthDraft { username: String }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct RedirectDraft { callback_url: String }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct ServerDraft {
     #[form(child)]
     auth: AuthDraft,
@@ -138,10 +138,10 @@ only business data: Form creates the identity of each item occurrence. Obtain
 `ItemPath` values only by enumerating the form or by a collection mutation:
 
 ```rust,ignore
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct HeaderDraft { name: String }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct RequestDraft {
     #[form(items)]
     headers: Vec<HeaderDraft>,
@@ -168,25 +168,25 @@ an opaque stable UI key while that item remains active.
 This scales to a recursive filter tree without adding IDs to the model:
 
 ```rust,ignore
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct QueryDraft {
     #[form(child)]
     filters: FilterGroup,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterGroup {
     #[form(items)]
     children: Vec<FilterNode>,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 enum FilterNode {
     Condition(FilterCondition),
     Group(FilterGroup),
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterCondition { value: String }
 
 let query_form = cx.new(|_| Form::new(QueryDraft {
@@ -239,6 +239,7 @@ let name_input = FormInput::new(
 let retry_limit_input = FormIntegerInput::new(
     &form,
     ProviderDraft::RETRY_LIMIT,
+    "budget-editor",
     |window, cx| IntegerInputState::new(window, cx).min(0u32).max(10u32),
     window,
     cx,
@@ -281,7 +282,12 @@ Write validators against one `ValidationRequest`, which supplies both the
 current model and snapshot-bound path resolution:
 
 ```rust,ignore
-impl Validator<ProviderDraft> for ProviderValidator {
+impl ProviderValidator {
+    fn rules(self) -> Vec<ValidationRule<ProviderDraft>> {
+        vec![ValidationRule::new("ProviderValidator", move |request, out| self.validate(request, out))
+            .dependency(ProviderDraft::ROOT)]
+    }
+
     fn validate(
         &self,
         request: ValidationRequest<'_, ProviderDraft>,
@@ -337,7 +343,12 @@ fn validate_filter_nodes<'a>(
     }
 }
 
-impl Validator<QueryDraft> for QueryValidator {
+impl QueryValidator {
+    fn rules(self) -> Vec<ValidationRule<QueryDraft>> {
+        vec![ValidationRule::new("QueryValidator", move |request, out| self.validate(request, out))
+            .dependency(QueryDraft::ROOT)]
+    }
+
     fn validate(
         &self,
         request: ValidationRequest<'_, QueryDraft>,
@@ -351,8 +362,7 @@ impl Validator<QueryDraft> for QueryValidator {
 }
 ```
 
-`Submit` is the default business-validation trigger. Add schema validation
-metadata for `Mount`, `Change`, or `Blur` when immediate feedback is desirable.
+`Submit` is the default business-validation trigger. Set the rule’s `.triggers(ValidationTriggers { ... })` for `Mount`, `Change`, or `Blur` when immediate feedback is desirable. Schema metadata configures required-field rules.
 After a catalog, permission, or other external dependency changes, explicitly
 request a scoped validation pass:
 
@@ -370,17 +380,16 @@ Pending form-owned async validation prevents `prepare` from succeeding.
 Use lifecycle methods when application data changes:
 
 ```rust,ignore
-self.form.update(cx, |form, cx| form.replace(next_draft, cx));
-self.form.update(cx, |form, cx| form.reset(cx));
-self.form.update(cx, |form, cx| form.rebase(saved_draft, cx));
+self.form.update(cx, |form, cx| form.replace(next_draft, DraftPolicy::Preserve, cx)?);
+self.form.update(cx, |form, cx| form.reset(DraftPolicy::Discard, cx)?);
+self.form.update(cx, |form, cx| form.rebase(saved_draft, DraftPolicy::Discard, cx)?);
 ```
 
 - `replace` installs a new current draft and retains the baseline.
 - `reset` restores the baseline as the current draft.
 - `rebase` installs one model as both current draft and baseline.
 
-Each lifecycle operation is a semantic model change even when its Rust values
-compare equal. Total paths remain valid. Old dynamic paths and their pending
+Lifecycle changes advance the editing revision when baseline or topology changes. `ModelChanged` is emitted only when the stored model changes; `SessionChanged` reports other lifecycle changes. Total paths remain valid. Old dynamic paths and their pending
 work retire.
 
 Prepare the value before application-owned I/O, and retain its version rather
@@ -444,3 +453,188 @@ semantic effect relevant to their target.
 - [README](../README.md)
 - [Macro guide]
 - [Component adapter guide]
+
+
+## Editing session and breaking API changes (#248)
+
+`Validator` / `with_validator` / `replace_validator` have been removed. Register
+explicit rules with `Form::with_rules(Vec<ValidationRule<M>>) -> Result<Self,
+RuleRegistrationError>` or `replace_rules(..., cx) -> Result<(), ...>`. Each rule
+has a `RuleId`, one or more typed `.dependency(path)` subtrees, optional dynamic
+`.instance(path)`, and `.triggers(ValidationTriggers)`. IDs cannot be duplicated
+within an instance. The execution request covers the whole snapshot: output
+locations do not determine scheduling. Results atomically replace all previous
+results owned by that rule, including an empty result and across triggers.
+Started rules rerun on dependency edits; unrelated changes leave them alone.
+External runs recheck all registered rules. Unresolved dependent drafts suppress
+old synchronous results until parsing succeeds. Garde adapters become explicit
+rules with `GardeValidator::new(context).into_rule("garde", Model::ROOT)`.
+
+Native writers submit parsed values with `defer_set` or unresolved display data
+with `defer_draft(display, code, message, window, cx)`. Bindings use a stable
+`EditorKey`; `with_editor_key(key, cx)` reconnects a low-level writer. The Form
+retains drafts after unmount. Different editors at the same path keep independent
+drafts. Successful parsing clears only that editor. `is_dirty` includes drafts;
+format-equivalent parsed values compare by stored value. An edit ticket is
+reserved synchronously before deferring native writes: pending admission blocks
+`prepare`, and even equal-value input invalidates older save versions. Dropping a
+binding/window settles queued tickets; accepted drafts remain in the Form.
+
+`DraftChanged(ModelChange<M>)` reports draft content changes with path impact.
+A combined parsed model/draft change shares one revision and notification.
+Message-only changes do not advance editing revision. `SessionChanged` reports
+baseline/topology lifecycle changes without falsely emitting `ModelChanged`.
+Exhaustive event matches must handle both new variants. Value setters are not
+called for ordinary draft/validation notifications.
+
+Total paths expose `baseline(&form, cx)` and `is_dirty(&form, cx)`; dynamic paths
+and item paths expose `try_baseline -> Result<Option<T>, ResolveError>` and
+`try_is_dirty`. New occurrences have no baseline; retired paths return an error.
+Collection dirty includes additions, deletion, order and child drafts.
+Total-path and descriptor `set` now return `Result<bool, ResolveError>` so a
+structural write can reject `WouldRetireDrafts` before changing anything.
+Dynamic set/remove/replace-all/cross-parent moves also reject retirement of a
+draft. Explicitly call `form.discard_drafts(typed_subtree, cx)?` before a deliberate
+destructive structural mutation; scalar programmatic writes preserve drafts.
+
+`replace(value, policy, cx)`, `reset(policy, cx)` and `rebase(value, policy, cx)`
+require `DraftPolicy::Preserve` or `Discard` and return
+`Result<LifecycleReport, LifecycleError>`. Preserve retains valid drafts and
+atomically rejects retirement of dynamic drafts. Preserve rejects pending
+native admission with `EditsPending`; Discard settles those tickets and clears
+drafts. Reset with Preserve can remain dirty. Discard denotes a deliberate
+abandon/load action; ordinary refresh should use preserving rebase.
+
+`rebase_preserving_edits(remote, cx)` atomically merges old baseline, local and
+remote values, installs the remote baseline, and returns conflict paths plus a
+version. Ordinary fields and direct child leaves merge independently; opaque
+fields, collections, Option and enum/case structures merge as whole units.
+Concurrent changes retain local values and report conflicts. Drafts conflict
+with external changes even when the stored local value equals the old baseline.
+Retained local occurrences retain identity; an uncorrelated external baseline
+returns None for their dynamic baseline. No index-based matching or generic
+keyed collection framework is provided. Reports can be checked using
+`form.is_current(report.version())`. They do not lock external persistence.
+`rebase_if_current(prepared.version(), saved, cx)` remains guarded and never
+accepts pending input or unresolved drafts. Do not turn a stale save result into
+a refresh using the old baseline: merging edits made during save requires the
+actual submitted snapshot as ancestor and remains application policy.
+
+### Domain field merges
+
+Use `#[form(merge = function_path)]` when a field has domain keys or merge rules.
+The function has signature `fn(&T, &T, &T) -> FieldMerge<T>`: old baseline B,
+local stored value L, then remote value R. It receives complete typed values,
+including unknown or unreadable content retained by the application. It must
+be pure: no Form access, GPUI context, I/O or events. For example, an opaque map
+can merge independent keys and keep local values on conflicting keys:
+
+```rust
+use std::collections::BTreeMap;
+use gpui_form::{FieldMerge, FormSchema};
+
+type Overrides = BTreeMap<String, String>;
+
+#[derive(Clone, PartialEq, FormSchema)]
+struct Settings {
+    #[form(merge = merge_overrides)]
+    model_overrides: Overrides,
+}
+
+fn merge_overrides(base: &Overrides, local: &Overrides, remote: &Overrides)
+    -> FieldMerge<Overrides>
+{
+    let mut candidate = remote.clone();
+    let mut conflict = false;
+    for key in base.keys().chain(local.keys()) {
+        let (b, l, r) = (base.get(key), local.get(key), remote.get(key));
+        if l == b { continue; }
+        conflict |= r != b && l != r;
+        match l {
+            Some(value) => { candidate.insert(key.clone(), value.clone()); }
+            None => { candidate.remove(key); }
+        }
+    }
+    if conflict { FieldMerge::conflicted(candidate) }
+    else { FieldMerge::merged(candidate) }
+}
+```
+
+The hook replaces the field's default recursive or whole-unit merge, while
+schema traversal, validation and typed paths stay the same. It works with leaf,
+`child` and `items` fields. Declare it at the merge boundary: existing traversal
+stops at collections, Option and enum units, so hooks inside those units are
+not visited automatically. Duplicate hooks are rejected; Rust checks the function
+and return types. See the [macro guide](../../gpui-form-macros/docs/guide.md#field-merge-declarations).
+
+Pending native edit tickets reject the entire refresh with `EditsPending`
+before any hook runs. Each draft-free hook produces a candidate within the same
+transaction as ordinary fields. `conflicted` adds the field's `PathKey` to the
+deduplicated `LifecycleReport::conflicts()`; the report version is the installed
+version. Domain keys are application data, not dynamic PathKeys.
+
+If any unresolved draft intersects a hook field, Form skips that hook and keeps
+the whole local field, original draft text and active dynamic identities.
+It reports a field conflict when R differs from B, even if L equals R; R=B only
+retains the edit. Other fields continue merging. This deliberately postpones
+even independent remote keys in that field until the user resolves or explicitly
+discards the draft and refreshes again. A hook cannot authorize draft loss.
+
+Without drafts, a candidate equal to L preserves that field's dynamic identities.
+A different candidate retires all its dynamic descendants; rebuild bindings from
+new active paths. Other fields retain their identities. There is no matching by
+index, value or business key. The stored field baseline is always the original R,
+so an unsaved candidate remains dirty. Dynamic baseline correspondence uses the
+installed topology when candidate=R, or the previous baseline when R=B and
+candidate=L. Otherwise `try_baseline` may return `None`; read the total field's
+baseline and project domain keys there. `None` does not mean a domain Unset value.
+These hooks apply to `rebase_preserving_edits`; the guarded save-install behavior
+of `rebase_if_current` is unchanged.
+
+### Control mappings
+
+`ControlMapping<S, D>` formats storage with a cloned application context and
+parses display data with current storage, optional baseline and that same
+context snapshot into `EditResult::Parsed` or `EditResult::Draft`. Use
+`bind_mapped_control_in` / `try_bind_mapped_control_in` and their returned
+`MappedControlWriter::defer_edit`. `MappedControlBinding::refresh(context, cx)`
+reprojects clean editors without changing model/revision; drafts retain original
+text and are not reparsed. Parsing happens before enqueue, so queued text is
+not reinterpreted under a later context. Reusing a draft key with a different
+display/mapping type returns `MappingBindError::EditorType`. The native adapter
+provides `FormMappedInput`; integer constructors require an explicit editor key.
+Applications own inheritance/Unreadable/Unset semantics and business validation.
+Native controls continue to own focus, cursor, selection and IME composition;
+only committed native Change events enter the Form.
+
+A mapping can restore an inherited baseline without inventing a storage override:
+
+```rust,ignore
+#[derive(Clone, PartialEq)]
+enum Slot { Unset, Set(i32), Unreadable(String) }
+struct NumberMapping;
+impl ControlMapping<Slot, String> for NumberMapping {
+    type Context = i32; // application's inherited value snapshot
+    fn format(&self, stored: &Slot, inherited: &i32) -> String {
+        match stored {
+            Slot::Unset => inherited.to_string(),
+            Slot::Set(n) => n.to_string(),
+            Slot::Unreadable(raw) => raw.clone(),
+        }
+    }
+    fn parse(&self, display: String, current: &Slot, baseline: Option<&Slot>, inherited: &i32)
+        -> EditResult<Slot, String>
+    {
+        if let Some(base) = baseline.filter(|b| self.format(b, inherited) == display) {
+            return EditResult::Parsed(base.clone());
+        }
+        if self.format(current, inherited) == display {
+            return EditResult::Parsed(current.clone());
+        }
+        match display.parse() {
+            Ok(n) => EditResult::Parsed(Slot::Set(n)),
+            Err(_) => EditResult::draft(display, "number", "Enter an integer"),
+        }
+    }
+}
+```

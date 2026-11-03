@@ -80,7 +80,8 @@ impl UrlEncodedView {
             &form,
             window,
             |this, _, event: &FormEvent<RequestDraft>, window, cx| {
-                let FormEvent::ModelChanged(change) = event else {
+                let (FormEvent::ModelChanged(change) | FormEvent::SessionChanged(change)) = event
+                else {
                     return;
                 };
                 let impact = change.impact(&this.fields);

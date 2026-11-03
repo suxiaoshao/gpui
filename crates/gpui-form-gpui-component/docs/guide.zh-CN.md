@@ -42,7 +42,7 @@ struct ModelId(String);
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct TagId(String);
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct ProviderDraft {
     #[form(required)]
     name: String,
@@ -50,37 +50,37 @@ struct ProviderDraft {
     enabled: bool,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct JobDraft {
     budget: u64,
     tag_ids: Vec<TagId>,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct QueryDraft {
     #[form(child)]
     filters: FilterGroup,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterGroup {
     #[form(items)]
     children: Vec<FilterNode>,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterNode {
     #[form(child)]
     kind: FilterNodeKind,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 enum FilterNodeKind {
     Condition(FilterCondition),
     Group(FilterGroup),
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterCondition {
     value: String,
     limit: u64,
@@ -102,7 +102,7 @@ let form = cx.new(|_| Form::new(ProviderDraft {
 }));
 
 let name: String = ProviderDraft::NAME.get(&form, cx);
-let changed: bool = ProviderDraft::NAME.set(&form, "Local provider".into(), cx);
+let changed: bool = ProviderDraft::NAME.set(&form, "Local provider".into(), cx).unwrap();
 ```
 
 collection item、活跃 enum case 与 `Option::Some` value 是 dynamic location。Form 生成它们的 identity。应从
@@ -201,12 +201,13 @@ workspace 应用也可通过 `gpui_kit::component::input` 使用同一类型。
 
 ## 绑定整数 input
 
-`FormIntegerInput` 把未完成或非法的 editor text 保留在 native state。只有合法的 typed integer 才写入 Form。
+`FormIntegerInput` 将未完成或非法的展示文本按 editor key 保留在 Form；只有合法的 typed integer 才写入模型。
 
 ```rust,ignore
 let budget_input = FormIntegerInput::new(
     &job_form,
     JobDraft::BUDGET,
+    "budget-editor",
     |window, cx| {
         IntegerInputState::new(window, cx)
             .min(1_024u64)
@@ -228,6 +229,7 @@ let limit = condition.clone().then(FilterCondition::LIMIT);
 let limit_input = FormIntegerInput::try_new(
     &query_form,
     limit,
+    "budget-editor",
     |window, cx| IntegerInputState::new(window, cx).min(0u64).step(1u64),
     window,
     cx,
@@ -287,7 +289,7 @@ let form_for_change = form.clone();
 let checkbox = Checkbox::new("provider-enabled-checkbox")
     .checked(checked)
     .on_click(move |checked, _window, cx| {
-        enabled_path.set(&form_for_change, *checked, cx);
+        enabled_path.set(&form_for_change, *checked, cx).unwrap();
     });
 
 let switch_form = form.clone();
@@ -295,7 +297,7 @@ let switch_path = ProviderDraft::ENABLED;
 let switch = Switch::new("provider-enabled-switch")
     .checked(checked)
     .on_click(move |checked, _window, cx| {
-        switch_path.set(&switch_form, *checked, cx);
+        switch_path.set(&switch_form, *checked, cx).unwrap();
     });
 ```
 
@@ -347,8 +349,7 @@ match value.try_errors(&query_form, cx) {
 }
 ```
 
-native editor issue（例如未完成的 integer text）仍附着于对应 control。合法 edit 会清除它自身过时的 editor
-issue。validation-only change 不会 reset native value，也不会擦除无关 editor state。
+未解析展示草稿及其问题由 Form 按 editor key 持有，control 卸载后仍保留；合法 edit 只清除来源编辑者的草稿和问题。validation-only change 不会 reset native value，也不会擦除无关 editor state。
 
 只有页面拥有的渲染需要时才 observe Form：
 
@@ -458,3 +459,10 @@ drop binding，之后 native callback 无法再修改 Form。
 - [gpui-form README](../../gpui-form/README.md)
 - [gpui-form 使用指南](../../gpui-form/docs/guide.zh-CN.md)
 - [gpui-form-macros 使用指南](../../gpui-form-macros/docs/guide.zh-CN.md)
+
+
+## 草稿与映射绑定（#248）
+
+FormIntegerInput::new/try_new 在 path 后新增稳定 EditorKey 参数，均返回 FormIntegerInputBuildError（含展示/映射类型不匹配）。同路径两个编辑器必须用不同 key。未解析数字文本由 Form 持有，卸载仍阻止 prepare；相同 key 重挂恢复草稿，程序写值不覆盖草稿。删除动态子树前明确弃稿。
+
+FormMappedInput::new(form, path, editor_key, mapping, context, build, window, cx) 将原生 InputState 绑定到 ControlMapping<S,String>；refresh(context,cx) 只重投影无草稿编辑器，不写模型、不重解析草稿。parse 接收当前存储值、可选基线和原生事件入口的上下文快照。应用可用 Parsed 恢复 Unset/Unreadable，或用 Draft 保留未解析文本。光标、焦点、选择和 IME 仍由原生控件持有。[完整核心契约](../../gpui-form/docs/guide.zh-CN.md)包含票据竞态、生命周期策略与 rebase 限制。

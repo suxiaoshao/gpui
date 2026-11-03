@@ -7,7 +7,7 @@ struct Draft {
 }
 
 fn wrong_value_type(form: &Entity<Form<Draft>>, cx: &mut App) {
-    Draft::NAME.set(form, 42_u64, cx);
+    Draft::NAME.set(form, 42_u64, cx).unwrap();
 }
 
 fn main() {}

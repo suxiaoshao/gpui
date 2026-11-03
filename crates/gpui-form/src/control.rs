@@ -93,6 +93,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> BindingPath<Root, T> {
         let core = match self {
             Self::Total(core) | Self::Dynamic(core) => core,
         };
+        let can_retire = form.ensure_can_retire(&core.address);
         let changed = {
             let (model, topology) = form.model_and_topology();
             let snapshot = topology.snapshot();
@@ -100,6 +101,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> BindingPath<Root, T> {
             if current == &value {
                 false
             } else {
+                can_retire?;
                 *core.access.get_mut(model, &snapshot)? = value;
                 true
             }
@@ -178,10 +180,19 @@ pub struct ControlBinding {
     _subscription: Subscription,
     state: Rc<RefCell<BindingState>>,
     shared: Arc<BindingShared>,
+    edit_clock: crate::draft::EditClock,
+    refresh: Box<dyn Fn(&mut App)>,
+}
+
+impl ControlBinding {
+    pub fn refresh(&self, cx: &mut App) {
+        (self.refresh)(cx);
+    }
 }
 
 impl Drop for ControlBinding {
     fn drop(&mut self) {
+        self.edit_clock.cancel_control(self.shared.control_id);
         self.shared.active.store(false, Ordering::Release);
         self.shared.advance_generation();
         let _ = (&mut *self.state.borrow_mut()).transition(Message::Drop);
@@ -196,10 +207,12 @@ pub enum ControlProjection<T> {
 
 /// A cloneable weak capability used only by native control callbacks.
 pub struct ControlWriter<Root: FormSchema, T: 'static> {
-    form: WeakEntity<Form<Root>>,
+    pub(crate) form: WeakEntity<Form<Root>>,
     path: BindingPath<Root, T>,
     shared: Arc<BindingShared>,
     state: RcWeak<RefCell<BindingState>>,
+    edit_clock: crate::draft::EditClock,
+    editor: crate::EditorKey,
 }
 
 impl<Root: FormSchema, T: 'static> Clone for ControlWriter<Root, T> {
@@ -209,24 +222,30 @@ impl<Root: FormSchema, T: 'static> Clone for ControlWriter<Root, T> {
             path: self.path.clone(),
             shared: self.shared.clone(),
             state: self.state.clone(),
+            edit_clock: self.edit_clock.clone(),
+            editor: self.editor.clone(),
         }
     }
 }
 
 impl<Root: FormSchema, T: Clone + PartialEq + 'static> ControlWriter<Root, T> {
-    fn begin_native_edit<Owner>(&self, cx: &mut Context<Owner>) -> u64
+    fn begin_native_edit<Owner>(&self, cx: &mut Context<Owner>) -> Option<crate::draft::EditTicket>
     where
         Owner: 'static,
     {
-        let editor_sequence = self.shared.advance_editor_sequence();
-        let Some(form) = self.form.upgrade() else {
-            return editor_sequence;
-        };
+        let form = self.form.upgrade()?;
+        if !self.path.is_current(form.read(cx)) {
+            return None;
+        }
+        self.shared.advance_editor_sequence();
         let revision = form.read(cx).revision();
         if let Some(state) = self.state.upgrade() {
             let _ = (&mut *state.borrow_mut()).transition(Message::SuppressThrough(revision));
         }
-        editor_sequence
+        Some(
+            self.edit_clock
+                .reserve(self.shared.control_id, self.path.target().address),
+        )
     }
 
     pub fn defer_set<Owner>(&self, value: T, window: &Window, cx: &mut Context<Owner>)
@@ -236,7 +255,10 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> ControlWriter<Root, T> {
         if !self.shared.active.load(Ordering::Acquire) {
             return;
         }
-        let editor_sequence = self.begin_native_edit(cx);
+        let Some(ticket) = self.begin_native_edit(cx) else {
+            return;
+        };
+        let editor_sequence = self.shared.editor_sequence.load(Ordering::Acquire);
         let lifecycle_generation = self.shared.lifecycle_generation.load(Ordering::Acquire);
         let writer = self.clone();
         cx.defer_in(window, move |_, _, cx| {
@@ -249,6 +271,9 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> ControlWriter<Root, T> {
             let Some(form) = writer.form.upgrade() else {
                 return;
             };
+            if !ticket.accept() {
+                return;
+            }
             let origin = ControlOrigin {
                 control_id: writer.shared.control_id,
                 lifecycle_generation,
@@ -284,8 +309,57 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> ControlWriter<Root, T> {
         });
     }
 
-    pub fn defer_set_issue<Owner>(
+    /// Submit unresolved display data to the Form, independently of native entity lifetime.
+    pub fn defer_draft<Owner, D: Clone + PartialEq + 'static>(
         &self,
+        display: D,
+        code: impl Into<Cow<'static, str>>,
+        message: ValidationMessage,
+        window: &Window,
+        cx: &mut Context<Owner>,
+    ) where
+        Owner: 'static,
+    {
+        self.defer_mapped_draft(
+            display,
+            std::any::TypeId::of::<D>(),
+            code,
+            message,
+            window,
+            cx,
+        );
+    }
+
+    pub fn defer_draft_for<Mapping: 'static, Owner: 'static, D: Clone + PartialEq + 'static>(
+        &self,
+        display: D,
+        code: impl Into<Cow<'static, str>>,
+        message: ValidationMessage,
+        window: &Window,
+        cx: &mut Context<Owner>,
+    ) {
+        self.defer_mapped_draft(
+            display,
+            std::any::TypeId::of::<Mapping>(),
+            code,
+            message,
+            window,
+            cx,
+        );
+    }
+
+    pub fn draft_for<Mapping: 'static, D: Clone + PartialEq + 'static>(
+        &self,
+        cx: &App,
+    ) -> Result<Option<D>, crate::EditorTypeMismatch> {
+        self.mapped_draft(std::any::TypeId::of::<Mapping>(), cx)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn defer_mapped_draft<Owner, D: Clone + PartialEq + 'static>(
+        &self,
+        display: D,
+        mapping: std::any::TypeId,
         code: impl Into<Cow<'static, str>>,
         message: ValidationMessage,
         window: &Window,
@@ -296,38 +370,78 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> ControlWriter<Root, T> {
         if !self.shared.active.load(Ordering::Acquire) {
             return;
         }
-        // Invalid/incomplete native text is still a newer editor state. It must
-        // suppress any older authoritative Value already waiting in the mailbox.
-        self.begin_native_edit(cx);
+        let Some(ticket) = self.begin_native_edit(cx) else {
+            return;
+        };
         let writer = self.clone();
         let code = code.into().into_owned();
-        let lifecycle_generation = self.shared.lifecycle_generation.load(Ordering::Acquire);
+        let generation = self.shared.lifecycle_generation.load(Ordering::Acquire);
         cx.defer_in(window, move |_, _, cx| {
             if !writer.shared.active.load(Ordering::Acquire)
-                || writer.shared.lifecycle_generation.load(Ordering::Acquire)
-                    != lifecycle_generation
+                || generation != writer.shared.lifecycle_generation.load(Ordering::Acquire)
             {
                 return;
             }
             let Some(form) = writer.form.upgrade() else {
                 return;
             };
-            if !writer.path.is_current(form.read(cx)) {
+            if !writer.path.is_current(form.read(cx)) || !ticket.accept() {
                 return;
             }
-            let address = match &writer.path {
-                BindingPath::Total(core) | BindingPath::Dynamic(core) => core.address.clone(),
-            };
+            let key = form
+                .read(cx)
+                .topology()
+                .key(&writer.path.target().address)
+                .expect("bound path");
             form.update(cx, |form, cx| {
-                form.set_control_issue(
+                form.accept_draft(
+                    key,
+                    writer.editor.clone(),
                     writer.shared.control_id,
-                    address,
-                    Arc::downgrade(&writer.shared.active),
-                    Some((code, message)),
+                    display,
+                    mapping,
+                    code,
+                    message,
                     cx,
-                );
+                )
             });
         });
+    }
+
+    pub fn draft<D: Clone + PartialEq + 'static>(
+        &self,
+        cx: &App,
+    ) -> Result<Option<D>, crate::EditorTypeMismatch> {
+        self.mapped_draft(std::any::TypeId::of::<D>(), cx)
+    }
+
+    pub(crate) fn mapped_draft<D: Clone + PartialEq + 'static>(
+        &self,
+        mapping: std::any::TypeId,
+        cx: &App,
+    ) -> Result<Option<D>, crate::EditorTypeMismatch> {
+        let Some(form) = self.form.upgrade() else {
+            return Ok(None);
+        };
+        let form = form.read(cx);
+        let Some(key) = form.topology().key(&self.path.target().address) else {
+            return Ok(None);
+        };
+        form.editor_draft(&key, &self.editor, mapping)
+    }
+
+    /// Reconnect to an application-stable editor identity before subscribing to native events.
+    pub fn with_editor_key(mut self, editor: impl Into<crate::EditorKey>, cx: &mut App) -> Self {
+        self.editor = editor.into();
+        if let Some(form) = self.form.upgrade() {
+            let key = form.read(cx).topology().key(&self.path.target().address);
+            if let Some(key) = key {
+                form.update(cx, |form, _| {
+                    form.restore_editor(&key, &self.editor, self.shared.control_id)
+                });
+            }
+        }
+        self
     }
 
     pub fn defer_clear_issue<Owner>(&self, window: &Window, cx: &mut Context<Owner>)
@@ -414,6 +528,7 @@ where
     Owner: 'static,
 {
     let shared = Arc::new(BindingShared::new(next_control_id()));
+    let edit_clock = form.read(cx).edit_clock.clone();
     let state = Rc::new(RefCell::new(BindingState::new()));
     let projector: Rc<Projector<T, Owner>> = Rc::new(project);
     let weak_form = form.downgrade();
@@ -426,8 +541,9 @@ where
     let subscription_owner = owner.downgrade();
     let subscription_window = window.window_handle();
     let subscription = cx.subscribe(form, move |form, event: &FormEvent<Root>, cx| {
-        let FormEvent::ModelChanged(change) = event else {
-            return;
+        let change = match event {
+            FormEvent::ModelChanged(change) | FormEvent::SessionChanged(change) => change,
+            _ => return,
         };
         if subscription_state.borrow().lifecycle() != Lifecycle::Active {
             return;
@@ -440,7 +556,7 @@ where
             subscription_shared.active.store(false, Ordering::Release);
             subscription_shared.advance_generation();
             (&mut *subscription_state.borrow_mut()).transition(Message::Retire)
-        } else if change.kind() != crate::ModelChangeKind::Edit {
+        } else if change.kind() != crate::ModelChangeKind::Edit && impact.is_affected() {
             subscription_shared.advance_generation();
             (&mut *subscription_state.borrow_mut()).transition(Message::QueueValue {
                 revision: change.revision(),
@@ -483,15 +599,49 @@ where
         }
     });
 
+    let refresh_form = weak_form.clone();
+    let refresh_path = path.clone();
+    let refresh_shared = shared.clone();
+    let refresh_state = state.clone();
+    let refresh_projector = projector.clone();
+    let refresh_owner = owner.downgrade();
+    let refresh_window = window.window_handle();
+    let refresh = Box::new(move |cx: &mut App| {
+        if let Some(form) = refresh_form.upgrade() {
+            let effect = (&mut *refresh_state.borrow_mut()).transition(Message::RefreshValue {
+                revision: form.read(cx).revision(),
+                editor_sequence: refresh_shared.editor_sequence.load(Ordering::Acquire),
+            });
+            if matches!(effect, Effect::ScheduleDrain) {
+                schedule_drain(
+                    DrainRequest {
+                        form: refresh_form.clone(),
+                        path: refresh_path.clone(),
+                        shared: refresh_shared.clone(),
+                        state: refresh_state.clone(),
+                        projector: refresh_projector.clone(),
+                        owner: refresh_owner.clone(),
+                        window: refresh_window,
+                    },
+                    cx,
+                );
+            }
+        }
+    });
+
     let writer = ControlWriter {
         form: weak_form,
         path,
         shared: shared.clone(),
+        edit_clock: edit_clock.clone(),
+        editor: crate::EditorKey::new(format!("control-{}", shared.control_id)),
         state: Rc::downgrade(&state),
     };
     (
         ControlBinding {
             _subscription: subscription,
+            refresh,
+            edit_clock,
             state,
             shared,
         },
@@ -538,6 +688,13 @@ where
                         };
                         let value = {
                             let form_ref = form.read(cx);
+                            if form_ref
+                                .drafts
+                                .values()
+                                .any(|d| d.control == shared.control_id)
+                            {
+                                return;
+                            }
                             if !path.is_current(form_ref) {
                                 None
                             } else {
@@ -557,9 +714,6 @@ where
                             return;
                         };
                         projector(owner, ControlProjection::Value(value), window, cx);
-                        form.update(cx, |form, cx| {
-                            form.clear_control_issue(shared.control_id, cx);
-                        });
                     }
                     Effect::None | Effect::ScheduleDrain => {}
                 }
