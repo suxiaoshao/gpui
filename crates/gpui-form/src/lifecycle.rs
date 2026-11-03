@@ -1,5 +1,35 @@
 use crate::{FormVersion, PathKey, topology::CanonicalAddress};
 
+/// A domain merge candidate for one schema field during an edit-preserving rebase.
+///
+/// Declare a pure `fn(&T, &T, &T) -> FieldMerge<T>` with `#[form(merge = path)]`.
+/// Its inputs are the baseline, local stored value and remote value. Form installs
+/// the candidate atomically with the other fields and retains the remote baseline.
+/// A field with unresolved drafts keeps its local value without calling the hook.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldMerge<T> {
+    value: T,
+    conflicted: bool,
+}
+
+impl<T> FieldMerge<T> {
+    /// Accept a candidate without reporting a domain conflict.
+    pub fn merged(value: T) -> Self {
+        Self {
+            value,
+            conflicted: false,
+        }
+    }
+
+    /// Accept a candidate and report a conflict at this field's path.
+    pub fn conflicted(value: T) -> Self {
+        Self {
+            value,
+            conflicted: true,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DraftPolicy {
     Preserve,
@@ -64,14 +94,11 @@ impl MergePlan {
         value
     }
     pub fn atomic<T: Clone + PartialEq>(&mut self, base: &T, local: &T, remote: &T) -> T {
-        let draft = self
-            .drafts
-            .iter()
-            .any(|d| crate::validation::intersects(d, &self.address));
+        let draft = self.has_draft();
         let keep_local = draft || (local != base && local != remote);
         if keep_local {
             if remote != base && (draft || local != remote) {
-                self.conflicts.push(self.address.clone());
+                self.record_conflict();
             }
             self.baseline.push((
                 self.address.clone(),
@@ -91,6 +118,49 @@ impl MergePlan {
             self.baseline
                 .push((self.address.clone(), BaselineChoice::Current));
             remote.clone()
+        }
+    }
+
+    pub fn merge_with<T: Clone + PartialEq>(
+        &mut self,
+        base: &T,
+        local: &T,
+        remote: &T,
+        merge: fn(&T, &T, &T) -> FieldMerge<T>,
+    ) -> T {
+        if self.has_draft() {
+            return self.atomic(base, local, remote);
+        }
+
+        let candidate = merge(base, local, remote);
+        if candidate.conflicted {
+            self.record_conflict();
+        }
+        if &candidate.value != local {
+            self.external.push(self.address.clone());
+        }
+        self.baseline.push((
+            self.address.clone(),
+            if &candidate.value == remote {
+                BaselineChoice::Current
+            } else if remote == base && &candidate.value == local {
+                BaselineChoice::Previous
+            } else {
+                BaselineChoice::Unmapped
+            },
+        ));
+        candidate.value
+    }
+
+    fn has_draft(&self) -> bool {
+        self.drafts
+            .iter()
+            .any(|draft| crate::validation::intersects(draft, &self.address))
+    }
+
+    fn record_conflict(&mut self) {
+        if !self.conflicts.contains(&self.address) {
+            self.conflicts.push(self.address.clone());
         }
     }
 }

@@ -103,4 +103,11 @@ variant。完整示例请见指南。
 
 ## 三方合并遍历（#248）
 
-FormSchema derive 新增 `__merge(base, local, remote, plan)`：普通字段独立合并，直接 child 递归；集合、Option、枚举整体保守合并。手写 FormSchema 必须显式实现此方法，用 MergePlan::child/atomic 覆盖所有字段，不通过序列化或下标推断 identity。Total set 返回 Result<bool, ResolveError>，调用方处理退休未解析草稿时的拒绝。
+derive 对普通字段独立合并、直接 child 递归；集合、Option、枚举默认整体保守合并。
+Total `set` 返回 `Result<bool, ResolveError>`，可能拒绝退休草稿。
+
+在字段上声明 `#[form(merge = function_path)]`，可与 `child`、`items` 共用，覆盖该字段合并。
+纯函数接收基线/本地/远端 `&T`，通过 `merged(candidate)` 或 `conflicted(candidate)`
+返回 `gpui_form::FieldMerge<T>`；重复 hook 会报错。Form 保留带未解析草稿的完整字段并跳过
+它的 hook，其他候选在同一事务中安装，基线始终为原始远端。
+详见[字段合并声明](docs/guide.zh-CN.md#字段合并声明)。

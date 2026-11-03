@@ -113,4 +113,14 @@ payload implementing `FormSchema`. See the guide for complete examples.
 
 ## Three-way merge driver (#248)
 
-Derived `FormSchema` now implements `__merge(base, local, remote, plan)`. It merges ordinary fields independently and recurses through direct child schemas. Collections, Option and enums are whole conservative units. Handwritten `FormSchema` implementations must implement `__merge` explicitly, using `MergePlan::child` and `MergePlan::atomic`, and cover every field; no serialization or index identity inference is involved. Total `set` calls return `Result<bool, ResolveError>` and must handle rejection when replacing a subtree would retire unresolved drafts.
+Derived schemas merge ordinary fields independently and recurse through direct
+children. Collections, Option and enums are conservative whole units by default.
+Total `set` returns `Result<bool, ResolveError>` and can reject retirement of drafts.
+
+Declare `#[form(merge = function_path)]` on a field, optionally alongside `child`
+or `items`, to override that field's merge. The pure function receives
+baseline/local/remote `&T` values and returns `gpui_form::FieldMerge<T>` through
+`merged(candidate)` or `conflicted(candidate)`. Duplicate hooks are rejected.
+Form keeps fields with unresolved drafts intact and skips their hooks; all other
+candidates install in the same transaction with the original remote baseline.
+See [field merge declarations](docs/guide.md#field-merge-declarations).

@@ -1,0 +1,5 @@
+error: duplicate `merge` option
+ --> tests/ui/vnext/fail/duplicate_merge.rs:4:12
+  |
+4 |     #[form(merge = merge_value)]
+  |            ^^^^^

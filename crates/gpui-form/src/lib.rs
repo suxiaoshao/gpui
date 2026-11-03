@@ -33,7 +33,7 @@ pub use garde::{
     DefaultGardeMessageProvider, GardeMessageProvider, GardeRule, GardeValidator, garde_error,
 };
 pub use gpui_form_macros::FormSchema;
-pub use lifecycle::{DraftPolicy, LifecycleError, LifecycleReport};
+pub use lifecycle::{DraftPolicy, FieldMerge, LifecycleError, LifecycleReport};
 pub use mapping::{
     ControlMapping, MappedControlBinding, MappedControlWriter, MappingBindError,
     bind_mapped_control_in, try_bind_mapped_control_in,

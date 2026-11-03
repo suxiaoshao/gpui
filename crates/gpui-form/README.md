@@ -340,6 +340,17 @@ must be set again.
   built-in controls and the custom-control binding API.
 
 
+## Domain field merges
+
+Declare `#[form(merge = merge_overrides)]` on a field to customize its part of
+`rebase_preserving_edits`. The pure function receives baseline/local/remote
+stored values and returns `FieldMerge::merged(candidate)` or
+`FieldMerge::conflicted(candidate)`. It can also accompany `child` or `items`.
+Form installs all candidates atomically and always keeps the original remote
+baseline. A field with unresolved drafts keeps its entire local value and
+skips its hook for that refresh. See the [field merge guide](docs/guide.md#domain-field-merges)
+for identity, conflict and baseline rules.
+
 ## Editing session migration (#248)
 
 Register explicit ValidationRule dependencies with with_rules (Result); the old Validator entry points are removed. The Form owns unresolved drafts and synchronous native edit tickets. Total set now returns Result; replace/reset/rebase require DraftPolicy and return a lifecycle report. Use rebase_preserving_edits for atomic refresh with local edits and conflict reporting. Native integer constructors require stable editor keys; FormMappedInput supports storage/display mappings. See the [guide](docs/guide.md#editing-session-and-breaking-api-changes-248) for signatures, baseline/dirty queries and migration details.

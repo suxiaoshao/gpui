@@ -470,6 +470,69 @@ collection 框架。可用 `form.is_current(report.version())` 检查报告新�
 `rebase_if_current(prepared.version(), saved, cx)` 仍强制版本保护，拒绝草稿/未接纳输入。
 迟到保存结果不能拿旧基线强行套刷新合并；保存期间编辑的合并需要实际提交快照作祖先。
 
+### 字段级领域合并
+
+字段具有业务 key 或领域合并规则时，声明 `#[form(merge = function_path)]`。
+函数签名为 `fn(&T, &T, &T) -> FieldMerge<T>`，依次接收旧基线 B、本地存储值 L、
+远端值 R。输入是完整的类型值，包括应用保留的未知内容或 Unreadable。函数必须是纯函数，
+不访问 Form、GPUI context，不执行 I/O 或发事件。例如，不透明 map 可按 key 合并独立变更，
+同 key 冲突时保留本地：
+
+```rust
+use std::collections::BTreeMap;
+use gpui_form::{FieldMerge, FormSchema};
+
+type Overrides = BTreeMap<String, String>;
+
+#[derive(Clone, PartialEq, FormSchema)]
+struct Settings {
+    #[form(merge = merge_overrides)]
+    model_overrides: Overrides,
+}
+
+fn merge_overrides(base: &Overrides, local: &Overrides, remote: &Overrides)
+    -> FieldMerge<Overrides>
+{
+    let mut candidate = remote.clone();
+    let mut conflict = false;
+    for key in base.keys().chain(local.keys()) {
+        let (b, l, r) = (base.get(key), local.get(key), remote.get(key));
+        if l == b { continue; }
+        conflict |= r != b && l != r;
+        match l {
+            Some(value) => { candidate.insert(key.clone(), value.clone()); }
+            None => { candidate.remove(key); }
+        }
+    }
+    if conflict { FieldMerge::conflicted(candidate) }
+    else { FieldMerge::merged(candidate) }
+}
+```
+
+hook 覆盖该字段默认的递归或整体合并，schema 遍历、校验和类型路径保持原有规则。
+leaf、`child`、`items` 字段都可声明。应把 hook 放在实际合并边界：现有遍历在集合、Option、
+枚举整体单元处停止，不会自动调用它们内部字段的 hook。重复声明会报错，函数和返回类型由
+Rust 检查。详见[宏指南](../../gpui-form-macros/docs/guide.zh-CN.md#字段合并声明)。
+
+存在待接纳原生编辑票据时，整个刷新在调用任何 hook 前返回 `EditsPending`。
+无草稿字段的候选与普通字段在同一事务中安装；`conflicted` 把字段的 `PathKey` 加入去重的
+`LifecycleReport::conflicts()`，报告 version 为安装后的版本。业务 key 是应用数据，
+不能伪装成动态 PathKey。
+
+任一未解析草稿与 hook 字段相交时，Form 跳过该 hook，保留整个本地字段、原始草稿文本和
+活动动态身份。R 与 B 不同时报告字段冲突，即使 L=R；R=B 时只保留编辑。其他字段继续合并。
+这有意推迟了该字段内远端独立 key 的更新；用户修正或显式放弃草稿后需再次刷新。
+hook 不能授权弃稿。
+
+没有草稿时，候选等于 L 就保留该字段动态身份；候选不同则退休它的全部动态后代，
+调用方从新活动路径重建 binding，其他字段身份不受影响。不按下标、值或业务 key 对应身份。
+字段存储基线始终是原始 R，因此未保存的候选仍然 dirty。候选=R 时动态基线对应安装后的拓扑；
+R=B 且候选=L 时保留旧基线对应；其他情况 `try_baseline` 可返回 `None`。
+应用可以读取 total 字段基线再按业务 key 投影，不能把 `None` 当成领域 Unset。
+hook 仅用于 `rebase_preserving_edits`，`rebase_if_current` 的保存安装保护保持不变。
+
+### 控件映射
+
 `ControlMapping<S,D>` 用应用上下文快照 format，并把展示值、当前存储值、可选基线和
 同一上下文交给 parse，返回 `EditResult::Parsed/Draft`。通过
 `bind_mapped_control_in` / `try_bind_mapped_control_in` 和

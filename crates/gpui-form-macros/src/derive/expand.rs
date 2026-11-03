@@ -38,12 +38,18 @@ fn expand_struct(name: &Ident, fields: &[SchemaField]) -> syn::Result<TokenStrea
             fn #read_mut(value: &mut Self) -> &mut #field_type { &mut value.#field_name }
         });
 
-        let merge = match &field.kind {
-            SchemaFieldKind::Child(ChildKind::Direct) => quote! {
-                plan.child(#literal, |plan| <#field_type as ::gpui_form::FormSchema>::__merge(&base.#field_name, &local.#field_name, &remote.#field_name, plan))
-            },
-            _ => {
-                quote! { plan.child(#literal, |plan| plan.atomic(&base.#field_name, &local.#field_name, &remote.#field_name)) }
+        let merge = if let Some(hook) = &field.merge {
+            quote! {
+                plan.child(#literal, |plan| plan.merge_with(&base.#field_name, &local.#field_name, &remote.#field_name, #hook))
+            }
+        } else {
+            match &field.kind {
+                SchemaFieldKind::Child(ChildKind::Direct) => quote! {
+                    plan.child(#literal, |plan| <#field_type as ::gpui_form::FormSchema>::__merge(&base.#field_name, &local.#field_name, &remote.#field_name, plan))
+                },
+                _ => {
+                    quote! { plan.child(#literal, |plan| plan.atomic(&base.#field_name, &local.#field_name, &remote.#field_name)) }
+                }
             }
         };
         merges.push(quote! { #field_name: #merge });
