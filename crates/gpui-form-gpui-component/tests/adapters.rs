@@ -832,10 +832,10 @@ fn mapped_native_input_accepts_only_committed_ime_and_restores_offline_draft(
             inherited: &i32,
         ) -> EditResult<Option<i32>, String> {
             if display == inherited.to_string() {
-                return EditResult::Parsed(None);
+                return EditResult::update(|_| Ok(None));
             }
             match display.parse() {
-                Ok(n) => EditResult::Parsed(Some(n)),
+                Ok(n) => EditResult::update(move |_| Ok(Some(n))),
                 Err(_) => EditResult::draft(display, "number", "invalid number"),
             }
         }

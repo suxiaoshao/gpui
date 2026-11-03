@@ -34,8 +34,52 @@ impl std::fmt::Display for EditorTypeMismatch {
 }
 impl std::error::Error for EditorTypeMismatch {}
 
+/// A recoverable admission problem. The source display is retained as an editor draft.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditProblem {
+    code: Cow<'static, str>,
+    message: ValidationMessage,
+}
+impl EditProblem {
+    pub fn new(code: impl Into<Cow<'static, str>>, message: impl Into<ValidationMessage>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+    pub fn message(&self) -> &ValidationMessage {
+        &self.message
+    }
+    pub(crate) fn into_parts(self) -> (String, ValidationMessage) {
+        (self.code.into_owned(), self.message)
+    }
+}
+
+type UpdateFn<S> = dyn FnOnce(&S) -> Result<S, EditProblem> + 'static;
+
+/// A one-shot candidate calculation over the latest storage at admission.
+///
+/// Capture parsed intent and owned context/baseline fragments at native event entry.
+/// The callback must not reparse text, read external state, cause side effects or panic.
+/// Cancelled edits never run it; a failed update is retained as a draft and never retried.
+pub struct StorageUpdate<S>(Box<UpdateFn<S>>);
+impl<S> StorageUpdate<S> {
+    pub fn new(update: impl FnOnce(&S) -> Result<S, EditProblem> + 'static) -> Self {
+        Self(Box::new(update))
+    }
+    pub(crate) fn apply(self, latest: &S) -> Result<S, EditProblem> {
+        (self.0)(latest)
+    }
+}
+
 pub enum EditResult<S, D> {
+    /// Replace the entire bound value with this candidate, in admission order.
     Parsed(S),
+    /// Apply parsed intent to the latest storage once, at admission.
+    Update(StorageUpdate<S>),
     Draft {
         display: D,
         code: Cow<'static, str>,
@@ -43,6 +87,9 @@ pub enum EditResult<S, D> {
     },
 }
 impl<S, D> EditResult<S, D> {
+    pub fn update(update: impl FnOnce(&S) -> Result<S, EditProblem> + 'static) -> Self {
+        Self::Update(StorageUpdate::new(update))
+    }
     pub fn draft(
         display: D,
         code: impl Into<Cow<'static, str>>,
@@ -101,6 +148,9 @@ impl EditClock {
     }
     pub(crate) fn is_pending(&self) -> bool {
         !self.0.borrow().pending.is_empty()
+    }
+    pub(crate) fn is_control_pending(&self, control: u64) -> bool {
+        self.0.borrow().pending.values().any(|(c, _)| *c == control)
     }
     pub(crate) fn reserve(&self, control: u64, address: CanonicalAddress) -> EditTicket {
         let mut state = self.0.borrow_mut();

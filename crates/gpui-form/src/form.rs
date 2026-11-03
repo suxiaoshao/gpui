@@ -610,14 +610,14 @@ impl<M: FormSchema> Form<M> {
     pub(crate) fn complete_control_write(
         &mut self,
         control: u64,
+        editor: &crate::EditorKey,
         address: CanonicalAddress,
         changed: bool,
         origin: ControlOrigin,
         cx: &mut Context<Self>,
     ) {
-        let before = self.drafts.len();
-        self.drafts.retain(|_, d| d.control != control);
-        let draft_changed = before != self.drafts.len();
+        let key = self.topology.key(&address).expect("admitted control path");
+        let draft_changed = self.drafts.remove(&(key, editor.clone())).is_some();
         let issue_changed = self.validation.replace_control(control, None);
         if changed {
             self.commit_control_value(address.clone(), origin, cx);

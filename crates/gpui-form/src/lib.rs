@@ -25,7 +25,7 @@ pub mod __private {
 
 pub use change::{ChangeTarget, ModelChange, ModelChangeKind, PathImpact};
 pub use control::{ControlBinding, ControlProjection, ControlWriter};
-pub use draft::{EditResult, EditorKey, EditorTypeMismatch};
+pub use draft::{EditProblem, EditResult, EditorKey, EditorTypeMismatch, StorageUpdate};
 pub use error::{MutationError, PrepareError, ResolveError, TopologyError};
 pub use form::{AsyncValidationIssue, Form, FormEvent, FormRevision};
 #[cfg(feature = "garde-adapter")]
