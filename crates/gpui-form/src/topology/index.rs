@@ -135,6 +135,42 @@ impl TopologyIndex {
 }
 
 impl TopologyEdit {
+    pub(crate) fn copy_subtree(&mut self, prefix: &CanonicalAddress, source: &TopologySnapshot) {
+        retire_descendants(&mut self.data, prefix);
+        self.data.items.extend(
+            source
+                .data
+                .items
+                .iter()
+                .filter(|(a, _)| prefix.is_prefix_of(a))
+                .map(|(a, v)| (a.clone(), v.clone())),
+        );
+        self.data.active_cases.extend(
+            source
+                .data
+                .active_cases
+                .iter()
+                .filter(|(a, _)| prefix.is_prefix_of(a))
+                .map(|(a, v)| (a.clone(), *v)),
+        );
+        self.data.active_optionals.extend(
+            source
+                .data
+                .active_optionals
+                .iter()
+                .filter(|(a, _)| prefix.is_prefix_of(a))
+                .map(|(a, v)| (a.clone(), *v)),
+        );
+        self.data.identities.extend(
+            source
+                .data
+                .identities
+                .iter()
+                .filter(|(a, _)| prefix.is_prefix_of(a))
+                .map(|(a, v)| (a.clone(), v.clone())),
+        );
+    }
+
     pub(crate) fn snapshot(&self) -> TopologySnapshot {
         TopologySnapshot {
             session: self.session,

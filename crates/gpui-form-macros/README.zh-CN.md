@@ -24,7 +24,7 @@ derive 为每个字段生成一份静态、带类型的 descriptor。descriptor 
 use gpui::Entity;
 use gpui_form::{Form, FormSchema};
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct ProviderDraft {
     name: String,
     retry_limit: u32,
@@ -38,11 +38,11 @@ let form: Entity<Form<ProviderDraft>> = cx.new(|_| {
 });
 
 let name: String = ProviderDraft::NAME.get(&form, cx);
-let changed: bool = ProviderDraft::NAME.set(&form, "backup".to_owned(), cx);
+let changed: bool = ProviderDraft::NAME.set(&form, "backup".to_owned(), cx).unwrap();
 ```
 
 `ProviderDraft::NAME` 是 `FieldDef<ProviderDraft, String>`，同时也是 total path。total
-path 不经过依赖 runtime 的边界，因此 `get` 和 `set` 不会失败。`set` 返回 model 是否真的发生变化。
+path 不经过依赖 runtime 的边界，get 总能 resolve；set 返回 Result<bool, ResolveError>，可拒绝退休未解析草稿。
 
 ## 声明嵌套形状
 
@@ -99,3 +99,8 @@ derive 会在 model 定义附近拒绝不支持的声明：
 
 支持的 enum variant 是 unit variant，或携带一个实现 `FormSchema` 的具体 tuple payload 的
 variant。完整示例请见指南。
+
+
+## 三方合并遍历（#248）
+
+FormSchema derive 新增 `__merge(base, local, remote, plan)`：普通字段独立合并，直接 child 递归；集合、Option、枚举整体保守合并。手写 FormSchema 必须显式实现此方法，用 MergePlan::child/atomic 覆盖所有字段，不通过序列化或下标推断 identity。Total set 返回 Result<bool, ResolveError>，调用方处理退休未解析草稿时的拒绝。

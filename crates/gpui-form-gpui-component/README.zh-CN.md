@@ -24,7 +24,7 @@ use gpui_component::{form::field, input::{Input, InputState}};
 use gpui_form::{Form, FormSchema};
 use gpui_form_gpui_component::FormInput;
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct ProviderDraft {
     #[form(required)]
     name: String,
@@ -100,7 +100,7 @@ self.form.update(cx, |form, cx| {
 
 - `FormInput`、`FormTextarea`、`FormEditor` 分别通过 `InputState`、`TextareaState`、
   `EditorState` 绑定 `String`；单行使用 `Input`，多行正文使用 `Textarea`，代码使用 `Editor`。
-- `FormIntegerInput` 绑定整数 primitive，同时将未完成 text 保留在 native editor 内。
+- `FormIntegerInput` 绑定整数 primitive，同时将未解析展示草稿按稳定 editor key 保留在 Form。
 - `FormSelect` 绑定 `Option<D::Item::Value>`。
 - `FormCombobox` 绑定 `Vec<D::Item::Value>`。
 - `Checkbox` 与 `Switch` 没有暴露 state entity，应作为 controlled element 渲染。
@@ -114,3 +114,8 @@ delegate 由应用拥有；刷新 option 不会隐式改写 Form value 或选择
 
 完整的 total/dynamic path、全部 adapter、validation、option refresh 与 custom stateful adapter recipe
 请见[使用指南](docs/guide.zh-CN.md)或其[英文版本](docs/guide.md)。
+
+
+## 编辑会话迁移（#248）
+
+旧 Validator 入口已删除；with_rules 显式注册规则依赖并返回 Result。Form 持有未解析草稿与原生编辑票据。Total set 返回 Result；replace/reset/rebase 强制 DraftPolicy 并返回生命周期报告。刷新用 rebase_preserving_edits 原子保留本地编辑并报告冲突。数字构造函数新增稳定 editor key；FormMappedInput 提供存储/展示映射。签名、路径基线/dirty 和迁移详情见[指南](docs/guide.zh-CN.md)。

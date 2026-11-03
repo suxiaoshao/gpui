@@ -19,6 +19,14 @@ impl Runtime {
         }
     }
 
+    pub(super) fn advance(&mut self) {
+        self.revision.0 = self
+            .revision
+            .0
+            .checked_add(1)
+            .expect("form revision overflow");
+    }
+
     pub(super) const fn revision(&self) -> FormRevision {
         self.revision
     }

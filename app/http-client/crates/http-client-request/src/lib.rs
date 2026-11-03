@@ -71,7 +71,11 @@ impl RequestView {
     }
 
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let form = cx.new(|_| Form::new(RequestDraft::default()).with_validator(RequestValidator));
+        let form = cx.new(|_| {
+            Form::new(RequestDraft::default())
+                .with_rules(RequestValidator.rules())
+                .expect("valid rules")
+        });
         let transport_settings = HttpClientTransportSettings::default();
         let method = FormScalarSelect::new(
             &form,

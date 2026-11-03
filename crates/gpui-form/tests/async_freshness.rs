@@ -153,7 +153,7 @@ fn stale_version_completion_has_no_model_report_or_publication_side_effects(
         });
     });
     cx.run_until_parked();
-    cx.update(|cx| assert!(Pair::RIGHT.set(&form, "new revision".into(), cx)));
+    cx.update(|cx| assert!(Pair::RIGHT.set(&form, "new revision".into(), cx).unwrap()));
     cx.run_until_parked();
     events.set(0);
     notifications.set(0);
@@ -201,9 +201,9 @@ fn old_generation_completion_cannot_replace_the_new_pending_request(cx: &mut Tes
     let (current_completion, current_future) = manual();
     cx.update(|cx| {
         form.update(cx, |form, cx| {
-            form.start_async_validation(Pair::LEFT, "old", |_| old_future, cx)
+            form.start_async_validation(Pair::LEFT, "same-rule", |_| old_future, cx)
                 .unwrap();
-            form.start_async_validation(Pair::LEFT, "current", |_| current_future, cx)
+            form.start_async_validation(Pair::LEFT, "same-rule", |_| current_future, cx)
                 .unwrap();
         });
     });

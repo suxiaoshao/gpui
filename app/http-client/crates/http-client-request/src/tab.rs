@@ -225,15 +225,17 @@ mod tests {
         });
         cx.update(|_, cx| {
             let form = view.read(cx).form.clone();
-            RequestDraft::AUTH.set(
-                &form,
-                RequestAuthDraft::ApiKey(ApiKeyAuthDraft {
-                    name: "tag".into(),
-                    value: "new".into(),
-                    location: ApiKeyLocation::Header,
-                }),
-                cx,
-            );
+            RequestDraft::AUTH
+                .set(
+                    &form,
+                    RequestAuthDraft::ApiKey(ApiKeyAuthDraft {
+                        name: "tag".into(),
+                        value: "new".into(),
+                        location: ApiKeyLocation::Header,
+                    }),
+                    cx,
+                )
+                .unwrap();
         });
         cx.run_until_parked();
         cx.update(|_, cx| {

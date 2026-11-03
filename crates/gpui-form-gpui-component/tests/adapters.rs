@@ -161,6 +161,7 @@ impl AdapterHarness {
         let integer_control = FormIntegerInput::new(
             &form,
             AdapterInput::BUDGET,
+            "budget",
             |window, cx| IntegerInputState::new(window, cx).min(1).max(4096).step(1),
             window,
             cx,
@@ -236,7 +237,11 @@ fn total_input_mirrors_form_and_component_without_echo(cx: &mut TestAppContext) 
     cx.run_until_parked();
     cx.update(|_, cx| assert_eq!(AdapterInput::NAME.get(&form, cx), "user"));
 
-    cx.update(|_, cx| AdapterInput::NAME.set(&form, "external".to_string(), cx));
+    cx.update(|_, cx| {
+        AdapterInput::NAME
+            .set(&form, "external".to_string(), cx)
+            .unwrap()
+    });
     cx.run_until_parked();
     cx.update(|_, cx| assert_eq!(input.read(cx).value().as_ref(), "external"));
 }
@@ -251,19 +256,29 @@ fn total_input_projects_replace_reset_and_rebase(cx: &mut TestAppContext) {
     cx.update(|_, cx| {
         let mut replacement = AdapterInput::ROOT.get(&form, cx);
         replacement.name = "replaced".to_string();
-        form.update(cx, |form, cx| form.replace(replacement, cx));
+        form.update(cx, |form, cx| {
+            form.replace(replacement, gpui_form::DraftPolicy::Discard, cx)
+                .unwrap()
+        });
     });
     cx.run_until_parked();
     cx.update(|_, cx| assert_eq!(input.read(cx).value().as_ref(), "replaced"));
 
-    cx.update(|_, cx| form.update(cx, |form, cx| form.reset(cx)));
+    cx.update(|_, cx| {
+        form.update(cx, |form, cx| {
+            form.reset(gpui_form::DraftPolicy::Discard, cx).unwrap()
+        })
+    });
     cx.run_until_parked();
     cx.update(|_, cx| assert_eq!(input.read(cx).value().as_ref(), "initial"));
 
     cx.update(|_, cx| {
         let mut canonical = AdapterInput::ROOT.get(&form, cx);
         canonical.name = "rebased".to_string();
-        form.update(cx, |form, cx| form.rebase(canonical, cx));
+        form.update(cx, |form, cx| {
+            form.rebase(canonical, gpui_form::DraftPolicy::Discard, cx)
+                .unwrap()
+        });
     });
     cx.run_until_parked();
     cx.update(|_, cx| assert_eq!(input.read(cx).value().as_ref(), "rebased"));
@@ -277,8 +292,12 @@ fn total_input_discards_stale_projection_after_a_new_native_edit(cx: &mut TestAp
     let (form, input) = entities(&root, &mut cx);
 
     cx.update(|window, cx| {
-        AdapterInput::NAME.set(&form, "one".to_string(), cx);
-        AdapterInput::NAME.set(&form, "two".to_string(), cx);
+        AdapterInput::NAME
+            .set(&form, "one".to_string(), cx)
+            .unwrap();
+        AdapterInput::NAME
+            .set(&form, "two".to_string(), cx)
+            .unwrap();
         input.update(cx, |input, cx| {
             input.set_value("editor".to_string(), window, cx);
             cx.emit(InputEvent::Change);
@@ -388,7 +407,7 @@ fn custom_dynamic_adapter_receives_retired_once_and_writer_stops(cx: &mut TestAp
         })
     });
 
-    cx.update(|_, cx| AdapterInput::DETAILS.set(&form, None, cx));
+    cx.update(|_, cx| AdapterInput::DETAILS.set(&form, None, cx).unwrap());
     cx.run_until_parked();
     cx.update(|_, cx| {
         assert_eq!(probe.read(cx).retired, 1);
@@ -427,15 +446,17 @@ fn dynamic_input_stops_writing_after_optional_payload_is_replaced(cx: &mut TestA
 
     cx.update(|_, cx| {
         let details = AdapterInput::ROOT.then(AdapterInput::DETAILS);
-        details.set(&form, None, cx);
-        details.set(
-            &form,
-            Some(Details {
-                note: "replacement".to_string(),
-                budget: 9,
-            }),
-            cx,
-        );
+        details.set(&form, None, cx).unwrap();
+        details
+            .set(
+                &form,
+                Some(Details {
+                    note: "replacement".to_string(),
+                    budget: 9,
+                }),
+                cx,
+            )
+            .unwrap();
     });
     cx.update(|window, cx| {
         dynamic_input.update(cx, |input, cx| {
@@ -510,7 +531,8 @@ fn whole_model_replacement_cancels_queued_total_callback(cx: &mut TestAppContext
         let mut replacement = AdapterInput::ROOT.get(&form, cx);
         form.update(cx, |form, cx| {
             replacement.name = "replacement".into();
-            form.replace(replacement, cx);
+            form.replace(replacement, gpui_form::DraftPolicy::Discard, cx)
+                .unwrap();
         });
     });
     cx.run_until_parked();
@@ -518,7 +540,7 @@ fn whole_model_replacement_cancels_queued_total_callback(cx: &mut TestAppContext
 }
 
 #[gpui::test]
-fn dropping_integer_control_releases_its_blocking_issue(cx: &mut TestAppContext) {
+fn dropping_integer_control_keeps_draft_and_remount_restores_text(cx: &mut TestAppContext) {
     let window = open_harness(cx);
     let mut cx = VisualTestContext::from_window(window.into(), cx);
     let root = window.root(&mut cx).expect("adapter harness root");
@@ -548,7 +570,38 @@ fn dropping_integer_control_releases_its_blocking_issue(cx: &mut TestAppContext)
     cx.update(|_, cx| {
         assert_eq!(AdapterInput::BUDGET.get(&form, cx), 1024);
         assert!(form.update(cx, |form, cx| form.prepare(cx)).is_ok());
+    });
+    cx.update(|window, cx| {
+        integer_control
+            .read(cx)
+            .editor()
+            .clone()
+            .update(cx, |input, cx| {
+                input.set_value("--", window, cx);
+                cx.emit(InputEvent::Change);
+            });
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
         root.update(cx, |root, _| root.integer_control = None);
+        assert!(form.update(cx, |form, cx| form.prepare(cx)).is_err());
+        root.update(cx, |root, cx| {
+            let restored = FormIntegerInput::new(
+                &form,
+                AdapterInput::BUDGET,
+                "budget",
+                |window, cx| IntegerInputState::new(window, cx).min(1).max(4096),
+                window,
+                cx,
+            )
+            .unwrap();
+            assert_eq!(restored.read(cx).editor().read(cx).value().as_ref(), "--");
+            root.integer_control = Some(restored);
+        });
+        form.update(cx, |form, cx| {
+            form.reset(gpui_form::DraftPolicy::Discard, cx)
+        })
+        .unwrap();
         assert!(form.update(cx, |form, cx| form.prepare(cx)).is_ok());
     });
 }
@@ -569,6 +622,7 @@ fn retiring_dynamic_subtree_revokes_control_issue_and_callbacks(cx: &mut TestApp
             let control = FormIntegerInput::try_new(
                 &root.form,
                 details.then(Details::BUDGET),
+                "details.budget",
                 IntegerInputState::new,
                 window,
                 cx,
@@ -588,9 +642,14 @@ fn retiring_dynamic_subtree_revokes_control_issue_and_callbacks(cx: &mut TestApp
     cx.run_until_parked();
     cx.update(|_, cx| {
         assert!(form.update(cx, |form, cx| form.prepare(cx)).is_err());
+        form.update(cx, |form, cx| {
+            form.discard_drafts(AdapterInput::DETAILS, cx)
+        })
+        .unwrap();
         AdapterInput::ROOT
             .then(AdapterInput::DETAILS)
-            .set(&form, None, cx);
+            .set(&form, None, cx)
+            .unwrap();
         assert!(form.update(cx, |form, cx| form.prepare(cx)).is_ok());
     });
     cx.update(|_, cx| {
@@ -718,7 +777,9 @@ macro_rules! multiline_adapter_test {
             cx.run_until_parked();
             cx.update(|_, cx| {
                 assert_eq!(AdapterInput::NAME.get(&form, cx), "中文\nsecond line");
-                AdapterInput::NAME.set(&form, "external\nvalue".into(), cx);
+                AdapterInput::NAME
+                    .set(&form, "external\nvalue".into(), cx)
+                    .unwrap();
             });
             cx.run_until_parked();
             cx.update(|_, cx| assert_eq!(control.read(cx).value().as_ref(), "external\nvalue"));
@@ -745,3 +806,118 @@ multiline_adapter_test!(
     FormEditor,
     EditorState
 );
+
+#[gpui::test]
+fn mapped_native_input_accepts_only_committed_ime_and_restores_offline_draft(
+    cx: &mut TestAppContext,
+) {
+    use gpui::EntityInputHandler as _;
+    use gpui_form::{ControlMapping, EditResult};
+    use gpui_form_gpui_component::FormMappedInput;
+    #[derive(Clone, PartialEq, FormSchema)]
+    struct Draft {
+        value: Option<i32>,
+    }
+    struct Mapping;
+    impl ControlMapping<Option<i32>, String> for Mapping {
+        type Context = i32;
+        fn format(&self, value: &Option<i32>, inherited: &i32) -> String {
+            value.map_or_else(|| inherited.to_string(), |n| format!("000{n}"))
+        }
+        fn parse(
+            &self,
+            display: String,
+            _: &Option<i32>,
+            _: Option<&Option<i32>>,
+            inherited: &i32,
+        ) -> EditResult<Option<i32>, String> {
+            if display == inherited.to_string() {
+                return EditResult::Parsed(None);
+            }
+            match display.parse() {
+                Ok(n) => EditResult::Parsed(Some(n)),
+                Err(_) => EditResult::draft(display, "number", "invalid number"),
+            }
+        }
+    }
+    let window = open_harness(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).unwrap();
+    let (form, control) = cx.update(|window, cx| {
+        root.update(cx, |_, cx| {
+            let form = cx.new(|_| Form::new(Draft { value: None }));
+            let control = FormMappedInput::new(
+                &form,
+                Draft::VALUE,
+                "value",
+                Mapping,
+                12,
+                InputState::new,
+                window,
+                cx,
+            )
+            .unwrap();
+            assert_eq!(control.read(cx).value().as_ref(), "12");
+            (form, control)
+        })
+    });
+    cx.update(|window, cx| {
+        control.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.replace_and_mark_text_in_range(None, "2", Some(1..1), window, cx);
+            input.replace_and_mark_text_in_range(None, "23", Some(2..2), window, cx);
+        })
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert_eq!(Draft::VALUE.get(&form, cx), None);
+        control.update(cx, |input, cx| {
+            input.replace_text_in_range(None, "23", window, cx)
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert_eq!(Draft::VALUE.get(&form, cx), Some(23));
+        assert_eq!(
+            control.read(cx).value().as_ref(),
+            "23",
+            "source text is not immediately reformatted to 00023"
+        );
+        control.update(cx, |input, cx| {
+            input.set_value("--", window, cx);
+            cx.emit(InputEvent::Change);
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| control.refresh(99, cx));
+    cx.run_until_parked();
+    cx.update(|_, cx| assert_eq!(control.read(cx).value().as_ref(), "--"));
+    drop(control);
+    cx.update(|_, cx| assert!(form.update(cx, |f, cx| f.prepare(cx)).is_err()));
+    let restored = cx.update(|window, cx| {
+        root.update(cx, |_, cx| {
+            FormMappedInput::new(
+                &form,
+                Draft::VALUE,
+                "value",
+                Mapping,
+                99,
+                InputState::new,
+                window,
+                cx,
+            )
+            .unwrap()
+        })
+    });
+    cx.update(|_, cx| {
+        assert_eq!(restored.read(cx).value().as_ref(), "--");
+        form.update(cx, |f, cx| f.reset(gpui_form::DraftPolicy::Discard, cx))
+            .unwrap();
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        assert_eq!(restored.read(cx).value().as_ref(), "99");
+        assert!(form.update(cx, |f, cx| f.prepare(cx)).is_ok());
+        assert!(!form.read(cx).is_dirty());
+    });
+}

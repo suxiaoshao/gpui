@@ -4,7 +4,7 @@ use crate::{FormRevision, topology::SessionId};
 
 /// An opaque optimistic-concurrency token bound to one Form editing session.
 ///
-/// A version can only be obtained from [`Prepared`]. It deliberately exposes
+/// A version is obtained from [`Prepared`] or a lifecycle report. It deliberately exposes
 /// neither its session identity nor its revision: callers can retain and pass
 /// it back to `Form::rebase_if_current`, but cannot manufacture a matching
 /// token for another editing session.
@@ -12,15 +12,25 @@ use crate::{FormRevision, topology::SessionId};
 pub struct FormVersion {
     session: SessionId,
     revision: FormRevision,
+    edit_epoch: u64,
 }
 
 impl FormVersion {
-    pub(crate) const fn new(session: SessionId, revision: FormRevision) -> Self {
-        Self { session, revision }
+    pub(crate) const fn new(session: SessionId, revision: FormRevision, edit_epoch: u64) -> Self {
+        Self {
+            session,
+            revision,
+            edit_epoch,
+        }
     }
 
-    pub(crate) fn is_current(self, session: SessionId, revision: FormRevision) -> bool {
-        self.session == session && self.revision == revision
+    pub(crate) fn is_current(
+        self,
+        session: SessionId,
+        revision: FormRevision,
+        edit_epoch: u64,
+    ) -> bool {
+        self.session == session && self.revision == revision && self.edit_epoch == edit_epoch
     }
 }
 

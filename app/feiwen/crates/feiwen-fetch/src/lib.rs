@@ -85,7 +85,11 @@ impl FetchView {
                 i18n.t("fetch-cookie-placeholder"),
             )
         };
-        let form = cx.new(|_| Form::new(FetchDraft::default()).with_validator(FetchValidator));
+        let form = cx.new(|_| {
+            Form::new(FetchDraft::default())
+                .with_rules(FetchValidator.rules())
+                .expect("valid rules")
+        });
         let url_control = FormInput::new(
             &form,
             FetchDraft::URL,
@@ -96,6 +100,7 @@ impl FetchView {
         let start_control = FormIntegerInput::new(
             &form,
             FetchDraft::START_PAGE,
+            "fetch.start",
             move |window, cx| IntegerInputState::new(window, cx).min(1).step(1),
             window,
             cx,
@@ -108,6 +113,7 @@ impl FetchView {
         let end_control = FormIntegerInput::new(
             &form,
             FetchDraft::END_PAGE,
+            "fetch.end",
             move |window, cx| IntegerInputState::new(window, cx).min(1).step(1),
             window,
             cx,
@@ -208,7 +214,10 @@ impl FetchView {
             .task_state
             .read(cx, |state| state.snapshot().map(FetchDraft::from));
         if let Some(snapshot) = snapshot {
-            self.form.update(cx, |form, cx| form.replace(snapshot, cx));
+            self.form.update(cx, |form, cx| {
+                form.replace(snapshot, gpui_form::DraftPolicy::Discard, cx)
+                    .unwrap()
+            });
         }
     }
 

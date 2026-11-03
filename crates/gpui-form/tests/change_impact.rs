@@ -49,7 +49,7 @@ fn record_model_changes(
     let changes = Rc::new(RefCell::new(Vec::new()));
     let recorded = changes.clone();
     cx.subscribe(form, move |_, event: &FormEvent<Model>, _| {
-        if let FormEvent::ModelChanged(change) = event {
+        if let FormEvent::ModelChanged(change) | FormEvent::SessionChanged(change) = event {
             recorded.borrow_mut().push(change.clone());
         }
     })
@@ -77,7 +77,7 @@ fn frozen_change_impact_does_not_recompute_against_later_model_state(cx: &mut Te
     assert!(!first_change.impact(&Model::TITLE).is_affected());
 
     cx.update(|cx| {
-        assert!(Model::TITLE.set(&form, "later".into(), cx));
+        assert!(Model::TITLE.set(&form, "later".into(), cx).unwrap());
     });
     assert!(first_change.impact(&first_value).value_changed());
     assert!(!first_change.impact(&Model::TITLE).is_affected());
@@ -98,7 +98,7 @@ fn wrong_session_dynamic_target_has_no_impact(cx: &mut TestAppContext) {
     });
 
     cx.update(|cx| {
-        assert!(Model::TITLE.set(&first_form, "changed".into(), cx));
+        assert!(Model::TITLE.set(&first_form, "changed".into(), cx).unwrap());
     });
     let impact = changes.borrow()[0].impact(&foreign_value);
     assert!(!impact.is_affected());
@@ -222,13 +222,17 @@ fn collection_composite_and_whole_model_mutations_publish_precise_change_sets(
 
     changes.borrow_mut().clear();
     cx.update(|cx| {
-        assert!(Model::DETAILS.set(
-            &form,
-            Details {
-                note: "changed".into(),
-            },
-            cx,
-        ));
+        assert!(
+            Model::DETAILS
+                .set(
+                    &form,
+                    Details {
+                        note: "changed".into(),
+                    },
+                    cx,
+                )
+                .unwrap()
+        );
     });
     assert_eq!(changes.borrow().len(), 1);
     let change = changes.borrow().last().unwrap().clone();
@@ -246,12 +250,18 @@ fn collection_composite_and_whole_model_mutations_publish_precise_change_sets(
         changes.borrow_mut().clear();
         let old_item = cx.update(|cx| rows.items(&form, cx).remove(0));
         cx.update(|cx| match install {
-            0 => form.update(cx, |form, cx| form.replace(model(), cx)),
-            1 => form.update(cx, |form, cx| form.reset(cx)),
+            0 => form.update(cx, |form, cx| {
+                form.replace(model(), gpui_form::DraftPolicy::Preserve, cx)
+                    .unwrap()
+            }),
+            1 => form.update(cx, |form, cx| {
+                form.reset(gpui_form::DraftPolicy::Discard, cx).unwrap()
+            }),
             2 => form.update(cx, |form, cx| {
                 let mut next = model();
                 next.title = "rebased".into();
-                form.rebase(next, cx);
+                form.rebase(next, gpui_form::DraftPolicy::Preserve, cx)
+                    .unwrap()
             }),
             _ => unreachable!(),
         });

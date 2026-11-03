@@ -5,6 +5,9 @@ use crate::{PathKey, ValidationReport};
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ResolveError {
+    WouldRetireDrafts {
+        paths: Vec<PathKey>,
+    },
     WrongSession {
         path: PathKey,
     },
@@ -26,6 +29,9 @@ pub enum ResolveError {
 impl fmt::Display for ResolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::WouldRetireDrafts { .. } => f.write_str(
+                "the mutation would retire unresolved editor drafts; explicitly discard them first",
+            ),
             Self::WrongSession { .. } => f.write_str("the path belongs to another form session"),
             Self::Retired { .. } => f.write_str("the dynamic form path has been retired"),
             Self::MissingOptional { .. } => f.write_str("the optional form value is absent"),
@@ -105,12 +111,16 @@ impl From<TopologyError> for MutationError {
 pub enum PrepareError {
     Validation(ValidationReport),
     ValidationPending,
+    EditsPending,
+    UnresolvedDrafts,
 }
 
 impl fmt::Display for PrepareError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Validation(_) => f.write_str("form validation failed"),
+            Self::EditsPending => f.write_str("native edits are awaiting admission"),
+            Self::UnresolvedDrafts => f.write_str("the form has unresolved editor drafts"),
             Self::ValidationPending => f.write_str("form validation is still running"),
         }
     }

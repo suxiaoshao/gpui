@@ -8,8 +8,8 @@ use std::{
 };
 
 use crate::{
-    FieldSchema, FormSchema, ValidationMessage, ValidationRequest, ValidationSink,
-    ValidationSource, Validator,
+    ChangeTarget, FieldSchema, FormSchema, ValidationMessage, ValidationRequest, ValidationRule,
+    ValidationSink, ValidationSource,
     schema::SchemaVisitor,
     topology::{CanonicalAddress, TopologySnapshot},
 };
@@ -235,12 +235,21 @@ where
     }
 }
 
-impl<T, P> Validator<T> for GardeValidator<T, P>
+impl<T, P> GardeValidator<T, P>
 where
     T: FormSchema + garde::Validate,
     T::Context: 'static,
     P: GardeMessageProvider,
 {
+    pub fn into_rule(
+        self,
+        id: impl Into<crate::RuleId>,
+        dependency: impl ChangeTarget<T>,
+    ) -> ValidationRule<T> {
+        ValidationRule::new(id, move |request, out| self.validate(request, out))
+            .dependency(dependency)
+    }
+
     fn validate(&self, request: ValidationRequest<'_, T>, out: &mut ValidationSink<'_, T>) {
         let result = garde::i18n::with_i18n(MessageI18n::<P>::default(), || {
             garde::Validate::validate_with(request.model(), &self.context)
@@ -274,7 +283,7 @@ where
                 );
                 continue;
             }
-            let Some((address, schema)) = paths.get(&external) else {
+            let Some((address, _schema)) = paths.get(&external) else {
                 out.push_with_source(
                     CanonicalAddress::default(),
                     ValidationSource::Internal,
@@ -283,7 +292,7 @@ where
                 );
                 continue;
             };
-            if request.includes_address(address) && schema.triggers().includes(request.trigger()) {
+            if request.includes_address(address) {
                 out.push_with_source(
                     address.clone(),
                     ValidationSource::Validator(Cow::Borrowed("garde")),

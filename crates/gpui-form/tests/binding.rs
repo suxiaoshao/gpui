@@ -173,7 +173,8 @@ fn equal_writer_set_clears_its_issue_without_a_model_event(cx: &mut TestAppConte
 
     cx.update(|window, cx| {
         root.update(cx, |_, cx| {
-            writer.defer_set_issue(
+            writer.defer_draft(
+                "-".to_owned(),
                 "editor",
                 gpui_form::ValidationMessage::literal("incomplete"),
                 window,
@@ -211,8 +212,8 @@ fn mailbox_keeps_the_latest_external_value_and_never_overwrites_a_new_editor_wri
     clear(&first, &mut cx);
 
     cx.update(|_, cx| {
-        assert!(Model::TITLE.set(&form, "one".into(), cx));
-        assert!(Model::TITLE.set(&form, "two".into(), cx));
+        assert!(Model::TITLE.set(&form, "one".into(), cx).unwrap());
+        assert!(Model::TITLE.set(&form, "two".into(), cx).unwrap());
     });
     cx.run_until_parked();
     assert_eq!(
@@ -223,7 +224,11 @@ fn mailbox_keeps_the_latest_external_value_and_never_overwrites_a_new_editor_wri
 
     cx.update(|window, cx| {
         root.update(cx, |_, cx| writer.defer_set("editor".into(), window, cx));
-        assert!(Model::TITLE.set(&form, "newer-external".into(), cx));
+        assert!(
+            Model::TITLE
+                .set(&form, "newer-external".into(), cx)
+                .unwrap()
+        );
     });
     cx.run_until_parked();
     cx.update(|_, cx| assert_eq!(Model::TITLE.get(&form, cx), "editor"));
@@ -246,15 +251,23 @@ fn dynamic_retirement_projects_once_and_total_binding_survives_whole_model_lifec
     clear(&dynamic, &mut cx);
 
     cx.update(|_, cx| {
-        assert!(Model::DETAILS.set(&form, None, cx));
+        assert!(Model::DETAILS.set(&form, None, cx).unwrap());
     });
     cx.run_until_parked();
     assert_eq!(values(&dynamic, &mut cx), [ControlProjection::Retired]);
 
     cx.update(|_, cx| {
-        form.update(cx, |form, cx| form.replace(model("replaced"), cx));
-        form.update(cx, |form, cx| form.reset(cx));
-        form.update(cx, |form, cx| form.rebase(model("rebased"), cx));
+        form.update(cx, |form, cx| {
+            form.replace(model("replaced"), gpui_form::DraftPolicy::Preserve, cx)
+                .unwrap()
+        });
+        form.update(cx, |form, cx| {
+            form.reset(gpui_form::DraftPolicy::Discard, cx).unwrap()
+        });
+        form.update(cx, |form, cx| {
+            form.rebase(model("rebased"), gpui_form::DraftPolicy::Preserve, cx)
+                .unwrap()
+        });
     });
     cx.run_until_parked();
     assert_eq!(values(&dynamic, &mut cx), [ControlProjection::Retired]);
@@ -281,9 +294,10 @@ fn invalid_editor_sequence_suppresses_an_older_queued_authoritative_value(cx: &m
     clear(&first, &mut cx);
 
     cx.update(|window, cx| {
-        assert!(Model::TITLE.set(&form, "authoritative".into(), cx));
+        assert!(Model::TITLE.set(&form, "authoritative".into(), cx).unwrap());
         root.update(cx, |_, cx| {
-            writer.defer_set_issue(
+            writer.defer_draft(
+                "-".to_owned(),
                 "invalid-editor-text",
                 gpui_form::ValidationMessage::literal("incomplete"),
                 window,
@@ -303,7 +317,7 @@ fn invalid_editor_sequence_suppresses_an_older_queued_authoritative_value(cx: &m
 }
 
 #[gpui::test]
-fn control_write_clears_peer_issue_in_its_model_transaction(cx: &mut TestAppContext) {
+fn control_write_preserves_peer_draft_in_its_model_transaction(cx: &mut TestAppContext) {
     let window = open_harness(cx);
     let mut cx = VisualTestContext::from_window(window.into(), cx);
     let root = window.root(&mut cx).expect("binding harness root");
@@ -319,7 +333,8 @@ fn control_write_clears_peer_issue_in_its_model_transaction(cx: &mut TestAppCont
 
     cx.update(|window, cx| {
         root.update(cx, |_, cx| {
-            second_writer.defer_set_issue(
+            second_writer.defer_draft(
+                "-".to_owned(),
                 "peer-invalid",
                 gpui_form::ValidationMessage::literal("peer invalid"),
                 window,
@@ -337,6 +352,7 @@ fn control_write_clears_peer_issue_in_its_model_transaction(cx: &mut TestAppCont
         let validation_events = validation_events.clone();
         cx.subscribe(&form, move |_, event: &FormEvent<Model>, _| match event {
             FormEvent::ModelChanged(_) => model_events.set(model_events.get() + 1),
+            FormEvent::DraftChanged(_) | FormEvent::SessionChanged(_) => {}
             FormEvent::ValidationChanged { .. } => {
                 validation_events.set(validation_events.get() + 1)
             }
@@ -353,8 +369,8 @@ fn control_write_clears_peer_issue_in_its_model_transaction(cx: &mut TestAppCont
 
     cx.update(|_, cx| {
         assert_eq!(Model::TITLE.get(&form, cx), "accepted");
-        assert!(form.read(cx).is_valid());
-        assert!(form.read(cx).validation_report().issues().is_empty());
+        assert!(!form.read(cx).is_valid());
+        assert_eq!(form.read(cx).validation_report().issues().len(), 1);
     });
     assert_eq!(model_events.get(), 1);
     assert_eq!(validation_events.get(), 0);
@@ -380,7 +396,8 @@ fn dropped_binding_makes_queued_and_future_writer_work_no_op(cx: &mut TestAppCon
 
     cx.update(|window, cx| {
         root.update(cx, |_, cx| {
-            writer.defer_set_issue(
+            writer.defer_draft(
+                "-".to_owned(),
                 "temporary-invalid",
                 gpui_form::ValidationMessage::literal("temporary invalid"),
                 window,
@@ -392,7 +409,7 @@ fn dropped_binding_makes_queued_and_future_writer_work_no_op(cx: &mut TestAppCon
     cx.update(|_, cx| assert!(!form.read(cx).is_valid()));
 
     cx.update(|window, cx| {
-        assert!(Model::TITLE.set(&form, "queued".into(), cx));
+        assert!(Model::TITLE.set(&form, "queued".into(), cx).unwrap());
         drop(binding);
         root.update(cx, |_, cx| writer.defer_set("ignored".into(), window, cx));
     });
@@ -400,8 +417,8 @@ fn dropped_binding_makes_queued_and_future_writer_work_no_op(cx: &mut TestAppCon
 
     cx.update(|_, cx| {
         assert_eq!(Model::TITLE.get(&form, cx), "queued");
-        assert!(form.read(cx).is_valid());
-        assert!(form.read(cx).validation_report().issues().is_empty());
+        assert!(!form.read(cx).is_valid());
+        assert_eq!(form.read(cx).validation_report().issues().len(), 1);
     });
     assert!(values(&owner, &mut cx).is_empty());
 }
@@ -490,7 +507,8 @@ fn public_debug_output_omits_schema_addresses_and_private_control_identity(
 
     cx.update(|window, cx| {
         root.update(cx, |_, cx| {
-            writer.defer_set_issue(
+            writer.defer_draft(
+                "-".to_owned(),
                 "private-control-issue",
                 gpui_form::ValidationMessage::literal("invalid"),
                 window,
@@ -512,4 +530,338 @@ fn public_debug_output_omits_schema_addresses_and_private_control_identity(
         assert!(!debug.contains("generation"));
         assert!(!debug.contains("editor_sequence"));
     }
+}
+
+#[gpui::test]
+fn native_ticket_blocks_prepare_and_invalidates_saved_version_before_defer(
+    cx: &mut TestAppContext,
+) {
+    let window = open_harness(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).unwrap();
+    cx.update(|window, cx| {
+        let (form, writer) =
+            root.read_with(cx, |root, _| (root.form.clone(), root.first_writer.clone()));
+        let version = form
+            .update(cx, |form, cx| form.prepare(cx))
+            .unwrap()
+            .version();
+        root.update(cx, |_, cx| writer.defer_set("initial".into(), window, cx));
+        assert!(matches!(
+            form.update(cx, |form, cx| form.prepare(cx)),
+            Err(gpui_form::PrepareError::EditsPending)
+        ));
+        assert!(!form.update(cx, |form, cx| form.rebase_if_current(
+            version,
+            model("stale"),
+            cx
+        )));
+        form.update(cx, |f, cx| f.discard_drafts(Model::TITLE, cx))
+            .unwrap();
+        root.update(cx, |_, cx| {
+            writer.defer_set("discarded before admission".into(), window, cx)
+        });
+        let revision = form.read(cx).revision();
+        form.update(cx, |f, cx| f.discard_drafts(Model::TITLE, cx))
+            .unwrap();
+        assert!(form.read(cx).revision() > revision);
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        let form = root.read(cx).form.clone();
+        assert_eq!(Model::TITLE.get(&form, cx), "initial");
+        assert!(form.update(cx, |form, cx| form.prepare(cx)).is_ok());
+    });
+}
+
+#[gpui::test]
+fn drafts_survive_unmount_and_each_editor_owns_its_text(cx: &mut TestAppContext) {
+    let window = open_harness(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).unwrap();
+    let (form, binding, writer) = cx.update(|window, cx| {
+        let form = root.read(cx).form.clone();
+        let owner = root.read(cx).first.clone();
+        let (binding, writer) =
+            Model::TITLE.bind_control_in(&form, &owner, |_, _, _, _| {}, window, cx);
+        let writer = writer.with_editor_key("offline", cx);
+        root.update(cx, |_, cx| {
+            writer.defer_draft("-".to_owned(), "syntax", "bad".into(), window, cx)
+        });
+        (form, binding, writer)
+    });
+    cx.run_until_parked();
+    let revision = cx.update(|_, cx| form.read(cx).revision());
+    cx.update(|window, cx| {
+        root.update(cx, |_, cx| {
+            writer.defer_draft("--".to_owned(), "syntax", "bad".into(), window, cx)
+        })
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| assert!(form.read(cx).revision() > revision));
+    drop(binding);
+    cx.update(|_, cx| {
+        assert!(form.read(cx).is_dirty());
+        assert!(form.update(cx, |form, cx| form.prepare(cx)).is_err());
+        Model::TITLE.set(&form, "programmatic".into(), cx).unwrap();
+    });
+    let (_binding, restored) = cx.update(|window, cx| {
+        let owner = root.read(cx).first.clone();
+        let (binding, writer) =
+            Model::TITLE.bind_control_in(&form, &owner, |_, _, _, _| {}, window, cx);
+        (binding, writer.with_editor_key("offline", cx))
+    });
+    cx.update(|window, cx| {
+        assert_eq!(restored.draft::<String>(cx).unwrap(), Some("--".into()));
+        let other = root.read(cx).second_writer.clone();
+        root.update(cx, |_, cx| {
+            other.defer_draft("other".to_owned(), "syntax", "bad".into(), window, cx)
+        });
+        root.update(cx, |_, cx| restored.defer_set("initial".into(), window, cx));
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        assert!(restored.draft::<String>(cx).unwrap().is_none());
+        assert!(
+            form.read(cx).is_dirty(),
+            "other editor's draft still blocks submission"
+        );
+        form.update(cx, |form, cx| {
+            form.reset(gpui_form::DraftPolicy::Discard, cx)
+        })
+        .unwrap();
+        assert!(!form.read(cx).is_dirty());
+    });
+}
+
+#[gpui::test]
+fn preserving_lifecycle_refuses_to_retire_a_dynamic_draft_atomically(cx: &mut TestAppContext) {
+    let window = open_harness(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).unwrap();
+    let (form, note, _binding, writer) = cx.update(|window, cx| {
+        let form = root.read(cx).form.clone();
+        let note = Model::ROOT
+            .then(Model::DETAILS)
+            .some()
+            .resolve(&form, cx)
+            .unwrap()
+            .unwrap()
+            .then(Details::NOTE);
+        let owner = root.read(cx).dynamic.clone();
+        let (binding, writer) = note
+            .try_bind_control_in(&form, &owner, |_, _, _, _| {}, window, cx)
+            .unwrap();
+        root.update(cx, |_, cx| {
+            writer.defer_draft("draft".to_owned(), "syntax", "bad".into(), window, cx)
+        });
+        (form, note, binding, writer)
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        let revision = form.read(cx).revision();
+        assert!(matches!(
+            form.update(cx, |form, cx| form.rebase(
+                model("external"),
+                gpui_form::DraftPolicy::Preserve,
+                cx
+            )),
+            Err(gpui_form::LifecycleError::WouldRetireDrafts(_))
+        ));
+        assert_eq!(form.read(cx).revision(), revision);
+        assert_eq!(Model::TITLE.baseline(&form, cx), "initial");
+        assert!(Model::DETAILS.set(&form, None, cx).is_err());
+        assert_eq!(note.try_get(&form, cx).unwrap(), "note");
+        assert_eq!(writer.draft::<String>(cx).unwrap(), Some("draft".into()));
+        form.update(cx, |form, cx| form.discard_drafts(note.clone(), cx))
+            .unwrap();
+        Model::DETAILS.set(&form, None, cx).unwrap();
+        assert!(note.try_get(&form, cx).is_err());
+    });
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Slot {
+    Unset,
+    Set(i32),
+    Unreadable(String),
+}
+#[derive(Clone, Debug, PartialEq, FormSchema)]
+struct MappedModel {
+    slot: Slot,
+}
+struct SlotMapping;
+impl gpui_form::ControlMapping<Slot, String> for SlotMapping {
+    type Context = i32;
+    fn format(&self, stored: &Slot, inherited: &i32) -> String {
+        match stored {
+            Slot::Unset => inherited.to_string(),
+            Slot::Set(n) => n.to_string(),
+            Slot::Unreadable(s) => s.clone(),
+        }
+    }
+    fn parse(
+        &self,
+        display: String,
+        stored: &Slot,
+        baseline: Option<&Slot>,
+        inherited: &i32,
+    ) -> gpui_form::EditResult<Slot, String> {
+        if let Some(baseline) = baseline.filter(|b| self.format(b, inherited) == display) {
+            return gpui_form::EditResult::Parsed(baseline.clone());
+        }
+        if self.format(stored, inherited) == display {
+            return gpui_form::EditResult::Parsed(stored.clone());
+        }
+        match display.parse() {
+            Ok(n) => gpui_form::EditResult::Parsed(Slot::Set(n)),
+            Err(_) => gpui_form::EditResult::draft(display, "syntax", "number required"),
+        }
+    }
+}
+
+#[gpui::test]
+fn mapping_keeps_domain_slots_drafts_and_captured_context_separate(cx: &mut TestAppContext) {
+    let window = open_harness(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).unwrap();
+    let (form, binding, writer, log) = cx.update(|window, cx| {
+        let form = cx.new(|_| Form::new(MappedModel { slot: Slot::Unset }));
+        let log = cx.new(|_| ProjectionLog::default());
+        let (binding, writer) = gpui_form::bind_mapped_control_in(
+            &form,
+            MappedModel::SLOT,
+            "slot",
+            SlotMapping,
+            10,
+            &log,
+            |log, value, _, _| log.values.push(value),
+            window,
+            cx,
+        )
+        .unwrap();
+        assert_eq!(
+            log.read(cx).values,
+            vec![ControlProjection::Value("10".into())]
+        );
+        (form, binding, writer, log)
+    });
+    cx.update(|window, cx| root.update(cx, |_, cx| writer.defer_edit("22".into(), window, cx)));
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert_eq!(MappedModel::SLOT.get(&form, cx), Slot::Set(22));
+        root.update(cx, |_, cx| writer.defer_edit("10".into(), window, cx));
+        binding.refresh(20, cx);
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert_eq!(
+            MappedModel::SLOT.get(&form, cx),
+            Slot::Unset,
+            "queued input used the context at native event entry"
+        );
+        assert!(!form.read(cx).is_dirty());
+        root.update(cx, |_, cx| writer.defer_edit("--".into(), window, cx));
+    });
+    cx.run_until_parked();
+    let count = cx.update(|_, cx| log.read(cx).values.len());
+    cx.update(|_, cx| binding.refresh(30, cx));
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        assert_eq!(
+            log.read(cx).values.len(),
+            count,
+            "refresh must not overwrite native draft text"
+        );
+        let report = form
+            .update(cx, |f, cx| {
+                f.rebase_preserving_edits(
+                    MappedModel {
+                        slot: Slot::Set(40),
+                    },
+                    cx,
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            report.conflicts().len(),
+            1,
+            "draft plus external change conflicts even though stored value equals old baseline"
+        );
+        assert_eq!(MappedModel::SLOT.get(&form, cx), Slot::Unset);
+        assert!(form.update(cx, |f, cx| f.prepare(cx)).is_err());
+    });
+    cx.update(|_, cx| {
+        form.update(cx, |f, cx| {
+            f.rebase(
+                MappedModel {
+                    slot: Slot::Unreadable("unknown syntax".into()),
+                },
+                gpui_form::DraftPolicy::Discard,
+                cx,
+            )
+        })
+        .unwrap()
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        assert_eq!(
+            log.read(cx).values.last(),
+            Some(&ControlProjection::Value("unknown syntax".into()))
+        )
+    });
+}
+
+#[gpui::test]
+fn closed_window_settles_an_unadmitted_native_ticket(cx: &mut TestAppContext) {
+    let window = open_harness(cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut visual).unwrap();
+    let form = visual.update(|window, cx| {
+        let (form, writer) =
+            root.read_with(cx, |root, _| (root.form.clone(), root.first_writer.clone()));
+        root.update(cx, |_, cx| {
+            writer.defer_set("never accepted".into(), window, cx)
+        });
+        assert!(form.update(cx, |f, cx| f.prepare(cx)).is_err());
+        window.remove_window();
+        form
+    });
+    visual.run_until_parked();
+    drop(visual);
+    cx.update(|cx| {
+        assert_eq!(Model::TITLE.get(&form, cx), "initial");
+        assert!(form.update(cx, |f, cx| f.prepare(cx)).is_ok());
+    });
+}
+
+#[gpui::test]
+fn retired_callback_cannot_invalidate_a_fresh_prepared_version_before_notification(
+    cx: &mut TestAppContext,
+) {
+    let window = open_harness(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).unwrap();
+    cx.update(|window, cx| {
+        let form = root.read(cx).form.clone();
+        let note = Model::ROOT
+            .then(Model::DETAILS)
+            .some()
+            .resolve(&form, cx)
+            .unwrap()
+            .unwrap()
+            .then(Details::NOTE);
+        let owner = root.read(cx).dynamic.clone();
+        let (_binding, writer) = note
+            .try_bind_control_in(&form, &owner, |_, _, _, _| {}, window, cx)
+            .unwrap();
+        Model::DETAILS.set(&form, None, cx).unwrap();
+        let prepared = form.update(cx, |f, cx| f.prepare(cx)).unwrap();
+        root.update(cx, |_, cx| writer.defer_set("retired".into(), window, cx));
+        assert!(form.update(cx, |f, cx| f.rebase_if_current(
+            prepared.version(),
+            prepared.value().clone(),
+            cx
+        )));
+    });
 }

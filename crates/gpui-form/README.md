@@ -33,7 +33,7 @@ use gpui_component::{
 };
 use gpui_form::{
     Form, FormEvent, FormSchema, Prepared, ValidationMessage,
-    ValidationItemPath, ValidationRequest, ValidationSink, ValidationTrigger, Validator,
+    ValidationItemPath, ValidationRequest, ValidationSink, ValidationTrigger, ValidationRule,
 };
 use gpui_form_gpui_component::{FormInput, FormIntegerInput, IntegerInputState};
 ```
@@ -58,13 +58,11 @@ struct ProviderDraft {
 `FormSchema` creates reusable static descriptors such as
 `ProviderDraft::NAME`. A descriptor contains schema metadata and typed access;
 it never retains a form entity, value, subscription, or native control. The
-root descriptor is also a total path, so its `get` and `set` operations cannot
-fail.
+root descriptor is also a total path: reads always resolve; writes return Result to protect unresolved drafts during structural replacement.
 
 ### Create an editing session
 
-The constructors are infallible. Give the form an initial draft, then optionally
-attach a validator for this editing session:
+Form::new creates the session. Register explicit rules with with_rules, which returns a configuration Result:
 
 ```rust,ignore
 let form: Entity<Form<ProviderDraft>> = cx.new(|_| {
@@ -73,7 +71,7 @@ let form: Entity<Form<ProviderDraft>> = cx.new(|_| {
         retry_limit: 3,
         enabled: true,
     })
-    .with_validator(ProviderValidator::new(reserved_names))
+    .with_rules(ProviderValidator::new(reserved_names).rules()).expect("valid rules")
 });
 ```
 
@@ -97,7 +95,12 @@ impl ProviderValidator {
     }
 }
 
-impl Validator<ProviderDraft> for ProviderValidator {
+impl ProviderValidator {
+    fn rules(self) -> Vec<ValidationRule<ProviderDraft>> {
+        vec![ValidationRule::new("ProviderValidator", move |request, out| self.validate(request, out))
+            .dependency(ProviderDraft::ROOT)]
+    }
+
     fn validate(
         &self,
         request: ValidationRequest<'_, ProviderDraft>,
@@ -117,8 +120,7 @@ impl Validator<ProviderDraft> for ProviderValidator {
 }
 ```
 
-Business validation runs on `Submit` by default. Schema-declared `Mount`,
-`Change`, and `Blur` rules opt into their corresponding triggers. Use
+Business validation rules default to Submit. Configure their triggers explicitly with ValidationRule::triggers; schema trigger metadata controls required-field rules. Use
 `ValidationTrigger::External` when a catalog or another external dependency
 changes; it is not related to a `DynamicPath`.
 
@@ -153,6 +155,7 @@ impl ProviderPage {
         let retry_limit_input = FormIntegerInput::new(
             &form,
             ProviderDraft::RETRY_LIMIT,
+    "budget-editor",
             |window, cx| IntegerInputState::new(window, cx).min(0u32).max(10u32),
             window,
             cx,
@@ -180,7 +183,7 @@ let form = self.form.clone();
 Checkbox::new("provider-enabled")
     .checked(checked)
     .on_click(move |checked, _, cx| {
-        enabled.set(&form, *checked, cx);
+        enabled.set(&form, *checked, cx).unwrap();
     });
 ```
 
@@ -227,26 +230,26 @@ Mark nested schemas with `#[form(child)]` and structured collections with
 `#[form(items)]`. This complete recursive model contains no Form-only ID:
 
 ```rust,ignore
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct QueryDraft {
     #[form(child)]
     filters: FilterGroup,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterGroup {
     title: String,
     #[form(items)]
     children: Vec<FilterNode>,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 enum FilterNode {
     Condition(FilterCondition),
     Group(FilterGroup),
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterCondition {
     value: String,
 }
@@ -262,7 +265,7 @@ let title = QueryDraft::ROOT
     .then(QueryDraft::FILTERS)
     .then(FilterGroup::TITLE);
 let value: String = title.get(&query_form, cx);
-title.set(&query_form, "Recent articles".into(), cx);
+title.set(&query_form, "Recent articles".into(), cx).unwrap();
 ```
 
 Items, enum cases, and `Option::Some` locations are dynamic. Form creates their
@@ -308,7 +311,7 @@ typed target was affected:
 
 ```rust,ignore
 let subscription = cx.subscribe(&form, |_, _, event, cx| {
-    if let FormEvent::ModelChanged(change) = event {
+    if let FormEvent::ModelChanged(change) | FormEvent::SessionChanged(change) = event {
         let children = QueryDraft::ROOT
             .then(QueryDraft::FILTERS)
             .then(FilterGroup::CHILDREN);
@@ -335,3 +338,8 @@ must be set again.
   cases, and compile-time diagnostics.
 - [Component adapter guide](../gpui-form-gpui-component/docs/guide.md):
   built-in controls and the custom-control binding API.
+
+
+## Editing session migration (#248)
+
+Register explicit ValidationRule dependencies with with_rules (Result); the old Validator entry points are removed. The Form owns unresolved drafts and synchronous native edit tickets. Total set now returns Result; replace/reset/rebase require DraftPolicy and return a lifecycle report. Use rebase_preserving_edits for atomic refresh with local edits and conflict reporting. Native integer constructors require stable editor keys; FormMappedInput supports storage/display mappings. See the [guide](docs/guide.md#editing-session-and-breaking-api-changes-248) for signatures, baseline/dirty queries and migration details.

@@ -200,10 +200,11 @@ where
     pub fn new<Root, Owner, Path, Build>(
         form: &Entity<Form<Root>>,
         path: Path,
+        editor: impl Into<gpui_form::EditorKey>,
         build: Build,
         window: &mut Window,
         cx: &mut Context<Owner>,
-    ) -> Result<Self, IntegerInputPolicyError>
+    ) -> Result<Self, FormIntegerInputBuildError>
     where
         Root: FormSchema,
         Owner: 'static,
@@ -226,6 +227,17 @@ where
             cx,
         );
 
+        let writer = writer.with_editor_key(editor, cx);
+        if let Some(draft) = writer
+            .draft_for::<IntegerInputState<N>, String>(cx)
+            .map_err(FormIntegerInputBuildError::EditorType)?
+        {
+            state
+                .read(cx)
+                .editor()
+                .clone()
+                .update(cx, |input, cx| input.set_value(draft, window, cx));
+        }
         let event_subscription = integer_event_subscription(&state, writer, window, cx);
         Ok(Self {
             subscriptions: vec![event_subscription],
@@ -237,6 +249,7 @@ where
     pub fn try_new<Root, Owner, Build>(
         form: &Entity<Form<Root>>,
         path: DynamicPath<Root, N>,
+        editor: impl Into<gpui_form::EditorKey>,
         build: Build,
         window: &mut Window,
         cx: &mut Context<Owner>,
@@ -261,6 +274,17 @@ where
             cx,
         )?;
 
+        let writer = writer.with_editor_key(editor, cx);
+        if let Some(draft) = writer
+            .draft_for::<IntegerInputState<N>, String>(cx)
+            .map_err(FormIntegerInputBuildError::EditorType)?
+        {
+            state
+                .read(cx)
+                .editor()
+                .clone()
+                .update(cx, |input, cx| input.set_value(draft, window, cx));
+        }
         let event_subscription = integer_event_subscription(&state, writer, window, cx);
         Ok(Self {
             subscriptions: vec![event_subscription],
@@ -294,13 +318,19 @@ where
     cx.subscribe_in(
         state,
         window,
-        move |_, _, event: &IntegerInputEvent<N>, window, cx| match event {
+        move |_, state, event: &IntegerInputEvent<N>, window, cx| match event {
             IntegerInputEvent::Change(Ok(value)) => {
                 writer.defer_set(*value, window, cx);
             }
             IntegerInputEvent::Change(Err(error)) => {
                 let (code, message) = integer_issue(*error);
-                writer.defer_set_issue(code, message, window, cx);
+                writer.defer_draft_for::<IntegerInputState<N>, _, _>(
+                    state.read(cx).editor().read(cx).value().to_string(),
+                    code,
+                    message,
+                    window,
+                    cx,
+                );
             }
             IntegerInputEvent::Blur => writer.defer_blur(window, cx),
         },
