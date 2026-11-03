@@ -168,3 +168,56 @@ API 收敛：`ValidationRule::new(id, check).dependency(path).triggers(...)`；`
 - 当前 Feiwen 二进制以临时 `.app` 包装及 `/tmp/issue248-feiwen-qa` 数据库启动：9/1 范围不能开始，清空起始页后点击开始未启动任务，跨页保留空草稿，填回 1 可解析；Query 增加条件后重置恢复默认条件。未发起抓取请求；临时数据库与包装已清理。这不是打包/发布验收。
 
 未改依赖版本。既有 `block 0.1.6` future-incompatibility 提示仍在；受影响 crate 的 `-D warnings` Clippy 通过。未执行 Linux/Windows、完整发布打包或 Gupi 另仓迁移；集合/Option/case 仍为保守整体单元，保存期间编辑的迟到保存合并仍需应用持有实际提交祖先。
+
+## 补充：字段级领域合并 hook（Gupi #139）
+
+状态：已实施，本地验证通过。此补充从 #265 head `40392ad5239bdeb880961a569202801a7037a0ab` 开始，由 #265 之后独立的共享库 PR 交付，不改写上文已完成部分的验证结论。用户已决定增加此能力；[Gupi #139](https://github.com/suxiaoshao/gupi/issues/139) 的 `model_thinking/model_overrides` 刷新依赖它。
+
+### 声明与职责
+
+在一个 schema 字段上声明纯领域函数，derive 语法为 `#[form(child, merge = merge_model_overrides)]`；leaf、`items` 字段也可使用 `merge = function_path`，支持限定函数路径。hook 覆盖这个字段的默认递归/整体合并策略，仍沿用原 schema 遍历、校验和路径身份；一个字段只能有一个 hook，跨 attribute 重复声明同样编译失败。不提供全局隐式注册、按字符串寻址或通用 keyed collection 框架。应在实际合并单元上声明：外层集合、Option、枚举保持整体边界，不会自动遍历其内部字段的 hook。
+
+函数类型：`fn(&T, &T, &T) -> FieldMerge<T>`，依次输入同一次事务快照的基线 B、当前存储值 L、远端 R。公开的 `FieldMerge<T>` 通过 `FieldMerge::merged(value)`、`FieldMerge::conflicted(value)` 提供候选存储值与字段冲突标记，内部字段私有；字段类型与返回类型由 Rust 校验。函数不得读取/修改 Form、访问 GPUI Context、写盘或发事件；不接收 InputState、编辑票据或动态内部地址。Form 在发布前调用它，领域算法留在应用，不放进宏或 runtime。
+
+B/L/R 是完整字段值，包括应用保留的未知键和 Unreadable；hook 不把它们序列化后丢信息。Gupi 在函数内部按业务 key 和叶值选择：独立变更合并，同叶双边不一致保留本地并报冲突，未知原始内容按应用既有规则保留。输出顺序由领域函数决定。三个引用不是异步保存的提交祖先；hook 不扩展迟到保存安装语义。
+
+### 原子性与冲突
+
+合并前仍先检查待接纳编辑；有票据返回 `EditsPending`，不调用 hook，也不改变任何字段。hook 只产生候选，不自行安装。所有普通字段与 hook 字段在同一个 `rebase_preserving_edits` 计划中完成，随后一起更新模型、基线、拓扑、校验和 revision。禁止通过公开 rebase + replace、先 set 再 rebase 或应用层模拟事务实现。
+
+hook 的 conflict 标记加入 `LifecycleReport.conflicts()` 中该字段的 PathKey，与其他冲突去重，报告 version 是安装后的版本。首版只承诺字段级定位，不新增任意字符串子路径或第二套领域错误协议。Gupi 可以从业务上下文展示 key 信息，但不能把业务 key 伪造成动态 PathKey。Form 的草稿保护产生的冲突与 hook 自报冲突取并集；应用不能用 hook 的无冲突标记消除 runtime 发现的草稿冲突。
+
+### 草稿与动态身份：保守边界
+
+hook 没有资格清草稿或猜测两份集合的 occurrence 对应关系。首版采用以下明确规则：
+
+| 字段情况 | 安装与身份 |
+| --- | --- |
+| 没有未解析草稿，候选等于 L | 保留本地字段及活动动态身份；仍把 R 设为字段基线。 |
+| 没有未解析草稿，候选不同于 L | 安装候选，退休该字段的动态后代并重新建立身份；其他字段不受影响。不按 index、值或业务 key 复活旧身份。 |
+| 有未解析草稿 | 该字段保留整个 L、原草稿和活动身份；本轮不执行其领域 hook。R 与 B 不同时报告字段冲突；R=B 时只保留编辑。其他无草稿字段继续正常合并。 |
+
+最后一条是用户已确认的安全边界：无效 token 与同一个 map 的远端独立 key 同时改变时，该 map 不会在本轮自动吸收独立 key，用户先修正/明确放弃草稿，再重新读取。不能把这描述为完整保留了旧 `Slot::Invalid` 下的逐 key 自动合并。它避免在这个小 hook 中引入草稿迁移、应用身份映射或 keyed framework。若产品要求即使有动态草稿也实时合并独立 key，应另明确公开身份对应契约，本补充不假设已具备该能力。
+
+标量程序写入仍遵循既有保稿规则；这里的保守规则专门约束外部三方合并，不扩大到普通编辑。显式删除/替换的弃稿继续走既有 typed `discard_drafts`，hook 不能输出“允许丢稿”。
+
+### 基线对应
+
+每次成功事务的字段存储基线都是原始 R，不是候选或 L，否则会把未保存编辑错误标记 clean。候选等于 R 时，基线拓扑可与安装后的 live 拓扑对应；R=B 且保留 L 时可保留旧基线对应。其余情况不推断跨独立模型的动态身份映射，动态子路径的 `try_baseline` 允许返回 None，由父字段完整值与草稿判定 dirty。total path 的 baseline 始终能读取 R。
+
+因此 Gupi 若需按业务 key 展示远端叶值，从 Form 所持有的 map 字段基线按业务 key 查询即可；这是领域投影，不维护第二份 Form 基线，也不把 None 偷换为 Unset。候选结构被安装后旧 binding 收到退休信号，应用从新活动路径重建，不能重定向旧 ItemPath。
+
+### 实施与验证边界
+
+扩展 derive 字段元数据及合并调用，提供小型公开 FieldMerge 返回类型，接入既有事务和字段冲突报告；更新中英文公开指南及宏声明说明。不要把隐藏 `FormSchema::__merge` / `__private::MergePlan` 当作应用接入面，也不重构 Operation、Store 或通用集合。
+
+必要验证沿用现有生命周期与宏回归：用一个真实业务键字段证明独立键候选在一次事务中安装、冲突定位字段且基线仍为 R；确认带草稿字段保留原文与身份而其他字段更新，以及候选替换后旧动态路径确实退休。这些覆盖防止数据丢失和虚假 clean，不重复整个 Form 测试矩阵。
+
+实际实现与验证（本地 macOS，全部 Rust 命令在 `nix develop --command` 中运行，使用 Nix 专用 `CARGO_TARGET_DIR=/tmp/issue265-nix-trybuild`，不经 MBX shim）：
+
+- 公开接入为 `#[form(merge = path)]` 与 `FieldMerge::{merged, conflicted}`；隐藏合并计划沿用现有 Form 原子安装，不新增 Form 生命周期入口。中英文 README/指南、宏指南与 skill contracts 已同步。
+- `tests/field_merge.rs` 的三个公开入口测试覆盖业务键独立变更与普通字段冲突的并集、原子事件与单次 revision、未知原始内容、远端基线/dirty、动态基线对应、局部退休、待接纳编辑拒绝，以及草稿字段跳过 hook 而其他字段继续更新。
+- `TRYBUILD=overwrite cargo test -p gpui-form -p gpui-form-macros --test ui --locked`：在 Nix 中生成重复 hook 和错误返回类型的两个新诊断快照；已有 `.stderr` 未修改。
+- `cargo test -p gpui-form -p gpui-form-macros -p gpui-form-gpui-component --all-features --locked`：82 项通过、0 失败，包含未开启 overwrite 的两个 trybuild 测试入口。
+- `cargo clippy -p gpui-form -p gpui-form-macros -p gpui-form-gpui-component --all-targets --all-features --locked -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check`：通过。
+- 此处没有 Gupi 消费者迁移或原生界面验收；Linux/Windows 由后续 PR CI 验证。带草稿字段本轮推迟远端独立 key、没有跨独立模型动态身份映射、迟到保存祖先仍由应用管理，均维持本补充的已确认边界。

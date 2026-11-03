@@ -520,6 +520,79 @@ accepts pending input or unresolved drafts. Do not turn a stale save result into
 a refresh using the old baseline: merging edits made during save requires the
 actual submitted snapshot as ancestor and remains application policy.
 
+### Domain field merges
+
+Use `#[form(merge = function_path)]` when a field has domain keys or merge rules.
+The function has signature `fn(&T, &T, &T) -> FieldMerge<T>`: old baseline B,
+local stored value L, then remote value R. It receives complete typed values,
+including unknown or unreadable content retained by the application. It must
+be pure: no Form access, GPUI context, I/O or events. For example, an opaque map
+can merge independent keys and keep local values on conflicting keys:
+
+```rust
+use std::collections::BTreeMap;
+use gpui_form::{FieldMerge, FormSchema};
+
+type Overrides = BTreeMap<String, String>;
+
+#[derive(Clone, PartialEq, FormSchema)]
+struct Settings {
+    #[form(merge = merge_overrides)]
+    model_overrides: Overrides,
+}
+
+fn merge_overrides(base: &Overrides, local: &Overrides, remote: &Overrides)
+    -> FieldMerge<Overrides>
+{
+    let mut candidate = remote.clone();
+    let mut conflict = false;
+    for key in base.keys().chain(local.keys()) {
+        let (b, l, r) = (base.get(key), local.get(key), remote.get(key));
+        if l == b { continue; }
+        conflict |= r != b && l != r;
+        match l {
+            Some(value) => { candidate.insert(key.clone(), value.clone()); }
+            None => { candidate.remove(key); }
+        }
+    }
+    if conflict { FieldMerge::conflicted(candidate) }
+    else { FieldMerge::merged(candidate) }
+}
+```
+
+The hook replaces the field's default recursive or whole-unit merge, while
+schema traversal, validation and typed paths stay the same. It works with leaf,
+`child` and `items` fields. Declare it at the merge boundary: existing traversal
+stops at collections, Option and enum units, so hooks inside those units are
+not visited automatically. Duplicate hooks are rejected; Rust checks the function
+and return types. See the [macro guide](../../gpui-form-macros/docs/guide.md#field-merge-declarations).
+
+Pending native edit tickets reject the entire refresh with `EditsPending`
+before any hook runs. Each draft-free hook produces a candidate within the same
+transaction as ordinary fields. `conflicted` adds the field's `PathKey` to the
+deduplicated `LifecycleReport::conflicts()`; the report version is the installed
+version. Domain keys are application data, not dynamic PathKeys.
+
+If any unresolved draft intersects a hook field, Form skips that hook and keeps
+the whole local field, original draft text and active dynamic identities.
+It reports a field conflict when R differs from B, even if L equals R; R=B only
+retains the edit. Other fields continue merging. This deliberately postpones
+even independent remote keys in that field until the user resolves or explicitly
+discards the draft and refreshes again. A hook cannot authorize draft loss.
+
+Without drafts, a candidate equal to L preserves that field's dynamic identities.
+A different candidate retires all its dynamic descendants; rebuild bindings from
+new active paths. Other fields retain their identities. There is no matching by
+index, value or business key. The stored field baseline is always the original R,
+so an unsaved candidate remains dirty. Dynamic baseline correspondence uses the
+installed topology when candidate=R, or the previous baseline when R=B and
+candidate=L. Otherwise `try_baseline` may return `None`; read the total field's
+baseline and project domain keys there. `None` does not mean a domain Unset value.
+These hooks apply to `rebase_preserving_edits`; the guarded save-install behavior
+of `rebase_if_current` is unchanged.
+
+### Control mappings
+
 `ControlMapping<S, D>` formats storage with a cloned application context and
 parses display data with current storage, optional baseline and that same
 context snapshot into `EditResult::Parsed` or `EditResult::Draft`. Use

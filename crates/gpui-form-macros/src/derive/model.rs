@@ -20,6 +20,7 @@ pub(super) struct SchemaField {
     pub(super) ident: Ident,
     pub(super) ty: Type,
     pub(super) kind: SchemaFieldKind,
+    pub(super) merge: Option<syn::Path>,
     pub(super) validation: LeafValidation,
 }
 
@@ -128,6 +129,7 @@ fn parse_struct_fields(data: &DataStruct) -> syn::Result<Vec<SchemaField>> {
                 ident,
                 ty: field.ty.clone(),
                 kind,
+                merge: options.merge,
                 validation: LeafValidation {
                     required: options.required,
                     triggers: options.triggers,

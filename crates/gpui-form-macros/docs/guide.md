@@ -364,4 +364,35 @@ active item, case, or optional payload.
 
 ## Three-way merge driver (#248)
 
-Derived `FormSchema` now implements `__merge(base, local, remote, plan)`. It merges ordinary fields independently and recurses through direct child schemas. Collections, Option and enums are whole conservative units. Handwritten `FormSchema` implementations must implement `__merge` explicitly, using `MergePlan::child` and `MergePlan::atomic`, and cover every field; no serialization or index identity inference is involved. Total `set` calls return `Result<bool, ResolveError>` and must handle rejection when replacing a subtree would retire unresolved drafts.
+Generated merge traversal merges ordinary fields independently and recurses
+through direct child schemas. Collections, Option and enums are conservative
+whole units by default. Handwritten `FormSchema` implementations remain
+responsible for covering every merge unit in their internal traversal.
+Total `set` returns `Result<bool, ResolveError>` and can reject retirement of
+unresolved drafts.
+
+### Field merge declarations
+
+A named struct field may declare `#[form(merge = function_path)]`, including
+qualified paths such as `domain::merge_overrides`. It may accompany `child`,
+`items`, or leaf validation metadata. The function must accept three `&T`
+arguments (baseline, local storage, remote) and return `gpui_form::FieldMerge<T>`
+for the complete declared field type. For an optional child, T is `Option<Child>`;
+for items, T is `Vec<Item>`. Repeated `merge` options, including across separate
+attributes, produce a declaration-site error. Rust checks the hook signature
+and return type.
+
+The hook overrides that field's default merge while keeping its existing schema
+traversal and validation metadata. It runs only when traversal reaches the field:
+hooks nested inside an enclosing whole collection, Option or enum unit are not
+automatically visited. No container- or variant-level hook is provided.
+
+Use the attribute and public `FieldMerge::merged(candidate)` /
+`FieldMerge::conflicted(candidate)` constructors as the application extension.
+`FormSchema::__merge` and `__private::MergePlan` are hidden traversal machinery.
+Hooks are pure candidate functions and never receive Form, GPUI context, native
+controls or occurrence IDs. Pending native admission rejects before hooks run;
+an unresolved draft in a hook field keeps the entire local field and skips that
+hook. Candidates install atomically, conflicts locate the field, and the baseline
+remains the original remote value. The [Form guide](../../gpui-form/docs/guide.md#domain-field-merges)
+has a complete example and the dynamic identity/baseline rules.

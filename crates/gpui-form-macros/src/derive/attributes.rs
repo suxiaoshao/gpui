@@ -36,9 +36,10 @@ impl TriggerSelection {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct FieldOptions {
     pub(super) kind: FieldKind,
+    pub(super) merge: Option<syn::Path>,
     pub(super) required: bool,
     pub(super) triggers: TriggerSelection,
     pub(super) has_validation: bool,
@@ -50,6 +51,7 @@ impl Default for FieldOptions {
     fn default() -> Self {
         Self {
             kind: FieldKind::Leaf,
+            merge: None,
             required: false,
             triggers: TriggerSelection::default(),
             has_validation: false,
@@ -69,6 +71,13 @@ pub(super) fn parse_field_options(attributes: &[Attribute]) -> syn::Result<Field
         .filter(|attribute| attribute.path().is_ident("form"))
     {
         attribute.parse_nested_meta(|meta| {
+            if meta.path.is_ident("merge") {
+                if options.merge.is_some() {
+                    return Err(meta.error("duplicate `merge` option"));
+                }
+                options.merge = Some(meta.value()?.parse()?);
+                return Ok(());
+            }
             if meta.path.is_ident("required") {
                 if options.required {
                     return Err(meta.error("duplicate `required` option"));

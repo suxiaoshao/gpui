@@ -344,4 +344,25 @@ active item、case 或 optional payload 的 dynamic path。
 
 ## 三方合并遍历（#248）
 
-FormSchema derive 新增 `__merge(base, local, remote, plan)`：普通字段独立合并，直接 child 递归；集合、Option、枚举整体保守合并。手写 FormSchema 必须显式实现此方法，用 MergePlan::child/atomic 覆盖所有字段，不通过序列化或下标推断 identity。Total set 返回 Result<bool, ResolveError>，调用方处理退休未解析草稿时的拒绝。
+生成的合并遍历对普通字段独立合并、直接 child 递归；集合、Option、枚举默认作为整体保守合并。
+手写 `FormSchema` 仍需在内部遍历中覆盖每个合并单元。Total `set` 返回
+`Result<bool, ResolveError>`，可能拒绝退休未解析草稿。
+
+### 字段合并声明
+
+具名 struct 字段可以声明 `#[form(merge = function_path)]`，支持
+`domain::merge_overrides` 等限定路径，可与 `child`、`items` 或 leaf 校验元数据共用。
+函数接收三个 `&T`（基线、本地存储值、远端），返回 `gpui_form::FieldMerge<T>`，
+T 是声明的完整字段类型：optional child 为 `Option<Child>`，items 为 `Vec<Item>`。
+重复的 `merge`（包括跨独立 attribute）会在声明处报错，函数签名和返回类型由 Rust 检查。
+
+hook 覆盖该字段默认合并策略，保留原有 schema 遍历和校验元数据。只有合并遍历到达该字段时
+才执行；位于外层整体集合、Option 或枚举单元内部的 hook 不会自动遍历。
+不提供 container 或 variant 层 hook。
+
+应用通过此 attribute 和公开的 `FieldMerge::merged(candidate)` /
+`FieldMerge::conflicted(candidate)` 构造器接入。`FormSchema::__merge` 和
+`__private::MergePlan` 属于隐藏遍历机制。hook 是纯候选函数，不接收 Form、GPUI context、
+原生控件或 occurrence ID。待接纳输入会在调用 hook 前拒绝整个事务；hook 字段存在未解析草稿时
+整字段保留本地并跳过 hook。候选原子安装，冲突定位字段，基线始终是原始远端。
+完整示例及动态身份/基线规则见 [Form 指南](../../gpui-form/docs/guide.zh-CN.md#字段级领域合并)。
