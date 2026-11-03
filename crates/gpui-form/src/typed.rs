@@ -2,14 +2,17 @@
 
 pub use crate::{
     AsyncValidationIssue, CaseDef, CaseResolver, ChangeTarget, ChildDef, ControlBinding,
-    ControlProjection, ControlWriter, DynamicItemsPath, DynamicPath, ErrorParamValue, ErrorParams,
-    FieldDef, FieldSchema, Form, FormEvent, FormRevision, FormSchema, FormVersion, IntoTotalPath,
-    ItemPath, ItemsDef, ModelChange, ModelChangeKind, MutationError, OptionalResolver, PathImpact,
-    PathKey, Position, PrepareError, Prepared, RequiredValue, ResolveError, RootDef, TopologyError,
-    TotalItemsPath, TotalPath, ValidationCaseResolver, ValidationDynamicItemsPath,
+    ControlMapping, ControlProjection, ControlWriter, DraftPolicy, DynamicItemsPath, DynamicPath,
+    EditResult, EditorKey, EditorTypeMismatch, ErrorParamValue, ErrorParams, FieldDef, FieldSchema,
+    Form, FormEvent, FormRevision, FormSchema, FormVersion, IntoTotalPath, ItemPath, ItemsDef,
+    LifecycleError, LifecycleReport, MappedControlBinding, MappedControlWriter, MappingBindError,
+    ModelChange, ModelChangeKind, MutationError, OptionalResolver, PathImpact, PathKey, Position,
+    PrepareError, Prepared, RequiredValue, ResolveError, RootDef, RuleId, RuleRegistrationError,
+    TopologyError, TotalItemsPath, TotalPath, ValidationCaseResolver, ValidationDynamicItemsPath,
     ValidationDynamicPath, ValidationIssue, ValidationItemPath, ValidationMessage,
     ValidationOptionalResolver, ValidationPath, ValidationReport, ValidationRequest,
-    ValidationSink, ValidationSource, ValidationTrigger, ValidationTriggers, Validator,
+    ValidationRule, ValidationSink, ValidationSource, ValidationTrigger, ValidationTriggers,
+    bind_mapped_control_in, try_bind_mapped_control_in,
 };
 
 #[cfg(feature = "garde-adapter")]

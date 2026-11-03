@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use gpui_form::{
     FormSchema, ValidationDynamicItemsPath, ValidationDynamicPath, ValidationMessage,
-    ValidationRequest, ValidationSink, Validator,
+    ValidationRequest, ValidationSink,
 };
 
 use super::advanced::options::{
@@ -177,7 +177,15 @@ impl ConditionField {
 
 pub(crate) struct QueryDraftValidator;
 
-impl Validator<QueryDraft> for QueryDraftValidator {
+impl QueryDraftValidator {
+    pub(crate) fn rules(self) -> Vec<gpui_form::ValidationRule<QueryDraft>> {
+        vec![
+            gpui_form::ValidationRule::new("QueryDraftValidator", move |request, out| {
+                self.validate(request, out)
+            })
+            .dependency(QueryDraft::ROOT),
+        ]
+    }
     fn validate(
         &self,
         request: ValidationRequest<'_, QueryDraft>,
@@ -1136,7 +1144,8 @@ mod tests {
                     },
                     sorts: Vec::new(),
                 })
-                .with_validator(QueryDraftValidator)
+                .with_rules(QueryDraftValidator.rules())
+                .expect("valid rules")
             });
             let item = QueryDraft::ROOT
                 .then(QueryDraft::FILTERS)

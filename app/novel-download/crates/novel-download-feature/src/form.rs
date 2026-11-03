@@ -1,6 +1,4 @@
-use gpui_form::{
-    FormSchema, Prepared, ValidationMessage, ValidationRequest, ValidationSink, Validator,
-};
+use gpui_form::{FormSchema, Prepared, ValidationMessage, ValidationRequest, ValidationSink};
 
 use crate::{
     crawler::source::{PreparedDownloadRequest, parse_download_source},
@@ -16,7 +14,20 @@ pub(super) struct DownloadRequest {
 
 pub(super) struct DownloadRequestValidator;
 
-impl Validator<DownloadRequest> for DownloadRequestValidator {
+impl DownloadRequestValidator {
+    pub(crate) fn rules(self) -> Vec<gpui_form::ValidationRule<DownloadRequest>> {
+        vec![
+            gpui_form::ValidationRule::new("DownloadRequestValidator", move |request, out| {
+                self.validate(request, out)
+            })
+            .dependency(DownloadRequest::SOURCE)
+            .triggers(gpui_form::ValidationTriggers {
+                submit: true,
+                blur: false,
+                ..Default::default()
+            }),
+        ]
+    }
     fn validate(
         &self,
         request: ValidationRequest<'_, DownloadRequest>,
@@ -58,7 +69,11 @@ mod tests {
         cx: &mut gpui_kit::App,
     ) -> gpui_kit::Entity<Form<DownloadRequest>> {
         let source = source.into();
-        cx.new(|_| Form::new(DownloadRequest { source }).with_validator(DownloadRequestValidator))
+        cx.new(|_| {
+            Form::new(DownloadRequest { source })
+                .with_rules(DownloadRequestValidator.rules())
+                .expect("valid rules")
+        })
     }
 
     #[gpui_kit::test]
@@ -68,7 +83,9 @@ mod tests {
 
             assert!(DownloadRequest::SOURCE.errors(&form, cx).is_empty());
 
-            DownloadRequest::SOURCE.set(&form, "unsupported-source".into(), cx);
+            DownloadRequest::SOURCE
+                .set(&form, "unsupported-source".into(), cx)
+                .unwrap();
             assert!(DownloadRequest::SOURCE.errors(&form, cx).is_empty());
 
             DownloadRequest::SOURCE.validate(&form, ValidationTrigger::Blur, cx);

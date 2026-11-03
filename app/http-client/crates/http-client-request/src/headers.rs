@@ -80,7 +80,8 @@ impl HttpHeadersView {
             &form,
             window,
             |this, _, event: &FormEvent<RequestDraft>, window, cx| {
-                let FormEvent::ModelChanged(change) = event else {
+                let (FormEvent::ModelChanged(change) | FormEvent::SessionChanged(change)) = event
+                else {
                     return;
                 };
                 let impact = change.impact(&RequestDraft::HEADERS);
@@ -401,7 +402,11 @@ mod tests {
                 ],
                 ..RequestDraft::default()
             };
-            let form = cx.new(|_| Form::new(draft).with_validator(RequestValidator));
+            let form = cx.new(|_| {
+                Form::new(draft)
+                    .with_rules(RequestValidator.rules())
+                    .expect("valid rules")
+            });
             let view_form = form.clone();
             let window = cx
                 .open_window(Default::default(), move |window, cx| {

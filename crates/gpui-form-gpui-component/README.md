@@ -26,7 +26,7 @@ use gpui_component::{form::field, input::{Input, InputState}};
 use gpui_form::{Form, FormSchema};
 use gpui_form_gpui_component::FormInput;
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct ProviderDraft {
     #[form(required)]
     name: String,
@@ -106,8 +106,8 @@ self.form.update(cx, |form, cx| {
 - `FormInput`, `FormTextarea`, and `FormEditor` bind `String` through `InputState`,
   `TextareaState`, and `EditorState`, respectively. Use `Input` for single lines,
   `Textarea` for multiline prose, and `Editor` for code.
-- `FormIntegerInput` binds integer primitives while keeping incomplete text in
-  the native editor.
+- `FormIntegerInput` binds integer primitives while retaining unresolved text in
+  the Form under a stable editor key.
 - `FormSelect` binds `Option<D::Item::Value>`.
 - `FormCombobox` binds `Vec<D::Item::Value>`.
 - `Checkbox` and `Switch` are rendered as controlled elements because they do
@@ -126,3 +126,8 @@ values or selects a fallback implicitly.
 See the [user guide](docs/guide.md) or its [Chinese version](docs/guide.zh-CN.md)
 for total and dynamic paths, all adapters, validation, option refreshes, and a
 custom stateful-adapter recipe.
+
+
+## Editing session migration (#248)
+
+Register explicit ValidationRule dependencies with with_rules (Result); the old Validator entry points are removed. The Form owns unresolved drafts and synchronous native edit tickets. Total set now returns Result; replace/reset/rebase require DraftPolicy and return a lifecycle report. Use rebase_preserving_edits for atomic refresh with local edits and conflict reporting. Native integer constructors require stable editor keys; FormMappedInput supports storage/display mappings. See the [guide](docs/guide.md#editing-session-and-breaking-api-changes-248) for signatures, baseline/dirty queries and migration details.

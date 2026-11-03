@@ -51,7 +51,7 @@ fn page_prepare_uses_the_form_snapshot_without_rewriting_the_editor(cx: &mut Tes
     let form = cx.update(|_, cx| view.read(cx).form.clone());
     let original = " https://example.test/items?q=one#local-fragment ".to_owned();
 
-    cx.update(|_, cx| RequestDraft::URL.set(&form, original.clone(), cx));
+    cx.update(|_, cx| RequestDraft::URL.set(&form, original.clone(), cx).unwrap());
     let prepared = cx.update(|_, cx| {
         view.update(cx, |view, cx| {
             view.prepare_request(cx)
@@ -131,7 +131,11 @@ fn accepted_send_clears_the_previous_response_before_worker_poll(cx: &mut TestAp
     initialize(cx);
     let (view, cx) = cx.add_window_view(RequestView::new);
     let form = cx.update(|_, cx| view.read(cx).form.clone());
-    cx.update(|_, cx| RequestDraft::URL.set(&form, "http://127.0.0.1:9".into(), cx));
+    cx.update(|_, cx| {
+        RequestDraft::URL
+            .set(&form, "http://127.0.0.1:9".into(), cx)
+            .unwrap()
+    });
     cx.update(|window, cx| {
         view.update(cx, |view, cx| {
             let previous = completed_response(b"old");

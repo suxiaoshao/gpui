@@ -87,7 +87,9 @@ impl DownloadView {
     ) -> Self {
         let placeholder = cx.global::<I18n>().t("download-source-placeholder");
         let form = cx.new(|_| {
-            Form::new(DownloadRequest::default()).with_validator(DownloadRequestValidator)
+            Form::new(DownloadRequest::default())
+                .with_rules(DownloadRequestValidator.rules())
+                .expect("valid rules")
         });
         let source_control = FormInput::new(
             &form,
@@ -672,9 +674,13 @@ mod tests {
         cx.update(|cx| {
             window
                 .update(cx, |view, _window, cx| {
-                    DownloadRequest::SOURCE.set(&view.form, "first".into(), cx);
+                    DownloadRequest::SOURCE
+                        .set(&view.form, "first".into(), cx)
+                        .unwrap();
                     view.start(cx);
-                    DownloadRequest::SOURCE.set(&view.form, "second".into(), cx);
+                    DownloadRequest::SOURCE
+                        .set(&view.form, "second".into(), cx)
+                        .unwrap();
                 })
                 .unwrap();
         });
@@ -705,7 +711,9 @@ mod tests {
         cx.update(|cx| {
             window
                 .update(cx, |view, _window, cx| {
-                    DownloadRequest::SOURCE.set(&view.form, "novel".into(), cx);
+                    DownloadRequest::SOURCE
+                        .set(&view.form, "novel".into(), cx)
+                        .unwrap();
                     view.start(cx);
                 })
                 .unwrap();

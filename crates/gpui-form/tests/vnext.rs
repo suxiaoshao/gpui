@@ -4,7 +4,7 @@ use std::{
 };
 
 use gpui::{AppContext as _, TestAppContext};
-use gpui_form::{Form, FormSchema, PrepareError, ResolveError, ValidationMessage, Validator};
+use gpui_form::{Form, FormSchema, PrepareError, ResolveError, ValidationMessage};
 
 #[derive(Clone, Debug, PartialEq, FormSchema)]
 struct Leaf {
@@ -179,14 +179,16 @@ fn optional_incarnation_and_prepared_cas_are_session_bound(cx: &mut TestAppConte
             .unwrap()
             .expect("initial optional payload is present")
             .then(Leaf::VALUE);
-        optional.set(&form, None, cx);
-        optional.set(
-            &form,
-            Some(Leaf {
-                value: "rebuilt".into(),
-            }),
-            cx,
-        );
+        optional.set(&form, None, cx).unwrap();
+        optional
+            .set(
+                &form,
+                Some(Leaf {
+                    value: "rebuilt".into(),
+                }),
+                cx,
+            )
+            .unwrap();
         assert!(matches!(
             value.try_get(&form, cx),
             Err(ResolveError::Retired { .. })
@@ -213,7 +215,16 @@ fn optional_incarnation_and_prepared_cas_are_session_bound(cx: &mut TestAppConte
 
 struct RejectForbidden;
 
-impl Validator<Leaf> for RejectForbidden {
+impl RejectForbidden {
+    pub(crate) fn rules(self) -> Vec<gpui_form::ValidationRule<Leaf>> {
+        vec![
+            gpui_form::ValidationRule::new("RejectForbidden", move |request, out| {
+                self.validate(request, out)
+            })
+            .dependency(Leaf::ROOT)
+            .triggers(gpui_form::ValidationTriggers::ALL),
+        ]
+    }
     fn validate(
         &self,
         request: gpui_form::ValidationRequest<'_, Leaf>,
@@ -233,7 +244,8 @@ fn validation_is_field_scoped_and_prepare_uses_the_same_snapshot(cx: &mut TestAp
             Form::new(Leaf {
                 value: String::new(),
             })
-            .with_validator(RejectForbidden)
+            .with_rules(RejectForbidden.rules())
+            .expect("valid rules")
         });
         assert_eq!(Leaf::VALUE.errors(&form, cx).len(), 1);
         assert!(matches!(
@@ -241,12 +253,12 @@ fn validation_is_field_scoped_and_prepare_uses_the_same_snapshot(cx: &mut TestAp
             Err(PrepareError::Validation(_))
         ));
 
-        Leaf::VALUE.set(&form, "forbidden".into(), cx);
+        Leaf::VALUE.set(&form, "forbidden".into(), cx).unwrap();
         let errors = Leaf::VALUE.errors(&form, cx);
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].code(), "forbidden");
 
-        Leaf::VALUE.set(&form, "allowed".into(), cx);
+        Leaf::VALUE.set(&form, "allowed".into(), cx).unwrap();
         let prepared = form.update(cx, |form, cx| form.prepare(cx)).unwrap();
         assert_eq!(prepared.value().value, "allowed");
     });
@@ -254,7 +266,16 @@ fn validation_is_field_scoped_and_prepare_uses_the_same_snapshot(cx: &mut TestAp
 
 struct RejectSecondLeaf;
 
-impl gpui_form::Validator<Root> for RejectSecondLeaf {
+impl RejectSecondLeaf {
+    pub(crate) fn rules(self) -> Vec<gpui_form::ValidationRule<Root>> {
+        vec![
+            gpui_form::ValidationRule::new("RejectSecondLeaf", move |request, out| {
+                self.validate(request, out)
+            })
+            .dependency(Root::ROOT)
+            .triggers(gpui_form::ValidationTriggers::ALL),
+        ]
+    }
     fn validate(
         &self,
         request: gpui_form::ValidationRequest<'_, Root>,
@@ -281,7 +302,11 @@ impl gpui_form::Validator<Root> for RejectSecondLeaf {
 #[gpui::test]
 fn validation_resolver_enumerates_recursive_items_on_one_snapshot(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        let form = cx.new(|_| Form::new(initial_root()).with_validator(RejectSecondLeaf));
+        let form = cx.new(|_| {
+            Form::new(initial_root())
+                .with_rules(RejectSecondLeaf.rules())
+                .expect("valid rules")
+        });
         let children = Root::ROOT.then(Root::GROUP).then(Group::CHILDREN);
         let items = children.items(&form, cx);
         let second = items[1]
@@ -297,13 +322,8 @@ fn validation_resolver_enumerates_recursive_items_on_one_snapshot(cx: &mut TestA
             form.validate(gpui_form::ValidationTrigger::Submit, cx)
         });
         let errors = second.try_errors(&form, cx).unwrap();
-        assert_eq!(errors.len(), 2);
+        assert_eq!(errors.len(), 1);
         assert!(errors.iter().all(|error| error.code() == "second"));
-        assert!(
-            errors
-                .iter()
-                .any(|error| { error.trigger() == gpui_form::ValidationTrigger::Mount })
-        );
         assert!(
             errors
                 .iter()
@@ -483,7 +503,7 @@ fn async_validation_blocks_prepare_and_discards_intersecting_work(cx: &mut TestA
             form.start_async_validation(Leaf::VALUE, "pending", |_| std::future::pending(), cx)
                 .unwrap();
         });
-        Leaf::VALUE.set(&form, "changed".into(), cx);
+        Leaf::VALUE.set(&form, "changed".into(), cx).unwrap();
         assert!(!form.read(cx).is_validating());
         assert!(Leaf::VALUE.errors(&form, cx).is_empty());
     });
@@ -510,7 +530,7 @@ fn any_model_revision_cancels_pending_version_bound_validation(cx: &mut TestAppC
         });
         assert!(form.read(cx).is_validating());
 
-        assert!(AsyncPair::RIGHT.set(&form, "changed".into(), cx));
+        assert!(AsyncPair::RIGHT.set(&form, "changed".into(), cx).unwrap());
         assert!(
             !form.read(cx).is_validating(),
             "a pending result cannot remain current after the global FormVersion advances"
@@ -520,7 +540,20 @@ fn any_model_revision_cancels_pending_version_bound_validation(cx: &mut TestAppC
 
 struct SubmitOnly;
 
-impl Validator<Leaf> for SubmitOnly {
+impl SubmitOnly {
+    pub(crate) fn rules(self) -> Vec<gpui_form::ValidationRule<Leaf>> {
+        vec![
+            gpui_form::ValidationRule::new("SubmitOnly", move |request, out| {
+                self.validate(request, out)
+            })
+            .dependency(Leaf::ROOT)
+            .triggers(gpui_form::ValidationTriggers {
+                submit: true,
+                blur: false,
+                ..Default::default()
+            }),
+        ]
+    }
     fn validate(
         &self,
         request: gpui_form::ValidationRequest<'_, Leaf>,
@@ -534,19 +567,18 @@ impl Validator<Leaf> for SubmitOnly {
 }
 
 #[gpui::test]
-fn validation_keeps_independent_trigger_buckets(cx: &mut TestAppContext) {
+fn external_execution_clears_previous_submit_result(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let form = cx.new(|_| {
             Form::new(Leaf {
                 value: "value".into(),
             })
-            .with_validator(SubmitOnly)
+            .with_rules(SubmitOnly.rules())
+            .expect("valid rules")
         });
         assert!(form.update(cx, |form, cx| form.prepare(cx)).is_err());
-        Leaf::VALUE.validate(&form, gpui_form::ValidationTrigger::Blur, cx);
-        let errors = Leaf::VALUE.errors(&form, cx);
-        assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].trigger(), gpui_form::ValidationTrigger::Submit);
+        Leaf::VALUE.validate(&form, gpui_form::ValidationTrigger::External, cx);
+        assert!(Leaf::VALUE.errors(&form, cx).is_empty());
     });
 }
 
@@ -709,7 +741,10 @@ fn garde_positions_map_to_runtime_item_paths(cx: &mut TestAppContext) {
                     },
                 ],
             })
-            .with_validator(gpui_form::GardeValidator::<GardeRoot>::new(()))
+            .with_rules(vec![
+                gpui_form::GardeValidator::<GardeRoot>::new(()).into_rule("garde", GardeRoot::ROOT),
+            ])
+            .unwrap()
         });
         let rows = GardeRoot::ROWS.items(&form, cx);
         let second_label = rows[1].clone().then(GardeRow::LABEL);

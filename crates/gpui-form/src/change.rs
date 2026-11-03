@@ -6,7 +6,7 @@ use crate::{
     topology::{CanonicalAddress, SessionId, root_address},
 };
 
-mod sealed {
+pub(crate) mod sealed {
     use crate::{FormSchema, change::ChangeTargetInfo};
 
     pub trait Sealed<M: FormSchema> {

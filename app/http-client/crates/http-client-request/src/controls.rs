@@ -802,14 +802,18 @@ mod tests {
         assert!(cx.did_prompt_for_paths());
         assert!(has_picker_task(&root, &mut cx));
         cx.update(|_, cx| {
-            RequestDraft::BODY.set(&form, RequestBodyDraft::None, cx);
+            RequestDraft::BODY
+                .set(&form, RequestBodyDraft::None, cx)
+                .unwrap();
         });
         cx.run_until_parked();
         cx.update(|_, cx| {
             let root = root.read(cx);
             assert!(root.control.picker_task.borrow().is_none());
             assert!(state.read(cx).retired);
-            RequestDraft::BODY.set(&form, RequestBodyDraft::binary(), cx);
+            RequestDraft::BODY
+                .set(&form, RequestBodyDraft::binary(), cx)
+                .unwrap();
         });
         cx.run_until_parked();
 

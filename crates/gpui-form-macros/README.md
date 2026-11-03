@@ -25,7 +25,7 @@ is read or changed.
 use gpui::Entity;
 use gpui_form::{Form, FormSchema};
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct ProviderDraft {
     name: String,
     retry_limit: u32,
@@ -39,12 +39,12 @@ let form: Entity<Form<ProviderDraft>> = cx.new(|_| {
 });
 
 let name: String = ProviderDraft::NAME.get(&form, cx);
-let changed: bool = ProviderDraft::NAME.set(&form, "backup".to_owned(), cx);
+let changed: bool = ProviderDraft::NAME.set(&form, "backup".to_owned(), cx).unwrap();
 ```
 
 `ProviderDraft::NAME` is a `FieldDef<ProviderDraft, String>`, which is also a
 total path. A total path has no runtime-dependent boundary, so `get` and `set`
-are infallible. `set` returns whether the model actually changed.
+always resolve for reads. `set` returns Result<bool, ResolveError> and can reject retirement of unresolved drafts.
 
 ## Describe nested shapes
 
@@ -109,3 +109,8 @@ The derive rejects unsupported declarations near the model definition:
 
 Supported enum variants are unit variants or variants with one concrete tuple
 payload implementing `FormSchema`. See the guide for complete examples.
+
+
+## Three-way merge driver (#248)
+
+Derived `FormSchema` now implements `__merge(base, local, remote, plan)`. It merges ordinary fields independently and recurses through direct child schemas. Collections, Option and enums are whole conservative units. Handwritten `FormSchema` implementations must implement `__merge` explicitly, using `MergePlan::child` and `MergePlan::atomic`, and cover every field; no serialization or index identity inference is involved. Total `set` calls return `Result<bool, ResolveError>` and must handle rejection when replacing a subtree would retire unresolved drafts.

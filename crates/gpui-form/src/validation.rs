@@ -15,7 +15,9 @@ use crate::{
     topology::{CanonicalAddress, SessionId, TopologyIndex, TopologySnapshot},
 };
 
-mod report;
+mod rules;
+pub(crate) use rules::RuleOwner;
+pub use rules::{RuleId, RuleRegistrationError, ValidationRule};
 mod transition;
 mod trigger;
 
@@ -122,6 +124,7 @@ pub enum ValidationSource {
 
 #[derive(Clone)]
 pub struct ValidationIssue {
+    pub(crate) owner: Option<RuleOwner>,
     pub(crate) path: PathKey,
     pub(crate) address: CanonicalAddress,
     pub(crate) source: ValidationSource,
@@ -148,7 +151,8 @@ impl fmt::Debug for ValidationIssue {
 
 impl PartialEq for ValidationIssue {
     fn eq(&self, other: &Self) -> bool {
-        self.path == other.path
+        self.owner == other.owner
+            && self.path == other.path
             && self.address == other.address
             && self.source == other.source
             && self.trigger == other.trigger
@@ -213,53 +217,10 @@ impl ValidationReport {
             .collect()
     }
 
-    pub(crate) fn replace_scope(
-        &mut self,
-        scope: Option<&CanonicalAddress>,
-        trigger: ValidationTrigger,
-        mut next: Vec<ValidationIssue>,
-    ) {
-        let replacements = report::replacement_keys(&next);
-        self.issues.retain(|issue| {
-            if !issue.is_active() {
-                return false;
-            }
-            if matches!(
-                issue.source,
-                ValidationSource::Control | ValidationSource::Async(_)
-            ) {
-                return true;
-            }
-            let same_bucket = issue.trigger == trigger
-                && scope.is_none_or(|scope| intersects(scope, &issue.address));
-            let superseded = replacements.iter().any(|(address, source, code, trigger)| {
-                address == &issue.address
-                    && source == &issue.source
-                    && code == &issue.code
-                    && *trigger == issue.trigger
-            });
-            !same_bucket && !superseded
-        });
+    pub(crate) fn replace_owner(&mut self, owner: &RuleOwner, mut next: Vec<ValidationIssue>) {
+        self.issues
+            .retain(|issue| issue.owner.as_ref() != Some(owner));
         self.issues.append(&mut next);
-    }
-
-    pub(crate) fn invalidate_sync(&mut self, scopes: &[CanonicalAddress]) {
-        self.issues.retain(|issue| {
-            issue.is_active()
-                && (matches!(
-                    issue.source,
-                    ValidationSource::Control | ValidationSource::Async(_)
-                ) || !scopes.iter().any(|scope| intersects(scope, &issue.address)))
-        });
-    }
-
-    pub(crate) fn remove_control_intersecting(&mut self, address: &CanonicalAddress) -> bool {
-        let before = self.issues.len();
-        self.issues.retain(|issue| {
-            !matches!(issue.source, ValidationSource::Control)
-                || !intersects(address, &issue.address)
-        });
-        self.issues.len() != before
     }
 
     pub(crate) fn retain_current(&mut self, topology: &TopologyIndex) {
@@ -321,19 +282,6 @@ fn snapshot_key(topology: &TopologySnapshot, address: &CanonicalAddress) -> Path
     topology
         .key(address)
         .expect("validation topology must be materialized before snapshot")
-}
-
-pub trait Validator<M: FormSchema>: 'static {
-    fn validate(&self, request: ValidationRequest<'_, M>, out: &mut ValidationSink<'_, M>);
-}
-
-impl<M: FormSchema, F> Validator<M> for F
-where
-    F: for<'a, 'b> Fn(ValidationRequest<'a, M>, &mut ValidationSink<'b, M>) + 'static,
-{
-    fn validate(&self, request: ValidationRequest<'_, M>, out: &mut ValidationSink<'_, M>) {
-        self(request, out);
-    }
 }
 
 pub struct ValidationRequest<'a, M: FormSchema> {
@@ -486,7 +434,7 @@ impl<'a, M: FormSchema> ValidationRequest<'a, M> {
         self.scope.is_none_or(|scope| intersects(scope, address))
     }
 
-    pub(crate) fn version(&self) -> FormVersion {
+    pub fn version(&self) -> FormVersion {
         self.version
     }
 
@@ -513,6 +461,7 @@ pub struct ValidationSink<'a, M: FormSchema> {
     topology: TopologySnapshot,
     trigger: ValidationTrigger,
     source: ValidationSource,
+    owner: RuleOwner,
     issues: Vec<ValidationIssue>,
     marker: PhantomData<&'a M>,
 }
@@ -535,6 +484,7 @@ impl<'a, M: FormSchema> ValidationSink<'a, M> {
     ) {
         let path = snapshot_key(&self.topology, &address);
         self.issues.push(ValidationIssue {
+            owner: Some(self.owner.clone()),
             path,
             address,
             source: self.source.clone(),
@@ -556,6 +506,7 @@ impl<'a, M: FormSchema> ValidationSink<'a, M> {
     ) {
         let path = snapshot_key(&self.topology, &address);
         self.issues.push(ValidationIssue {
+            owner: Some(self.owner.clone()),
             path,
             address,
             source,
@@ -597,117 +548,133 @@ pub(crate) mod sealed {
     pub trait Sealed {}
 }
 
-pub(crate) fn validate<'a, M: FormSchema>(
-    model: &'a M,
-    topology: &'a TopologyIndex,
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate<M: FormSchema>(
+    model: &M,
+    topology: &TopologyIndex,
     version: FormVersion,
     trigger: ValidationTrigger,
-    scope: Option<&CanonicalAddress>,
-    validator: Option<&dyn Validator<M>>,
-) -> Vec<ValidationIssue> {
-    let model = model.clone();
-    let model = &model;
+    scopes: Option<&[CanonicalAddress]>,
+    drafts: &[CanonicalAddress],
+    rules: &mut [ValidationRule<M>],
+    started: &mut std::collections::HashSet<PathKey>,
+    report: &mut ValidationReport,
+) {
     let snapshot = topology.snapshot();
+    started.retain(|key| snapshot.key(key.address()).as_ref() == Some(key));
     let mut required = RequiredVisitor {
         topology: &snapshot,
         trigger,
-        scope,
+        scopes,
+        started,
+        drafts,
         address: CanonicalAddress::default(),
-        issues: Vec::new(),
-        validator_enabled: false,
+        replacements: Vec::new(),
     };
     model.__visit(&mut required);
-    let validator_enabled = matches!(
-        trigger,
-        ValidationTrigger::Submit | ValidationTrigger::External
-    ) || required.validator_enabled;
-    let mut issues = required.issues;
-
-    if validator_enabled && let Some(validator) = validator {
+    for (owner, next) in required.replacements {
+        report.replace_owner(&owner, next);
+    }
+    for rule in rules {
+        let Some(owner) = rule.owner(&snapshot) else {
+            continue;
+        };
+        if !rule.matches(scopes, trigger) {
+            continue;
+        }
+        rule.started = true;
+        if rule
+            .dependencies
+            .iter()
+            .any(|dep| drafts.iter().any(|d| intersects(d, &dep.address)))
+        {
+            report.replace_owner(&owner, Vec::new());
+            continue;
+        }
         let request = ValidationRequest {
             model,
             version,
             trigger,
-            scope,
+            scope: None,
             session: topology.session(),
             topology: snapshot.clone(),
             marker: PhantomData,
         };
-        debug_assert_eq!(request.version(), version);
         let mut sink = ValidationSink {
             topology: snapshot.clone(),
             trigger,
-            source: ValidationSource::Validator(Cow::Borrowed("validator")),
+            source: ValidationSource::Validator(rule.id.as_str().to_owned().into()),
+            owner: owner.clone(),
             issues: Vec::new(),
             marker: PhantomData,
         };
-        validator.validate(request, &mut sink);
-        issues.extend(sink.issues);
+        (rule.check)(request, &mut sink);
+        report.replace_owner(&owner, sink.issues);
     }
-
-    issues
 }
 
 struct RequiredVisitor<'a> {
     topology: &'a TopologySnapshot,
     trigger: ValidationTrigger,
-    scope: Option<&'a CanonicalAddress>,
+    scopes: Option<&'a [CanonicalAddress]>,
+    drafts: &'a [CanonicalAddress],
+    started: &'a mut std::collections::HashSet<PathKey>,
     address: CanonicalAddress,
-    issues: Vec<ValidationIssue>,
-    validator_enabled: bool,
+    replacements: Vec<(RuleOwner, Vec<ValidationIssue>)>,
 }
 
 impl RequiredVisitor<'_> {
-    fn nested(&self, address: CanonicalAddress) -> Self {
-        Self {
-            topology: self.topology,
-            trigger: self.trigger,
-            scope: self.scope,
-            address,
-            issues: Vec::new(),
-            validator_enabled: false,
-        }
-    }
-
-    fn absorb(&mut self, nested: Self) {
-        self.issues.extend(nested.issues);
-        self.validator_enabled |= nested.validator_enabled;
+    fn visit_nested(
+        &mut self,
+        address: CanonicalAddress,
+        visit: &mut dyn FnMut(&mut dyn SchemaVisitor),
+    ) {
+        let old = std::mem::replace(&mut self.address, address);
+        visit(self);
+        self.address = old;
     }
 }
 
 impl SchemaVisitor for RequiredVisitor<'_> {
     fn field(&mut self, schema: FieldSchema, missing: bool) {
-        let address = self.address.field(schema.name());
-        if schema.triggers().includes(self.trigger)
-            && self.scope.is_none_or(|scope| intersects(scope, &address))
-        {
-            self.validator_enabled = true;
+        if !schema.is_required() {
+            return;
         }
-        if !missing
-            || !schema.is_required()
-            || !schema.triggers().includes(self.trigger)
-            || !self.scope.is_none_or(|scope| intersects(scope, &address))
+        let address = self.address.field(schema.name());
+        let path = snapshot_key(self.topology, &address);
+        let affected = self
+            .scopes
+            .is_none_or(|scopes| scopes.iter().any(|s| intersects(s, &address)));
+        if !affected
+            || !(schema.triggers().includes(self.trigger)
+                || self.trigger == ValidationTrigger::External
+                || self.started.contains(&path))
         {
             return;
         }
-        let path = snapshot_key(self.topology, &address);
-        self.issues.push(ValidationIssue {
-            path,
-            address,
-            source: ValidationSource::Required,
-            trigger: self.trigger,
-            code: Cow::Borrowed("required"),
-            message: ValidationMessage::key("gpui-form-error-required"),
-            control: None,
-            async_generation: None,
-            control_active: None,
-        });
+        self.started.insert(path.clone());
+        let owner = RuleOwner::Required(path.clone());
+        let next = if missing && !self.drafts.iter().any(|d| intersects(d, &address)) {
+            vec![ValidationIssue {
+                owner: Some(owner.clone()),
+                path,
+                address,
+                source: ValidationSource::Required,
+                trigger: self.trigger,
+                code: Cow::Borrowed("required"),
+                message: ValidationMessage::key("gpui-form-error-required"),
+                control: None,
+                async_generation: None,
+                control_active: None,
+            }]
+        } else {
+            Vec::new()
+        };
+        self.replacements.push((owner, next));
     }
 
     fn child(&mut self, name: &'static str, visit: &mut dyn FnMut(&mut dyn SchemaVisitor)) {
-        let mut nested = self.nested(self.address.field(name));
-        visit(&mut nested);
-        self.absorb(nested);
+        self.visit_nested(self.address.field(name), visit);
     }
 
     fn optional(
@@ -726,9 +693,7 @@ impl SchemaVisitor for RequiredVisitor<'_> {
             .expect("present optional topology must be materialized");
         let address = parent.some_occurrence(occurrence);
         snapshot_key(self.topology, &address);
-        let mut nested = self.nested(address);
-        visit(&mut nested);
-        self.absorb(nested);
+        self.visit_nested(address, visit);
     }
 
     fn items(
@@ -746,9 +711,7 @@ impl SchemaVisitor for RequiredVisitor<'_> {
         for (index, token) in tokens.into_iter().enumerate() {
             let address = collection.item(token);
             snapshot_key(self.topology, &address);
-            let mut nested = self.nested(address);
-            visit(index, &mut nested);
-            self.absorb(nested);
+            self.visit_nested(address, &mut |v| visit(index, v));
         }
     }
 
@@ -759,9 +722,7 @@ impl SchemaVisitor for RequiredVisitor<'_> {
             .expect("active case topology must be materialized");
         let address = self.address.case_occurrence(name, occurrence);
         snapshot_key(self.topology, &address);
-        let mut nested = self.nested(address);
-        visit(&mut nested);
-        self.absorb(nested);
+        self.visit_nested(address, visit);
     }
 
     fn unit_case(&mut self, name: &'static str) {

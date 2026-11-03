@@ -43,7 +43,7 @@ struct ModelId(String);
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct TagId(String);
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct ProviderDraft {
     #[form(required)]
     name: String,
@@ -51,37 +51,37 @@ struct ProviderDraft {
     enabled: bool,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct JobDraft {
     budget: u64,
     tag_ids: Vec<TagId>,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct QueryDraft {
     #[form(child)]
     filters: FilterGroup,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterGroup {
     #[form(items)]
     children: Vec<FilterNode>,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterNode {
     #[form(child)]
     kind: FilterNodeKind,
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 enum FilterNodeKind {
     Condition(FilterCondition),
     Group(FilterGroup),
 }
 
-#[derive(Clone, FormSchema)]
+#[derive(Clone, PartialEq, FormSchema)]
 struct FilterCondition {
     value: String,
     limit: u64,
@@ -103,7 +103,7 @@ let form = cx.new(|_| Form::new(ProviderDraft {
 }));
 
 let name: String = ProviderDraft::NAME.get(&form, cx);
-let changed: bool = ProviderDraft::NAME.set(&form, "Local provider".into(), cx);
+let changed: bool = ProviderDraft::NAME.set(&form, "Local provider".into(), cx).unwrap();
 ```
 
 Collection items, active enum cases, and `Option::Some` values are dynamic
@@ -210,13 +210,14 @@ remain available; it does not need a form binding.
 
 ## Bind integer input
 
-`FormIntegerInput` keeps incomplete or invalid editor text in its native state.
+`FormIntegerInput` keeps incomplete or invalid display text in the Form under its editor key.
 Only a valid typed integer is written to the Form.
 
 ```rust,ignore
 let budget_input = FormIntegerInput::new(
     &job_form,
     JobDraft::BUDGET,
+    "budget-editor",
     |window, cx| {
         IntegerInputState::new(window, cx)
             .min(1_024u64)
@@ -240,6 +241,7 @@ let limit = condition.clone().then(FilterCondition::LIMIT);
 let limit_input = FormIntegerInput::try_new(
     &query_form,
     limit,
+    "budget-editor",
     |window, cx| IntegerInputState::new(window, cx).min(0u64).step(1u64),
     window,
     cx,
@@ -302,7 +304,7 @@ let form_for_change = form.clone();
 let checkbox = Checkbox::new("provider-enabled-checkbox")
     .checked(checked)
     .on_click(move |checked, _window, cx| {
-        enabled_path.set(&form_for_change, *checked, cx);
+        enabled_path.set(&form_for_change, *checked, cx).unwrap();
     });
 
 let switch_form = form.clone();
@@ -310,7 +312,7 @@ let switch_path = ProviderDraft::ENABLED;
 let switch = Switch::new("provider-enabled-switch")
     .checked(checked)
     .on_click(move |checked, _window, cx| {
-        switch_path.set(&switch_form, *checked, cx);
+        switch_path.set(&switch_form, *checked, cx).unwrap();
     });
 ```
 
@@ -366,8 +368,7 @@ match value.try_errors(&query_form, cx) {
 }
 ```
 
-Native editor issues, such as incomplete integer text, remain associated with
-that control. A valid edit clears its own obsolete editor issue. Validation-only
+Unresolved display drafts and their issues remain associated with the editor key in the Form, including after control unmount. A valid edit clears its own obsolete editor issue. Validation-only
 changes do not reset a native value or erase unrelated editor state.
 
 Observe the Form only when page-owned rendering needs it:
@@ -484,3 +485,10 @@ adapter drops its binding, so later native callbacks cannot change the Form.
 - [gpui-form README](../../gpui-form/README.md)
 - [gpui-form guide](../../gpui-form/docs/guide.md)
 - [gpui-form-macros guide](../../gpui-form-macros/docs/guide.md)
+
+
+## Draft and mapping bindings (#248)
+
+FormIntegerInput::new/try_new now take a stable EditorKey after the path, and both return FormIntegerInputBuildError (including a display/mapping type mismatch). Two editors at one path need different keys. Unresolved integer text lives in the Form, survives unmount and blocks prepare. Rebuilding with the same key restores it; programmatic values do not overwrite a draft. Discard drafts explicitly before removing their dynamic subtree.
+
+FormMappedInput::new(form, path, editor_key, mapping, context, build, window, cx) binds a native InputState to ControlMapping<S, String>. Its refresh(context, cx) reprojects clean editors without writing the model; drafts keep their text. parse receives current storage and optional baseline with the context snapshot from native event entry. Use Parsed to restore Unset/Unreadable domain values when appropriate, or Draft for unresolved text. Native cursor, focus, selection and IME remain control-owned. See the [core contract](../../gpui-form/docs/guide.md#editing-session-and-breaking-api-changes-248) for edit-ticket races, lifecycle policies and rebase limitations.

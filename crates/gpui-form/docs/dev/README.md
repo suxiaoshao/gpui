@@ -1,5 +1,7 @@
 # gpui-form 开发计划
 
+- [Issue #248：校验规则与完整编辑会话](issue-248/README.md)：已实施；规则依赖、原生草稿、路径基线、保留编辑的 rebase 与映射绑定，本地验证完成。
+
 - [Issue #215：依赖升级](issue-215/README.md)：gpui-form 的依赖/API 配套迁移与验证边界。
 
 本目录保存维护者使用的实施计划，不定义 crate 的公开 API。使用者应阅读
