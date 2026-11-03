@@ -8,6 +8,11 @@ on:
     branches:
       - main
 
+  # Refresh before GitHub's seven-day idle eviction, with margin for delayed runs.
+  schedule:
+    - cron: '23 4 * * 1,4'
+  workflow_dispatch:
+
 permissions:
   contents: read
 
@@ -34,10 +39,10 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          # Unknown comparisons and manual runs retain the full checks.
+          # Scheduled/manual runs and unknown comparisons retain the full checks.
           echo 'run=true' >> "$GITHUB_OUTPUT"
-          if [[ "$EVENT" == workflow_dispatch || -z "$BASE" || "$BASE" =~ ^0+$ ]]; then
-            echo 'Manual run or missing comparison base: running full checks.' >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$EVENT" == schedule || "$EVENT" == workflow_dispatch || -z "$BASE" || "$BASE" =~ ^0+$ ]]; then
+            echo 'Scheduled/manual run or missing comparison base: running full checks.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           if [[ "$EVENT" == pull_request ]]; then
@@ -125,16 +130,14 @@ jobs:
         with:
           shared-key: ${{ runner.os }}-${{ hashFiles('flake.lock', 'rust-toolchain.toml') }}
           cache-bin: false
+          # Windows target cleanup failed with ENOENT before 65196de3; keep registry caching only.
           cache-targets: ${{ matrix.runs_on != 'windows-latest' }}
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          # PR caches are merge-ref scoped and compete with main for storage.
+          save-if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
 
       - name: Cargo fmt
         if: ${{ needs.changes.outputs.run != 'false' }}
         run: ${{ matrix.command }} cargo fmt --all -- --check
-
-      - name: Cargo build
-        if: ${{ needs.changes.outputs.run != 'false' }}
-        run: ${{ matrix.command }} cargo build --workspace --locked
 
       - name: Cargo test
         if: ${{ needs.changes.outputs.run != 'false' }}
