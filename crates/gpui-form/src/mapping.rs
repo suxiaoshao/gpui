@@ -70,14 +70,24 @@ impl<
             // Parse now: queued input must never be reinterpreted after a context refresh.
             let context = self.context.borrow().clone();
             self.mapping.parse(
-                display,
+                display.clone(),
                 stored,
                 form.baseline_for(&self.core).as_ref(),
                 &context,
             )
         };
         match result {
-            EditResult::Parsed(value) => self.writer.defer_set(value, window, cx),
+            EditResult::Parsed(value) => self.writer.defer_mapped_update(
+                display,
+                TypeId::of::<Map>(),
+                crate::StorageUpdate::new(move |_| Ok(value)),
+                window,
+                cx,
+            ),
+            EditResult::Update(update) => {
+                self.writer
+                    .defer_mapped_update(display, TypeId::of::<Map>(), update, window, cx)
+            }
             EditResult::Draft {
                 display,
                 code,

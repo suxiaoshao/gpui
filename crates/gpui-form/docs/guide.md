@@ -595,7 +595,7 @@ of `rebase_if_current` is unchanged.
 
 `ControlMapping<S, D>` formats storage with a cloned application context and
 parses display data with current storage, optional baseline and that same
-context snapshot into `EditResult::Parsed` or `EditResult::Draft`. Use
+context snapshot into `EditResult::Parsed`, `Update` or `Draft`. Use
 `bind_mapped_control_in` / `try_bind_mapped_control_in` and their returned
 `MappedControlWriter::defer_edit`. `MappedControlBinding::refresh(context, cx)`
 reprojects clean editors without changing model/revision; drafts retain original
@@ -638,3 +638,85 @@ impl ControlMapping<Slot, String> for NumberMapping {
     }
 }
 ```
+
+### Admission-time mapped updates
+
+`Parsed(value)` explicitly replaces the complete bound value. Independent editors
+of one map or composite field should return `EditResult::update(...)`: the
+one-shot callback receives the latest storage when its native edit is admitted.
+For example, two queued key edits then compose instead of replacing each other's
+copies of the map:
+
+```rust,ignore
+use std::collections::BTreeMap;
+use gpui_form::{ControlMapping, EditProblem, EditResult};
+
+type Overrides = BTreeMap<String, u64>;
+struct TokenMapping { key: String }
+impl ControlMapping<Overrides, String> for TokenMapping {
+    type Context = u64;
+    fn format(&self, stored: &Overrides, inherited: &u64) -> String {
+        stored.get(&self.key).unwrap_or(inherited).to_string()
+    }
+    fn parse(&self, display: String, _: &Overrides, baseline: Option<&Overrides>,
+             inherited: &u64) -> EditResult<Overrides, String> {
+        let Ok(value) = display.parse::<u64>() else {
+            return EditResult::draft(display, "number", "Enter an integer");
+        };
+        let Some(baseline) = baseline else {
+            return EditResult::draft(display, "baseline-unavailable", "Refresh before editing");
+        };
+        let key = self.key.clone();
+        let base = baseline.get(&key).copied();
+        let target = if value == base.unwrap_or(*inherited) { base } else { Some(value) };
+        EditResult::update(move |latest: &Overrides| {
+            if latest.contains_key("locked") {
+                return Err(EditProblem::new("locked", "Overrides are locked"));
+            }
+            let mut next = latest.clone();
+            match target {
+                Some(value) => { next.insert(key, value); }
+                None => { next.remove(&key); }
+            }
+            Ok(next)
+        })
+    }
+}
+```
+
+Parse runs once at native event entry, with that entry's storage, baseline and
+context. Capture an owned key, parsed value and any required baseline/context
+fragments. The update is `FnOnce(&S) -> Result<S, EditProblem> + 'static`, with no
+Clone or Send requirement. It must not reparse text, read external state, perform
+side effects or panic. Do not capture the entry's whole map as the update base,
+or omit an edit because its display equals entry storage: an earlier queued edit
+may still need to be undone. Restore only the target baseline leaf on latest.
+
+`Update(StorageUpdate<S>)` and `StorageUpdate::new` expose the same payload;
+`EditProblem::new(code, message)` accepts a `ValidationMessage` and has `code()` /
+`message()` readers. Exhaustive `EditResult` matches must handle the new variant.
+Mapping and adapter constructor signatures are unchanged.
+
+Each call reserves one native ticket before returning. Admissions run in order;
+an Update sees earlier accepted edits, and a later Parsed can replace their full
+result. Pending input blocks prepare and preserving rebase, and invalidates older
+save versions. Cancelled bindings/windows, discarded tickets and retired paths
+never execute the callback or create orphan drafts. Context refresh only projects
+clean, admitted editors and never changes captured intent or retries an update.
+
+On admission failure, Form retains the original display under the source
+`(PathKey, EditorKey)` as a Draft and settles its ticket. The stored value,
+baseline and topology stay unchanged. A candidate that would retire dynamic
+drafts produces code `form-edit-would-retire-drafts` with a displayable problem;
+this also applies to a rejected mapped Parsed replacement. Failures never retry
+automatically. Remount with the same key to restore the text; corrected new input
+may try again. Success clears only that editor's draft and issue, even for an
+equal candidate, while preserving peers' drafts and pending native text. Model
+and source-draft changes share one revision; an equal edit that only clears a
+draft advances it once. Updates do not change the baseline.
+
+Composite updates keep existing whole-value installation rules: a changed
+candidate retires dynamic descendants, and unresolved dynamic drafts cause
+refusal. Use typed `discard_drafts` only for an explicit discard. There is no
+business-key path or identity reconciliation. Field merge hooks still apply
+only to external refresh, including their conservative draft-skipping rule.

@@ -221,3 +221,89 @@ hook 没有资格清草稿或猜测两份集合的 occurrence 对应关系。首
 - `cargo test -p gpui-form -p gpui-form-macros -p gpui-form-gpui-component --all-features --locked`：82 项通过、0 失败，包含未开启 overwrite 的两个 trybuild 测试入口。
 - `cargo clippy -p gpui-form -p gpui-form-macros -p gpui-form-gpui-component --all-targets --all-features --locked -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check`：通过。
 - 此处没有 Gupi 消费者迁移或原生界面验收；Linux/Windows 由后续 PR CI 验证。带草稿字段本轮推迟远端独立 key、没有跨独立模型动态身份映射、迟到保存祖先仍由应用管理，均维持本补充的已确认边界。
+
+## 提案：映射编辑在接纳时应用类型化更新（Gupi #139 阻塞）
+
+状态：已实施，本地验证通过。依据 `origin/main` 的 `f28d839d7815d9d58917b0ca4c839397dee9bd7e`；用户已批准文末三项决定。本节不改变上文已确认的字段合并 hook 和草稿保守规则，不修改 Gupi、不实现通用业务键集合。
+
+### 问题与选型
+
+`src/mapping.rs` 的 `MappedControlWriter::defer_edit` 在原生事件入口用当前存储值执行 parse；`src/control.rs::ControlWriter::defer_set` 随后排队写入完整字段值。两个 map-root 编辑器在接纳前分别输入 reserve=20、keep=30，两次 parse 都从空 map 出发，最终只剩 `{keep:30}`。这不是队列乱序，而是第二个排队的整值候选已经遗漏第一个意图。
+
+原始证据为协调者提供的公开 API 探针 `/private/tmp/gupi-139-probe/src/lib.rs` 与 `/private/tmp/gupi-139-probe.log`：绑定同一字段、不同 EditorKey，预期两键，实际仅 keep。现已把公开入口复现迁入 `tests/mapped_admission.rs`，将部分编辑 mapping 改为 Update 后验证两键；正式回归不依赖临时目录。
+
+采用已批准的 **接纳时类型化更新**：parse 在入口将展示值解析为领域意图；Form 在队列接纳时以最新字段存储值执行该意图。不选新的“业务键叶路径”：继承项尚无本地 occurrence，为它定义身份、基线、退休和可选写入会引入另一套路由及集合契约。也不将 parse 整体延迟到接纳时，否则上下文变化会重新解释已输入内容。
+
+### 最小公开接口
+
+保留 `ControlMapping<S,D>::parse` 的现有签名，给 `EditResult<S,D>` 增加 `Update(StorageUpdate<S>)` 分支，提供 `EditResult::update(...)` 和 `StorageUpdate::new(...)` 构造器。`StorageUpdate<S>` 内部封装一次性 `FnOnce(&S) -> Result<S, EditProblem> + 'static`；`EditProblem::new(code, message)` 使用 code 与 `ValidationMessage`，并提供 `code()` / `message()` 读取器。内部字段私有，问题表达与 Draft 一致。以下语义均已获用户批准。
+
+- parse 仍只调用一次，取得原生事件入口的 display、stored、可选 baseline、context 快照。无效语法立即返回 Draft；合法输入返回捕获业务键、已解析值或“恢复该键基线/Unset”等意图的 Update。
+- Update 接收的是**接纳时该 typed path 的最新 S**，返回候选 S。它没有 Form、Context、Window 或可变模型引用，不写盘、不读外部状态、不再读取/解析原生文本，也不重新取得 mapping context。需要的上下文和基线片段必须在入口捕获为拥有的数据。
+- `FnOnce` 只在一次有效接纳中执行一次；取消后不执行，不自动重试。输入只读，先生成候选再安装；返回 Err 不得部分修改模型。闭包不得产生副作用或 panic，Form 不提供回滚外部副作用的承诺。
+- 不新增 associated type，不新增另一套 binding/adapter。`bind_mapped_control_in`、dynamic 对应入口、FormMappedInput 与既有 editor 类型检查共同支持 Update。仅内部 writer 增加接纳更新通路，首版不必另公开通用 `ControlWriter::defer_update`。
+
+公开接口示意：
+
+```rust,ignore
+// key、value 在原生入口确定；闭包不能捕获 old_map 当作更新基础。
+EditResult::update(move |latest: &Map| {
+    let mut next = latest.clone();
+    next.insert(key, value);
+    Ok(next)
+})
+```
+
+因此两个排队更新分别作用于 `{}` 和 `{reserve:20}`，最终得到两键；同一键的两个赋值按接纳顺序以后者为准。删除/恢复继承也只更新目标键或目标叶，保留 latest 的其他键、未知内容及顺序。具体字段不存在、Unreadable 无法安全改写等领域前提由闭包检查并返回问题，不静默转为空 map。
+
+入口读取的 stored 不是最新队列状态。部分编辑器不得因“展示等于入口存储值”返回旧整图或省略入队；回到基线也应构造仅恢复目标叶的 Update，才能抵消同一编辑器先前尚未接纳的输入。若某操作确实依赖读取值，应用必须把意图设计为作用于 latest 的变换，或在闭包中核对捕获的前提并拒绝，不可把旧根值重新塞回去。
+
+### 接纳、票据与草稿
+
+映射入口保留原始 display 的克隆，供接纳失败形成草稿。沿用现有原生编辑票据、editor sequence、source suppression 和 lifecycle generation，不另建应用队列。一个调用只预留一个票据，在返回原生回调前完成预留；pending 阻止 prepare，并立即使旧保存版本失效。
+
+接纳顺序与原生入口调用顺序一致；不同 EditorKey 的更新不能互相覆盖或以“只取最新”合并掉。每次先验证绑定/窗口存活、generation、票据和路径仍有效，再读取 latest、调用 Update、完成结构安全检查，最后在同一 Form 更新内安装。之前编辑推进 revision 不是拒绝后续编辑的理由。销毁、退休、显式 Discard 继续取消对应票据；已取消闭包不得运行，不能复活旧路径或草稿。
+
+成功安装只清来源 `(PathKey, EditorKey)` 的草稿和问题，不能清其他编辑器的无效文本。即使候选值等于 latest，清除来源旧草稿也必须完成。相同 key 重挂恢复草稿，展示/映射类型不兼容仍拒绝绑定；EditorKey 不成为存储路径或业务 identity。同一根字段上的 reserve/keep 使用不同稳定 key，读继承值或输入坏文本都不要求先创建持久覆盖行。
+
+Update 返回 Err，或候选会退休其他动态草稿而被 Form 拒绝时：当前模型、基线、拓扑均不变；原始 display 与问题以来源编辑器的 Draft 留在 Form，结算本次票据并继续阻止 prepare。不得像当前内部整值写入的 `let _ = ...set(...)` 那样忽略接纳错误。runtime 产生稳定错误 code 和可展示问题，页面仍负责翻译/布局。重挂能够恢复，修正后的新输入可以重试；不在后台自动重放失败闭包。
+
+绑定已取消或动态目标已退休属于生命周期取消，不把草稿挂到不存在的位置。此时沿用既有退休/弃稿语义，而不是作为可恢复的领域更新失败处理。
+
+### 动态身份、版本与基线
+
+Update 是在最新 S 上计算候选，不是新的拓扑编辑语言。写入仍遵循目标路径的已有整值安装规则：相等候选不退休身份；改变复合字段会退休其动态后代，不按业务键或下标匹配。会损失动态子路径草稿时整次拒绝，不为成功应用 patch 而自动 Discard。根路径上不同 EditorKey 的草稿不因后代退休而消失。
+
+Gupi 的 inherited map token 因此可以在稳定 map 根路径绑定，Update 仅插入/移除那个业务叶，成功写值时才按领域需要物化覆盖。若同一 map 中还有旧 dynamic token 编辑器，其后代可能被根更新退休，必须按正式路径重新绑定；需要跨根更新保留未解析文本的 token 应一致采用根路径加 EditorKey。这不把业务 key 升格为 Form identity，也不承诺动态行身份无变化。
+
+每个成功接纳最多推进一次编辑 revision：模型改变发 ModelChanged；同时清稿的 DraftChanged 共享该 revision；仅清稿发 DraftChanged；等值且无草稿/拓扑变化不推进 revision。接纳失败新增/改变草稿按既有草稿版本规则处理，只有问题文案变化不推进编辑版本。票据 epoch 已失效的旧保存凭据不会因最终值回到原值而重新有效。
+
+来源控件不立即 format 回写；其他控件按最新模型投影，仍保护它们尚待接纳的输入和已有草稿。不以整字段 Changed 为由覆盖相邻编辑器已输入但未接纳的文本。映射 context refresh 继续只重投影无草稿编辑器，不改变排队 Update 捕获的意图。
+
+Update 不改变基线。路径 dirty 仍是存储值相对基线的差异加未解析草稿；没有第二份 map 基线或 patch 历史参与 dirty。回到继承值时，parse 捕获对应基线叶/Unset 意图，Update 对 latest 只改这一叶；未保存的其他键必须仍 dirty。根字段基线和动态后代的对应继续遵循现有安装规则。
+
+### 与整值 Parsed、字段合并 hook 的关系
+
+`Parsed(S)` 继续合法，含义明确为“替换这个绑定字段的完整值”：标量输入或真正拥有全字段的编辑器继续使用。多个整值替换按序执行，后一个替换前一个是明确语义；库不从两份 S 自动推导 diff。它不适用于同一复合字段的独立部分编辑器。Update 与 Parsed 混排时也遵循这个顺序：Update 从前面的结果计算，后来的 Parsed 可以完整覆盖它。既有探针不能不改 mapping 就宣称修复，应将其部分编辑 mapping 改为 Update 并验证两键结果。
+
+字段 merge hook 仍只处理外部 B/L/R 刷新，不用于本地 Update 接纳。pending 票据让 preserving rebase 返回 EditsPending；接纳完成后它看到最新 L。有未解析草稿时继续跳过整个 hook 字段并保留 L；无草稿时照常调用领域 hook，基线仍为远端 R。Update 不削弱这个用户已确认的保守边界，也不增加迟到保存合并祖先接口。
+
+### 破坏面、实施边界与必要验证
+
+公开破坏面是 `EditResult` 新分支使穷举 match 需要迁移；ControlMapping 签名、既有 Parsed/Draft 构造、binding 与整数适配器构造签名不变。新增一次性闭包载荷不要求 Clone/Send。库内所有 EditResult 消费者统一支持新分支，不把遗漏分支改成 wildcard 丢弃；业务错误和结构拒绝走可恢复草稿。更新公开中英文指南、适配器说明与 skill invariants，解释入口解析/接纳更新的分工。
+
+先在既有绑定回归中用真实公开 API 验证不同 key 的连续 Update 不丢值，同 key 回到基线不会被旧排队编辑覆盖；再覆盖接纳失败保留输入、另一个编辑器草稿不被清掉，以及 context 刷新/显式放弃/旧保存结果的交错。验证目的分别是防止覆盖用户输入、虚假 clean 和旧任务覆盖新编辑，不重写业务 merge 算法或复制整个生命周期矩阵。运行受影响 Form/adapter 检查与测试即可；本设计不包含 Gupi 全量验收或 UI 改造。
+
+用户已批准：新增 Update 分支、保留 Parsed 整值语义；接纳失败将原输入保留为 Draft、不自动重试；沿用复合字段动态退休规则，不扩展身份对应或业务键路径。
+
+### 实施与验证记录（2026-11-04）
+
+- 新增 `EditProblem`、`StorageUpdate<S>` 及 `EditResult::Update`，从 crate 根和 typed 便捷导入导出。`MappedControlWriter` 对 Parsed/Update 都保留入口 display；内部 writer 统一接纳并处理结构拒绝，不再丢弃 set 错误。生命周期取消不会执行更新或留下孤立草稿。
+- `form-edit-would-retire-drafts` 是结构拒绝的稳定 code，附带可展示的 `ValidationMessage`。成功按来源 `(PathKey, EditorKey)` 清稿；投影 drain 同时检查该控件的待接纳票据和已有草稿。未增加公开 `ControlWriter::defer_update`，未更改 mapping/adapter 构造签名。
+- 四组公开 API 回归覆盖两键排队、同键回基线与未知键保留、入口 context 捕获及旧保存拒绝、失败原文重挂/无重试/只清来源、Parsed/Update 混排、显式放弃/卸载取消，以及 Parsed 和 Update 的结构拒绝与单次 revision。既有原生 IME/离线草稿适配器回归改用 Update。
+- 反向验证曾临时移除 pending 投影保护，连续编辑回归稳定失败；恢复后通过，证明覆盖了真实的投影竞态。
+- 以下 Rust 检查全部在 `nix develop --command` 内运行，测试/Clippy 使用 Nix 专用 `CARGO_TARGET_DIR=/tmp/issue265-nix-trybuild`：
+  - `cargo test -p gpui-form -p gpui-form-gpui-component --all-features --locked`：85 项通过、0 失败，包含原有 trybuild 入口，未开启 overwrite，未修改 `.stderr`。
+  - `cargo clippy -p gpui-form -p gpui-form-gpui-component --all-targets --all-features --locked -- -D warnings`：通过。
+  - `cargo fmt --all -- --check`、`git diff --check`：通过。
+- 中英文公开指南、适配器说明与 skill contracts 已同步。本地 macOS 的公开入口/原生适配器测试不等同于 Gupi 迁移验收；Linux/Windows 留给 PR CI。闭包纯度、领域前提和业务叶意图由应用保证；动态整值安装边界保持不变。

@@ -333,6 +333,13 @@ let subscription = cx.subscribe(&form, |_, _, event, cx| {
 存在未解析草稿的字段会整字段保留本地值，并在本轮刷新跳过 hook。身份、冲突和基线规则见
 [字段合并指南](docs/guide.zh-CN.md#字段级领域合并)。
 
+## 映射编辑的接纳时更新
+
+共享复合字段的部分编辑器返回 `EditResult::update(...)`，一次性、可失败的闭包在接纳时
+变换最新存储值；`Parsed` 仍是整值替换。失败将原输入保存为来源编辑器草稿，成功保留其他
+编辑器的草稿与排队输入。穷举匹配 `EditResult` 的调用方需处理 `Update`。
+详见[映射更新契约](docs/guide.zh-CN.md#映射编辑的接纳时更新)。
+
 ## 编辑会话迁移（#248）
 
 旧 Validator 入口已删除；with_rules 显式注册规则依赖并返回 Result。Form 持有未解析草稿与原生编辑票据。Total set 返回 Result；replace/reset/rebase 强制 DraftPolicy 并返回生命周期报告。刷新用 rebase_preserving_edits 原子保留本地编辑并报告冲突。数字构造函数新增稳定 editor key；FormMappedInput 提供存储/展示映射。签名、路径基线/dirty 和迁移详情见[指南](docs/guide.zh-CN.md)。
