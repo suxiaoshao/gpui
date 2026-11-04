@@ -585,10 +585,12 @@ impl<M: FormSchema> Form<M> {
     pub(crate) fn set_control_issue(
         &mut self,
         control: u64,
+        editor: &crate::EditorKey,
         address: CanonicalAddress,
         _active: Weak<AtomicBool>,
         issue: Option<(String, ValidationMessage)>,
     ) -> bool {
+        let key = self.topology.key(&address).expect("bound editor path");
         let issue = issue.map(|(code, message)| ValidationIssue {
             owner: None,
             path: self
@@ -601,15 +603,15 @@ impl<M: FormSchema> Form<M> {
             code: code.into(),
             message,
             control: Some(control),
+            editor: Some(editor.clone()),
             async_generation: None,
             control_active: None,
         });
-        self.validation.replace_control(control, issue)
+        self.validation.replace_editor(&key, editor, issue)
     }
 
     pub(crate) fn complete_control_write(
         &mut self,
-        control: u64,
         editor: &crate::EditorKey,
         address: CanonicalAddress,
         changed: bool,
@@ -617,8 +619,8 @@ impl<M: FormSchema> Form<M> {
         cx: &mut Context<Self>,
     ) {
         let key = self.topology.key(&address).expect("admitted control path");
-        let draft_changed = self.drafts.remove(&(key, editor.clone())).is_some();
-        let issue_changed = self.validation.replace_control(control, None);
+        let draft_changed = self.drafts.remove(&(key.clone(), editor.clone())).is_some();
+        let issue_changed = self.validation.replace_editor(&key, editor, None);
         if changed {
             self.commit_control_value(address.clone(), origin, cx);
             if draft_changed {
@@ -632,8 +634,16 @@ impl<M: FormSchema> Form<M> {
         }
     }
 
-    pub(crate) fn clear_control_issue(&mut self, control: u64, cx: &mut Context<Self>) {
-        if self.validation.replace_control(control, None) {
+    pub(crate) fn clear_editor_issue(
+        &mut self,
+        address: &CanonicalAddress,
+        editor: &crate::EditorKey,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(key) = self.topology.key(address) else {
+            return;
+        };
+        if self.validation.replace_editor(&key, editor, None) {
             self.publish_validation(cx);
         }
     }
@@ -675,6 +685,96 @@ impl<M: FormSchema> Form<M> {
             }
         }
         Ok(self.lifecycle_report(Vec::new()))
+    }
+
+    /// Accepted draft state and issues owned by exactly this path and editor.
+    /// This query never reads native text and works after the control is unmounted.
+    pub fn editor_status(
+        &self,
+        path: impl crate::ChangeTarget<M>,
+        editor: impl Into<crate::EditorKey>,
+    ) -> Result<crate::EditorStatus, crate::LifecycleError> {
+        self.editor_status_at(path.__change_target(), &editor.into())
+    }
+
+    pub(crate) fn editor_status_at(
+        &self,
+        target: crate::change::ChangeTargetInfo,
+        editor: &crate::EditorKey,
+    ) -> Result<crate::EditorStatus, crate::LifecycleError> {
+        let key = self.check_editor_target(&target)?;
+        let draft = self.drafts.get(&(key.clone(), editor.clone()));
+        let issues = self
+            .validation
+            .issues
+            .iter()
+            .filter(|issue| {
+                issue.editor.as_ref() == Some(editor) && issue.path() == &key && issue.is_active()
+            })
+            .cloned()
+            .collect();
+        Ok(crate::EditorStatus {
+            has_draft: draft.is_some(),
+            issues,
+        })
+    }
+
+    /// Explicitly abandon accepted drafts and queued input for exactly one editor.
+    pub fn discard_editor_draft(
+        &mut self,
+        path: impl crate::ChangeTarget<M>,
+        editor: impl Into<crate::EditorKey>,
+        cx: &mut Context<Self>,
+    ) -> Result<crate::LifecycleReport, crate::LifecycleError> {
+        self.discard_editor_at(path.__change_target(), &editor.into(), cx)
+    }
+
+    pub(crate) fn discard_editor_at(
+        &mut self,
+        target: crate::change::ChangeTargetInfo,
+        editor: &crate::EditorKey,
+        cx: &mut Context<Self>,
+    ) -> Result<crate::LifecycleReport, crate::LifecycleError> {
+        let key = self.check_editor_target(&target)?;
+        let mut controls = self.edit_clock.cancel_editor_at(&target.address, editor);
+        let draft = self.drafts.remove(&(key.clone(), editor.clone()));
+        if let Some(draft) = &draft {
+            controls.push(draft.control);
+        }
+        controls.sort_unstable();
+        controls.dedup();
+        let issue_changed = self.validation.replace_editor(&key, editor, None);
+        if !controls.is_empty() {
+            self.invalidate_async_for_model_change(std::slice::from_ref(&target.address));
+            self.refresh_validation(std::slice::from_ref(&target.address));
+            self.publish_session(
+                ModelChangeKind::Replace,
+                ChangeSet::subtree(target.address.clone(), false, Vec::new())
+                    .for_controls(controls),
+                cx,
+            );
+            if draft.is_some() {
+                self.emit_draft(target.address, false, cx);
+            }
+        } else if issue_changed {
+            self.publish_validation(cx);
+        }
+        Ok(self.lifecycle_report(Vec::new()))
+    }
+
+    fn check_editor_target(
+        &self,
+        target: &crate::change::ChangeTargetInfo,
+    ) -> Result<PathKey, crate::LifecycleError> {
+        if target
+            .session
+            .is_some_and(|session| session != self.session())
+        {
+            return Err(crate::LifecycleError::InvalidTarget);
+        }
+        self.topology
+            .key(&target.address)
+            .ok_or(crate::LifecycleError::InvalidTarget)
     }
 
     pub(crate) fn ensure_can_remove(&self, address: &CanonicalAddress) -> Result<(), ResolveError> {
@@ -759,7 +859,10 @@ impl<M: FormSchema> Form<M> {
             let old = draft.control;
             draft.control = control;
             for issue in &mut self.validation.issues {
-                if issue.control == Some(old) {
+                if issue.control == Some(old)
+                    && issue.path() == key
+                    && issue.editor.as_ref() == Some(editor)
+                {
                     issue.control = Some(control);
                 }
             }
@@ -784,9 +887,14 @@ impl<M: FormSchema> Form<M> {
             .drafts
             .get(&(key.clone(), editor.clone()))
             .is_none_or(|old| !old.same_display(&record));
-        self.drafts.insert((key, editor), record);
-        let issue_changed =
-            self.set_control_issue(control, address.clone(), Weak::new(), Some((code, message)));
+        self.drafts.insert((key, editor.clone()), record);
+        let issue_changed = self.set_control_issue(
+            control,
+            &editor,
+            address.clone(),
+            Weak::new(),
+            Some((code, message)),
+        );
         if changed {
             self.invalidate_async_for_model_change(std::slice::from_ref(&address));
             self.refresh_validation(std::slice::from_ref(&address));
@@ -987,6 +1095,7 @@ impl<M: FormSchema> Form<M> {
             code: issue.code,
             message: issue.message,
             control: None,
+            editor: None,
             async_generation: Some(generation),
             control_active: None,
         });

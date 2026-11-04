@@ -596,7 +596,21 @@ fn dropping_integer_control_keeps_draft_and_remount_restores_text(cx: &mut TestA
             )
             .unwrap();
             assert_eq!(restored.read(cx).editor().read(cx).value().as_ref(), "--");
+            let status = restored.editor_status(cx).unwrap();
+            assert!(status.has_draft());
+            assert!(!status.issues().is_empty());
+            restored.discard_draft(cx).unwrap();
+            assert!(!restored.editor_status(cx).unwrap().has_draft());
             root.integer_control = Some(restored);
+        });
+        assert_eq!(AdapterInput::BUDGET.get(&form, cx), 1024);
+        assert!(form.update(cx, |form, cx| form.prepare(cx)).is_ok());
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        root.read_with(cx, |root, cx| {
+            let restored = root.integer_control.as_ref().unwrap();
+            assert_eq!(restored.read(cx).editor().read(cx).value().as_ref(), "1024");
         });
         form.update(cx, |form, cx| {
             form.reset(gpui_form::DraftPolicy::Discard, cx)
@@ -911,6 +925,17 @@ fn mapped_native_input_accepts_only_committed_ime_and_restores_offline_draft(
     });
     cx.update(|_, cx| {
         assert_eq!(restored.read(cx).value().as_ref(), "--");
+        assert!(restored.editor_status(cx).unwrap().has_draft());
+        assert_eq!(
+            restored.editor_status(cx).unwrap().issues()[0].code(),
+            "number"
+        );
+        restored.discard_draft(cx).unwrap();
+        assert!(!restored.editor_status(cx).unwrap().has_draft());
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        assert_eq!(restored.read(cx).value().as_ref(), "00023");
         form.update(cx, |f, cx| f.reset(gpui_form::DraftPolicy::Discard, cx))
             .unwrap();
     });

@@ -2,9 +2,7 @@ use std::ops::Deref;
 
 use gpui::{AppContext as _, Context, Entity, Subscription, Window};
 use gpui_component::input::{EditorState, InputEvent, InputState, TextareaState};
-use gpui_form::{
-    ControlBinding, ControlProjection, DynamicPath, Form, FormSchema, IntoTotalPath, ResolveError,
-};
+use gpui_form::{ControlProjection, DynamicPath, Form, FormSchema, IntoTotalPath, ResolveError};
 
 // All three controls share the same binding and event contract.
 macro_rules! text_control {
@@ -12,11 +10,25 @@ macro_rules! text_control {
         pub struct $name {
             #[allow(dead_code)]
             subscriptions: Vec<Subscription>,
-            _binding: ControlBinding,
+            editor: crate::editor::EditorAccess,
             state: Entity<$state>,
         }
 
         impl $name {
+            /// Explicitly discard this source editor's accepted draft and queued input.
+            pub fn discard_draft(
+                &self,
+                cx: &mut gpui::App,
+            ) -> Result<gpui_form::LifecycleReport, gpui_form::LifecycleError> {
+                self.editor.discard_draft(cx)
+            }
+            pub fn editor_status(
+                &self,
+                cx: &gpui::App,
+            ) -> Result<gpui_form::EditorStatus, gpui_form::LifecycleError> {
+                self.editor.editor_status(cx)
+            }
+
             pub fn new<Root, Owner, Path, Build>(
                 form: &Entity<Form<Root>>,
                 path: Path,
@@ -44,6 +56,7 @@ macro_rules! text_control {
                     window,
                     cx,
                 );
+                let editor = crate::editor::EditorAccess::new(binding, &writer);
                 let state_subscription = cx.subscribe_in(
                     &state,
                     window,
@@ -57,7 +70,7 @@ macro_rules! text_control {
                 );
                 Self {
                     subscriptions: vec![state_subscription],
-                    _binding: binding,
+                    editor,
                     state,
                 }
             }
@@ -87,6 +100,7 @@ macro_rules! text_control {
                     window,
                     cx,
                 )?;
+                let editor = crate::editor::EditorAccess::new(binding, &writer);
                 let state_subscription = cx.subscribe_in(
                     &state,
                     window,
@@ -100,7 +114,7 @@ macro_rules! text_control {
                 );
                 Ok(Self {
                     subscriptions: vec![state_subscription],
-                    _binding: binding,
+                    editor,
                     state,
                 })
             }
@@ -229,6 +243,19 @@ impl<C: Clone + 'static> FormMappedInput<C> {
             binding,
             state,
         })
+    }
+
+    pub fn discard_draft(
+        &self,
+        cx: &mut gpui::App,
+    ) -> Result<gpui_form::LifecycleReport, gpui_form::LifecycleError> {
+        self.binding.discard_draft(cx)
+    }
+    pub fn editor_status(
+        &self,
+        cx: &gpui::App,
+    ) -> Result<gpui_form::EditorStatus, gpui_form::LifecycleError> {
+        self.binding.editor_status(cx)
     }
 
     pub fn refresh(&self, context: C, cx: &mut gpui::App) {

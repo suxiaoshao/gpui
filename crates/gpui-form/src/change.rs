@@ -98,6 +98,7 @@ pub(crate) struct ChangeSet {
     pub(crate) value: ValueImpact,
     pub(crate) structure: StructuralImpact,
     pub(crate) retired: RetiredImpact,
+    controls: Option<Vec<u64>>,
 }
 
 impl ChangeSet {
@@ -107,6 +108,7 @@ impl ChangeSet {
         retired: Vec<CanonicalAddress>,
     ) -> Self {
         Self {
+            controls: None,
             value: ValueImpact::Scopes(vec![ValueScope::SubtreeReplaced(address.clone())]),
             structure: if structure_changed {
                 StructuralImpact::Roots(vec![address])
@@ -140,6 +142,7 @@ impl ChangeSet {
             RetiredImpact::Roots(compress_roots(retired))
         };
         Self {
+            controls: None,
             value,
             structure,
             retired,
@@ -148,6 +151,7 @@ impl ChangeSet {
 
     pub(crate) fn whole_model(retired: Vec<CanonicalAddress>) -> Self {
         Self {
+            controls: None,
             value: ValueImpact::All,
             structure: StructuralImpact::All,
             retired: if retired.is_empty() {
@@ -156,6 +160,11 @@ impl ChangeSet {
                 RetiredImpact::Roots(compress_roots(retired))
             },
         }
+    }
+
+    pub(crate) fn for_controls(mut self, controls: Vec<u64>) -> Self {
+        self.controls = Some(controls);
+        self
     }
 
     fn impact(&self, target: &ChangeTargetInfo) -> PathImpact {
@@ -269,6 +278,15 @@ impl<M: FormSchema> ModelChange<M> {
 
     pub(crate) const fn origin(&self) -> Option<ControlOrigin> {
         self.origin
+    }
+    pub(crate) fn targets_control(&self, control: u64) -> bool {
+        self.changes
+            .controls
+            .as_ref()
+            .is_none_or(|controls| controls.contains(&control))
+    }
+    pub(crate) fn is_editor_scoped(&self) -> bool {
+        self.changes.controls.is_some()
     }
 }
 

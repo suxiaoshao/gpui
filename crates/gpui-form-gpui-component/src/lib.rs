@@ -1,6 +1,7 @@
 //! Typed `gpui-component` controls for `gpui-form`.
 
 mod combobox;
+mod editor;
 mod error;
 mod input;
 pub mod integer_input;

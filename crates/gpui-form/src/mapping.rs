@@ -20,11 +20,21 @@ pub trait ControlMapping<S, D>: 'static {
 pub struct MappedControlBinding<C> {
     binding: ControlBinding,
     context: Rc<RefCell<C>>,
+    editor: EditorKey,
 }
 impl<C> MappedControlBinding<C> {
     pub fn refresh(&self, context: C, cx: &mut App) {
         *self.context.borrow_mut() = context;
         self.binding.refresh(cx);
+    }
+    pub fn discard_draft(
+        &self,
+        cx: &mut App,
+    ) -> Result<crate::LifecycleReport, crate::LifecycleError> {
+        self.binding.discard_editor_draft(&self.editor, cx)
+    }
+    pub fn editor_status(&self, cx: &App) -> Result<crate::EditorStatus, crate::LifecycleError> {
+        self.binding.editor_status(&self.editor, cx)
     }
 }
 pub struct MappedControlWriter<M: FormSchema, S: 'static, D, Map: ControlMapping<S, D>> {
@@ -54,6 +64,15 @@ impl<
     Map: ControlMapping<S, D>,
 > MappedControlWriter<M, S, D, Map>
 {
+    pub fn discard_draft(
+        &self,
+        cx: &mut App,
+    ) -> Result<crate::LifecycleReport, crate::LifecycleError> {
+        self.writer.discard_draft(cx)
+    }
+    pub fn editor_status(&self, cx: &App) -> Result<crate::EditorStatus, crate::LifecycleError> {
+        self.writer.editor_status(cx)
+    }
     pub fn defer_edit<Owner: 'static>(&self, display: D, window: &Window, cx: &mut Context<Owner>) {
         let Some(form) = self.writer.form.upgrade() else {
             return;
@@ -294,11 +313,12 @@ where
             cx,
         )
     };
-    let writer = writer.with_editor_key(editor, cx);
+    let writer = writer.with_editor_key(editor.clone(), cx);
     Ok((
         MappedControlBinding {
             binding,
             context: context.clone(),
+            editor,
         },
         MappedControlWriter {
             writer,

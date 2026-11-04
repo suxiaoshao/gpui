@@ -360,6 +360,14 @@ source-editor draft, and success preserves peers' drafts and queued input.
 Exhaustive `EditResult` matches must handle `Update`. See the
 [mapped update contract](docs/guide.md#admission-time-mapped-updates).
 
+## Per-editor drafts
+
+Use `form.editor_status(path, editor_key)` for accepted draft state and source
+issues, including after unmount or loss of an inherited key. Explicitly abandon
+one source with `form.discard_editor_draft(path, editor_key, cx)`: peer drafts and
+queued input survive. Mapped bindings, writers and adapters forward these operations.
+See [per-editor drafts](docs/guide.md#per-editor-drafts).
+
 ## Editing session migration (#248)
 
 Register explicit ValidationRule dependencies with with_rules (Result); the old Validator entry points are removed. The Form owns unresolved drafts and synchronous native edit tickets. Total set now returns Result; replace/reset/rebase require DraftPolicy and return a lifecycle report. Use rebase_preserving_edits for atomic refresh with local edits and conflict reporting. Native integer constructors require stable editor keys; FormMappedInput supports storage/display mappings. See the [guide](docs/guide.md#editing-session-and-breaking-api-changes-248) for signatures, baseline/dirty queries and migration details.

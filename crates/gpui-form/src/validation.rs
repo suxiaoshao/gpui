@@ -132,6 +132,7 @@ pub struct ValidationIssue {
     pub(crate) code: Cow<'static, str>,
     pub(crate) message: ValidationMessage,
     pub(crate) control: Option<u64>,
+    pub(crate) editor: Option<crate::EditorKey>,
     pub(crate) async_generation: Option<u64>,
     pub(crate) control_active: Option<Weak<AtomicBool>>,
 }
@@ -159,6 +160,7 @@ impl PartialEq for ValidationIssue {
             && self.code == other.code
             && self.message == other.message
             && self.control == other.control
+            && self.editor == other.editor
             && self.async_generation == other.async_generation
     }
 }
@@ -233,6 +235,23 @@ impl ValidationReport {
         let before = self.issues.len();
         self.issues
             .retain(|candidate| candidate.control != Some(control));
+        let adding = issue.is_some();
+        if let Some(issue) = issue {
+            self.issues.push(issue);
+        }
+        before != self.issues.len() || adding
+    }
+
+    pub(crate) fn replace_editor(
+        &mut self,
+        path: &PathKey,
+        editor: &crate::EditorKey,
+        issue: Option<ValidationIssue>,
+    ) -> bool {
+        let before = self.issues.len();
+        self.issues.retain(|candidate| {
+            candidate.path() != path || candidate.editor.as_ref() != Some(editor)
+        });
         let adding = issue.is_some();
         if let Some(issue) = issue {
             self.issues.push(issue);
@@ -492,6 +511,7 @@ impl<'a, M: FormSchema> ValidationSink<'a, M> {
             code,
             message,
             control: None,
+            editor: None,
             async_generation: None,
             control_active: None,
         });
@@ -514,6 +534,7 @@ impl<'a, M: FormSchema> ValidationSink<'a, M> {
             code: code.into(),
             message,
             control: None,
+            editor: None,
             async_generation: None,
             control_active: None,
         });
@@ -664,6 +685,7 @@ impl SchemaVisitor for RequiredVisitor<'_> {
                 code: Cow::Borrowed("required"),
                 message: ValidationMessage::key("gpui-form-error-required"),
                 control: None,
+                editor: None,
                 async_generation: None,
                 control_active: None,
             }]

@@ -720,3 +720,45 @@ candidate retires dynamic descendants, and unresolved dynamic drafts cause
 refusal. Use typed `discard_drafts` only for an explicit discard. There is no
 business-key path or identity reconciliation. Field merge hooks still apply
 only to external refresh, including their conservative draft-skipping rule.
+
+### Per-editor drafts
+
+Several editors can share a total map path and use different stable EditorKeys.
+Read their accepted unresolved state directly from Form, including after unmount:
+
+```rust,ignore
+let status = form.read(cx).editor_status(Settings::MODEL_OVERRIDES, "reserve")?;
+let invalid = status.has_draft();
+let source_issues = status.issues();
+
+form.update(cx, |form, cx| {
+    form.discard_editor_draft(Settings::MODEL_OVERRIDES, "reserve", cx)
+})?;
+```
+
+`EditorStatus` is an owned read-only snapshot. `has_draft()` means an accepted
+unresolved draft; queued native input is not included. Explicit discard still
+cancels queued input when `has_draft()` is false. `issues()` contains only
+that editor's current source issues. Keep using path errors for field-wide
+business validation. Queries neither parse native text nor advance revision,
+allocate path identity or require a mounted control. A retained draft remains
+discoverable even when its inherited business key disappears from mapping context.
+No private control ID is exposed.
+
+`discard_editor_draft(path, editor, cx)` targets exactly that path and EditorKey.
+It clears that editor's draft/issues and cancels its pending native tickets;
+cancelled Update callbacks never run. Other editors at the same path and editors
+under descendant paths keep their drafts and tickets. A peer's pending input still
+blocks prepare. The model, baseline and topology stay unchanged. A changed discard
+that removes a draft or cancels tickets advances one editing revision and invalidates older save credentials; DraftChanged
+shares that revision when a draft was removed. Issue-only changes stay validation-only;
+an empty discard is a no-op.
+Retired or foreign-session targets return `LifecycleError::InvalidTarget`.
+Use `discard_drafts(path, cx)` when explicitly discarding a whole subtree.
+
+`MappedControlBinding`, `MappedControlWriter`, `ControlWriter`, `FormMappedInput`
+and the text, integer, select and combobox adapters expose `discard_draft(cx)` /
+`editor_status(cx)` for their source editor. A raw `ControlBinding` instead takes
+the key explicitly: `discard_editor_draft(editor, cx)` / `editor_status(editor, cx)`.
+Known EditorKeys can also be passed by reference; generated control identities stay private.
+These APIs are additive; existing constructors retain their signatures.

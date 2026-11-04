@@ -84,7 +84,6 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> BindingPath<Root, T> {
         &self,
         form: &mut Form<Root>,
         value: T,
-        control_id: u64,
         editor: &crate::EditorKey,
         origin: ControlOrigin,
         cx: &mut Context<Form<Root>>,
@@ -108,14 +107,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> BindingPath<Root, T> {
                 true
             }
         };
-        form.complete_control_write(
-            control_id,
-            editor,
-            core.address.clone(),
-            changed,
-            origin,
-            cx,
-        );
+        form.complete_control_write(editor, core.address.clone(), changed, origin, cx);
         Ok(())
     }
 
@@ -145,6 +137,19 @@ struct BindingShared {
 
 type Projector<T, Owner> =
     dyn Fn(&mut Owner, ControlProjection<T>, &mut Window, &mut Context<Owner>) + 'static;
+trait BindingAccess {
+    fn refresh(&self, cx: &mut App);
+    fn discard_editor_draft(
+        &self,
+        editor: &crate::EditorKey,
+        cx: &mut App,
+    ) -> Result<crate::LifecycleReport, crate::LifecycleError>;
+    fn editor_status(
+        &self,
+        editor: &crate::EditorKey,
+        cx: &App,
+    ) -> Result<crate::EditorStatus, crate::LifecycleError>;
+}
 
 struct DrainRequest<Root: FormSchema, T: 'static, Owner: 'static> {
     form: WeakEntity<Form<Root>>,
@@ -154,6 +159,62 @@ struct DrainRequest<Root: FormSchema, T: 'static, Owner: 'static> {
     projector: Rc<Projector<T, Owner>>,
     owner: WeakEntity<Owner>,
     window: AnyWindowHandle,
+}
+
+impl<Root, T, Owner> BindingAccess for DrainRequest<Root, T, Owner>
+where
+    Root: FormSchema,
+    T: Clone + PartialEq + 'static,
+    Owner: 'static,
+{
+    fn refresh(&self, cx: &mut App) {
+        if let Some(form) = self.form.upgrade() {
+            let effect = (&mut *self.state.borrow_mut()).transition(Message::RefreshValue {
+                revision: form.read(cx).revision(),
+                editor_sequence: self.shared.editor_sequence.load(Ordering::Acquire),
+            });
+            if matches!(effect, Effect::ScheduleDrain) {
+                schedule_drain(
+                    DrainRequest {
+                        form: self.form.clone(),
+                        path: self.path.clone(),
+                        shared: self.shared.clone(),
+                        state: self.state.clone(),
+                        projector: self.projector.clone(),
+                        owner: self.owner.clone(),
+                        window: self.window,
+                    },
+                    cx,
+                );
+            }
+        }
+    }
+
+    fn discard_editor_draft(
+        &self,
+        editor: &crate::EditorKey,
+        cx: &mut App,
+    ) -> Result<crate::LifecycleReport, crate::LifecycleError> {
+        let form = self
+            .form
+            .upgrade()
+            .ok_or(crate::LifecycleError::InvalidTarget)?;
+        form.update(cx, |form, cx| {
+            form.discard_editor_at(self.path.target(), editor, cx)
+        })
+    }
+
+    fn editor_status(
+        &self,
+        editor: &crate::EditorKey,
+        cx: &App,
+    ) -> Result<crate::EditorStatus, crate::LifecycleError> {
+        let form = self
+            .form
+            .upgrade()
+            .ok_or(crate::LifecycleError::InvalidTarget)?;
+        form.read(cx).editor_status_at(self.path.target(), editor)
+    }
 }
 
 impl BindingShared {
@@ -190,12 +251,29 @@ pub struct ControlBinding {
     state: Rc<RefCell<BindingState>>,
     shared: Arc<BindingShared>,
     edit_clock: crate::draft::EditClock,
-    refresh: Box<dyn Fn(&mut App)>,
+    access: Box<dyn BindingAccess>,
 }
 
 impl ControlBinding {
     pub fn refresh(&self, cx: &mut App) {
-        (self.refresh)(cx);
+        self.access.refresh(cx);
+    }
+
+    /// Discard one stable editor at this binding's exact path.
+    pub fn discard_editor_draft(
+        &self,
+        editor: impl Into<crate::EditorKey>,
+        cx: &mut App,
+    ) -> Result<crate::LifecycleReport, crate::LifecycleError> {
+        self.access.discard_editor_draft(&editor.into(), cx)
+    }
+
+    pub fn editor_status(
+        &self,
+        editor: impl Into<crate::EditorKey>,
+        cx: &App,
+    ) -> Result<crate::EditorStatus, crate::LifecycleError> {
+        self.access.editor_status(&editor.into(), cx)
     }
 }
 
@@ -238,6 +316,28 @@ impl<Root: FormSchema, T: 'static> Clone for ControlWriter<Root, T> {
 }
 
 impl<Root: FormSchema, T: Clone + PartialEq + 'static> ControlWriter<Root, T> {
+    pub fn discard_draft(
+        &self,
+        cx: &mut App,
+    ) -> Result<crate::LifecycleReport, crate::LifecycleError> {
+        let form = self
+            .form
+            .upgrade()
+            .ok_or(crate::LifecycleError::InvalidTarget)?;
+        form.update(cx, |form, cx| {
+            form.discard_editor_at(self.path.target(), &self.editor, cx)
+        })
+    }
+
+    pub fn editor_status(&self, cx: &App) -> Result<crate::EditorStatus, crate::LifecycleError> {
+        let form = self
+            .form
+            .upgrade()
+            .ok_or(crate::LifecycleError::InvalidTarget)?;
+        form.read(cx)
+            .editor_status_at(self.path.target(), &self.editor)
+    }
+
     fn begin_native_edit<Owner>(&self, cx: &mut Context<Owner>) -> Option<crate::draft::EditTicket>
     where
         Owner: 'static,
@@ -251,10 +351,11 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> ControlWriter<Root, T> {
         if let Some(state) = self.state.upgrade() {
             let _ = (&mut *state.borrow_mut()).transition(Message::SuppressThrough(revision));
         }
-        Some(
-            self.edit_clock
-                .reserve(self.shared.control_id, self.path.target().address),
-        )
+        Some(self.edit_clock.reserve(
+            self.shared.control_id,
+            self.path.target().address,
+            self.editor.clone(),
+        ))
     }
 
     pub fn defer_set<Owner>(&self, value: T, window: &Window, cx: &mut Context<Owner>)
@@ -311,14 +412,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> ControlWriter<Root, T> {
                     return;
                 };
                 let problem = match update.apply(latest) {
-                    Ok(value) => match writer.path.set(
-                        form,
-                        value,
-                        writer.shared.control_id,
-                        &writer.editor,
-                        origin,
-                        cx,
-                    ) {
+                    Ok(value) => match writer.path.set(form, value, &writer.editor, origin, cx) {
                         Ok(()) => return,
                         Err(error @ ResolveError::WouldRetireDrafts { .. }) => {
                             crate::EditProblem::new(
@@ -523,7 +617,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> ControlWriter<Root, T> {
                 return;
             };
             form.update(cx, |form, cx| {
-                form.clear_control_issue(writer.shared.control_id, cx);
+                form.clear_editor_issue(&writer.path.target().address, &writer.editor, cx);
             });
         });
     }
@@ -607,6 +701,9 @@ where
             FormEvent::ModelChanged(change) | FormEvent::SessionChanged(change) => change,
             _ => return,
         };
+        if !change.targets_control(subscription_shared.control_id) {
+            return;
+        }
         if subscription_state.borrow().lifecycle() != Lifecycle::Active {
             return;
         }
@@ -619,7 +716,9 @@ where
             subscription_shared.advance_generation();
             (&mut *subscription_state.borrow_mut()).transition(Message::Retire)
         } else if change.kind() != crate::ModelChangeKind::Edit && impact.is_affected() {
-            subscription_shared.advance_generation();
+            if !change.is_editor_scoped() {
+                subscription_shared.advance_generation();
+            }
             (&mut *subscription_state.borrow_mut()).transition(Message::QueueValue {
                 revision: change.revision(),
                 editor_sequence: subscription_shared.editor_sequence.load(Ordering::Acquire),
@@ -661,36 +760,15 @@ where
         }
     });
 
-    let refresh_form = weak_form.clone();
-    let refresh_path = path.clone();
-    let refresh_shared = shared.clone();
-    let refresh_state = state.clone();
-    let refresh_projector = projector.clone();
-    let refresh_owner = owner.downgrade();
-    let refresh_window = window.window_handle();
-    let refresh = Box::new(move |cx: &mut App| {
-        if let Some(form) = refresh_form.upgrade() {
-            let effect = (&mut *refresh_state.borrow_mut()).transition(Message::RefreshValue {
-                revision: form.read(cx).revision(),
-                editor_sequence: refresh_shared.editor_sequence.load(Ordering::Acquire),
-            });
-            if matches!(effect, Effect::ScheduleDrain) {
-                schedule_drain(
-                    DrainRequest {
-                        form: refresh_form.clone(),
-                        path: refresh_path.clone(),
-                        shared: refresh_shared.clone(),
-                        state: refresh_state.clone(),
-                        projector: refresh_projector.clone(),
-                        owner: refresh_owner.clone(),
-                        window: refresh_window,
-                    },
-                    cx,
-                );
-            }
-        }
+    let access = Box::new(DrainRequest {
+        form: weak_form.clone(),
+        path: path.clone(),
+        shared: shared.clone(),
+        state: state.clone(),
+        projector,
+        owner: owner.downgrade(),
+        window: window.window_handle(),
     });
-
     let writer = ControlWriter {
         form: weak_form,
         path,
@@ -702,7 +780,7 @@ where
     (
         ControlBinding {
             _subscription: subscription,
-            refresh,
+            access,
             edit_clock,
             state,
             shared,

@@ -644,3 +644,38 @@ context refresh 只投影无草稿且无待接纳输入的编辑器，不改变�
 复合字段仍按原有整值规则安装：候选改变会退休动态后代，有未解析动态草稿则拒绝。
 只有明确弃稿才调用 typed `discard_drafts`，不引入业务键路径或身份对应。
 字段合并 hook 仍只处理外部刷新，并沿用带草稿字段整字段跳过 hook 的保守边界。
+
+### 按编辑器查询和弃稿
+
+同一 total map 路径上的多个编辑器使用不同的稳定 EditorKey。可以直接从 Form 读取各自
+已接纳的未解析状态，控件卸载后也不依赖原生文本：
+
+```rust,ignore
+let status = form.read(cx).editor_status(Settings::MODEL_OVERRIDES, "reserve")?;
+let invalid = status.has_draft();
+let source_issues = status.issues();
+
+form.update(cx, |form, cx| {
+    form.discard_editor_draft(Settings::MODEL_OVERRIDES, "reserve", cx)
+})?;
+```
+
+`EditorStatus` 是拥有数据的只读快照。`has_draft()` 仅表示已接纳未解析草稿，不包含待接纳输入；
+即使它为 false，明确放弃时仍应调用弃稿命令来取消排队输入。
+`issues()` 只包含该编辑器当前的来源问题，字段级业务校验仍读取路径 errors。
+查询不解析原生文本、不推进 revision、不分配路径身份，也不要求控件挂载。
+即使继承业务 key 从 mapping context 消失，Form 保留的草稿仍能按原键查询；不暴露内部 control ID。
+
+`discard_editor_draft(path, editor, cx)` 精确定位该路径和 EditorKey，清除它的草稿/问题，
+并取消它的待接纳原生票据；取消的 Update 不执行。同路径其他编辑器、后代路径的草稿和票据
+都保留，其他编辑器 pending 时 prepare 仍被阻止。存储值、基线和拓扑保持不变。
+移除草稿或取消票据时推进一次编辑 revision 并使旧保存凭据失效，DraftChanged 共享该 revision；
+仅问题变化沿用校验通知，不改编辑版本。完全无变化时不发布、不推进版本。
+退休或跨会话目标返回 `LifecycleError::InvalidTarget`。
+需要明确丢弃整棵子树时继续用 `discard_drafts(path, cx)`。
+
+`MappedControlBinding`、`MappedControlWriter`、`ControlWriter`、`FormMappedInput` 及文本、
+整数、选择、组合框适配器都提供来源推断的 `discard_draft(cx)` / `editor_status(cx)`。
+原始 `ControlBinding` 显式传键：`discard_editor_draft(editor, cx)` / `editor_status(editor, cx)`。
+这些入口也接受已有 EditorKey 的引用，生成的控件身份保持私有。
+均为 additive API，既有构造函数签名不变。
