@@ -136,6 +136,11 @@ custom stateful-adapter recipe.
 Form draft; peers' drafts and pending input stay protected. See the
 [mapping guide](docs/guide.md#draft-and-mapping-bindings-248).
 
+`FormMappedInput` and the other stateful adapters expose `editor_status(cx)` and
+`discard_draft(cx)` for their source editor. The query reports only accepted
+source drafts/issues; explicit discard also cancels that source's pending input.
+Other editors at the same path keep their state. See the [guide](docs/guide.md).
+
 ## Editing session migration (#248)
 
 Register explicit ValidationRule dependencies with with_rules (Result); the old Validator entry points are removed. The Form owns unresolved drafts and synchronous native edit tickets. Total set now returns Result; replace/reset/rebase require DraftPolicy and return a lifecycle report. Use rebase_preserving_edits for atomic refresh with local edits and conflict reporting. Native integer constructors require stable editor keys; FormMappedInput supports storage/display mappings. See the [guide](docs/guide.md#editing-session-and-breaking-api-changes-248) for signatures, baseline/dirty queries and migration details.

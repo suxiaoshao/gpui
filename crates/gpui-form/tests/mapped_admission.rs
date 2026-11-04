@@ -88,6 +88,336 @@ impl ControlMapping<Tokens, String> for TokenMapping {
     }
 }
 type TokenWriter = MappedControlWriter<TokenModel, Tokens, String, TokenMapping>;
+#[gpui::test]
+fn editor_discard_cancels_only_its_tickets_and_preserves_peer_input(cx: &mut TestAppContext) {
+    let window = open(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).unwrap();
+    let calls = Rc::new(Cell::new(0));
+    let (form, a, aw, b, bw, saved) = cx.update(|window, cx| {
+        let form = cx.new(|_| {
+            Form::new(TokenModel {
+                tokens: Tokens::new(),
+            })
+        });
+        let (a, aw) = bind_token(
+            &form,
+            TokenMapping {
+                key: "reserve",
+                whole: false,
+                calls: calls.clone(),
+            },
+            &root,
+            window,
+            cx,
+        );
+        let (b, bw) = bind_token(
+            &form,
+            TokenMapping {
+                key: "keep",
+                whole: false,
+                calls: calls.clone(),
+            },
+            &root,
+            window,
+            cx,
+        );
+        let saved = form.update(cx, |form, cx| form.prepare(cx)).unwrap();
+        let revision = form.read(cx).revision();
+        root.update(cx, |_, cx| aw.defer_edit("20".into(), window, cx));
+        assert!(
+            !aw.editor_status(cx).unwrap().has_draft(),
+            "pending input is not an accepted draft"
+        );
+        a.discard_draft(cx).unwrap();
+        assert_eq!(form.read(cx).revision().get(), revision.get() + 1);
+        root.update(cx, |_, cx| bw.defer_edit("10".into(), window, cx));
+        assert!(matches!(
+            form.update(cx, |form, cx| form.prepare(cx)),
+            Err(PrepareError::EditsPending)
+        ));
+        (form, a, aw, b, bw, saved)
+    });
+    cx.run_until_parked();
+    let events = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|window, cx| {
+        assert_eq!(calls.get(), 1, "only the peer's equal update was admitted");
+        assert!(TokenModel::TOKENS.get(&form, cx).is_empty());
+        assert!(!form.update(cx, |form, cx| form.rebase_if_current(
+            saved.version(),
+            saved.value().clone(),
+            cx
+        )));
+        let prepared = form.update(cx, |form, cx| form.prepare(cx)).unwrap();
+        let revision = form.read(cx).revision();
+        a.discard_draft(cx).unwrap();
+        assert_eq!(
+            form.read(cx).revision(),
+            revision,
+            "empty discard is a no-op"
+        );
+        assert!(form.read(cx).is_current(prepared.version()));
+        let observed = events.clone();
+        cx.subscribe(&form, move |_, event: &FormEvent<TokenModel>, _| {
+            if let FormEvent::DraftChanged(change) = event {
+                observed.borrow_mut().push(change.revision());
+            }
+        })
+        .detach();
+        root.update(cx, |_, cx| {
+            aw.defer_edit("bad-a".into(), window, cx);
+            bw.defer_edit("bad-b".into(), window, cx);
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert!(a.editor_status(cx).unwrap().has_draft());
+        let peer = b.editor_status(cx).unwrap();
+        assert!(peer.has_draft());
+        events.borrow_mut().clear();
+        root.update(cx, |_, cx| {
+            bw.defer_edit("30".into(), window, cx);
+            aw.defer_edit("20".into(), window, cx);
+        });
+        let revision = form.read(cx).revision();
+        aw.discard_draft(cx).unwrap();
+        assert_eq!(form.read(cx).revision().get(), revision.get() + 1);
+        assert_eq!(
+            b.editor_status(cx).unwrap(),
+            peer,
+            "peer draft and issue survive the command"
+        );
+        assert!(!a.editor_status(cx).unwrap().has_draft());
+        assert!(a.editor_status(cx).unwrap().issues().is_empty());
+        // Both the peer's later input and new source input must survive the queued discard notice.
+        root.update(cx, |_, cx| {
+            bw.defer_edit("50".into(), window, cx);
+            aw.defer_edit("40".into(), window, cx);
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        assert_eq!(calls.get(), 4, "cancelled source updates never execute");
+        assert_eq!(
+            TokenModel::TOKENS.get(&form, cx),
+            Tokens::from([("reserve".into(), 40), ("keep".into(), 50)])
+        );
+        assert_eq!(
+            events.borrow().len(),
+            2,
+            "one source discard and the peer's later successful clear"
+        );
+        assert!(!a.editor_status(cx).unwrap().has_draft());
+        assert!(!b.editor_status(cx).unwrap().has_draft());
+        assert!(form.update(cx, |form, cx| form.prepare(cx)).is_ok());
+    });
+}
+
+struct CatalogMapping {
+    problem: &'static str,
+    parses: Rc<Cell<usize>>,
+}
+impl ControlMapping<Tokens, String> for CatalogMapping {
+    type Context = Option<u64>;
+    fn format(&self, _: &Tokens, context: &Option<u64>) -> String {
+        context.map_or_else(|| "missing".into(), |value| value.to_string())
+    }
+    fn parse(
+        &self,
+        display: String,
+        _: &Tokens,
+        _: Option<&Tokens>,
+        _: &Option<u64>,
+    ) -> EditResult<Tokens, String> {
+        self.parses.set(self.parses.get() + 1);
+        EditResult::draft(display, self.problem, self.problem)
+    }
+}
+
+#[gpui::test]
+fn editor_status_is_read_only_and_retains_the_right_issue_after_context_loss_and_unmount(
+    cx: &mut TestAppContext,
+) {
+    let window = open(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).unwrap();
+    let parses = Rc::new(Cell::new(0));
+    let (form, a, aw, b, bw) = cx.update(|window, cx| {
+        let form = cx.new(|_| {
+            Form::new(TokenModel {
+                tokens: Tokens::new(),
+            })
+        });
+        let (a, aw) = bind_mapped_control_in(
+            &form,
+            TokenModel::TOKENS,
+            "reserve",
+            CatalogMapping {
+                problem: "reserve-invalid",
+                parses: parses.clone(),
+            },
+            Some(10),
+            &root,
+            |_, _, _, _| {},
+            window,
+            cx,
+        )
+        .unwrap();
+        let (b, bw) = bind_mapped_control_in(
+            &form,
+            TokenModel::TOKENS,
+            "keep",
+            CatalogMapping {
+                problem: "keep-invalid",
+                parses: parses.clone(),
+            },
+            Some(30),
+            &root,
+            |_, _, _, _| {},
+            window,
+            cx,
+        )
+        .unwrap();
+        root.update(cx, |_, cx| {
+            aw.defer_edit("bad-a".into(), window, cx);
+            bw.defer_edit("bad-b".into(), window, cx);
+        });
+        (form, a, aw, b, bw)
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| a.refresh(None, cx));
+    cx.run_until_parked();
+    let revision = cx.update(|_, cx| {
+        let revision = form.read(cx).revision();
+        let status = a.editor_status(cx).unwrap();
+        assert!(status.has_draft());
+        assert_eq!(status.issues().len(), 1);
+        assert_eq!(status.issues()[0].code(), "reserve-invalid");
+        assert_eq!(
+            b.editor_status(cx).unwrap().issues()[0].code(),
+            "keep-invalid"
+        );
+        let absent = form
+            .read(cx)
+            .editor_status(TokenModel::TOKENS, "absent")
+            .unwrap();
+        assert!(!absent.has_draft());
+        assert!(absent.issues().is_empty());
+        assert_eq!(form.read(cx).revision(), revision);
+        assert_eq!(
+            parses.get(),
+            2,
+            "losing the inherited key never reparses retained input"
+        );
+        revision
+    });
+    drop((a, aw, b, bw));
+    cx.update(|_, cx| {
+        let status = form
+            .read(cx)
+            .editor_status(TokenModel::TOKENS, "reserve")
+            .unwrap();
+        assert!(status.has_draft());
+        assert_eq!(status.issues()[0].code(), "reserve-invalid");
+        assert_eq!(form.read(cx).revision(), revision);
+        form.update(cx, |form, cx| {
+            form.discard_editor_draft(TokenModel::TOKENS, "reserve", cx)
+        })
+        .unwrap();
+        assert!(
+            !form
+                .read(cx)
+                .editor_status(TokenModel::TOKENS, "reserve")
+                .unwrap()
+                .has_draft()
+        );
+        let peer = form
+            .read(cx)
+            .editor_status(TokenModel::TOKENS, "keep")
+            .unwrap();
+        assert!(peer.has_draft());
+        assert_eq!(peer.issues()[0].code(), "keep-invalid");
+        assert_eq!(form.read(cx).revision().get(), revision.get() + 1);
+    });
+}
+
+#[gpui::test]
+fn stable_editor_keys_own_their_issues_even_with_cloned_writers(cx: &mut TestAppContext) {
+    let window = open(cx);
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    let root = window.root(&mut cx).unwrap();
+    let (form, _binding, a, _b) = cx.update(|window, cx| {
+        let form = cx.new(|_| {
+            Form::new(TokenModel {
+                tokens: Tokens::new(),
+            })
+        });
+        let (binding, writer) =
+            TokenModel::TOKENS.bind_control_in(&form, &root, |_, _, _, _| {}, window, cx);
+        let a = writer.clone().with_editor_key("reserve", cx);
+        let b = writer.with_editor_key("keep", cx);
+        root.update(cx, |_, cx| {
+            a.defer_draft(
+                "bad-a".to_owned(),
+                "a",
+                "invalid reserve".into(),
+                window,
+                cx,
+            );
+            b.defer_draft("bad-b".to_owned(), "b", "invalid keep".into(), window, cx);
+        });
+        (form, binding, a, b)
+    });
+    cx.run_until_parked();
+    let revision = cx.update(|window, cx| {
+        let revision = form.read(cx).revision();
+        assert_eq!(a.editor_status(cx).unwrap().issues()[0].code(), "a");
+        root.update(cx, |_, cx| a.defer_clear_issue(window, cx));
+        revision
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        assert_eq!(
+            form.read(cx).revision(),
+            revision,
+            "issue-only changes do not advance editing revision"
+        );
+        assert!(a.editor_status(cx).unwrap().has_draft());
+        assert!(a.editor_status(cx).unwrap().issues().is_empty());
+        let peer = form
+            .read(cx)
+            .editor_status(TokenModel::TOKENS, "keep")
+            .unwrap();
+        a.discard_draft(cx).unwrap();
+        assert_eq!(
+            form.read(cx)
+                .editor_status(TokenModel::TOKENS, "keep")
+                .unwrap(),
+            peer
+        );
+        root.update(cx, |_, cx| {
+            a.defer_draft(
+                "bad-a".to_owned(),
+                "a",
+                "invalid reserve".into(),
+                window,
+                cx,
+            );
+            a.defer_set(Tokens::new(), window, cx);
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        assert!(!a.editor_status(cx).unwrap().has_draft());
+        let peer = form
+            .read(cx)
+            .editor_status(TokenModel::TOKENS, "keep")
+            .unwrap();
+        assert!(peer.has_draft());
+        assert_eq!(peer.issues()[0].code(), "b");
+    });
+}
+
 fn bind_token(
     form: &Entity<Form<TokenModel>>,
     mapping: TokenMapping,

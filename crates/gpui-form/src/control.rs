@@ -84,7 +84,6 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> BindingPath<Root, T> {
         &self,
         form: &mut Form<Root>,
         value: T,
-        control_id: u64,
         editor: &crate::EditorKey,
         origin: ControlOrigin,
         cx: &mut Context<Form<Root>>,
@@ -108,14 +107,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> BindingPath<Root, T> {
                 true
             }
         };
-        form.complete_control_write(
-            control_id,
-            editor,
-            core.address.clone(),
-            changed,
-            origin,
-            cx,
-        );
+        form.complete_control_write(editor, core.address.clone(), changed, origin, cx);
         Ok(())
     }
 
@@ -145,6 +137,10 @@ struct BindingShared {
 
 type Projector<T, Owner> =
     dyn Fn(&mut Owner, ControlProjection<T>, &mut Window, &mut Context<Owner>) + 'static;
+type EditorDiscard =
+    dyn Fn(&crate::EditorKey, &mut App) -> Result<crate::LifecycleReport, crate::LifecycleError>;
+type EditorQuery =
+    dyn Fn(&crate::EditorKey, &App) -> Result<crate::EditorStatus, crate::LifecycleError>;
 
 struct DrainRequest<Root: FormSchema, T: 'static, Owner: 'static> {
     form: WeakEntity<Form<Root>>,
@@ -191,11 +187,30 @@ pub struct ControlBinding {
     shared: Arc<BindingShared>,
     edit_clock: crate::draft::EditClock,
     refresh: Box<dyn Fn(&mut App)>,
+    discard_editor: Box<EditorDiscard>,
+    editor_status: Box<EditorQuery>,
 }
 
 impl ControlBinding {
     pub fn refresh(&self, cx: &mut App) {
         (self.refresh)(cx);
+    }
+
+    /// Discard one stable editor at this binding's exact path.
+    pub fn discard_editor_draft(
+        &self,
+        editor: impl Into<crate::EditorKey>,
+        cx: &mut App,
+    ) -> Result<crate::LifecycleReport, crate::LifecycleError> {
+        (self.discard_editor)(&editor.into(), cx)
+    }
+
+    pub fn editor_status(
+        &self,
+        editor: impl Into<crate::EditorKey>,
+        cx: &App,
+    ) -> Result<crate::EditorStatus, crate::LifecycleError> {
+        (self.editor_status)(&editor.into(), cx)
     }
 }
 
@@ -238,6 +253,28 @@ impl<Root: FormSchema, T: 'static> Clone for ControlWriter<Root, T> {
 }
 
 impl<Root: FormSchema, T: Clone + PartialEq + 'static> ControlWriter<Root, T> {
+    pub fn discard_draft(
+        &self,
+        cx: &mut App,
+    ) -> Result<crate::LifecycleReport, crate::LifecycleError> {
+        let form = self
+            .form
+            .upgrade()
+            .ok_or(crate::LifecycleError::InvalidTarget)?;
+        form.update(cx, |form, cx| {
+            form.discard_editor_at(self.path.target(), &self.editor, cx)
+        })
+    }
+
+    pub fn editor_status(&self, cx: &App) -> Result<crate::EditorStatus, crate::LifecycleError> {
+        let form = self
+            .form
+            .upgrade()
+            .ok_or(crate::LifecycleError::InvalidTarget)?;
+        form.read(cx)
+            .editor_status_at(self.path.target(), &self.editor)
+    }
+
     fn begin_native_edit<Owner>(&self, cx: &mut Context<Owner>) -> Option<crate::draft::EditTicket>
     where
         Owner: 'static,
@@ -251,10 +288,11 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> ControlWriter<Root, T> {
         if let Some(state) = self.state.upgrade() {
             let _ = (&mut *state.borrow_mut()).transition(Message::SuppressThrough(revision));
         }
-        Some(
-            self.edit_clock
-                .reserve(self.shared.control_id, self.path.target().address),
-        )
+        Some(self.edit_clock.reserve(
+            self.shared.control_id,
+            self.path.target().address,
+            self.editor.clone(),
+        ))
     }
 
     pub fn defer_set<Owner>(&self, value: T, window: &Window, cx: &mut Context<Owner>)
@@ -311,14 +349,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> ControlWriter<Root, T> {
                     return;
                 };
                 let problem = match update.apply(latest) {
-                    Ok(value) => match writer.path.set(
-                        form,
-                        value,
-                        writer.shared.control_id,
-                        &writer.editor,
-                        origin,
-                        cx,
-                    ) {
+                    Ok(value) => match writer.path.set(form, value, &writer.editor, origin, cx) {
                         Ok(()) => return,
                         Err(error @ ResolveError::WouldRetireDrafts { .. }) => {
                             crate::EditProblem::new(
@@ -523,7 +554,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> ControlWriter<Root, T> {
                 return;
             };
             form.update(cx, |form, cx| {
-                form.clear_control_issue(writer.shared.control_id, cx);
+                form.clear_editor_issue(&writer.path.target().address, &writer.editor, cx);
             });
         });
     }
@@ -607,6 +638,9 @@ where
             FormEvent::ModelChanged(change) | FormEvent::SessionChanged(change) => change,
             _ => return,
         };
+        if !change.targets_control(subscription_shared.control_id) {
+            return;
+        }
         if subscription_state.borrow().lifecycle() != Lifecycle::Active {
             return;
         }
@@ -619,7 +653,9 @@ where
             subscription_shared.advance_generation();
             (&mut *subscription_state.borrow_mut()).transition(Message::Retire)
         } else if change.kind() != crate::ModelChangeKind::Edit && impact.is_affected() {
-            subscription_shared.advance_generation();
+            if !change.is_editor_scoped() {
+                subscription_shared.advance_generation();
+            }
             (&mut *subscription_state.borrow_mut()).transition(Message::QueueValue {
                 revision: change.revision(),
                 editor_sequence: subscription_shared.editor_sequence.load(Ordering::Acquire),
@@ -691,6 +727,10 @@ where
         }
     });
 
+    let discard_form = weak_form.clone();
+    let discard_target = path.target();
+    let status_form = weak_form.clone();
+    let status_target = discard_target.clone();
     let writer = ControlWriter {
         form: weak_form,
         path,
@@ -706,6 +746,21 @@ where
             edit_clock,
             state,
             shared,
+            discard_editor: Box::new(move |editor, cx| {
+                let form = discard_form
+                    .upgrade()
+                    .ok_or(crate::LifecycleError::InvalidTarget)?;
+                form.update(cx, |form, cx| {
+                    form.discard_editor_at(discard_target.clone(), editor, cx)
+                })
+            }),
+            editor_status: Box::new(move |editor, cx| {
+                let form = status_form
+                    .upgrade()
+                    .ok_or(crate::LifecycleError::InvalidTarget)?;
+                form.read(cx)
+                    .editor_status_at(status_target.clone(), editor)
+            }),
         },
         writer,
     )

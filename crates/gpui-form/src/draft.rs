@@ -6,7 +6,7 @@ use std::{
     rc::Rc,
 };
 
-use crate::{PathKey, ValidationMessage, topology::CanonicalAddress};
+use crate::{PathKey, ValidationIssue, ValidationMessage, topology::CanonicalAddress};
 
 /// Application-stable identity of one editor at a path. Distinct editors need distinct keys.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -22,6 +22,27 @@ impl EditorKey {
 impl From<&'static str> for EditorKey {
     fn from(key: &'static str) -> Self {
         Self::new(key)
+    }
+}
+impl From<&EditorKey> for EditorKey {
+    fn from(key: &EditorKey) -> Self {
+        key.clone()
+    }
+}
+
+/// Accepted unresolved state for one (path, EditorKey), independent of mounted controls.
+/// Pending native input is not an accepted draft. Issues belong only to this editor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditorStatus {
+    pub(crate) has_draft: bool,
+    pub(crate) issues: Vec<ValidationIssue>,
+}
+impl EditorStatus {
+    pub fn has_draft(&self) -> bool {
+        self.has_draft
+    }
+    pub fn issues(&self) -> &[ValidationIssue] {
+        &self.issues
     }
 }
 
@@ -136,7 +157,12 @@ pub(crate) struct EditClock(Rc<RefCell<ClockState>>);
 #[derive(Default)]
 struct ClockState {
     epoch: u64,
-    pending: HashMap<u64, (u64, CanonicalAddress)>,
+    pending: HashMap<u64, PendingEdit>,
+}
+struct PendingEdit {
+    control: u64,
+    address: CanonicalAddress,
+    editor: EditorKey,
 }
 pub(crate) struct EditTicket {
     clock: EditClock,
@@ -150,13 +176,29 @@ impl EditClock {
         !self.0.borrow().pending.is_empty()
     }
     pub(crate) fn is_control_pending(&self, control: u64) -> bool {
-        self.0.borrow().pending.values().any(|(c, _)| *c == control)
+        self.0
+            .borrow()
+            .pending
+            .values()
+            .any(|edit| edit.control == control)
     }
-    pub(crate) fn reserve(&self, control: u64, address: CanonicalAddress) -> EditTicket {
+    pub(crate) fn reserve(
+        &self,
+        control: u64,
+        address: CanonicalAddress,
+        editor: EditorKey,
+    ) -> EditTicket {
         let mut state = self.0.borrow_mut();
         state.epoch = state.epoch.checked_add(1).expect("edit epoch exhausted");
         let id = state.epoch;
-        state.pending.insert(id, (control, address));
+        state.pending.insert(
+            id,
+            PendingEdit {
+                control,
+                address,
+                editor,
+            },
+        );
         EditTicket {
             clock: self.clone(),
             id,
@@ -166,7 +208,7 @@ impl EditClock {
         self.0
             .borrow_mut()
             .pending
-            .retain(|_, (c, _)| *c != control);
+            .retain(|_, edit| edit.control != control);
     }
     pub(crate) fn cancel_all(&self) {
         self.0.borrow_mut().pending.clear();
@@ -174,8 +216,26 @@ impl EditClock {
     pub(crate) fn cancel_at(&self, address: &CanonicalAddress) -> bool {
         let mut state = self.0.borrow_mut();
         let before = state.pending.len();
-        state.pending.retain(|_, (_, a)| !address.is_prefix_of(a));
+        state
+            .pending
+            .retain(|_, edit| !address.is_prefix_of(&edit.address));
         state.pending.len() != before
+    }
+    pub(crate) fn cancel_editor_at(
+        &self,
+        address: &CanonicalAddress,
+        editor: &EditorKey,
+    ) -> Vec<u64> {
+        let mut controls = Vec::new();
+        self.0.borrow_mut().pending.retain(|_, edit| {
+            if &edit.address == address && &edit.editor == editor {
+                controls.push(edit.control);
+                false
+            } else {
+                true
+            }
+        });
+        controls
     }
 }
 impl EditTicket {

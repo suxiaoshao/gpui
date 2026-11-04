@@ -123,6 +123,10 @@ delegate 由应用拥有；刷新 option 不会隐式改写 Form value 或选择
 被拒绝编辑的原文保存在 Form 草稿中，其他编辑器的草稿与待接纳输入继续受保护。
 详见[映射指南](docs/guide.zh-CN.md)。
 
+`FormMappedInput` 及其他有状态适配器提供来源推断的 `editor_status(cx)` / `discard_draft(cx)`。
+查询仅返回已接纳的来源草稿与问题；显式弃稿也取消该来源待接纳输入，同路径其他编辑器状态保留。
+详见[指南](docs/guide.zh-CN.md)。
+
 ## 编辑会话迁移（#248）
 
 旧 Validator 入口已删除；with_rules 显式注册规则依赖并返回 Result。Form 持有未解析草稿与原生编辑票据。Total set 返回 Result；replace/reset/rebase 强制 DraftPolicy 并返回生命周期报告。刷新用 rebase_preserving_edits 原子保留本地编辑并报告冲突。数字构造函数新增稳定 editor key；FormMappedInput 提供存储/展示映射。签名、路径基线/dirty 和迁移详情见[指南](docs/guide.zh-CN.md)。

@@ -340,6 +340,13 @@ let subscription = cx.subscribe(&form, |_, _, event, cx| {
 编辑器的草稿与排队输入。穷举匹配 `EditResult` 的调用方需处理 `Update`。
 详见[映射更新契约](docs/guide.zh-CN.md#映射编辑的接纳时更新)。
 
+## 按编辑器查询和弃稿
+
+`form.editor_status(path, editor_key)` 读取已接纳草稿与来源问题，控件卸载、继承 key 消失后
+也可查询。明确放弃单个来源用 `form.discard_editor_draft(path, editor_key, cx)`，
+其他编辑器的草稿和排队输入保留。映射 binding、writer 和适配器提供转发入口。
+详见[按编辑器查询和弃稿](docs/guide.zh-CN.md#按编辑器查询和弃稿)。
+
 ## 编辑会话迁移（#248）
 
 旧 Validator 入口已删除；with_rules 显式注册规则依赖并返回 Result。Form 持有未解析草稿与原生编辑票据。Total set 返回 Result；replace/reset/rebase 强制 DraftPolicy 并返回生命周期报告。刷新用 rebase_preserving_edits 原子保留本地编辑并报告冲突。数字构造函数新增稳定 editor key；FormMappedInput 提供存储/展示映射。签名、路径基线/dirty 和迁移详情见[指南](docs/guide.zh-CN.md)。

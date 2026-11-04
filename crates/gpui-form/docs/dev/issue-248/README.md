@@ -307,3 +307,18 @@ Update 不改变基线。路径 dirty 仍是存储值相对基线的差异加未
   - `cargo clippy -p gpui-form -p gpui-form-gpui-component --all-targets --all-features --locked -- -D warnings`：通过。
   - `cargo fmt --all -- --check`、`git diff --check`：通过。
 - 中英文公开指南、适配器说明与 skill contracts 已同步。本地 macOS 的公开入口/原生适配器测试不等同于 Gupi 迁移验收；Linux/Windows 留给 PR CI。闭包纯度、领域前提和业务叶意图由应用保证；动态整值安装边界保持不变。
+
+## 补充：按编辑器弃稿与只读状态（Gupi #139）
+
+状态：已实施，本地验证通过；基于 `7921f5ec`。同一 map 根上的业务键编辑器共用 typed path、各有稳定 EditorKey，需要明确弃稿和错误查询，不引入业务键路径或应用侧无效状态副本。
+
+- `Form::discard_editor_draft(path, editor, cx)` 只清精确 `(path, EditorKey)` 的已接纳草稿及其问题，并取消该编辑器在该路径的全部排队票据。其他编辑器、后代路径的草稿/票据均保留，取消的 Update 不执行。不修改存储值、基线或拓扑。
+- 票据携带 EditorKey。会话通知内部按来源控件过滤，不能因同一路径的 SessionChanged 作废其他编辑器的 generation；弃稿后的新输入也不能被迟到通知取消。有草稿或票据变化才推进一次 revision；移除草稿时 DraftChanged 共享该 revision；完全无变化不发布、不推进版本。保存凭据失效规则沿用路径级弃稿。
+- `Form::editor_status(path, editor)` 返回 `EditorStatus`，通过 `has_draft()` / `issues()` 读取已接纳未解析草稿及其当前来源问题。排队输入尚未成为草稿；字段级业务校验仍从路径读取。查询不改变 revision、不解析原生文本、不要求控件挂载；继承 key 消失或控件卸载后，保留的草稿仍能按原键查询。不暴露内部 control ID。
+- `ControlWriter` / 映射 binding 和 writer 提供来源推断的 `discard_draft`、`editor_status`；原始 `ControlBinding` 的两个方法显式接收 EditorKey。`FormMappedInput` 及文本、整数、选择、组合框适配器转发相同来源操作。原有 `discard_drafts(path, cx)` 保持整子树范围。退休/跨会话目标返回既有 `LifecycleError::InvalidTarget`。
+- 必要回归只覆盖同根多编辑器隔离（已接纳草稿与排队输入）、弃稿后新输入/旧保存竞态、无变化版本规则，以及卸载/上下文 key 消失后的只读来源查询。所有新增接口均为 additive；中英文指南和 skill contracts 同步。
+
+实际验证（macOS，Rust 命令通过 `nix develop --command`，测试/Clippy 使用 `CARGO_TARGET_DIR=/tmp/issue265-nix-trybuild`）：
+- 三个公开回归覆盖精确票据/通知隔离、只读离线查询和共用 writer 的 EditorKey 问题归属；既有原生映射输入回归验证 query/discard 转发与显示复原。控制来源问题按路径和 EditorKey 替换/重绑，控件 ID 只用于内部路由，不作为公开查询面。
+- `cargo test -p gpui-form -p gpui-form-gpui-component --all-features --locked`：88 项通过，0 失败；包含原有 trybuild，未开启 overwrite、未修改 `.stderr`。
+- `cargo clippy -p gpui-form -p gpui-form-gpui-component --all-targets --all-features --locked -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check`：通过。未进行 Gupi 产品验收，Linux/Windows 由 PR CI 验证。

@@ -911,6 +911,17 @@ fn mapped_native_input_accepts_only_committed_ime_and_restores_offline_draft(
     });
     cx.update(|_, cx| {
         assert_eq!(restored.read(cx).value().as_ref(), "--");
+        assert!(restored.editor_status(cx).unwrap().has_draft());
+        assert_eq!(
+            restored.editor_status(cx).unwrap().issues()[0].code(),
+            "number"
+        );
+        restored.discard_draft(cx).unwrap();
+        assert!(!restored.editor_status(cx).unwrap().has_draft());
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        assert_eq!(restored.read(cx).value().as_ref(), "00023");
         form.update(cx, |f, cx| f.reset(gpui_form::DraftPolicy::Discard, cx))
             .unwrap();
     });

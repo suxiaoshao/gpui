@@ -190,6 +190,7 @@ where
     #[allow(dead_code)]
     subscriptions: Vec<Subscription>,
     _binding: ControlBinding,
+    editor: crate::editor::EditorAccess,
     state: Entity<IntegerInputState<N>>,
 }
 
@@ -197,6 +198,20 @@ impl<N> FormIntegerInput<N>
 where
     N: IntegerValue,
 {
+    /// Explicitly discard this source editor's accepted draft and queued input.
+    pub fn discard_draft(
+        &self,
+        cx: &mut gpui::App,
+    ) -> Result<gpui_form::LifecycleReport, gpui_form::LifecycleError> {
+        self.editor.discard_draft(cx)
+    }
+    pub fn editor_status(
+        &self,
+        cx: &gpui::App,
+    ) -> Result<gpui_form::EditorStatus, gpui_form::LifecycleError> {
+        self.editor.editor_status(cx)
+    }
+
     pub fn new<Root, Owner, Path, Build>(
         form: &Entity<Form<Root>>,
         path: Path,
@@ -238,10 +253,12 @@ where
                 .clone()
                 .update(cx, |input, cx| input.set_value(draft, window, cx));
         }
+        let editor = crate::editor::EditorAccess::new(&writer);
         let event_subscription = integer_event_subscription(&state, writer, window, cx);
         Ok(Self {
             subscriptions: vec![event_subscription],
             _binding: binding,
+            editor,
             state,
         })
     }
@@ -285,10 +302,12 @@ where
                 .clone()
                 .update(cx, |input, cx| input.set_value(draft, window, cx));
         }
+        let editor = crate::editor::EditorAccess::new(&writer);
         let event_subscription = integer_event_subscription(&state, writer, window, cx);
         Ok(Self {
             subscriptions: vec![event_subscription],
             _binding: binding,
+            editor,
             state,
         })
     }

@@ -478,3 +478,13 @@ Update 沿用同一适配器与构造函数，按原生调用顺序在接纳时�
 其他编辑器的草稿和未接纳原文继续保留。穷举匹配 `EditResult` 需新增 Update 分支，
 既有 mapping/adapter 签名保持不变。光标、焦点、选择和 IME 仍由原生控件持有。
 取消、revision、错误 code 和动态退休规则见[接纳契约](../../gpui-form/docs/guide.zh-CN.md#映射编辑的接纳时更新)。
+
+按 token 展示错误时，`FormMappedInput::editor_status(cx)` 返回来源编辑器已接纳的草稿标志和
+当前问题，不包含同一 map 根上其他编辑器的错误。`discard_draft(cx)` 只明确清除该来源并取消
+它的排队输入；移除草稿或取消票据后，控件仍挂载时再投影当前存储值。其他编辑器的草稿与票据保留，取消的更新不执行。
+文本、整数、选择和组合框适配器也提供相同的两个方法。
+
+控件卸载或继承 key 消失后，通过 `form.read(cx).editor_status(path, editor_key)` 查询保留状态，
+无需重解析文本或维护应用侧无效状态副本。明确清除用
+`form.discard_editor_draft(path, editor_key, cx)`。精确范围、无变化/版本和无效目标规则见
+[按编辑器查询和弃稿](../../gpui-form/docs/guide.zh-CN.md#按编辑器查询和弃稿)。

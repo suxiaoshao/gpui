@@ -510,3 +510,17 @@ matches need an Update arm; existing mapping/adapter signatures stay the same.
 Native cursor, focus, selection and IME remain control-owned. See the
 [admission contract](../../gpui-form/docs/guide.md#admission-time-mapped-updates)
 for cancellation, revision, error-code and dynamic retirement rules.
+
+For token-specific feedback, `FormMappedInput::editor_status(cx)` returns the
+source editor's accepted draft flag and current issues. It excludes other editors
+at the same map root. `discard_draft(cx)` explicitly clears only that source and
+cancels only its queued input. Removing a draft or cancelling tickets projects current storage when still mounted.
+Peer drafts and tickets survive; cancelled updates never run. Text, integer,
+select and combobox adapters expose the same pair of methods.
+
+After unmount or when an inherited key disappears, use
+`form.read(cx).editor_status(path, editor_key)` to discover retained state without
+reparsing text or keeping an application invalid-state map. Use
+`form.discard_editor_draft(path, editor_key, cx)` for explicit source cleanup.
+See [per-editor drafts](../../gpui-form/docs/guide.md#per-editor-drafts) for exact
+scope, no-op/version and invalid-target behavior.
