@@ -20,6 +20,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.ref_name == 'main' && github.sha || 'anysha' }}
   cancel-in-progress: true
 
+# Keep file/line backtraces without full type/variable debug data in cached targets.
+env:
+  RUST_BACKTRACE: '1'
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  # The workspace explicitly enables debug data for build scripts/proc macros too.
+  CARGO_PROFILE_DEV_BUILD_OVERRIDE_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_BUILD_OVERRIDE_DEBUG: line-tables-only
+
 jobs:
   changes:
     name: Classify changes
@@ -112,6 +121,14 @@ jobs:
           fi
           /usr/bin/xcrun metal --version
 
+      - name: Free Linux disk space before restoring artifacts
+        if: ${{ needs.changes.outputs.run != 'false' && runner.os == 'Linux' }}
+        run: |
+          df -h "$GITHUB_WORKSPACE"
+          # This desktop workspace uses Nix for its native toolchain, not Android/.NET.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet
+          df -h "$GITHUB_WORKSPACE"
+
       - name: Install Nix
         if: ${{ needs.changes.outputs.run != 'false' && runner.os != 'Windows' }}
         uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31
@@ -128,7 +145,8 @@ jobs:
         if: ${{ needs.changes.outputs.run != 'false' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: ${{ runner.os }}-${{ hashFiles('flake.lock', 'rust-toolchain.toml') }}
+          # Keep both exact and fallback restores out of the old full-debug generation.
+          shared-key: ci-lines-v1-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust-toolchain.toml') }}
           cache-bin: false
           # Windows target cleanup failed with ENOENT before 65196de3; keep registry caching only.
           cache-targets: ${{ matrix.runs_on != 'windows-latest' }}
