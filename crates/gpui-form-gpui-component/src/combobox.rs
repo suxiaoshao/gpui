@@ -5,9 +5,7 @@ use gpui_component::{
     combobox::{ComboboxEvent, ComboboxState},
     searchable_list::{SearchableListDelegate, SearchableListItem},
 };
-use gpui_form::{
-    ControlBinding, ControlProjection, DynamicPath, Form, FormSchema, IntoTotalPath, ResolveError,
-};
+use gpui_form::{ControlProjection, DynamicPath, Form, FormSchema, IntoTotalPath, ResolveError};
 
 type ComboboxValue<D> = <<D as SearchableListDelegate>::Item as SearchableListItem>::Value;
 
@@ -18,7 +16,6 @@ where
 {
     #[allow(dead_code)]
     subscriptions: Vec<Subscription>,
-    _binding: ControlBinding,
     editor: crate::editor::EditorAccess,
     state: Entity<ComboboxState<D>>,
 }
@@ -72,7 +69,7 @@ where
             window,
             cx,
         );
-        let editor = crate::editor::EditorAccess::new(&writer);
+        let editor = crate::editor::EditorAccess::new(binding, &writer);
         let event_subscription = cx.subscribe_in(
             &state,
             window,
@@ -84,7 +81,6 @@ where
         );
         Self {
             subscriptions: vec![event_subscription],
-            _binding: binding,
             editor,
             state,
         }
@@ -118,7 +114,7 @@ where
             window,
             cx,
         )?;
-        let editor = crate::editor::EditorAccess::new(&writer);
+        let editor = crate::editor::EditorAccess::new(binding, &writer);
         let event_subscription = cx.subscribe_in(
             &state,
             window,
@@ -130,7 +126,6 @@ where
         );
         Ok(Self {
             subscriptions: vec![event_subscription],
-            _binding: binding,
             editor,
             state,
         })

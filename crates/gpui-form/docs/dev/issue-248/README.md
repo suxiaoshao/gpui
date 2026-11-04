@@ -322,3 +322,10 @@ Update 不改变基线。路径 dirty 仍是存储值相对基线的差异加未
 - 三个公开回归覆盖精确票据/通知隔离、只读离线查询和共用 writer 的 EditorKey 问题归属；既有原生映射输入回归验证 query/discard 转发与显示复原。控制来源问题按路径和 EditorKey 替换/重绑，控件 ID 只用于内部路由，不作为公开查询面。
 - `cargo test -p gpui-form -p gpui-form-gpui-component --all-features --locked`：88 项通过，0 失败；包含原有 trybuild，未开启 overwrite、未修改 `.stderr`。
 - `cargo clippy -p gpui-form -p gpui-form-gpui-component --all-targets --all-features --locked -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check`：通过。未进行 Gupi 产品验收，Linux/Windows 由 PR CI 验证。
+
+PR #270 的 macOS workspace Clippy 发现适配器内联体积增长触发 HTTP `AuthFields` 的 `large_enum_variant`。修复收敛在适配器：私有擦除句柄将唯一 binding 和一份弱 writer 合并持有，替代内联 binding 与两份操作闭包，减少内联体积和重复捕获。所有文本、整数、选择和组合框适配器采用同一所有权结构。原始 `ControlBinding` 的 refresh/discard/query 也合并为一个私有擦除对象，共享原来的弱 Form/路径/投影上下文，替代三份闭包；HTTP 自定义 scalar select 无需额外存储。Drop 仍取消原 binding 的票据，公开 API 和来源语义保持不变，不需要消费者装箱或 `allow()`。沿用现有生命周期覆盖，并在整数重新挂载回归中验证状态查询、显式弃稿与原生显示复原。
+
+此次修复后的 macOS 复核全部通过（Rust 命令仍在 `nix develop --command` 内，沿用同一 Nix target）：
+- CI 同款 `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`：通过，包含 HTTP Request 及应用消费者。
+- `cargo test -p gpui-form -p gpui-form-gpui-component -p http-client-request --all-features --locked`：150 项通过，0 失败（Form/适配器 88 项、HTTP Request 62 项）；包含既有 trybuild，未改 `.stderr`。
+- `cargo fmt --all -- --check`、`git diff --check`：通过。

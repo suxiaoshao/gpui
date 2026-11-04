@@ -12,7 +12,7 @@ use gpui::{
 use gpui_component::input::{InputEvent, InputState, NumberInput, NumberInputEvent, StepAction};
 use gpui_component::{Disableable, Sizable, Size};
 use gpui_form::{
-    ControlBinding, ControlProjection, ControlWriter, DynamicPath, Form, FormSchema, IntoTotalPath,
+    ControlProjection, ControlWriter, DynamicPath, Form, FormSchema, IntoTotalPath,
     ValidationMessage,
 };
 
@@ -189,7 +189,6 @@ where
 {
     #[allow(dead_code)]
     subscriptions: Vec<Subscription>,
-    _binding: ControlBinding,
     editor: crate::editor::EditorAccess,
     state: Entity<IntegerInputState<N>>,
 }
@@ -253,11 +252,10 @@ where
                 .clone()
                 .update(cx, |input, cx| input.set_value(draft, window, cx));
         }
-        let editor = crate::editor::EditorAccess::new(&writer);
+        let editor = crate::editor::EditorAccess::new(binding, &writer);
         let event_subscription = integer_event_subscription(&state, writer, window, cx);
         Ok(Self {
             subscriptions: vec![event_subscription],
-            _binding: binding,
             editor,
             state,
         })
@@ -302,11 +300,10 @@ where
                 .clone()
                 .update(cx, |input, cx| input.set_value(draft, window, cx));
         }
-        let editor = crate::editor::EditorAccess::new(&writer);
+        let editor = crate::editor::EditorAccess::new(binding, &writer);
         let event_subscription = integer_event_subscription(&state, writer, window, cx);
         Ok(Self {
             subscriptions: vec![event_subscription],
-            _binding: binding,
             editor,
             state,
         })

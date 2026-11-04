@@ -137,10 +137,19 @@ struct BindingShared {
 
 type Projector<T, Owner> =
     dyn Fn(&mut Owner, ControlProjection<T>, &mut Window, &mut Context<Owner>) + 'static;
-type EditorDiscard =
-    dyn Fn(&crate::EditorKey, &mut App) -> Result<crate::LifecycleReport, crate::LifecycleError>;
-type EditorQuery =
-    dyn Fn(&crate::EditorKey, &App) -> Result<crate::EditorStatus, crate::LifecycleError>;
+trait BindingAccess {
+    fn refresh(&self, cx: &mut App);
+    fn discard_editor_draft(
+        &self,
+        editor: &crate::EditorKey,
+        cx: &mut App,
+    ) -> Result<crate::LifecycleReport, crate::LifecycleError>;
+    fn editor_status(
+        &self,
+        editor: &crate::EditorKey,
+        cx: &App,
+    ) -> Result<crate::EditorStatus, crate::LifecycleError>;
+}
 
 struct DrainRequest<Root: FormSchema, T: 'static, Owner: 'static> {
     form: WeakEntity<Form<Root>>,
@@ -150,6 +159,62 @@ struct DrainRequest<Root: FormSchema, T: 'static, Owner: 'static> {
     projector: Rc<Projector<T, Owner>>,
     owner: WeakEntity<Owner>,
     window: AnyWindowHandle,
+}
+
+impl<Root, T, Owner> BindingAccess for DrainRequest<Root, T, Owner>
+where
+    Root: FormSchema,
+    T: Clone + PartialEq + 'static,
+    Owner: 'static,
+{
+    fn refresh(&self, cx: &mut App) {
+        if let Some(form) = self.form.upgrade() {
+            let effect = (&mut *self.state.borrow_mut()).transition(Message::RefreshValue {
+                revision: form.read(cx).revision(),
+                editor_sequence: self.shared.editor_sequence.load(Ordering::Acquire),
+            });
+            if matches!(effect, Effect::ScheduleDrain) {
+                schedule_drain(
+                    DrainRequest {
+                        form: self.form.clone(),
+                        path: self.path.clone(),
+                        shared: self.shared.clone(),
+                        state: self.state.clone(),
+                        projector: self.projector.clone(),
+                        owner: self.owner.clone(),
+                        window: self.window,
+                    },
+                    cx,
+                );
+            }
+        }
+    }
+
+    fn discard_editor_draft(
+        &self,
+        editor: &crate::EditorKey,
+        cx: &mut App,
+    ) -> Result<crate::LifecycleReport, crate::LifecycleError> {
+        let form = self
+            .form
+            .upgrade()
+            .ok_or(crate::LifecycleError::InvalidTarget)?;
+        form.update(cx, |form, cx| {
+            form.discard_editor_at(self.path.target(), editor, cx)
+        })
+    }
+
+    fn editor_status(
+        &self,
+        editor: &crate::EditorKey,
+        cx: &App,
+    ) -> Result<crate::EditorStatus, crate::LifecycleError> {
+        let form = self
+            .form
+            .upgrade()
+            .ok_or(crate::LifecycleError::InvalidTarget)?;
+        form.read(cx).editor_status_at(self.path.target(), editor)
+    }
 }
 
 impl BindingShared {
@@ -186,14 +251,12 @@ pub struct ControlBinding {
     state: Rc<RefCell<BindingState>>,
     shared: Arc<BindingShared>,
     edit_clock: crate::draft::EditClock,
-    refresh: Box<dyn Fn(&mut App)>,
-    discard_editor: Box<EditorDiscard>,
-    editor_status: Box<EditorQuery>,
+    access: Box<dyn BindingAccess>,
 }
 
 impl ControlBinding {
     pub fn refresh(&self, cx: &mut App) {
-        (self.refresh)(cx);
+        self.access.refresh(cx);
     }
 
     /// Discard one stable editor at this binding's exact path.
@@ -202,7 +265,7 @@ impl ControlBinding {
         editor: impl Into<crate::EditorKey>,
         cx: &mut App,
     ) -> Result<crate::LifecycleReport, crate::LifecycleError> {
-        (self.discard_editor)(&editor.into(), cx)
+        self.access.discard_editor_draft(&editor.into(), cx)
     }
 
     pub fn editor_status(
@@ -210,7 +273,7 @@ impl ControlBinding {
         editor: impl Into<crate::EditorKey>,
         cx: &App,
     ) -> Result<crate::EditorStatus, crate::LifecycleError> {
-        (self.editor_status)(&editor.into(), cx)
+        self.access.editor_status(&editor.into(), cx)
     }
 }
 
@@ -697,40 +760,15 @@ where
         }
     });
 
-    let refresh_form = weak_form.clone();
-    let refresh_path = path.clone();
-    let refresh_shared = shared.clone();
-    let refresh_state = state.clone();
-    let refresh_projector = projector.clone();
-    let refresh_owner = owner.downgrade();
-    let refresh_window = window.window_handle();
-    let refresh = Box::new(move |cx: &mut App| {
-        if let Some(form) = refresh_form.upgrade() {
-            let effect = (&mut *refresh_state.borrow_mut()).transition(Message::RefreshValue {
-                revision: form.read(cx).revision(),
-                editor_sequence: refresh_shared.editor_sequence.load(Ordering::Acquire),
-            });
-            if matches!(effect, Effect::ScheduleDrain) {
-                schedule_drain(
-                    DrainRequest {
-                        form: refresh_form.clone(),
-                        path: refresh_path.clone(),
-                        shared: refresh_shared.clone(),
-                        state: refresh_state.clone(),
-                        projector: refresh_projector.clone(),
-                        owner: refresh_owner.clone(),
-                        window: refresh_window,
-                    },
-                    cx,
-                );
-            }
-        }
+    let access = Box::new(DrainRequest {
+        form: weak_form.clone(),
+        path: path.clone(),
+        shared: shared.clone(),
+        state: state.clone(),
+        projector,
+        owner: owner.downgrade(),
+        window: window.window_handle(),
     });
-
-    let discard_form = weak_form.clone();
-    let discard_target = path.target();
-    let status_form = weak_form.clone();
-    let status_target = discard_target.clone();
     let writer = ControlWriter {
         form: weak_form,
         path,
@@ -742,25 +780,10 @@ where
     (
         ControlBinding {
             _subscription: subscription,
-            refresh,
+            access,
             edit_clock,
             state,
             shared,
-            discard_editor: Box::new(move |editor, cx| {
-                let form = discard_form
-                    .upgrade()
-                    .ok_or(crate::LifecycleError::InvalidTarget)?;
-                form.update(cx, |form, cx| {
-                    form.discard_editor_at(discard_target.clone(), editor, cx)
-                })
-            }),
-            editor_status: Box::new(move |editor, cx| {
-                let form = status_form
-                    .upgrade()
-                    .ok_or(crate::LifecycleError::InvalidTarget)?;
-                form.read(cx)
-                    .editor_status_at(status_target.clone(), editor)
-            }),
         },
         writer,
     )

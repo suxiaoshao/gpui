@@ -1,30 +1,45 @@
 use gpui::App;
-use gpui_form::{ControlWriter, EditorStatus, FormSchema, LifecycleError, LifecycleReport};
+use gpui_form::{
+    ControlBinding, ControlWriter, EditorStatus, FormSchema, LifecycleError, LifecycleReport,
+};
 
-type Discard = dyn Fn(&mut App) -> Result<LifecycleReport, LifecycleError>;
-type Query = dyn Fn(&App) -> Result<EditorStatus, LifecycleError>;
-
-/// Erased weak source capability; adapters never need to expose generated editor identities.
-pub(crate) struct EditorAccess {
-    discard: Box<Discard>,
-    query: Box<Query>,
+trait EditorSource {
+    fn discard_draft(&self, cx: &mut App) -> Result<LifecycleReport, LifecycleError>;
+    fn editor_status(&self, cx: &App) -> Result<EditorStatus, LifecycleError>;
 }
+
+struct BoundEditor<M: FormSchema, T: 'static> {
+    _binding: ControlBinding,
+    writer: ControlWriter<M, T>,
+}
+
+impl<M: FormSchema, T: Clone + PartialEq + 'static> EditorSource for BoundEditor<M, T> {
+    fn discard_draft(&self, cx: &mut App) -> Result<LifecycleReport, LifecycleError> {
+        self.writer.discard_draft(cx)
+    }
+
+    fn editor_status(&self, cx: &App) -> Result<EditorStatus, LifecycleError> {
+        self.writer.editor_status(cx)
+    }
+}
+
+/// Keep the binding and one weak writer together behind a compact erased handle.
+pub(crate) struct EditorAccess(Box<dyn EditorSource>);
 
 impl EditorAccess {
     pub(crate) fn new<M: FormSchema, T: Clone + PartialEq + 'static>(
+        binding: ControlBinding,
         writer: &ControlWriter<M, T>,
     ) -> Self {
-        let discard = writer.clone();
-        let query = writer.clone();
-        Self {
-            discard: Box::new(move |cx| discard.discard_draft(cx)),
-            query: Box::new(move |cx| query.editor_status(cx)),
-        }
+        Self(Box::new(BoundEditor {
+            _binding: binding,
+            writer: writer.clone(),
+        }))
     }
     pub(crate) fn discard_draft(&self, cx: &mut App) -> Result<LifecycleReport, LifecycleError> {
-        (self.discard)(cx)
+        self.0.discard_draft(cx)
     }
     pub(crate) fn editor_status(&self, cx: &App) -> Result<EditorStatus, LifecycleError> {
-        (self.query)(cx)
+        self.0.editor_status(cx)
     }
 }
