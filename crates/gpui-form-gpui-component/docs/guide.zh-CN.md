@@ -465,4 +465,16 @@ drop binding，之后 native callback 无法再修改 Form。
 
 FormIntegerInput::new/try_new 在 path 后新增稳定 EditorKey 参数，均返回 FormIntegerInputBuildError（含展示/映射类型不匹配）。同路径两个编辑器必须用不同 key。未解析数字文本由 Form 持有，卸载仍阻止 prepare；相同 key 重挂恢复草稿，程序写值不覆盖草稿。删除动态子树前明确弃稿。
 
-FormMappedInput::new(form, path, editor_key, mapping, context, build, window, cx) 将原生 InputState 绑定到 ControlMapping<S,String>；refresh(context,cx) 只重投影无草稿编辑器，不写模型、不重解析草稿。parse 接收当前存储值、可选基线和原生事件入口的上下文快照。应用可用 Parsed 恢复 Unset/Unreadable，或用 Draft 保留未解析文本。光标、焦点、选择和 IME 仍由原生控件持有。[完整核心契约](../../gpui-form/docs/guide.zh-CN.md)包含票据竞态、生命周期策略与 rebase 限制。
+`FormMappedInput::new(form, path, editor_key, mapping, context, build, window, cx)`
+将原生 InputState 绑定到 `ControlMapping<S,String>`。`refresh(context,cx)` 只投影无草稿且
+无待接纳输入的编辑器，不写模型、不重解析草稿。parse 在入口用当时的存储值、可选基线和上下文
+执行一次。`Parsed` 用于完整字段替换，`Draft` 用于无效语法；共享 map 或复合字段的部分编辑
+使用 `EditResult::update(move |latest| ...)`，入口捕获 key、已解析意图及需要的上下文/基线叶，
+回到继承时也只在 latest 上恢复目标叶。
+
+Update 沿用同一适配器与构造函数，按原生调用顺序在接纳时执行一次。失败把原文本和
+`EditProblem` 保存在 Form 草稿中，重挂恢复、阻止 prepare，不自动重试。
+结构拒绝同样保留原文（包括 Parsed），绝不自动放弃动态草稿。成功只清来源编辑器草稿；
+其他编辑器的草稿和未接纳原文继续保留。穷举匹配 `EditResult` 需新增 Update 分支，
+既有 mapping/adapter 签名保持不变。光标、焦点、选择和 IME 仍由原生控件持有。
+取消、revision、错误 code 和动态退休规则见[接纳契约](../../gpui-form/docs/guide.zh-CN.md#映射编辑的接纳时更新)。

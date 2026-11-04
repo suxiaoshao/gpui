@@ -66,6 +66,10 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> BindingPath<Root, T> {
     }
 
     fn value(&self, form: &Form<Root>) -> Result<T, ResolveError> {
+        self.stored(form).cloned()
+    }
+
+    fn stored<'a>(&self, form: &'a Form<Root>) -> Result<&'a T, ResolveError> {
         let core = match self {
             Self::Total(core) => core,
             Self::Dynamic(core) => {
@@ -73,10 +77,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> BindingPath<Root, T> {
                 core
             }
         };
-        Ok(core
-            .access
-            .get(form.value(), &form.topology().snapshot())?
-            .clone())
+        core.access.get(form.value(), &form.topology().snapshot())
     }
 
     fn set(
@@ -84,6 +85,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> BindingPath<Root, T> {
         form: &mut Form<Root>,
         value: T,
         control_id: u64,
+        editor: &crate::EditorKey,
         origin: ControlOrigin,
         cx: &mut Context<Form<Root>>,
     ) -> Result<(), ResolveError> {
@@ -106,7 +108,14 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> BindingPath<Root, T> {
                 true
             }
         };
-        form.complete_control_write(control_id, core.address.clone(), changed, origin, cx);
+        form.complete_control_write(
+            control_id,
+            editor,
+            core.address.clone(),
+            changed,
+            origin,
+            cx,
+        );
         Ok(())
     }
 
@@ -252,6 +261,23 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> ControlWriter<Root, T> {
     where
         Owner: 'static,
     {
+        self.defer_mapped_update(
+            value.clone(),
+            std::any::TypeId::of::<T>(),
+            crate::StorageUpdate::new(move |_| Ok(value)),
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn defer_mapped_update<Owner: 'static, D: Clone + PartialEq + 'static>(
+        &self,
+        display: D,
+        mapping: std::any::TypeId,
+        update: crate::StorageUpdate<T>,
+        window: &Window,
+        cx: &mut Context<Owner>,
+    ) {
         if !self.shared.active.load(Ordering::Acquire) {
             return;
         }
@@ -271,7 +297,7 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> ControlWriter<Root, T> {
             let Some(form) = writer.form.upgrade() else {
                 return;
             };
-            if !ticket.accept() {
+            if !writer.path.is_current(form.read(cx)) || !ticket.accept() {
                 return;
             }
             let origin = ControlOrigin {
@@ -279,10 +305,46 @@ impl<Root: FormSchema, T: Clone + PartialEq + 'static> ControlWriter<Root, T> {
                 lifecycle_generation,
                 editor_sequence,
             };
-            let _ = form.update(cx, |form, cx| {
-                writer
-                    .path
-                    .set(form, value, writer.shared.control_id, origin, cx)
+            form.update(cx, |form, cx| {
+                let Ok(latest) = writer.path.stored(form) else {
+                    // Resolution failures cancel an edit whose target no longer exists.
+                    return;
+                };
+                let problem = match update.apply(latest) {
+                    Ok(value) => match writer.path.set(
+                        form,
+                        value,
+                        writer.shared.control_id,
+                        &writer.editor,
+                        origin,
+                        cx,
+                    ) {
+                        Ok(()) => return,
+                        Err(error @ ResolveError::WouldRetireDrafts { .. }) => {
+                            crate::EditProblem::new(
+                                "form-edit-would-retire-drafts",
+                                error.to_string(),
+                            )
+                        }
+                        Err(_) => return, // Lifecycle cancellation must not create orphan drafts.
+                    },
+                    Err(problem) => problem,
+                };
+                let key = form
+                    .topology()
+                    .key(&writer.path.target().address)
+                    .expect("admitted path remains active after a rejected candidate");
+                let (code, message) = problem.into_parts();
+                form.accept_draft(
+                    key,
+                    writer.editor,
+                    writer.shared.control_id,
+                    display,
+                    mapping,
+                    code,
+                    message,
+                    cx,
+                );
             });
         });
     }
@@ -688,10 +750,11 @@ where
                         };
                         let value = {
                             let form_ref = form.read(cx);
-                            if form_ref
-                                .drafts
-                                .values()
-                                .any(|d| d.control == shared.control_id)
+                            if form_ref.edit_clock.is_control_pending(shared.control_id)
+                                || form_ref
+                                    .drafts
+                                    .values()
+                                    .any(|d| d.control == shared.control_id)
                             {
                                 return;
                             }

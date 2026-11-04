@@ -491,4 +491,22 @@ adapter drops its binding, so later native callbacks cannot change the Form.
 
 FormIntegerInput::new/try_new now take a stable EditorKey after the path, and both return FormIntegerInputBuildError (including a display/mapping type mismatch). Two editors at one path need different keys. Unresolved integer text lives in the Form, survives unmount and blocks prepare. Rebuilding with the same key restores it; programmatic values do not overwrite a draft. Discard drafts explicitly before removing their dynamic subtree.
 
-FormMappedInput::new(form, path, editor_key, mapping, context, build, window, cx) binds a native InputState to ControlMapping<S, String>. Its refresh(context, cx) reprojects clean editors without writing the model; drafts keep their text. parse receives current storage and optional baseline with the context snapshot from native event entry. Use Parsed to restore Unset/Unreadable domain values when appropriate, or Draft for unresolved text. Native cursor, focus, selection and IME remain control-owned. See the [core contract](../../gpui-form/docs/guide.md#editing-session-and-breaking-api-changes-248) for edit-ticket races, lifecycle policies and rebase limitations.
+`FormMappedInput::new(form, path, editor_key, mapping, context, build, window, cx)`
+binds a native InputState to `ControlMapping<S, String>`. `refresh(context, cx)`
+reprojects clean editors without pending input and never writes the model or
+reparses drafts. Parse runs once with entry storage, optional baseline and context.
+Use `Parsed` for complete-field replacement, `Draft` for unresolved syntax, and
+`EditResult::update(move |latest| ...)` for a partial edit of a shared map or
+composite field. Capture the key, parsed intent and required context/baseline leaf
+at entry; restore only that leaf on latest when returning to inheritance.
+
+Update uses the same adapter and constructors. It runs once at admission in native
+call order; failure retains the original text and `EditProblem` as a Form draft,
+survives remount, blocks prepare and never retries automatically. Structural
+refusal also preserves text, including for Parsed; dynamic drafts are never
+auto-discarded. Successful writes clear only the source editor's draft. Peer
+drafts and unadmitted native text keep their values. Exhaustive `EditResult`
+matches need an Update arm; existing mapping/adapter signatures stay the same.
+Native cursor, focus, selection and IME remain control-owned. See the
+[admission contract](../../gpui-form/docs/guide.md#admission-time-mapped-updates)
+for cancellation, revision, error-code and dynamic retirement rules.

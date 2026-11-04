@@ -534,7 +534,7 @@ hook 仅用于 `rebase_preserving_edits`，`rebase_if_current` 的保存安装�
 ### 控件映射
 
 `ControlMapping<S,D>` 用应用上下文快照 format，并把展示值、当前存储值、可选基线和
-同一上下文交给 parse，返回 `EditResult::Parsed/Draft`。通过
+同一上下文交给 parse，返回 `EditResult::Parsed/Update/Draft`。通过
 `bind_mapped_control_in` / `try_bind_mapped_control_in` 和
 `MappedControlWriter::defer_edit` 接入。`MappedControlBinding::refresh(context, cx)`
 仅重投影无草稿编辑器，不改模型/revision，不重解析草稿；排队前完成 parse，后续上下文
@@ -575,3 +575,72 @@ impl ControlMapping<Slot, String> for NumberMapping {
     }
 }
 ```
+
+### 映射编辑的接纳时更新
+
+`Parsed(value)` 明确表示替换整个绑定值。同一 map 或复合字段上的独立部分编辑器应返回
+`EditResult::update(...)`：一次性闭包在原生编辑接纳时取得最新存储值，使连续业务键编辑
+按序叠加。示例中的回到基线操作也只恢复目标叶，保留其他未保存键：
+
+```rust,ignore
+use std::collections::BTreeMap;
+use gpui_form::{ControlMapping, EditProblem, EditResult};
+
+type Overrides = BTreeMap<String, u64>;
+struct TokenMapping { key: String }
+impl ControlMapping<Overrides, String> for TokenMapping {
+    type Context = u64;
+    fn format(&self, stored: &Overrides, inherited: &u64) -> String {
+        stored.get(&self.key).unwrap_or(inherited).to_string()
+    }
+    fn parse(&self, display: String, _: &Overrides, baseline: Option<&Overrides>,
+             inherited: &u64) -> EditResult<Overrides, String> {
+        let Ok(value) = display.parse::<u64>() else {
+            return EditResult::draft(display, "number", "Enter an integer");
+        };
+        let Some(baseline) = baseline else {
+            return EditResult::draft(display, "baseline-unavailable", "Refresh before editing");
+        };
+        let key = self.key.clone();
+        let base = baseline.get(&key).copied();
+        let target = if value == base.unwrap_or(*inherited) { base } else { Some(value) };
+        EditResult::update(move |latest: &Overrides| {
+            if latest.contains_key("locked") {
+                return Err(EditProblem::new("locked", "Overrides are locked"));
+            }
+            let mut next = latest.clone();
+            match target {
+                Some(value) => { next.insert(key, value); }
+                None => { next.remove(&key); }
+            }
+            Ok(next)
+        })
+    }
+}
+```
+
+parse 仍在原生入口执行一次，读取该入口的存储值、基线和上下文。闭包捕获拥有的 key、
+已解析值和需要的基线/上下文片段，签名为 `FnOnce(&S) -> Result<S, EditProblem> + 'static`，
+不要求 Clone/Send。不重新解析文本、不读外部状态、不产生副作用或 panic。
+不要捕获入口整图作为更新基础，也不要因展示值等于入口存储值而省略入队：更早的排队输入
+可能尚未接纳，需要这次操作在 latest 上抵消它。
+
+`Update(StorageUpdate<S>)` 和 `StorageUpdate::new` 提供相同载荷；
+`EditProblem::new(code, message)` 接收 `ValidationMessage`，通过 `code()` / `message()`
+读取问题。穷举匹配 `EditResult` 的调用方必须新增 Update 分支；mapping 和适配器构造签名不变。
+
+每次调用在返回前预留一个原生票据。接纳按序执行，Update 看到前面的已接纳结果，后来的
+Parsed 可以整值覆盖它们。pending 阻止 prepare 和 preserving rebase，并使旧保存版本失效。
+绑定/窗口取消、显式弃稿结算的票据、已退休路径均不执行闭包，也不产生孤立草稿。
+context refresh 只投影无草稿且无待接纳输入的编辑器，不改变捕获的意图或重试更新。
+
+接纳失败时，Form 将原始 display 和问题保存为来源 `(PathKey, EditorKey)` 的 Draft，结算票据，
+存储值、基线和拓扑保持不变。候选会退休动态草稿时，报告稳定 code
+`form-edit-would-retire-drafts` 和可展示问题；被拒绝的映射 Parsed 替换也走此路径。
+不自动重试；同 key 重挂恢复文本，用户修正后的新输入可再次尝试。
+成功只清来源编辑器的草稿和问题，包括等值候选；其他编辑器的草稿与待接纳原文继续保留。
+模型变更与同时清稿共享一次 revision；等值且仅清稿也只推进一次。Update 不改变基线。
+
+复合字段仍按原有整值规则安装：候选改变会退休动态后代，有未解析动态草稿则拒绝。
+只有明确弃稿才调用 typed `discard_drafts`，不引入业务键路径或身份对应。
+字段合并 hook 仍只处理外部刷新，并沿用带草稿字段整字段跳过 hook 的保守边界。
