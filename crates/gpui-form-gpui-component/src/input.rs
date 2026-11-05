@@ -1,7 +1,7 @@
 use std::ops::Deref;
 
 use gpui::{AppContext as _, Context, Entity, Subscription, Window};
-use gpui_component::input::{EditorState, InputEvent, InputState, TextareaState};
+use gpui_component::input::{EditorState, InputEditsEvent, InputEvent, InputState, TextareaState};
 use gpui_form::{ControlProjection, DynamicPath, Form, FormSchema, IntoTotalPath, ResolveError};
 
 // All three controls share the same binding and event contract.
@@ -57,19 +57,27 @@ macro_rules! text_control {
                     cx,
                 );
                 let editor = crate::editor::EditorAccess::new(binding, &writer);
+                let edits_writer = writer.clone();
+                let edits_subscription = cx.subscribe_in(
+                    &state,
+                    window,
+                    move |_, _, event: &InputEditsEvent, window, cx| {
+                        for (_, text) in event.edits() {
+                            edits_writer.defer_set(text.to_string(), window, cx);
+                        }
+                    },
+                );
                 let state_subscription = cx.subscribe_in(
                     &state,
                     window,
-                    move |_, state, event: &InputEvent, window, cx| match event {
-                        InputEvent::Change => {
-                            writer.defer_set(state.read(cx).value().to_string(), window, cx);
+                    move |_, _, event: &InputEvent, window, cx| {
+                        if matches!(event, InputEvent::Blur) {
+                            writer.defer_blur(window, cx);
                         }
-                        InputEvent::Blur => writer.defer_blur(window, cx),
-                        InputEvent::Focus | InputEvent::PressEnter { .. } => {}
                     },
                 );
                 Self {
-                    subscriptions: vec![state_subscription],
+                    subscriptions: vec![edits_subscription, state_subscription],
                     editor,
                     state,
                 }
@@ -101,19 +109,27 @@ macro_rules! text_control {
                     cx,
                 )?;
                 let editor = crate::editor::EditorAccess::new(binding, &writer);
+                let edits_writer = writer.clone();
+                let edits_subscription = cx.subscribe_in(
+                    &state,
+                    window,
+                    move |_, _, event: &InputEditsEvent, window, cx| {
+                        for (_, text) in event.edits() {
+                            edits_writer.defer_set(text.to_string(), window, cx);
+                        }
+                    },
+                );
                 let state_subscription = cx.subscribe_in(
                     &state,
                     window,
-                    move |_, state, event: &InputEvent, window, cx| match event {
-                        InputEvent::Change => {
-                            writer.defer_set(state.read(cx).value().to_string(), window, cx);
+                    move |_, _, event: &InputEvent, window, cx| {
+                        if matches!(event, InputEvent::Blur) {
+                            writer.defer_blur(window, cx);
                         }
-                        InputEvent::Blur => writer.defer_blur(window, cx),
-                        InputEvent::Focus | InputEvent::PressEnter { .. } => {}
                     },
                 );
                 Ok(Self {
-                    subscriptions: vec![state_subscription],
+                    subscriptions: vec![edits_subscription, state_subscription],
                     editor,
                     state,
                 })
@@ -136,7 +152,7 @@ text_control!(FormEditor, EditorState);
 
 /// Native text input backed by an application storage/display mapping.
 pub struct FormMappedInput<C> {
-    _subscription: Subscription,
+    _subscriptions: Vec<Subscription>,
     binding: gpui_form::MappedControlBinding<C>,
     state: Entity<InputState>,
 }
@@ -176,19 +192,27 @@ impl<C: Clone + 'static> FormMappedInput<C> {
             window,
             cx,
         )?;
+        let edits_writer = writer.clone();
+        let edits_subscription = cx.subscribe_in(
+            &state,
+            window,
+            move |_, _, event: &InputEditsEvent, window, cx| {
+                for (_, text) in event.edits() {
+                    edits_writer.defer_edit(text.to_string(), window, cx);
+                }
+            },
+        );
         let subscription = cx.subscribe_in(
             &state,
             window,
-            move |_, state, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => {
-                    writer.defer_edit(state.read(cx).value().to_string(), window, cx)
+            move |_, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::Blur) {
+                    writer.defer_blur(window, cx);
                 }
-                InputEvent::Blur => writer.defer_blur(window, cx),
-                _ => {}
             },
         );
         Ok(Self {
-            _subscription: subscription,
+            _subscriptions: vec![edits_subscription, subscription],
             binding,
             state,
         })
@@ -227,19 +251,27 @@ impl<C: Clone + 'static> FormMappedInput<C> {
             window,
             cx,
         )?;
+        let edits_writer = writer.clone();
+        let edits_subscription = cx.subscribe_in(
+            &state,
+            window,
+            move |_, _, event: &InputEditsEvent, window, cx| {
+                for (_, text) in event.edits() {
+                    edits_writer.defer_edit(text.to_string(), window, cx);
+                }
+            },
+        );
         let subscription = cx.subscribe_in(
             &state,
             window,
-            move |_, state, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => {
-                    writer.defer_edit(state.read(cx).value().to_string(), window, cx)
+            move |_, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::Blur) {
+                    writer.defer_blur(window, cx);
                 }
-                InputEvent::Blur => writer.defer_blur(window, cx),
-                _ => {}
             },
         );
         Ok(Self {
-            _subscription: subscription,
+            _subscriptions: vec![edits_subscription, subscription],
             binding,
             state,
         })

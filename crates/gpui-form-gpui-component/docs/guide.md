@@ -162,7 +162,9 @@ let name_input = FormInput::new(
 let element = Input::new(&name_input);
 ```
 
-`InputEvent::Change` defers a typed write. `InputEvent::Blur` requests the
+`InputEditsEvent` defers one typed write for each immutable post-edit text snapshot,
+in event order. The adapter does not read the latest state from `InputEvent::Change`
+or replay native edit operations into the Form. `InputEvent::Blur` requests the
 configured blur validation. Relevant Form value changes are silently projected
 back to the input; a write from this input is not echoed to itself.
 
@@ -188,7 +190,7 @@ old one.
 
 `FormTextarea` and `FormEditor` expose the same `new`, `try_new`, and `Deref`
 contract as `FormInput`, with `TextareaState` and `EditorState` respectively.
-All three use `InputEvent::Change` / `Blur` and silent `set_value` projections.
+All three use `InputEditsEvent` snapshots, `InputEvent::Blur`, and silent `set_value` projections.
 Dynamic path retirement and binding teardown follow the same rules above.
 
 ```rust,ignore
@@ -211,7 +213,10 @@ remain available; it does not need a form binding.
 ## Bind integer input
 
 `FormIntegerInput` keeps incomplete or invalid display text in the Form under its editor key.
-Only a valid typed integer is written to the Form.
+Only a valid typed integer is written to the Form. Each committed text snapshot is
+parsed separately; its parse result and original text stay paired for admission.
+`IntegerInputEvent::Change` still reports each result in order, including invalid
+intermediate input. Programmatic `set_value` projections remain silent.
 
 ```rust,ignore
 let budget_input = FormIntegerInput::new(

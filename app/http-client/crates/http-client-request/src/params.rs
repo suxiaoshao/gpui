@@ -441,7 +441,10 @@ fn reconcile_row_ids(
 
 #[cfg(test)]
 mod tests {
-    use gpui_kit::{IntoElement, Render, TestAppContext, VisualTestContext, WindowHandle, div};
+    use gpui_kit::{
+        EntityInputHandler, IntoElement, Render, TestAppContext, VisualTestContext, WindowHandle,
+        div,
+    };
 
     use super::super::url_input::UrlInput;
     use super::*;
@@ -522,8 +525,7 @@ mod tests {
     fn set_input(input: &Entity<InputState>, value: &str, cx: &mut VisualTestContext) {
         cx.update(|window, cx| {
             input.update(cx, |input, cx| {
-                input.set_value(value, window, cx);
-                cx.emit(InputEvent::Change);
+                input.replace_text_in_range(Some(0..input.value().len()), value, window, cx);
             });
         });
         cx.run_until_parked();
