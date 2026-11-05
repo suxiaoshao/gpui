@@ -498,3 +498,48 @@ pub(super) fn rgba_to_bgra(bytes: &mut [u8]) {
         pixel.swap(0, 2);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pdf_page_renders_at_viewport_size_in_bgra() {
+        // A self-contained red page exercises the real parser and rasterizer.
+        let stream = "1 0 0 rg 0 0 200 100 re f\n";
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << >> /Contents 4 0 R >>".to_owned(),
+            format!("<< /Length {} >>\nstream\n{}endstream", stream.len(), stream),
+        ];
+        let mut data = String::from("%PDF-1.4\n");
+        let mut offsets = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(data.len());
+            data.push_str(&format!("{} 0 obj\n{}\nendobj\n", index + 1, object));
+        }
+        let xref = data.len();
+        data.push_str("xref\n0 5\n0000000000 65535 f \n");
+        for offset in offsets {
+            data.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        data.push_str(&format!(
+            "trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+        ));
+        let pdf = hayro::hayro_syntax::Pdf::new(data.into_bytes()).unwrap();
+        let cache = hayro::RenderCache::new();
+        let image = render_page(
+            &pdf,
+            &cache,
+            &hayro::hayro_interpret::InterpreterSettings::default(),
+            0,
+            PdfViewport::new(100, 100),
+        )
+        .unwrap();
+        assert_eq!(image.size(0), gpui_kit::size(100.into(), 50.into()));
+        let pixels = image.as_bytes(0).unwrap();
+        assert_eq!(pixels.len(), 100 * 50 * 4);
+        assert_eq!(&pixels[(25 * 100 + 50) * 4..][..4], &[0, 0, 255, 255]);
+    }
+}

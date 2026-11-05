@@ -218,6 +218,29 @@ impl TableDelegate for ResultsTableDelegate {
             .unwrap_or_else(|| Column::new("unknown", ""))
     }
 
+    fn cell_label(&self, row_ix: usize, col_ix: usize, _: &App) -> Option<gpui_kit::SharedString> {
+        let novel = self.novel_at(row_ix)?;
+        Some(match ResultColumn::ALL.get(col_ix)? {
+            ResultColumn::Title => novel.title.name.clone(),
+            ResultColumn::Description => novel.desc.clone(),
+            ResultColumn::Author => Self::author_label(novel),
+            ResultColumn::WordCount => number_text(Some(novel.count.word_count)),
+            ResultColumn::ReadCount => number_text(novel.count.read_count),
+            ResultColumn::ReplyCount => number_text(novel.count.reply_count),
+            ResultColumn::IsLimit => if novel.is_limit { "是" } else { "否" }.into(),
+            ResultColumn::LatestChapter => novel.latest_chapter.name.clone(),
+            ResultColumn::Tags => {
+                let mut tags = novel
+                    .tags
+                    .iter()
+                    .map(|tag| tag.name.as_ref())
+                    .collect::<Vec<_>>();
+                tags.sort();
+                tags.join("、").into()
+            }
+        })
+    }
+
     fn fit_column(
         &mut self,
         col_ix: usize,
@@ -522,6 +545,52 @@ fn compare_missing_last(
 mod tests {
     use super::*;
     use feiwen_data::types::{NovelCount, Title};
+
+    #[gpui_kit::test]
+    fn cell_labels_expose_displayed_values_and_follow_sorted_rows(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let mut novel = novel_with_read_count(2, Some(42));
+            novel.title.name = "星河".into();
+            novel.desc = "真实简介".into();
+            novel.author = Author::Known(Title::new("作者甲".into(), 8));
+            novel.is_limit = true;
+            novel.tags = [
+                feiwen_data::service::Tag::new("玄幻".into(), Some(1)),
+                feiwen_data::service::Tag::new("完结".into(), Some(2)),
+            ]
+            .into_iter()
+            .collect();
+            let mut delegate = ResultsTableDelegate::new(gpui_kit::px(16.));
+            delegate.set_novels(vec![novel, novel_with_read_count(1, None)]);
+            let expected = [
+                "星河",
+                "真实简介",
+                "作者甲",
+                "2000",
+                "42",
+                "-",
+                "是",
+                "chapter 2",
+                "完结、玄幻",
+            ];
+            for (column, expected) in expected.into_iter().enumerate() {
+                assert_eq!(
+                    TableDelegate::cell_label(&delegate, 0, column, cx).as_deref(),
+                    Some(expected)
+                );
+            }
+            assert_eq!(delegate.cell_label(1, 2, cx).as_deref(), Some("匿名"));
+            assert_eq!(delegate.cell_label(1, 4, cx).as_deref(), Some("-"));
+            assert_eq!(delegate.cell_label(1, 6, cx).as_deref(), Some("否"));
+            delegate.sort_by_column(0, ColumnSort::Ascending);
+            assert_eq!(delegate.cell_label(0, 0, cx).as_deref(), Some("title 1"));
+            assert_eq!(delegate.cell_label(1, 0, cx).as_deref(), Some("星河"));
+            assert_eq!(delegate.cell_label(2, 0, cx), None);
+            assert_eq!(delegate.cell_label(0, 9, cx), None);
+        });
+    }
 
     #[test]
     fn loading_defaults_to_false_and_can_be_toggled() {

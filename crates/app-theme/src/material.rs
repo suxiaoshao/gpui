@@ -11,17 +11,16 @@ pub(super) fn adapt_material_scheme(
     let colors = build_material_theme_colors(mode, scheme, &palette, &code);
     let highlight = material_highlight_theme_style(scheme, &code, &editor);
 
-    ThemeConfig {
-        name: SharedString::from(format!(
-            "Material You {} {}",
-            seed_color,
-            if mode.is_dark() { "Dark" } else { "Light" }
-        )),
-        mode,
-        colors: colors.into(),
-        highlight: Some(highlight),
-        ..Default::default()
-    }
+    let mut config = ThemeConfig::default();
+    config.name = SharedString::from(format!(
+        "Material You {} {}",
+        seed_color,
+        if mode.is_dark() { "Dark" } else { "Light" }
+    ));
+    config.mode = mode;
+    config.colors = colors.into();
+    config.highlight = Some(highlight);
+    config
 }
 
 #[derive(Clone)]
