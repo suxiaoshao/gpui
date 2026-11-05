@@ -129,3 +129,32 @@ pub fn initialize_schema(conn: &duckdb::Connection) -> FeiwenResult<()> {
     event!(Level::INFO, "feiwen duckdb schema ready");
     Ok(())
 }
+
+#[cfg(test)]
+mod upgrade_tests {
+    use super::*;
+    use crate::query::{FilterExpr, Predicate, QuerySpec, TextField, TextOp, query_records};
+
+    #[test]
+    fn duckdb_schema_reinitialization_preserves_queryable_records() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        initialize_schema(&conn).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO novel VALUES
+            (1, 'QA 星河测试小说', '升级测试', false, '第一章', 1, 120000, 3456, 78, 1, 'QA 作者甲');
+            INSERT INTO tag VALUES (1, 'QA 标签');
+            INSERT INTO novel_tag VALUES (1, 'QA 标签');"#,
+        ).unwrap();
+        initialize_schema(&conn).unwrap();
+        let spec = QuerySpec::new(
+            FilterExpr::Predicate(Predicate::Text {
+                field: TextField::Title,
+                op: TextOp::Contains,
+                value: "星河".into(),
+            }),
+            Vec::new(),
+        );
+        let records = query_records(&conn, &spec).unwrap();
+        assert_eq!(records.len(), 1);
+    }
+}

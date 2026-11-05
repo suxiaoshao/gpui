@@ -21,12 +21,12 @@ reqwest = {version = "0.13.5",features=["query"]}
 async-compat = "0.2.6"
 
 # html
-scraper = "0.27.0"
+scraper = "0.29.0"
 nom = "8.0.0"
 url = "2.5.8"
 
 # database
-duckdb = { version = "1.10506.1", features = ["bundled", "parquet", "r2d2"] }
+duckdb = { version = "1.20000.1", features = ["bundled", "parquet", "r2d2"] }
 r2d2 = "0.8.10"
 
 # log

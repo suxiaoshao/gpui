@@ -567,8 +567,8 @@ impl Plot for ActivityHeatmapPlot {
 mod tests {
     use super::*;
     use gpui::{
-        Context, Entity, Render, ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext,
-        Window, rgb,
+        Context, Entity, Render, ScrollDelta, ScrollEvent, ScrollSource, TestAppContext,
+        VisualTestContext, Window, rgb,
     };
     use gpui_component::{Theme, scroll::ScrollbarHandle as _};
     use time::Month;
@@ -887,9 +887,10 @@ mod tests {
         assert!(viewport.size.width > px(0.));
         assert!(viewport.size.height > px(0.));
         let wheel = |cx: &mut VisualTestContext, lines| {
-            cx.simulate_event(ScrollWheelEvent {
+            cx.simulate_event(ScrollEvent {
                 position: viewport.center(),
                 delta: ScrollDelta::Lines(point(0., lines)),
+                source: ScrollSource::Pointer,
                 ..Default::default()
             });
             draw(cx);
