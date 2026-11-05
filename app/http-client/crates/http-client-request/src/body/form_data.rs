@@ -612,8 +612,7 @@ fn child_id(scope: &'static str, key: &PathKey, role: &'static str) -> ElementId
 
 #[cfg(test)]
 mod tests {
-    use gpui_kit::component::input::InputEvent;
-    use gpui_kit::{TestAppContext, VisualTestContext, WindowHandle};
+    use gpui_kit::{EntityInputHandler, TestAppContext, VisualTestContext, WindowHandle};
 
     use crate::{
         localization::init_i18n,
@@ -804,8 +803,12 @@ mod tests {
 
         cx.update(|window, cx| {
             stale_name.update(cx, |state, cx| {
-                state.set_value("stale occurrence", window, cx);
-                cx.emit(InputEvent::Change);
+                state.replace_text_in_range(
+                    Some(0..state.value().len()),
+                    "stale occurrence",
+                    window,
+                    cx,
+                );
             });
         });
         cx.run_until_parked();
@@ -849,8 +852,12 @@ mod tests {
         });
         cx.update(|window, cx| {
             stale_text.update(cx, |state, cx| {
-                state.set_value("retired Text writer", window, cx);
-                cx.emit(InputEvent::Change);
+                state.replace_text_in_range(
+                    Some(0..state.value().len()),
+                    "retired Text writer",
+                    window,
+                    cx,
+                );
             });
         });
         cx.run_until_parked();

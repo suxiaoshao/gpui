@@ -9,7 +9,9 @@ use gpui::{
     Focusable, IntoElement, Refineable, SharedString, StyleRefinement, Styled, Subscription, View,
     Window,
 };
-use gpui_component::input::{InputEvent, InputState, NumberInput, NumberInputEvent, StepAction};
+use gpui_component::input::{
+    InputEditsEvent, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction,
+};
 use gpui_component::{Disableable, Sizable, Size};
 use gpui_form::{
     ControlProjection, ControlWriter, DynamicPath, Form, FormSchema, IntoTotalPath,
@@ -55,6 +57,11 @@ pub enum IntegerInputEvent<N> {
     Blur,
 }
 
+struct IntegerInputEdit<N> {
+    text: String,
+    result: Result<N, IntegerInputError<N>>,
+}
+
 pub struct IntegerInputState<N>
 where
     N: IntegerValue,
@@ -73,22 +80,21 @@ where
         let editor = cx.new(|cx| InputState::new(window, cx));
         editor.update(cx, |editor, cx| editor.set_step(None, window, cx));
 
-        let input_subscription = cx.subscribe_in(
+        let edits_subscription = cx.subscribe_in(
             &editor,
             window,
-            |this, editor, event: &InputEvent, _window, cx| match event {
-                InputEvent::Change => {
-                    let result =
-                        parse::parse_integer(editor.read(cx).value().as_ref(), this.policy);
-                    if let Ok(value) = result {
-                        this.value = value;
-                    }
-                    cx.emit(IntegerInputEvent::Change(result));
+            |this, _, event: &InputEditsEvent, _, cx| {
+                for (_, text) in event.edits() {
+                    this.emit_edit(text.to_string(), cx);
                 }
-                InputEvent::Blur => cx.emit(IntegerInputEvent::Blur),
-                InputEvent::Focus | InputEvent::PressEnter { .. } => {}
             },
         );
+        let input_subscription =
+            cx.subscribe_in(&editor, window, |_, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Blur) {
+                    cx.emit(IntegerInputEvent::<N>::Blur);
+                }
+            });
 
         let step_subscription = cx.subscribe_in(
             &editor,
@@ -100,24 +106,30 @@ where
                     StepAction::Decrement => this.value.checked_sub(this.policy.step),
                 };
                 if let Some(next) = next.filter(|value| this.policy.contains(*value)) {
-                    let state = cx.entity().downgrade();
-                    cx.defer_in(window, move |_, window, cx| {
-                        let Some(state) = state.upgrade() else { return };
-                        state.update(cx, |state, cx| {
-                            state.set_value(next, window, cx);
-                            cx.emit(IntegerInputEvent::Change(Ok(next)));
-                        });
+                    cx.defer_in(window, move |state, window, cx| {
+                        state.set_value(next, window, cx);
+                        state.emit_edit(next.to_string(), cx);
                     });
                 }
             },
         );
 
         Self {
-            editor_subscriptions: vec![input_subscription, step_subscription],
+            editor_subscriptions: vec![edits_subscription, input_subscription, step_subscription],
             editor,
             value: N::ZERO,
             policy: IntegerInputPolicy::new(),
         }
+    }
+
+    fn emit_edit(&mut self, text: String, cx: &mut Context<Self>) {
+        let result = parse::parse_integer(&text, self.policy);
+        if let Ok(value) = result {
+            self.value = value;
+        }
+        // Keep the source text paired with its parse result for Form admission.
+        cx.emit(IntegerInputEdit { text, result });
+        cx.emit(IntegerInputEvent::Change(result));
     }
 
     pub fn min(mut self, min: N) -> Self {
@@ -162,6 +174,8 @@ where
         self.policy.validate().map(|_| ())
     }
 }
+
+impl<N> EventEmitter<IntegerInputEdit<N>> for IntegerInputState<N> where N: IntegerValue {}
 
 impl<N> EventEmitter<IntegerInputEvent<N>> for IntegerInputState<N> where N: IntegerValue {}
 
@@ -253,9 +267,9 @@ where
                 .update(cx, |input, cx| input.set_value(draft, window, cx));
         }
         let editor = crate::editor::EditorAccess::new(binding, &writer);
-        let event_subscription = integer_event_subscription(&state, writer, window, cx);
+        let event_subscriptions = integer_event_subscriptions(&state, writer, window, cx);
         Ok(Self {
-            subscriptions: vec![event_subscription],
+            subscriptions: event_subscriptions,
             editor,
             state,
         })
@@ -301,9 +315,9 @@ where
                 .update(cx, |input, cx| input.set_value(draft, window, cx));
         }
         let editor = crate::editor::EditorAccess::new(binding, &writer);
-        let event_subscription = integer_event_subscription(&state, writer, window, cx);
+        let event_subscriptions = integer_event_subscriptions(&state, writer, window, cx);
         Ok(Self {
-            subscriptions: vec![event_subscription],
+            subscriptions: event_subscriptions,
             editor,
             state,
         })
@@ -320,37 +334,45 @@ where
     }
 }
 
-fn integer_event_subscription<N, Root, Owner>(
+fn integer_event_subscriptions<N, Root, Owner>(
     state: &Entity<IntegerInputState<N>>,
     writer: ControlWriter<Root, N>,
     window: &Window,
     cx: &mut Context<Owner>,
-) -> Subscription
+) -> Vec<Subscription>
 where
     N: IntegerValue,
     Root: FormSchema,
     Owner: 'static,
 {
-    cx.subscribe_in(
+    let edits_writer = writer.clone();
+    let edits = cx.subscribe_in(
         state,
         window,
-        move |_, state, event: &IntegerInputEvent<N>, window, cx| match event {
-            IntegerInputEvent::Change(Ok(value)) => {
-                writer.defer_set(*value, window, cx);
-            }
-            IntegerInputEvent::Change(Err(error)) => {
-                let (code, message) = integer_issue(*error);
-                writer.defer_draft_for::<IntegerInputState<N>, _, _>(
-                    state.read(cx).editor().read(cx).value().to_string(),
+        move |_, _, event: &IntegerInputEdit<N>, window, cx| match event.result {
+            Ok(value) => edits_writer.defer_set(value, window, cx),
+            Err(error) => {
+                let (code, message) = integer_issue(error);
+                edits_writer.defer_draft_for::<IntegerInputState<N>, _, _>(
+                    event.text.clone(),
                     code,
                     message,
                     window,
                     cx,
                 );
             }
-            IntegerInputEvent::Blur => writer.defer_blur(window, cx),
         },
-    )
+    );
+    let blur = cx.subscribe_in(
+        state,
+        window,
+        move |_, _, event: &IntegerInputEvent<N>, window, cx| {
+            if matches!(event, IntegerInputEvent::Blur) {
+                writer.defer_blur(window, cx);
+            }
+        },
+    );
+    vec![edits, blur]
 }
 
 fn integer_issue<N: IntegerValue>(

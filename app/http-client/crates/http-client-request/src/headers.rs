@@ -372,8 +372,9 @@ fn headers_path() -> TotalItemsPath<RequestDraft, HeaderDraft> {
 
 #[cfg(test)]
 mod tests {
-    use gpui_kit::component::input::InputEvent;
-    use gpui_kit::{AppContext as _, TestAppContext, VisualTestContext, WindowHandle};
+    use gpui_kit::{
+        AppContext as _, EntityInputHandler, TestAppContext, VisualTestContext, WindowHandle,
+    };
 
     use crate::draft::ApiKeyAuthDraft;
     use crate::localization::init_i18n;
@@ -555,8 +556,7 @@ mod tests {
                 );
             });
             first_input.update(cx, |input, cx| {
-                input.set_value("stale", window, cx);
-                cx.emit(InputEvent::Change);
+                input.replace_text_in_range(Some(0..input.value().len()), "stale", window, cx);
             });
         });
         cx.run_until_parked();

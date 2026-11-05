@@ -158,7 +158,9 @@ let name_input = FormInput::new(
 let element = Input::new(&name_input);
 ```
 
-`InputEvent::Change` defer typed write；`InputEvent::Blur` 请求配置好的 blur validation。相关 Form value change
+`InputEditsEvent` 按事件顺序为每份不可变的编辑后文本快照 defer 一次 typed write；
+adapter 不在 `InputEvent::Change` 中读取最新 state，也不把 native edit 操作在 Form 中重放。
+`InputEvent::Blur` 请求配置好的 blur validation。相关 Form value change
 会静默投影回 input；由这个 input 发起的 write 不会回声给它自己。
 
 对已解析的 dynamic path 使用 `try_new`：
@@ -180,7 +182,7 @@ change 在相同 schema position 新建了另一个 condition，应创建新 ada
 ## 绑定多行正文与代码
 
 `FormTextarea`、`FormEditor` 的 `new`、`try_new`、`Deref` 契约与 `FormInput` 相同，
-原生类型分别为 `TextareaState`、`EditorState`。三者都消费 `InputEvent::Change` / `Blur`，
+原生类型分别为 `TextareaState`、`EditorState`。三者都消费 `InputEditsEvent` 快照与 `InputEvent::Blur`，
 通过静默 `set_value` 投影；动态路径退役和绑定释放遵循上文规则。
 
 ```rust,ignore
@@ -202,6 +204,8 @@ workspace 应用也可通过 `gpui_kit::component::input` 使用同一类型。
 ## 绑定整数 input
 
 `FormIntegerInput` 将未完成或非法的展示文本按 editor key 保留在 Form；只有合法的 typed integer 才写入模型。
+每份已提交文本快照分别解析，解析结果和对应原始文本一起入场。
+`IntegerInputEvent::Change` 仍依次报告每次结果，包括中间无效输入；程序 `set_value` 投影保持静默。
 
 ```rust,ignore
 let budget_input = FormIntegerInput::new(

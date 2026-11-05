@@ -1,16 +1,16 @@
 use gpui::{
-    AppContext as _, Context, Entity, EventEmitter, IntoElement, Render, Subscription,
-    TestAppContext, View, VisualTestContext, Window, WindowHandle, div,
+    AppContext as _, Context, Entity, EntityInputHandler, EventEmitter, IntoElement, Render,
+    Subscription, TestAppContext, View, VisualTestContext, Window, WindowHandle, div,
 };
 use gpui_component::{
     combobox::{ComboboxEvent, ComboboxState},
-    input::{EditorState, InputEvent, InputState, TextareaState},
+    input::{EditorState, InputState, TextareaState},
     select::{SelectEvent, SelectState},
 };
 use gpui_form::{ControlBinding, ControlProjection, DynamicPath, Form, FormSchema, ResolveError};
 use gpui_form_gpui_component::{
     FormCombobox, FormEditor, FormInput, FormIntegerInput, FormSelect, FormTextarea, IntegerInput,
-    IntegerInputError, IntegerInputEvent, IntegerInputPolicyError, IntegerInputState,
+    IntegerInputPolicyError, IntegerInputState,
 };
 
 #[derive(Clone, Debug, PartialEq, FormSchema)]
@@ -230,8 +230,7 @@ fn total_input_mirrors_form_and_component_without_echo(cx: &mut TestAppContext) 
 
     cx.update(|window, cx| {
         input.update(cx, |input, cx| {
-            input.set_value("user", window, cx);
-            cx.emit(InputEvent::Change);
+            input.replace_text_in_range(Some(0..input.value().len()), "user", window, cx);
         });
     });
     cx.run_until_parked();
@@ -299,8 +298,7 @@ fn total_input_discards_stale_projection_after_a_new_native_edit(cx: &mut TestAp
             .set(&form, "two".to_string(), cx)
             .unwrap();
         input.update(cx, |input, cx| {
-            input.set_value("editor".to_string(), window, cx);
-            cx.emit(InputEvent::Change);
+            input.replace_text_in_range(Some(0..input.value().len()), "editor", window, cx);
         });
     });
     cx.run_until_parked();
@@ -460,8 +458,7 @@ fn dynamic_input_stops_writing_after_optional_payload_is_replaced(cx: &mut TestA
     });
     cx.update(|window, cx| {
         dynamic_input.update(cx, |input, cx| {
-            input.set_value("stale", window, cx);
-            cx.emit(InputEvent::Change);
+            input.replace_text_in_range(Some(0..input.value().len()), "stale", window, cx);
         });
     });
     cx.run_until_parked();
@@ -492,8 +489,7 @@ fn dropping_bound_control_stops_component_to_form_sync(cx: &mut TestAppContext) 
     cx.update(|_, cx| root.update(cx, |root, _| root.control = None));
     cx.update(|window, cx| {
         input.update(cx, |input, cx| {
-            input.set_value("detached", window, cx);
-            cx.emit(InputEvent::Change);
+            input.replace_text_in_range(Some(0..input.value().len()), "detached", window, cx);
         });
     });
     cx.run_until_parked();
@@ -508,8 +504,7 @@ fn dropping_bound_control_cancels_already_queued_callback(cx: &mut TestAppContex
     let (form, input) = entities(&root, &mut cx);
     cx.update(|window, cx| {
         input.update(cx, |input, cx| {
-            input.set_value("queued", window, cx);
-            cx.emit(InputEvent::Change);
+            input.replace_text_in_range(Some(0..input.value().len()), "queued", window, cx);
         });
         root.update(cx, |root, _| root.control = None);
     });
@@ -525,8 +520,7 @@ fn whole_model_replacement_cancels_queued_total_callback(cx: &mut TestAppContext
     let (form, input) = entities(&root, &mut cx);
     cx.update(|window, cx| {
         input.update(cx, |input, cx| {
-            input.set_value("queued", window, cx);
-            cx.emit(InputEvent::Change);
+            input.replace_text_in_range(Some(0..input.value().len()), "queued", window, cx);
         });
         let mut replacement = AdapterInput::ROOT.get(&form, cx);
         form.update(cx, |form, cx| {
@@ -552,19 +546,25 @@ fn dropping_integer_control_keeps_draft_and_remount_restores_text(cx: &mut TestA
             )
         })
     });
-    cx.update(|_, cx| {
-        integer_control.update(cx, |_, cx| {
-            cx.emit(IntegerInputEvent::Change(Err(
-                IntegerInputError::InvalidSyntax,
-            )));
-        });
+    cx.update(|window, cx| {
+        integer_control
+            .read(cx)
+            .editor()
+            .clone()
+            .update(cx, |input, cx| {
+                input.replace_text_in_range(Some(0..input.value().len()), "--", window, cx);
+            });
     });
     cx.run_until_parked();
-    cx.update(|_, cx| {
+    cx.update(|window, cx| {
         assert!(form.update(cx, |form, cx| form.prepare(cx)).is_err());
-        integer_control.update(cx, |_, cx| {
-            cx.emit(IntegerInputEvent::Change(Ok(1024)));
-        });
+        integer_control
+            .read(cx)
+            .editor()
+            .clone()
+            .update(cx, |input, cx| {
+                input.replace_text_in_range(Some(0..input.value().len()), "1024", window, cx);
+            });
     });
     cx.run_until_parked();
     cx.update(|_, cx| {
@@ -577,8 +577,7 @@ fn dropping_integer_control_keeps_draft_and_remount_restores_text(cx: &mut TestA
             .editor()
             .clone()
             .update(cx, |input, cx| {
-                input.set_value("--", window, cx);
-                cx.emit(InputEvent::Change);
+                input.replace_text_in_range(Some(0..input.value().len()), "--", window, cx);
             });
     });
     cx.run_until_parked();
@@ -646,11 +645,9 @@ fn retiring_dynamic_subtree_revokes_control_issue_and_callbacks(cx: &mut TestApp
         })
     });
     let state = std::ops::Deref::deref(&control).clone();
-    cx.update(|_, cx| {
-        state.update(cx, |_, cx| {
-            cx.emit(IntegerInputEvent::Change(Err(
-                IntegerInputError::InvalidSyntax,
-            )));
+    cx.update(|window, cx| {
+        state.read(cx).editor().clone().update(cx, |input, cx| {
+            input.replace_text_in_range(Some(0..input.value().len()), "--", window, cx);
         });
     });
     cx.run_until_parked();
@@ -666,8 +663,10 @@ fn retiring_dynamic_subtree_revokes_control_issue_and_callbacks(cx: &mut TestApp
             .unwrap();
         assert!(form.update(cx, |form, cx| form.prepare(cx)).is_ok());
     });
-    cx.update(|_, cx| {
-        state.update(cx, |_, cx| cx.emit(IntegerInputEvent::Change(Ok(99))));
+    cx.update(|window, cx| {
+        state.read(cx).editor().clone().update(cx, |input, cx| {
+            input.replace_text_in_range(Some(0..input.value().len()), "99", window, cx);
+        });
     });
     cx.run_until_parked();
     cx.update(|_, cx| assert!(AdapterInput::DETAILS.get(&form, cx).is_none()));
@@ -784,8 +783,12 @@ macro_rules! multiline_adapter_test {
             });
             cx.update(|window, cx| {
                 control.update(cx, |input, cx| {
-                    input.set_value("中文\nsecond line", window, cx);
-                    cx.emit(InputEvent::Change);
+                    input.replace_text_in_range(
+                        Some(0..input.value().len()),
+                        "中文\nsecond line",
+                        window,
+                        cx,
+                    );
                 })
             });
             cx.run_until_parked();
@@ -801,8 +804,12 @@ macro_rules! multiline_adapter_test {
             drop(control);
             cx.update(|window, cx| {
                 state.update(cx, |input, cx| {
-                    input.set_value("after drop", window, cx);
-                    cx.emit(InputEvent::Change);
+                    input.replace_text_in_range(
+                        Some(0..input.value().len()),
+                        "after drop",
+                        window,
+                        cx,
+                    );
                 })
             });
             cx.run_until_parked();
@@ -898,8 +905,7 @@ fn mapped_native_input_accepts_only_committed_ime_and_restores_offline_draft(
             "source text is not immediately reformatted to 00023"
         );
         control.update(cx, |input, cx| {
-            input.set_value("--", window, cx);
-            cx.emit(InputEvent::Change);
+            input.replace_text_in_range(Some(0..input.value().len()), "--", window, cx);
         });
     });
     cx.run_until_parked();
@@ -946,3 +952,89 @@ fn mapped_native_input_accepts_only_committed_ime_and_restores_offline_draft(
         assert!(!form.read(cx).is_dirty());
     });
 }
+
+macro_rules! same_frame_text_test {
+    ($test:ident, $control:ident, $state:ident) => {
+        #[gpui::test]
+        fn $test(cx: &mut TestAppContext) {
+            for dynamic in [false, true] {
+                let window = open_harness(cx);
+                let mut visual = VisualTestContext::from_window(window.into(), cx);
+                let root = window.root(&mut visual).unwrap();
+                let (form, _) = entities(&root, &mut visual);
+                let control = visual.update(|window, cx| {
+                    root.update(cx, |_, cx| {
+                        if dynamic {
+                            let details = AdapterInput::ROOT
+                                .then(AdapterInput::DETAILS)
+                                .some()
+                                .resolve(&form, cx)
+                                .unwrap()
+                                .unwrap();
+                            $control::try_new(
+                                &form,
+                                details.then(Details::NOTE),
+                                $state::new,
+                                window,
+                                cx,
+                            )
+                            .unwrap()
+                        } else {
+                            $control::new(&form, AdapterInput::NAME, $state::new, window, cx)
+                        }
+                    })
+                });
+                let admissions = std::rc::Rc::new(std::cell::Cell::new(0));
+                let observed = admissions.clone();
+                let _subscription = visual.update(|_, cx| {
+                    root.update(cx, |_, cx| {
+                        cx.subscribe(
+                            &form,
+                            move |_, _, event: &gpui_form::FormEvent<AdapterInput>, _| {
+                                if matches!(event, gpui_form::FormEvent::ModelChanged(_)) {
+                                    observed.set(observed.get() + 1);
+                                }
+                            },
+                        )
+                    })
+                });
+                visual.update(|window, cx| {
+                    for text in ["1", "-", "2"] {
+                        control.update(cx, |input, cx| {
+                            input.replace_text_in_range(
+                                Some(0..input.value().len()),
+                                text,
+                                window,
+                                cx,
+                            )
+                        });
+                    }
+                });
+                visual.run_until_parked();
+                visual.update(|_, cx| {
+                    let model = AdapterInput::ROOT.get(&form, cx);
+                    assert_eq!(
+                        if dynamic {
+                            &model.details.as_ref().unwrap().note
+                        } else {
+                            &model.name
+                        },
+                        "2"
+                    );
+                    assert_eq!(
+                        admissions.get(),
+                        3,
+                        "each distinct snapshot must be admitted once"
+                    );
+                });
+            }
+        }
+    };
+}
+same_frame_text_test!(input_admits_each_native_snapshot, FormInput, InputState);
+same_frame_text_test!(
+    textarea_admits_each_native_snapshot,
+    FormTextarea,
+    TextareaState
+);
+same_frame_text_test!(editor_admits_each_native_snapshot, FormEditor, EditorState);
